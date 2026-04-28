@@ -59,7 +59,6 @@
         <style>TwoColumnsTopToBottom</style>
     </layoutSections>
     <relatedLists>
-        <fields>Name</fields>
         <fields>MSD_Level__c</fields>
         <fields>MSD_Step__c</fields>
         <fields>MSD_Message__c</fields>

@@ -72,7 +72,6 @@
         <style>TwoColumnsTopToBottom</style>
     </layoutSections>
     <relatedLists>
-        <fields>Name</fields>
         <fields>MSD_Status__c</fields>
         <fields>MSD_StartedAt__c</fields>
         <fields>MSD_FinishedAt__c</fields>

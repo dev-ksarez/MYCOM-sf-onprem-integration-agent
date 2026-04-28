@@ -54,7 +54,6 @@
         <style>TwoColumnsTopToBottom</style>
     </layoutSections>
     <relatedLists>
-        <fields>Name</fields>
         <fields>Active__c</fields>
         <fields>ObjectName__c</fields>
         <fields>NextRunAt__c</fields>
