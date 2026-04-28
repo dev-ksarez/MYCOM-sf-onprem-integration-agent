@@ -10,7 +10,7 @@
         <relationshipLabel>Field Mappings</relationshipLabel>
         <relationshipName>FieldMappings</relationshipName>
         <required>false</required>
-        <type>Metadata</type>
+        <type>Lookup</type>
     </fields>
     <fields>
         <fullName>SourceFieldApi__c</fullName>
