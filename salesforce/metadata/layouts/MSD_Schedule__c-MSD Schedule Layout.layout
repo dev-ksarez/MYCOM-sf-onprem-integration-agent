@@ -78,7 +78,6 @@
         <relatedList>MSD_Run__c.MSD_Schedule__c</relatedList>
     </relatedLists>
     <relatedLists>
-        <fields>Name</fields>
         <fields>MSD_ObjectName__c</fields>
         <fields>MSD_LastCheckpoint__c</fields>
         <fields>MSD_LastRecordId__c</fields>
