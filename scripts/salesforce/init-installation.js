@@ -406,6 +406,43 @@ async function validateCustomObjectFields(connection, objectName, requiredFields
   }
 }
 
+async function sanitizePayloadForWrite(connection, objectName, payload, operation) {
+  const op = operation === "update" ? "update" : "create";
+
+  try {
+    const describe = await connection.describe(objectName);
+    const allowed = new Set(
+      describe.fields
+        .filter((field) => (op === "create" ? field.createable : field.updateable))
+        .map((field) => field.name)
+    );
+
+    const sanitized = {};
+    const skipped = [];
+
+    for (const [key, value] of Object.entries(payload)) {
+      if (key === "Id" || allowed.has(key)) {
+        sanitized[key] = value;
+      } else {
+        skipped.push(key);
+      }
+    }
+
+    if (skipped.length > 0) {
+      console.warn(
+        `  ⚠️  Skipping ${skipped.length} non-${op}able field(s) on ${objectName}: ${skipped.join(", ")}`
+      );
+    }
+
+    return sanitized;
+  } catch (err) {
+    console.warn(
+      `  ⚠️  Could not evaluate field permissions for ${objectName} (${err.message}). Using original payload.`
+    );
+    return payload;
+  }
+}
+
 function buildSage100Templates() {
   const accountExternalId =
     String(process.env.SAGE100_ACCOUNT_EXTERNAL_ID_FIELD || "AccountNumber").trim() || "AccountNumber";
@@ -529,9 +566,15 @@ async function upsertConnectorByName(connection, connectorTemplate, activate) {
 
   if (result.records.length > 0) {
     const existingId = result.records[0].Id;
+    const updatePayload = await sanitizePayloadForWrite(
+      connection,
+      "MSD_Connector__c",
+      payload,
+      "update"
+    );
     const updateResult = await connection.sobject("MSD_Connector__c").update({
       Id: existingId,
-      ...payload,
+      ...updatePayload,
     });
 
     if (!updateResult.success) {
@@ -542,7 +585,13 @@ async function upsertConnectorByName(connection, connectorTemplate, activate) {
     return { action: "updated", id: existingId };
   }
 
-  const createResult = await connection.sobject("MSD_Connector__c").create(payload);
+  const createPayload = await sanitizePayloadForWrite(
+    connection,
+    "MSD_Connector__c",
+    payload,
+    "create"
+  );
+  const createResult = await connection.sobject("MSD_Connector__c").create(createPayload);
   if (!createResult.success || !createResult.id) {
     const details = "errors" in createResult ? JSON.stringify(createResult.errors) : "unknown create error";
     throw new Error(`Failed to create connector ${connectorTemplate.name}: ${details}`);
@@ -581,9 +630,15 @@ async function upsertScheduleByName(connection, scheduleTemplate, connectorId, a
 
   if (result.records.length > 0) {
     const existingId = result.records[0].Id;
+    const updatePayload = await sanitizePayloadForWrite(
+      connection,
+      "MSD_Schedule__c",
+      payload,
+      "update"
+    );
     const updateResult = await connection.sobject("MSD_Schedule__c").update({
       Id: existingId,
-      ...payload,
+      ...updatePayload,
     });
 
     if (!updateResult.success) {
@@ -594,7 +649,13 @@ async function upsertScheduleByName(connection, scheduleTemplate, connectorId, a
     return { action: "updated", id: existingId };
   }
 
-  const createResult = await connection.sobject("MSD_Schedule__c").create(payload);
+  const createPayload = await sanitizePayloadForWrite(
+    connection,
+    "MSD_Schedule__c",
+    payload,
+    "create"
+  );
+  const createResult = await connection.sobject("MSD_Schedule__c").create(createPayload);
   if (!createResult.success || !createResult.id) {
     const details = "errors" in createResult ? JSON.stringify(createResult.errors) : "unknown create error";
     throw new Error(`Failed to create schedule ${scheduleTemplate.name}: ${details}`);
