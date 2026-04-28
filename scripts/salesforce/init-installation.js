@@ -316,6 +316,8 @@ async function deployMetadata(connection) {
   const layoutsDir = path.join(metadataDir, "layouts");
   const globalValueSetsDir = path.join(metadataDir, "globalValueSets");
 
+  cleanupLegacyProduct2PicklistMetadata(metadataDir);
+
   if (!fs.existsSync(packageXml)) {
     console.warn(`⚠️  Metadata package.xml not found at: ${packageXml}`);
     console.warn("   Skipping metadata deployment. Custom objects may not be created.");
@@ -538,6 +540,59 @@ async function deployMetadata(connection) {
   } catch (err) {
     console.error(`❌ Metadata deployment failed: ${err.message}`);
     throw err;
+  }
+}
+
+function cleanupLegacyProduct2PicklistMetadata(metadataDir) {
+  const legacyPaths = [
+    path.join(metadataDir, "objects", "Product2.object"),
+    path.join(metadataDir, "objects", "Product2", "fields", "MSD_Artikelgruppe__c.field-meta.xml"),
+    path.join(metadataDir, "objects", "Product2", "fields", "MSD_Artikelgruppe__c.field"),
+  ];
+
+  for (const legacyPath of legacyPaths) {
+    if (!fs.existsSync(legacyPath)) {
+      continue;
+    }
+
+    const stat = fs.statSync(legacyPath);
+    if (stat.isDirectory()) {
+      fs.rmSync(legacyPath, { recursive: true, force: true });
+    } else {
+      fs.unlinkSync(legacyPath);
+    }
+
+    console.log(`  🧹 Removed legacy metadata artifact: ${path.relative(appRoot(), legacyPath)}`);
+  }
+
+  const permissionSetPath = path.join(
+    metadataDir,
+    "permissionsets",
+    "MSD_Integration_Agent.permissionset"
+  );
+
+  if (!fs.existsSync(permissionSetPath)) {
+    return;
+  }
+
+  const content = fs.readFileSync(permissionSetPath, "utf8");
+  if (!content.includes("Product2.MSD_Artikelgruppe__c") && !content.includes("<object>Product2</object>")) {
+    return;
+  }
+
+  const cleaned = content
+    .replace(
+      /\s*<fieldPermissions>\s*<editable>true<\/editable>\s*<field>Product2\.MSD_Artikelgruppe__c<\/field>\s*<readable>true<\/readable>\s*<\/fieldPermissions>\s*/g,
+      "\n"
+    )
+    .replace(
+      /\s*<objectPermissions>\s*<allowCreate>true<\/allowCreate>\s*<allowDelete>false<\/allowDelete>\s*<allowEdit>true<\/allowEdit>\s*<allowRead>true<\/allowRead>\s*<modifyAllRecords>false<\/modifyAllRecords>\s*<object>Product2<\/object>\s*<viewAllRecords>false<\/viewAllRecords>\s*<\/objectPermissions>\s*/g,
+      "\n"
+    );
+
+  if (cleaned !== content) {
+    fs.writeFileSync(permissionSetPath, cleaned, "utf8");
+    console.log("  🧹 Removed legacy Product2 permissions from MSD_Integration_Agent.permissionset");
   }
 }
 
