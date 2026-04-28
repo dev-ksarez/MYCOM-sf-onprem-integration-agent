@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GlobalValueSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <customValue>
+        <fullName>BEISPIEL_STANDARD</fullName>
+        <default>false</default>
+        <label>Beispiel Standard</label>
+    </customValue>
+    <customValue>
+        <fullName>BEISPIEL_PREMIUM</fullName>
+        <default>false</default>
+        <label>Beispiel Premium</label>
+    </customValue>
+    <masterLabel>MSD Artikelgruppen</masterLabel>
+    <sorted>false</sorted>
+</GlobalValueSet>

@@ -159,6 +159,37 @@ function escapeXml(value) {
     .replace(/'/g, "&apos;");
 }
 
+function buildArticleGroupGlobalValueSetXml(entries) {
+  const customValuesXml = entries
+    .map(
+      (entry) => [
+        "    <customValue>",
+        `        <fullName>${escapeXml(entry.apiName)}</fullName>`,
+        "        <default>false</default>",
+        `        <label>${escapeXml(entry.label)}</label>`,
+        "    </customValue>",
+      ].join("\n")
+    )
+    .join("\n");
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<GlobalValueSet xmlns="http://soap.sforce.com/2006/04/metadata">',
+    customValuesXml,
+    '    <masterLabel>MSD Artikelgruppen</masterLabel>',
+    '    <sorted>false</sorted>',
+    '</GlobalValueSet>',
+    '',
+  ].join("\n");
+}
+
+function getDefaultArticleGroupEntries() {
+  return [
+    { apiName: "BEISPIEL_STANDARD", label: "Beispiel Standard" },
+    { apiName: "BEISPIEL_PREMIUM", label: "Beispiel Premium" },
+  ];
+}
+
 async function generateArticleGroupGlobalValueSet(sqlConfig) {
   const sql = require("mssql");
   const metadataDir = path.join(appRoot(), "salesforce", "metadata");
@@ -208,30 +239,22 @@ async function generateArticleGroupGlobalValueSet(sqlConfig) {
       }
     }
 
-    const customValuesXml = Array.from(uniqueEntries.values())
-      .map(
-        (entry) => [
-          "    <customValue>",
-          `        <fullName>${escapeXml(entry.apiName)}</fullName>`,
-          "        <default>false</default>",
-          `        <label>${escapeXml(entry.label)}</label>`,
-          "    </customValue>",
-        ].join("\n")
-      )
-      .join("\n");
-
-    const xml = [
-      '<?xml version="1.0" encoding="UTF-8"?>',
-      '<GlobalValueSet xmlns="http://soap.sforce.com/2006/04/metadata">',
-      customValuesXml,
-      '    <masterLabel>MSD Artikelgruppen</masterLabel>',
-      '    <sorted>false</sorted>',
-      '</GlobalValueSet>',
-      '',
-    ].join("\n");
+    const xml = buildArticleGroupGlobalValueSetXml(Array.from(uniqueEntries.values()));
 
     fs.writeFileSync(outputFile, xml, "utf8");
     console.log(`  ✓ Generated global value set MSD_Artikelgruppen (${uniqueEntries.size} values)`);
+    return;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`  ⚠️  Could not generate MSD_Artikelgruppen from SQL: ${message}`);
+
+    if (!fs.existsSync(outputFile)) {
+      const fallbackXml = buildArticleGroupGlobalValueSetXml(getDefaultArticleGroupEntries());
+      fs.writeFileSync(outputFile, fallbackXml, "utf8");
+      console.warn("  ⚠️  Using static fallback values for MSD_Artikelgruppen example");
+    } else {
+      console.warn("  ⚠️  Reusing existing MSD_Artikelgruppen value set file");
+    }
   } finally {
     if (pool) {
       await pool.close();
