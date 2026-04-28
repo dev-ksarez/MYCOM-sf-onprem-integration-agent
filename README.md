@@ -52,6 +52,7 @@ npm run dev
 - `npm run win:register-updater` - Scheduled Task fuer Auto-Update registrieren
 - `npm run win:build-package` - Kunden-ZIP erzeugen
 - `npm run win:build-package:with-node-modules` - Kunden-ZIP inkl. `node_modules`
+- `npm run init:installation -- --mode SAGE100` - Basis-Importprofile fuer Erstinstallation anlegen
 - `npm run sf:deploy-metadata` - Salesforce Metadaten deployen
 
 ## Kunden-Deployment (Windows)
@@ -62,8 +63,9 @@ Kurzablauf:
 
 1. Release-Paket auf Zielserver entpacken
 2. `.env` konfigurieren
-3. Dienst installieren
-4. Auto-Updater registrieren
+3. Optional: `npm run init:installation -- --mode SAGE100`
+4. Dienst installieren
+5. Auto-Updater registrieren
 
 ## Paket fuer Kundeninstallation erstellen
 

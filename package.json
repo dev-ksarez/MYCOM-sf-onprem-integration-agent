@@ -14,6 +14,7 @@
     "win:register-updater": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/register-agent-updater-task.ps1",
     "win:build-package": "node scripts/windows/build-customer-package.js",
     "win:build-package:with-node-modules": "node scripts/windows/build-customer-package.js --include-node-modules",
+    "init:installation": "node scripts/salesforce/init-installation.js",
     "sf:deploy-metadata": "ts-node scripts/salesforce/deploy-metadata.ts"
   },
   "dependencies": {

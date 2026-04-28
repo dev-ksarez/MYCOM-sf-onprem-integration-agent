@@ -39,6 +39,30 @@ Mindestens enthalten:
 
 Beispielbasis siehe `.env.example`.
 
+Optional fuer den Basis-Installationsmodus SAGE100:
+
+- `SAGE100_ACCOUNT_EXTERNAL_ID_FIELD` (Default: `AccountNumber`)
+- `SAGE100_CONTACT_EXTERNAL_ID_FIELD` (Default: `Email`)
+
+### 2.1) Basis-Importprofile fuer SAGE100 einrichten
+
+Dieser Schritt legt bei der Erstinstallation zwei Schedule-Templates in Salesforce an:
+
+- `SAGE100 - KHKAdressen -> Account`
+- `SAGE100 - KHKAnsprechpartner -> Contact`
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run init:installation -- --mode SAGE100
+```
+
+Optional direkt aktivieren:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run init:installation -- --mode SAGE100 --activate
+```
+
 ### 3) Dienst installieren
 
 ```powershell
