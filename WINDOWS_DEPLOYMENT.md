@@ -142,3 +142,22 @@ Benötigte Umgebungsvariablen für diesen Schritt:
 cd C:\apps\sf-onprem-integration-agent
 npm run win:uninstall-service
 ```
+
+## Paket-Erstellung fuer den Vertrieb
+
+Im Projektverzeichnis kannst du das Kunden-Installationspaket lokal erstellen:
+
+```powershell
+npm run build
+npm run win:build-package
+```
+
+Ausgabe:
+
+- `artifacts/sf-onprem-integration-agent-customer-installer-<version>.zip`
+
+Optional mit bereits enthaltenen Abhaengigkeiten (groesseres Paket):
+
+```powershell
+npm run win:build-package:with-node-modules
+```

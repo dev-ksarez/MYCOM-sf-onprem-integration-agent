@@ -32,3 +32,6 @@ Thumbs.db
 # Temp
 temp/
 tmp/
+
+# Build artifacts
+artifacts/
