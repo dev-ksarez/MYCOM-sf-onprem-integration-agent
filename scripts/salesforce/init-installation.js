@@ -150,6 +150,96 @@ function escapeSoql(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
+function escapeXml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+async function generateArticleGroupGlobalValueSet(sqlConfig) {
+  const sql = require("mssql");
+  const metadataDir = path.join(appRoot(), "salesforce", "metadata");
+  const globalValueSetsDir = path.join(metadataDir, "globalValueSets");
+  const outputFile = path.join(globalValueSetsDir, "MSD_Artikelgruppen.globalValueSet");
+
+  await fs.promises.mkdir(globalValueSetsDir, { recursive: true });
+
+  let pool;
+  try {
+    pool = await sql.connect({
+      server: sqlConfig.server,
+      port: sqlConfig.port,
+      database: sqlConfig.database,
+      user: sqlConfig.user,
+      password: sqlConfig.password,
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+      },
+    });
+
+    const result = await pool.request().query(`
+      SELECT
+        Artikelgruppe,
+        Bezeichnung
+      FROM KHKArtikelgruppen
+      WHERE Artikelgruppe IS NOT NULL
+      ORDER BY Artikelgruppe ASC
+    `);
+
+    const entries = (result.recordset || [])
+      .map((row) => ({
+        apiName: String(row.Artikelgruppe || "").trim(),
+        label: String(row.Bezeichnung || row.Artikelgruppe || "").trim(),
+      }))
+      .filter((entry) => entry.apiName);
+
+    if (entries.length === 0) {
+      throw new Error("KHKArtikelgruppen returned no rows with Artikelgruppe values");
+    }
+
+    const uniqueEntries = new Map();
+    for (const entry of entries) {
+      if (!uniqueEntries.has(entry.apiName)) {
+        uniqueEntries.set(entry.apiName, entry);
+      }
+    }
+
+    const customValuesXml = Array.from(uniqueEntries.values())
+      .map(
+        (entry) => [
+          "    <customValue>",
+          `        <fullName>${escapeXml(entry.apiName)}</fullName>`,
+          "        <default>false</default>",
+          `        <label>${escapeXml(entry.label)}</label>`,
+          "    </customValue>",
+        ].join("\n")
+      )
+      .join("\n");
+
+    const xml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<GlobalValueSet xmlns="http://soap.sforce.com/2006/04/metadata">',
+      customValuesXml,
+      '    <masterLabel>MSD Artikelgruppen</masterLabel>',
+      '    <sorted>false</sorted>',
+      '</GlobalValueSet>',
+      '',
+    ].join("\n");
+
+    fs.writeFileSync(outputFile, xml, "utf8");
+    console.log(`  ✓ Generated global value set MSD_Artikelgruppen (${uniqueEntries.size} values)`);
+  } finally {
+    if (pool) {
+      await pool.close();
+    }
+    await sql.close();
+  }
+}
+
 async function login(loginUrl, clientId, clientSecret) {
 
   const tokenUrl = `${loginUrl.replace(/\/$/, "")}/services/oauth2/token`;
@@ -201,6 +291,7 @@ async function deployMetadata(connection) {
   const tabsDir = path.join(metadataDir, "tabs");
   const applicationsDir = path.join(metadataDir, "applications");
   const layoutsDir = path.join(metadataDir, "layouts");
+  const globalValueSetsDir = path.join(metadataDir, "globalValueSets");
 
   if (!fs.existsSync(packageXml)) {
     console.warn(`⚠️  Metadata package.xml not found at: ${packageXml}`);
@@ -319,6 +410,25 @@ async function deployMetadata(connection) {
 
       for (const layoutFile of layoutFiles) {
         archive.file(path.join(layoutsDir, layoutFile), { name: `layouts/${layoutFile}` });
+      }
+    }
+
+    if (fs.existsSync(globalValueSetsDir)) {
+      const globalValueSetFiles = fs
+        .readdirSync(globalValueSetsDir)
+        .filter((f) => f.endsWith(".globalValueSet"));
+
+      if (process.env.DEBUG_DEPLOY) {
+        console.log(`  🏷️  Adding ${globalValueSetFiles.length} global value set file(s) to ZIP:`);
+        for (const f of globalValueSetFiles) {
+          console.log(`     - globalValueSets/${f}`);
+        }
+      }
+
+      for (const valueSetFile of globalValueSetFiles) {
+        archive.file(path.join(globalValueSetsDir, valueSetFile), {
+          name: `globalValueSets/${valueSetFile}`,
+        });
       }
     }
 
@@ -970,6 +1080,15 @@ async function main() {
   };
 
   console.log(`Initializing installation mode ${args.mode} ...`);
+
+  console.log("🏷️  Generating example global picklist from KHKArtikelgruppen...");
+  await generateArticleGroupGlobalValueSet({
+    server: sqlServer,
+    port: sqlPort,
+    database: sqlDatabase,
+    user: sqlUser,
+    password: sqlPassword,
+  });
   
   // Deploy metadata first (creates custom objects if they don't exist)
   await deployMetadata(connection);

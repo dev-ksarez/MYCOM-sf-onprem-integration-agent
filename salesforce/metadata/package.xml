@@ -8,6 +8,7 @@
         <members>MSD_Log__c</members>
         <members>MSD_ObjectMapping__mdt</members>
         <members>MSD_FieldMapping__mdt</members>
+        <members>Product2</members>
         <name>CustomObject</name>
     </types>
     <types>
@@ -25,6 +26,10 @@
     <types>
         <members>MSD_Integration</members>
         <name>CustomApplication</name>
+    </types>
+    <types>
+        <members>MSD_Artikelgruppen</members>
+        <name>GlobalValueSet</name>
     </types>
     <types>
         <members>MSD_Connector__c-MSD Connector Layout</members>
