@@ -166,6 +166,11 @@ export interface SalesforcePicklistValue {
   label: string;
 }
 
+export interface GlobalPicklistEntry {
+  apiName: string;
+  label: string;
+}
+
 interface OAuthTokenResponse {
   access_token: string;
   instance_url: string;
@@ -809,5 +814,124 @@ export class SalesforceClient {
 
     this.globalPicklistCache.set(globalValueSetApiName, values);
     return values;
+  }
+
+  public async syncGlobalValueSetValues(input: {
+    globalValueSetApiName: string;
+    entries: GlobalPicklistEntry[];
+  }): Promise<{ added: number; updated: number; total: number }> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const globalValueSetApiName = input.globalValueSetApiName.trim();
+    if (!globalValueSetApiName) {
+      throw new Error("globalValueSetApiName must not be empty");
+    }
+
+    const normalizedEntries = Array.from(
+      new Map(
+        input.entries
+          .map((entry) => ({
+            apiName: String(entry.apiName || "").trim(),
+            label: String(entry.label || entry.apiName || "").trim()
+          }))
+          .filter((entry) => entry.apiName)
+          .map((entry) => [entry.apiName, entry])
+      ).values()
+    );
+
+    if (normalizedEntries.length === 0) {
+      throw new Error(`No valid entries provided for global value set ${globalValueSetApiName}`);
+    }
+
+    const metadataApi = this.connection.metadata as unknown as {
+      read: (type: string, fullName: string) => Promise<unknown>;
+      update: (type: string, metadata: unknown) => Promise<unknown>;
+      create: (type: string, metadata: unknown) => Promise<unknown>;
+    };
+
+    let existing: Record<string, unknown> | null = null;
+    try {
+      const readResult = await metadataApi.read("GlobalValueSet", globalValueSetApiName);
+      const metadataEntry = Array.isArray(readResult) ? readResult[0] : readResult;
+      if (metadataEntry && typeof metadataEntry === "object") {
+        existing = metadataEntry as Record<string, unknown>;
+      }
+    } catch {
+      existing = null;
+    }
+
+    const existingValuesRaw = existing?.customValue;
+    const existingValues = Array.isArray(existingValuesRaw)
+      ? existingValuesRaw
+      : existingValuesRaw
+        ? [existingValuesRaw]
+        : [];
+
+    const byApiName = new Map<string, Record<string, unknown>>();
+    for (const value of existingValues) {
+      if (!value || typeof value !== "object") {
+        continue;
+      }
+
+      const record = value as Record<string, unknown>;
+      const fullName = String(record.fullName ?? "").trim();
+      if (!fullName) {
+        continue;
+      }
+
+      byApiName.set(fullName, record);
+    }
+
+    let added = 0;
+    let updated = 0;
+
+    for (const entry of normalizedEntries) {
+      const existingValue = byApiName.get(entry.apiName);
+      if (!existingValue) {
+        byApiName.set(entry.apiName, {
+          fullName: entry.apiName,
+          default: false,
+          label: entry.label,
+          isActive: true
+        });
+        added += 1;
+        continue;
+      }
+
+      const previousLabel = String(existingValue.label ?? existingValue.fullName ?? "").trim();
+      if (previousLabel !== entry.label || existingValue.isActive === false) {
+        existingValue.label = entry.label;
+        existingValue.isActive = true;
+        updated += 1;
+      }
+    }
+
+    const mergedValues = Array.from(byApiName.values());
+
+    const metadataPayload: Record<string, unknown> = {
+      fullName: globalValueSetApiName,
+      masterLabel: String(existing?.masterLabel ?? globalValueSetApiName),
+      sorted: existing?.sorted === true,
+      customValue: mergedValues
+    };
+
+    const writeResult = existing
+      ? await metadataApi.update("GlobalValueSet", metadataPayload)
+      : await metadataApi.create("GlobalValueSet", metadataPayload);
+
+    const resultArray = Array.isArray(writeResult) ? writeResult : [writeResult];
+    const failed = resultArray.find(
+      (entry) => entry && typeof entry === "object" && "success" in (entry as Record<string, unknown>) && (entry as Record<string, unknown>).success === false
+    ) as Record<string, unknown> | undefined;
+
+    if (failed) {
+      const errors = failed.errors ? JSON.stringify(failed.errors) : "unknown metadata error";
+      throw new Error(`Failed to sync global value set ${globalValueSetApiName}: ${errors}`);
+    }
+
+    this.globalPicklistCache.delete(globalValueSetApiName);
+    return { added, updated, total: normalizedEntries.length };
   }
 }

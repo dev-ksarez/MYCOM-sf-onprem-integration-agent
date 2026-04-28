@@ -13,6 +13,7 @@ import { MssqlQuerySourceAdapter } from "./source-adapters/mssql/mssql-query-sou
 import { SalesforceScheduleSource } from "./source/salesforce/salesforce-schedule-source";
 import { MssqlTargetAdapter } from "./target-adapters/mssql/mssql-target-adapter";
 import { SalesforceTargetAdapter } from "./target-adapters/salesforce/salesforce-target-adapter";
+import { SalesforceGlobalPicklistTargetAdapter } from "./target-adapters/salesforce/salesforce-global-picklist-target-adapter";
 import { JobContext } from "./types/job-context";
 import { TransferContext } from "./types/transfer-context";
 
@@ -43,8 +44,15 @@ async function main(): Promise<void> {
       schedule.sourceType === "SALESFORCE_SOQL" && schedule.targetType === "MSSQL";
     const isGenericMssqlToSalesforce =
       schedule.sourceType === "MSSQL_SQL" && schedule.targetType === "SALESFORCE";
+    const isGenericMssqlToGlobalPicklist =
+      schedule.sourceType === "MSSQL_SQL" && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
 
-    if (!isGenericSalesforceToMssql && !isGenericMssqlToSalesforce && schedule.objectName !== "Account") {
+    if (
+      !isGenericSalesforceToMssql &&
+      !isGenericMssqlToSalesforce &&
+      !isGenericMssqlToGlobalPicklist &&
+      schedule.objectName !== "Account"
+    ) {
       logger.info(
         { scheduleId: schedule.id, objectName: schedule.objectName },
         "Skipping schedule because object is not supported yet"
@@ -159,7 +167,7 @@ async function main(): Promise<void> {
         const job = new DataTransferJob(logger, sourceAdapter, targetAdapter);
 
         result = await job.execute(transferContext, schedule.mappingDefinition);
-      } else if (isGenericMssqlToSalesforce) {
+      } else if (isGenericMssqlToSalesforce || isGenericMssqlToGlobalPicklist) {
         if (!schedule.sourceDefinition?.trim()) {
           throw new Error(`Schedule ${schedule.name} is missing MSD_SourceDefinition__c`);
         }
@@ -178,7 +186,9 @@ async function main(): Promise<void> {
           scheduleId: context.scheduleId,
           direction: schedule.direction || "Inbound",
           sourceType: schedule.sourceType || "MSSQL_SQL",
-          targetType: schedule.targetType || "SALESFORCE",
+          targetType:
+            schedule.targetType ||
+            (isGenericMssqlToGlobalPicklist ? "SALESFORCE_GLOBAL_PICKLIST" : "SALESFORCE"),
           batchSize: context.batchSize,
           maxRetries: context.maxRetries
         };
@@ -187,11 +197,13 @@ async function main(): Promise<void> {
           connectorConfig,
           schedule.sourceDefinition
         );
-        const targetAdapter = new SalesforceTargetAdapter(
-          salesforceClient,
-          schedule.targetDefinition,
-          connectorConfig
-        );
+        const targetAdapter = isGenericMssqlToGlobalPicklist
+          ? new SalesforceGlobalPicklistTargetAdapter(salesforceClient, schedule.targetDefinition)
+          : new SalesforceTargetAdapter(
+              salesforceClient,
+              schedule.targetDefinition,
+              connectorConfig
+            );
 
         if (!targetAdapter.isProfileSchedulerDue()) {
           logger.info(
