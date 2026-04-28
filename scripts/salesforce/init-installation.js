@@ -738,18 +738,45 @@ async function upsertConnectorByName(connection, connectorTemplate, activate) {
 }
 
 async function upsertScheduleByName(connection, scheduleTemplate, connectorId, activate) {
-  const escapedName = escapeSoql(scheduleTemplate.name);
-  const soql = `
-    SELECT Id, Name, Active__c
+  // Name is an AutoNumber field on MSD_Schedule__c, so matching by Name would always miss.
+  // Instead, load recent schedules and match by the stable schedule definition.
+  const result = await connection.query(`
+    SELECT
+      Id,
+      Name,
+      Active__c,
+      ObjectName__c,
+      SourceSystem__c,
+      TargetSystem__c,
+      Operation__c,
+      MSD_Direction__c,
+      MSD_SourceType__c,
+      MSD_TargetType__c,
+      MSD_SourceDefinition__c,
+      MSD_MappingDefinition__c,
+      MSD_TargetDefinition__c
     FROM MSD_Schedule__c
-    WHERE Name = '${escapedName}'
     ORDER BY CreatedDate DESC
-    LIMIT 1
-  `;
+    LIMIT 50
+  `);
 
-  const result = await connection.query(soql);
+  const existingRecord = (result.records || []).find((record) => {
+    const objectNameMatches = String(record.ObjectName__c || "").trim() === scheduleTemplate.objectName;
+    const sourceDefinitionMatches =
+      String(record.MSD_SourceDefinition__c || "").trim() === scheduleTemplate.sourceDefinition;
+    const targetDefinitionMatches =
+      String(record.MSD_TargetDefinition__c || "").trim() === scheduleTemplate.targetDefinition;
+    const mappingDefinitionMatches =
+      String(record.MSD_MappingDefinition__c || "").trim() === scheduleTemplate.mappingDefinition;
+
+    if (objectNameMatches && sourceDefinitionMatches) {
+      return true;
+    }
+
+    return sourceDefinitionMatches && targetDefinitionMatches && mappingDefinitionMatches;
+  });
+
   const payload = {
-    Name: scheduleTemplate.name,
     Active__c: activate,
     SourceSystem__c: "SAGE100",
     TargetSystem__c: "salesforce",
@@ -765,8 +792,8 @@ async function upsertScheduleByName(connection, scheduleTemplate, connectorId, a
     BatchSize__c: 200,
   };
 
-  if (result.records.length > 0) {
-    const existingId = result.records[0].Id;
+  if (existingRecord) {
+    const existingId = existingRecord.Id;
     const updatePayload = await sanitizePayloadForWrite(
       connection,
       "MSD_Schedule__c",
@@ -789,7 +816,11 @@ async function upsertScheduleByName(connection, scheduleTemplate, connectorId, a
   const createPayload = await sanitizePayloadForWrite(
     connection,
     "MSD_Schedule__c",
-    payload,
+    {
+      ...payload,
+      // Only for UI/reference; omitted automatically if not createable.
+      Name: scheduleTemplate.name,
+    },
     "create"
   );
   const createResult = await connection.sobject("MSD_Schedule__c").create(createPayload);
