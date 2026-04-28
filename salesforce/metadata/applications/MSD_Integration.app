@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CustomApplication xmlns="http://soap.sforce.com/2006/04/metadata">
     <description>App for operating and monitoring the MSD Salesforce integration.</description>
+    <formFactors>Large</formFactors>
+    <formFactors>Small</formFactors>
     <label>MSD Integration</label>
     <navType>Standard</navType>
     <tabs>standard-home</tabs>

@@ -3,7 +3,6 @@
     <description>Permissions for sf-onprem integration agent setup and runtime access.</description>
     <applicationVisibilities>
         <application>MSD_Integration</application>
-        <default>false</default>
         <visible>true</visible>
     </applicationVisibilities>
     <fieldPermissions>

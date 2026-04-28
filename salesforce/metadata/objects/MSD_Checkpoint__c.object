@@ -55,7 +55,6 @@
     </fields>
     <listViews>
         <fullName>All</fullName>
-        <columns>Name</columns>
         <columns>MSD_ObjectName__c</columns>
         <columns>MSD_LastCheckpoint__c</columns>
         <columns>MSD_LastRecordId__c</columns>

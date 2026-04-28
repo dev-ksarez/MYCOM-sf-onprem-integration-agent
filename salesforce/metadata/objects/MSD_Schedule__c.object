@@ -125,7 +125,6 @@
     </fields>
     <listViews>
         <fullName>All</fullName>
-        <columns>Name</columns>
         <columns>Active__c</columns>
         <columns>ObjectName__c</columns>
         <columns>Operation__c</columns>
