@@ -26,5 +26,13 @@
         <members>MSD_Integration</members>
         <name>CustomApplication</name>
     </types>
+    <types>
+        <members>MSD_Connector__c-MSD Connector Layout</members>
+        <members>MSD_Schedule__c-MSD Schedule Layout</members>
+        <members>MSD_Run__c-MSD Run Layout</members>
+        <members>MSD_Log__c-MSD Log Layout</members>
+        <members>MSD_Checkpoint__c-MSD Checkpoint Layout</members>
+        <name>Layout</name>
+    </types>
     <version>61.0</version>
 </Package>

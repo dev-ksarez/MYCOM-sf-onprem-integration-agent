@@ -200,6 +200,7 @@ async function deployMetadata(connection) {
   const permissionSetsDir = path.join(metadataDir, "permissionsets");
   const tabsDir = path.join(metadataDir, "tabs");
   const applicationsDir = path.join(metadataDir, "applications");
+  const layoutsDir = path.join(metadataDir, "layouts");
 
   if (!fs.existsSync(packageXml)) {
     console.warn(`⚠️  Metadata package.xml not found at: ${packageXml}`);
@@ -302,6 +303,22 @@ async function deployMetadata(connection) {
 
       for (const appFile of appFiles) {
         archive.file(path.join(applicationsDir, appFile), { name: `applications/${appFile}` });
+      }
+    }
+
+    // Add all layout files inside layouts/
+    if (fs.existsSync(layoutsDir)) {
+      const layoutFiles = fs.readdirSync(layoutsDir).filter((f) => f.endsWith(".layout"));
+
+      if (process.env.DEBUG_DEPLOY) {
+        console.log(`  🧱 Adding ${layoutFiles.length} layout file(s) to ZIP:`);
+        for (const f of layoutFiles) {
+          console.log(`     - layouts/${f}`);
+        }
+      }
+
+      for (const layoutFile of layoutFiles) {
+        archive.file(path.join(layoutsDir, layoutFile), { name: `layouts/${layoutFile}` });
       }
     }
 
