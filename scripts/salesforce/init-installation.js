@@ -197,6 +197,7 @@ async function deployMetadata(connection) {
   const metadataDir = path.join(appRoot(), "salesforce", "metadata");
   const packageXml = path.join(metadataDir, "package.xml");
   const objectsDir = path.join(metadataDir, "objects");
+  const permissionSetsDir = path.join(metadataDir, "permissionsets");
 
   if (!fs.existsSync(packageXml)) {
     console.warn(`⚠️  Metadata package.xml not found at: ${packageXml}`);
@@ -246,6 +247,28 @@ async function deployMetadata(connection) {
         console.log(`     ✓ objects/${objFile} (${fileSize} bytes)`);
       }
       archive.file(filePath, { name: `objects/${objFile}` });
+    }
+
+    // Add all permission set files inside permissionsets/
+    if (fs.existsSync(permissionSetsDir)) {
+      const permissionSetFiles = fs
+        .readdirSync(permissionSetsDir)
+        .filter((f) => f.endsWith(".permissionset") || f.endsWith(".permissionset-meta.xml"));
+
+      if (process.env.DEBUG_DEPLOY) {
+        console.log(`  🔐 Adding ${permissionSetFiles.length} permission set file(s) to ZIP:`);
+        for (const f of permissionSetFiles) {
+          console.log(`     - permissionsets/${f}`);
+        }
+      }
+
+      for (const permFile of permissionSetFiles) {
+        const filePath = path.join(permissionSetsDir, permFile);
+        const zipName = permFile.endsWith(".permissionset-meta.xml")
+          ? permFile.replace(/\.permissionset-meta\.xml$/, ".permissionset")
+          : permFile;
+        archive.file(filePath, { name: `permissionsets/${zipName}` });
+      }
     }
 
     // Important: finalize must be called after all files are added
@@ -331,6 +354,64 @@ async function deployMetadata(connection) {
   } catch (err) {
     console.error(`❌ Metadata deployment failed: ${err.message}`);
     throw err;
+  }
+}
+
+async function getCurrentUserId(connection) {
+  if (connection.userInfo && connection.userInfo.id) {
+    return connection.userInfo.id;
+  }
+
+  const identity = await connection.identity();
+  if (!identity || !identity.user_id) {
+    throw new Error("Could not resolve current Salesforce user ID from identity endpoint");
+  }
+
+  return identity.user_id;
+}
+
+async function ensurePermissionSetAssigned(connection, permissionSetName) {
+  try {
+    const userId = await getCurrentUserId(connection);
+    const escapedPermName = escapeSoql(permissionSetName);
+
+    const permResult = await connection.query(
+      `SELECT Id, Name FROM PermissionSet WHERE Name = '${escapedPermName}' LIMIT 1`
+    );
+
+    if (!permResult.records || permResult.records.length === 0) {
+      console.warn(
+        `  ⚠️  Permission Set '${permissionSetName}' not found. Continue without auto-assignment.`
+      );
+      return;
+    }
+
+    const permissionSetId = permResult.records[0].Id;
+    const assignmentCheck = await connection.query(
+      `SELECT Id FROM PermissionSetAssignment WHERE AssigneeId = '${escapeSoql(userId)}' AND PermissionSetId = '${escapeSoql(permissionSetId)}' LIMIT 1`
+    );
+
+    if (assignmentCheck.records && assignmentCheck.records.length > 0) {
+      console.log(`  ✓ Permission Set '${permissionSetName}' is already assigned`);
+      return;
+    }
+
+    const createResult = await connection.sobject("PermissionSetAssignment").create({
+      AssigneeId: userId,
+      PermissionSetId: permissionSetId,
+    });
+
+    if (!createResult.success) {
+      const details = "errors" in createResult ? JSON.stringify(createResult.errors) : "unknown";
+      throw new Error(details);
+    }
+
+    console.log(`  ✓ Permission Set '${permissionSetName}' assigned to integration user`);
+  } catch (err) {
+    console.warn(
+      `  ⚠️  Could not auto-assign Permission Set '${permissionSetName}': ${err.message}`
+    );
+    console.warn("     Continue without auto-assignment. Assign manually if field access errors persist.");
   }
 }
 
@@ -769,6 +850,9 @@ async function main() {
   
   // Deploy metadata first (creates custom objects if they don't exist)
   await deployMetadata(connection);
+
+  console.log("🔐 Ensuring integration permissions...");
+  await ensurePermissionSetAssigned(connection, "MSD_Integration_Agent");
 
   // Validate that required fields were created
   console.log("🔍 Validating deployed metadata...");

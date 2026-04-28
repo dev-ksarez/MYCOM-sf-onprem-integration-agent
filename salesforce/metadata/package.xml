@@ -10,5 +10,9 @@
         <members>MSD_FieldMapping__mdt</members>
         <name>CustomObject</name>
     </types>
+    <types>
+        <members>MSD_Integration_Agent</members>
+        <name>PermissionSet</name>
+    </types>
     <version>61.0</version>
 </Package>
