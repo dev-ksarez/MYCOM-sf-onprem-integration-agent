@@ -1,12 +1,11 @@
 param(
   [string]$TaskName = "SfOnpremIntegrationAgent-Updater",
   [string]$ServiceName = "SfOnpremIntegrationAgent",
-  [string]$ManifestUrl = "https://github.com/OWNER/REPO/releases/latest/download/update-manifest.json",
+  [string]$ManifestUrl = "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json",
   [int]$EveryMinutes = 15,
   [string]$AppRoot
 )
 
-# Replace OWNER/REPO with your actual GitHub repository path.
 # The CI pipeline automatically publishes update-manifest.json on every release tag.
 
 Set-StrictMode -Version Latest
@@ -24,10 +23,6 @@ function Resolve-AppRoot {
 }
 
 Write-Host "Manifest URL: $ManifestUrl" -ForegroundColor Cyan
-if ($ManifestUrl -like "*OWNER/REPO*") {
-  $ManifestUrl = Read-Host "Manifest URL contains placeholder. Enter the actual URL"
-}
-
 if (-not $ManifestUrl -or -not $ManifestUrl.Trim()) {
   throw "ManifestUrl is required."
 }
