@@ -15,7 +15,8 @@
     "win:build-package": "node scripts/windows/build-customer-package.js",
     "win:build-package:with-node-modules": "node scripts/windows/build-customer-package.js --include-node-modules",
     "init:installation": "node scripts/salesforce/init-installation.js",
-    "sf:deploy-metadata": "ts-node scripts/salesforce/deploy-metadata.ts"
+    "sf:deploy-metadata": "ts-node scripts/salesforce/deploy-metadata.ts",
+    "sf:debug-oauth": "node scripts/salesforce/debug-oauth.js"
   },
   "dependencies": {
     "@types/archiver": "^7.0.0",

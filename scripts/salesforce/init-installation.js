@@ -166,7 +166,20 @@ async function login(loginUrl, clientId, clientSecret) {
   });
 
   if (!response.ok) {
-    throw new Error(`Salesforce token request failed: ${response.status} ${await response.text()}`);
+    const errorText = await response.text();
+    const errorMsg = `Salesforce token request failed: ${response.status} ${errorText}`;
+    
+    // Provide diagnostic hint for common errors
+    if (errorText.includes("unsupported_grant_type")) {
+      console.error(`\n✗ ${errorMsg}`);
+      console.error("\n⚠️  Your Salesforce Connected App is NOT configured for Client Credentials Flow");
+      console.error("\nTo diagnose this issue, run:");
+      console.error("  npm run sf:debug-oauth");
+      console.error("\nFor detailed instructions, see: SALESFORCE_OAUTH_TROUBLESHOOTING.md");
+      console.error("");
+    }
+    
+    throw new Error(errorMsg);
   }
 
   const tokenData = await response.json();
