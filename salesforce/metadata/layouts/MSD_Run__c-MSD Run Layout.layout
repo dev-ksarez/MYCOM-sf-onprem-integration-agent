@@ -7,6 +7,7 @@
         <label>Run Overview</label>
         <layoutColumns>
             <layoutItems>
+                <behavior>Readonly</behavior>
                 <field>Name</field>
             </layoutItems>
             <layoutItems>

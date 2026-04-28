@@ -7,6 +7,7 @@
         <label>Connector Information</label>
         <layoutColumns>
             <layoutItems>
+                <behavior>Required</behavior>
                 <field>Name</field>
             </layoutItems>
             <layoutItems>
