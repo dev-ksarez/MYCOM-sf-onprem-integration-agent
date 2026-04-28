@@ -121,4 +121,15 @@
         <type>LongTextArea</type>
         <visibleLines>5</visibleLines>
     </fields>
+    <listViews>
+        <fullName>All</fullName>
+        <columns>Name</columns>
+        <columns>MSD_Status__c</columns>
+        <columns>MSD_StartedAt__c</columns>
+        <columns>MSD_FinishedAt__c</columns>
+        <columns>MSD_RecordsSucceeded__c</columns>
+        <columns>MSD_RecordsFailed__c</columns>
+        <filterScope>Everything</filterScope>
+        <label>All Runs</label>
+    </listViews>
 </CustomObject>

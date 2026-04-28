@@ -123,4 +123,14 @@
         <required>false</required>
         <type>DateTime</type>
     </fields>
+    <listViews>
+        <fullName>All</fullName>
+        <columns>Name</columns>
+        <columns>Active__c</columns>
+        <columns>ObjectName__c</columns>
+        <columns>Operation__c</columns>
+        <columns>NextRunAt__c</columns>
+        <filterScope>Everything</filterScope>
+        <label>All Schedules</label>
+    </listViews>
 </CustomObject>

@@ -78,4 +78,14 @@
         <type>LongTextArea</type>
         <visibleLines>3</visibleLines>
     </fields>
+    <listViews>
+        <fullName>All</fullName>
+        <columns>Name</columns>
+        <columns>MSD_Active__c</columns>
+        <columns>MSD_ConnectorType__c</columns>
+        <columns>MSD_TargetSystem__c</columns>
+        <columns>MSD_Direction__c</columns>
+        <filterScope>Everything</filterScope>
+        <label>All Connectors</label>
+    </listViews>
 </CustomObject>

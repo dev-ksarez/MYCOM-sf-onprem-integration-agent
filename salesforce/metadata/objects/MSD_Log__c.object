@@ -76,4 +76,14 @@
         <type>Text</type>
         <unique>false</unique>
     </fields>
+    <listViews>
+        <fullName>All</fullName>
+        <columns>Name</columns>
+        <columns>MSD_Level__c</columns>
+        <columns>MSD_Step__c</columns>
+        <columns>MSD_RecordKey__c</columns>
+        <columns>MSD_CorrelationId__c</columns>
+        <filterScope>Everything</filterScope>
+        <label>All Logs</label>
+    </listViews>
 </CustomObject>

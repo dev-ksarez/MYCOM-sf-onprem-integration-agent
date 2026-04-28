@@ -198,6 +198,8 @@ async function deployMetadata(connection) {
   const packageXml = path.join(metadataDir, "package.xml");
   const objectsDir = path.join(metadataDir, "objects");
   const permissionSetsDir = path.join(metadataDir, "permissionsets");
+  const tabsDir = path.join(metadataDir, "tabs");
+  const applicationsDir = path.join(metadataDir, "applications");
 
   if (!fs.existsSync(packageXml)) {
     console.warn(`⚠️  Metadata package.xml not found at: ${packageXml}`);
@@ -268,6 +270,38 @@ async function deployMetadata(connection) {
           ? permFile.replace(/\.permissionset-meta\.xml$/, ".permissionset")
           : permFile;
         archive.file(filePath, { name: `permissionsets/${zipName}` });
+      }
+    }
+
+    // Add all custom tab files inside tabs/
+    if (fs.existsSync(tabsDir)) {
+      const tabFiles = fs.readdirSync(tabsDir).filter((f) => f.endsWith(".tab"));
+
+      if (process.env.DEBUG_DEPLOY) {
+        console.log(`  🗂️  Adding ${tabFiles.length} tab file(s) to ZIP:`);
+        for (const f of tabFiles) {
+          console.log(`     - tabs/${f}`);
+        }
+      }
+
+      for (const tabFile of tabFiles) {
+        archive.file(path.join(tabsDir, tabFile), { name: `tabs/${tabFile}` });
+      }
+    }
+
+    // Add all custom app files inside applications/
+    if (fs.existsSync(applicationsDir)) {
+      const appFiles = fs.readdirSync(applicationsDir).filter((f) => f.endsWith(".app"));
+
+      if (process.env.DEBUG_DEPLOY) {
+        console.log(`  🧩 Adding ${appFiles.length} app file(s) to ZIP:`);
+        for (const f of appFiles) {
+          console.log(`     - applications/${f}`);
+        }
+      }
+
+      for (const appFile of appFiles) {
+        archive.file(path.join(applicationsDir, appFile), { name: `applications/${appFile}` });
       }
     }
 

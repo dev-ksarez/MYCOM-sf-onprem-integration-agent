@@ -14,5 +14,17 @@
         <members>MSD_Integration_Agent</members>
         <name>PermissionSet</name>
     </types>
+    <types>
+        <members>MSD_Connector__c</members>
+        <members>MSD_Schedule__c</members>
+        <members>MSD_Run__c</members>
+        <members>MSD_Log__c</members>
+        <members>MSD_Checkpoint__c</members>
+        <name>CustomTab</name>
+    </types>
+    <types>
+        <members>MSD_Integration</members>
+        <name>CustomApplication</name>
+    </types>
     <version>61.0</version>
 </Package>
