@@ -335,25 +335,72 @@ async function deployMetadata(connection) {
 }
 
 async function validateCustomObjectFields(connection, objectName, requiredFields) {
+  const notFoundMsg = `Custom object '${objectName}' does not exist. Metadata deployment failed.`;
+
   try {
     const describe = await connection.describe(objectName);
-    const existingFields = new Map(describe.fields.map((f) => [f.name, f]));
+    const existingFields = new Set(describe.fields.map((f) => f.name));
+    const missingFromDescribe = requiredFields.filter((fieldName) => !existingFields.has(fieldName));
 
-    const missing = requiredFields.filter((fieldName) => !existingFields.has(fieldName));
-    
-    if (missing.length > 0) {
-      console.error(`❌ Custom object '${objectName}' is missing required fields:`);
-      for (const field of missing) {
-        console.error(`  - ${field}`);
-      }
-      throw new Error(`Missing ${missing.length} field(s) on ${objectName}. Metadata deployment may have failed.`);
+    if (missingFromDescribe.length === 0) {
+      console.log(`  ✓ All required fields exist on ${objectName}`);
+      return true;
     }
 
-    console.log(`  ✓ All required fields exist on ${objectName}`);
-    return true;
+    // Describe can omit fields due to FLS/permissions. Verify via Tooling API before failing.
+    try {
+      const escapedObjectName = objectName.replace(/'/g, "\\'");
+      const fieldList = requiredFields
+        .map((fieldName) => `'${fieldName.replace(/'/g, "\\'")}'`)
+        .join(", ");
+
+      const toolingQuery = [
+        "SELECT QualifiedApiName",
+        "FROM FieldDefinition",
+        `WHERE EntityDefinition.QualifiedApiName = '${escapedObjectName}'`,
+        `AND QualifiedApiName IN (${fieldList})`,
+      ].join(" ");
+
+      const toolingResult = await connection.tooling.query(toolingQuery);
+      const toolingFields = new Set(
+        (toolingResult.records || []).map((record) => record.QualifiedApiName)
+      );
+      const stillMissing = requiredFields.filter((fieldName) => !toolingFields.has(fieldName));
+
+      if (stillMissing.length === 0) {
+        console.log(
+          `  ✓ All required fields exist on ${objectName} (verified via Tooling API; describe may be restricted)`
+        );
+        return true;
+      }
+
+      console.error(`❌ Custom object '${objectName}' is missing required fields:`);
+      for (const field of stillMissing) {
+        console.error(`  - ${field}`);
+      }
+      throw new Error(
+        `Missing ${stillMissing.length} field(s) on ${objectName}. Metadata deployment may have failed or the object in this org differs from expected metadata.`
+      );
+    } catch (toolingErr) {
+      console.warn(
+        `  ⚠️  Could not verify fields via Tooling API (${toolingErr.message}). Falling back to describe() result.`
+      );
+      console.error(`❌ Custom object '${objectName}' is missing required fields (describe):`);
+      for (const field of missingFromDescribe) {
+        console.error(`  - ${field}`);
+      }
+      throw new Error(
+        `Missing ${missingFromDescribe.length} field(s) on ${objectName} according to describe(). If fields exist in Setup, check Field-Level Security for the integration user or grant permission to query Tooling API.`
+      );
+    }
   } catch (err) {
-    if (err.message?.includes("not found")) {
-      throw new Error(`Custom object '${objectName}' does not exist. Metadata deployment failed.`);
+    const message = String(err?.message || "");
+    if (
+      message.includes("not found") ||
+      message.includes("No such column") ||
+      message.includes("sObject type")
+    ) {
+      throw new Error(notFoundMsg);
     }
     throw err;
   }
