@@ -12,7 +12,12 @@ function Resolve-AppRoot {
   param([string]$InputPath)
 
   if ($InputPath -and $InputPath.Trim()) {
-    return (Resolve-Path -Path $InputPath).Path
+    $candidate = $InputPath.Trim()
+    if (-not (Test-Path -Path $candidate)) {
+      throw "AppRoot path not found: $candidate"
+    }
+
+    return (Resolve-Path -Path $candidate).Path
   }
 
   $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -56,12 +61,75 @@ function Wait-ServiceState {
   return $false
 }
 
+function Test-IsElevated {
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Invoke-Sc {
+  param(
+    [string[]]$Arguments,
+    [string]$Action
+  )
+
+  $output = & sc.exe @Arguments 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    $message = ($output | Out-String).Trim()
+    throw "sc.exe $Action failed (exit code $LASTEXITCODE): $message"
+  }
+
+  return $output
+}
+
+function Resolve-NssmExe {
+  param([string]$AppRoot)
+
+  # Check project root first
+  if ($AppRoot) {
+    $rootCandidate = Join-Path $AppRoot "nssm.exe"
+    if (Test-Path -Path $rootCandidate) {
+      return $rootCandidate
+    }
+  }
+
+  # Check if nssm is in PATH
+  $nssmCommand = Get-Command nssm -ErrorAction SilentlyContinue
+  if ($nssmCommand -and $nssmCommand.Source) {
+    return $nssmCommand.Source
+  }
+
+  # Check common installation locations
+  $commonCandidates = @(
+    "C:\\ProgramData\\chocolatey\\bin\\nssm.exe",
+    "C:\\Windows\\System32\\nssm.exe"
+  )
+
+  foreach ($candidate in $commonCandidates) {
+    if (Test-Path -Path $candidate) {
+      return $candidate
+    }
+  }
+
+  return $null
+}
+
 $appRootResolved = Resolve-AppRoot -InputPath $AppRoot
 $entryPoint = Join-Path $appRootResolved "dist\main.js"
-$nodeExe = (Get-Command node -ErrorAction SilentlyContinue)?.Source
+$nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+$nodeExe = if ($nodeCommand) { $nodeCommand.Source } else { $null }
 
 if (-not $nodeExe) {
   throw "Node.js was not found in PATH. Install Node.js 22+ and retry."
+}
+
+$nssmExe = Resolve-NssmExe -AppRoot $appRootResolved
+if (-not $nssmExe) {
+  throw "NSSM (nssm.exe) is required to run Node.js as a Windows service. Ensure nssm.exe is in project root or install NSSM and ensure 'nssm' is in PATH."
+}
+
+if (-not (Test-IsElevated)) {
+  throw "Administrator rights are required to install a Windows service. Start PowerShell as Administrator and retry."
 }
 
 if (-not (Test-Path -Path $entryPoint)) {
@@ -74,6 +142,7 @@ Write-Host "  DisplayName : $DisplayName"
 Write-Host "  AppRoot     : $appRootResolved"
 Write-Host "  Node.exe    : $nodeExe"
 Write-Host "  EntryPoint  : $entryPoint"
+Write-Host "  NSSM.exe    : $nssmExe"
 
 if (-not (Ask-YesNo -Prompt "Continue with installation?" -Default $true)) {
   Write-Host "Aborted."
@@ -92,17 +161,46 @@ if ($existing) {
     [void](Wait-ServiceState -Name $ServiceName -ExpectedState "Stopped" -TimeoutSeconds 60)
   }
 
-  & sc.exe delete $ServiceName | Out-Null
+  [void](Invoke-Sc -Arguments @("delete", $ServiceName) -Action "delete")
   Start-Sleep -Seconds 2
 }
 
-$binPath = '"{0}" "{1}"' -f $nodeExe, $entryPoint
+$logsDir = Join-Path $appRootResolved "logs"
+if (-not (Test-Path -Path $logsDir)) {
+  New-Item -Path $logsDir -ItemType Directory -Force | Out-Null
+}
 
-& sc.exe create $ServiceName binPath= $binPath start= auto DisplayName= "$DisplayName" | Out-Null
-& sc.exe description $ServiceName "$Description" | Out-Null
-& sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/restart/30000 | Out-Null
+$stdoutLog = Join-Path $logsDir "agent-service.out.log"
+$stderrLog = Join-Path $logsDir "agent-service.err.log"
 
-Start-Service -Name $ServiceName
+& $nssmExe install $ServiceName $nodeExe $entryPoint | Out-Null
+if ($LASTEXITCODE -ne 0) {
+  throw "nssm install failed (exit code $LASTEXITCODE)."
+}
+
+& $nssmExe set $ServiceName DisplayName $DisplayName | Out-Null
+& $nssmExe set $ServiceName Description $Description | Out-Null
+& $nssmExe set $ServiceName AppDirectory $appRootResolved | Out-Null
+& $nssmExe set $ServiceName AppStdout $stdoutLog | Out-Null
+& $nssmExe set $ServiceName AppStderr $stderrLog | Out-Null
+& $nssmExe set $ServiceName AppRotateFiles 1 | Out-Null
+& $nssmExe set $ServiceName AppRotateOnline 1 | Out-Null
+& $nssmExe set $ServiceName Start SERVICE_AUTO_START | Out-Null
+
+[void](Invoke-Sc -Arguments @("failure", $ServiceName, "reset=", "86400", "actions=", "restart/5000/restart/15000/restart/30000") -Action "failure")
+
+$created = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+if (-not $created) {
+  throw "Service '$ServiceName' was not created. Verify Administrator rights and run the installer again."
+}
+
+try {
+  Start-Service -Name $ServiceName
+} catch {
+  $queryDetails = & sc.exe queryex $ServiceName 2>&1
+  $queryText = ($queryDetails | Out-String).Trim()
+  throw "Failed to start service '$ServiceName'. sc queryex output:`n$queryText`nOriginal error: $($_.Exception.Message)"
+}
 
 if (-not (Wait-ServiceState -Name $ServiceName -ExpectedState "Running" -TimeoutSeconds 30)) {
   throw "Service '$ServiceName' failed to reach Running state."
