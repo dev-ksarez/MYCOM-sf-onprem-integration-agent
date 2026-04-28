@@ -44,8 +44,21 @@ Watch for this output:
 
 **Look for errors in the output like:**
 ```
-⚠️  Metadata deployment had errors:
+❌ Metadata deployment had errors:
   [CustomObject] MSD_Connector__c: ...
+  [CustomField] MSD_Connector__c.MSD_Active__c: ...
+```
+
+**Field-level errors are particularly important:**
+If you see errors like:
+```
+[CustomField] MSD_Connector__c.MSD_Active__c: ...
+[CustomField] MSD_Schedule__c.Active__c: ...
+```
+
+This means the custom object was created but individual fields failed to deploy. This causes the error:
+```
+No such column 'MSD_Active__c' on sobject of type MSD_Connector__c
 ```
 
 **Common causes:**
@@ -71,14 +84,59 @@ After `npm run init:installation` completes, verify objects exist:
 
 1. Go to Salesforce → Setup → **Objects and Fields** → **Object Manager**
 2. Search for `MSD_Connector__c`
-3. Should see these custom objects:
-   - ✓ `MSD_Connector__c`
-   - ✓ `MSD_Schedule__c`
-   - ✓ `MSD_Run__c`
-   - ✓ `MSD_Checkpoint__c`
-   - ✓ `MSD_Log__c`
+3. Verify the object exists AND has these fields:
+   - ✓ Name
+   - ✓ MSD_Active__c (Checkbox)
+   - ✓ MSD_ConnectorType__c (Text)
+   - ✓ MSD_Parameters__c (Long Text)
+   - And others...
 
-If missing, the metadata deployment failed.
+4. If the object exists but fields are missing:
+   - The metadata deployment partially succeeded
+   - See **Field Deployment Errors** section below
+
+---
+
+## Field Deployment Errors
+
+### Symptom
+
+```
+No such column 'MSD_Active__c' on sobject of type MSD_Connector__c
+```
+
+Or after `init:installation`:
+```
+❌ Metadata deployment had errors:
+  [CustomField] MSD_Connector__c.MSD_Active__c: ...
+```
+
+### Causes and Fixes
+
+**1. Permission Issue**
+   - User needs "Modify All Data" permission
+   - Go to Setup → Users → [Your User] → Edit
+   - Check permission set: "Modify All Data"
+   - Or check profile permissions for custom object field creation
+
+**2. Organization Limit**
+   - Org might have reached custom field limit
+   - Developer Edition: 500 custom fields per org
+   - Check Setup → System Overview → Custom Object Fields Used / Limit
+
+**3. Metadata XML Configuration**
+   - Fields might have invalid XML structure
+   - Try deploying in Salesforce directly via Setup → Deploy
+   - Upload the `salesforce/metadata/` folder as a ZIP
+   - Look for specific XML validation errors
+
+**4. Scope Issue in Connected App**
+   - Ensure OAuth scope includes "modify metadata"
+   - Go to Setup → Apps → App Manager → Your App → Edit
+   - Add `full` or `metadata` scope
+   - Save and wait 2-5 minutes
+   - Regenerate and copy new Client Secret
+   - Retry deployment
 
 ---
 
