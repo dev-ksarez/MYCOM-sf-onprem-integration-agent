@@ -580,6 +580,9 @@ function buildSage100Templates() {
     String(process.env.SAGE100_ACCOUNT_EXTERNAL_ID_FIELD || "AccountNumber").trim() || "AccountNumber";
   const contactExternalId =
     String(process.env.SAGE100_CONTACT_EXTERNAL_ID_FIELD || "Email").trim() || "Email";
+  const contactAccountLookupField =
+    String(process.env.SAGE100_CONTACT_ACCOUNT_LOOKUP_FIELD || accountExternalId).trim() ||
+    accountExternalId;
 
   const accountTargetDefinition = JSON.stringify(
     {
@@ -655,6 +658,7 @@ function buildSage100Templates() {
       sourceDefinition: [
         "SELECT",
         "  AnsprechpartnerNr AS ExternalKey,",
+        "  Adresse AS AccountReference,",
         "  Vorname AS FirstName,",
         "  Nachname AS LastName,",
         "  Email AS Email,",
@@ -663,6 +667,7 @@ function buildSage100Templates() {
         "FROM KHKAnsprechpartner",
       ].join("\n"),
       mappingDefinition: [
+        `Account.${contactAccountLookupField};string=AccountReference;TRIM`,
         "Email;string=Email;LOWERCASE",
         "FirstName;string=FirstName;TRIM",
         "LastName;string=LastName;TRIM",

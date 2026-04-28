@@ -183,6 +183,46 @@ function formatSoqlDateTime(value: string): string {
   return date.toISOString();
 }
 
+function setNestedValue(target: Record<string, unknown>, path: string, value: unknown): void {
+  const segments = path.split(".").filter(Boolean);
+  if (segments.length === 0) {
+    return;
+  }
+
+  let cursor: Record<string, unknown> = target;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const segment = segments[i];
+    const existing = cursor[segment];
+
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+      cursor[segment] = {};
+    }
+
+    cursor = cursor[segment] as Record<string, unknown>;
+  }
+
+  cursor[segments[segments.length - 1]] = value;
+}
+
+function buildSalesforceRecordPayload(values: Record<string, unknown>): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) {
+      continue;
+    }
+
+    if (key.includes(".")) {
+      setNestedValue(payload, key, value);
+      continue;
+    }
+
+    payload[key] = value;
+  }
+
+  return payload;
+}
+
 export class SalesforceClient {
   private readonly config: SalesforceConfig;
   private connection?: Connection;
@@ -650,9 +690,7 @@ export class SalesforceClient {
       throw new Error(`Missing external id value for field ${externalIdField}`);
     }
 
-    const recordPayload = Object.fromEntries(
-      Object.entries(input.values).filter(([, value]) => value !== undefined)
-    );
+    const recordPayload = buildSalesforceRecordPayload(input.values);
 
     const result = await this.connection
       .sobject(objectApiName)
