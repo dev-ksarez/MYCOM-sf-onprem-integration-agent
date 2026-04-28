@@ -51,6 +51,8 @@ Dieser Schritt legt bei der Erstinstallation zwei Schedule-Templates in Salesfor
 - `SAGE100 - KHKAdressen -> Account`
 - `SAGE100 - KHKAnsprechpartner -> Contact`
 
+**Wichtig:** Dieser Schritt deployed automatisch auch die erforderlichen Salesforce Metadaten (Custom Objects, Fields) in Ihre Org. Sie benötigen dafür kein separates `npm run sf:deploy-metadata` Skript.
+
 ```powershell
 cd C:\apps\sf-onprem-integration-agent
 npm run init:installation -- --mode SAGE100
@@ -61,9 +63,16 @@ Bei diesem Schritt werden interaktiv abgefragt:
 - Salesforce Login URL, Client ID, Client Secret
 - SAGE100 SQL Server Host, Port, Datenbank, User, Passwort
 
-Die Werte werden in `.env` gespeichert. Zusaetzlich wird ein `MSD_Connector__c` fuer MSSQL angelegt/aktualisiert und mit den erzeugten Schedules verknuepft.
+Während der Ausführung:
 
-Optional direkt aktivieren:
+1. ✓ Authentifizierung bei Salesforce erfolgt
+2. ✓ Salesforce Metadaten werden deployed (Custom Objects erstellt/aktualisiert)
+3. ✓ `MSD_Connector__c` fuer MSSQL wird angelegt/aktualisiert
+4. ✓ Schedule-Templates werden erstellt und mit dem Connector verknuepft
+
+Die Werte werden in `.env` gespeichert.
+
+Optional direkt aktivieren (Schedules starten sofort):
 
 ```powershell
 cd C:\apps\sf-onprem-integration-agent

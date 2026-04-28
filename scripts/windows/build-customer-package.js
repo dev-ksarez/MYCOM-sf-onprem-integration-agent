@@ -130,6 +130,10 @@ async function main() {
     path.join(appRoot, "SALESFORCE_OAUTH_TROUBLESHOOTING.md"),
     path.join(stagingAppRoot, "SALESFORCE_OAUTH_TROUBLESHOOTING.md")
   );
+  await copyIfExists(
+    path.join(appRoot, "METADATA_DEPLOYMENT_TROUBLESHOOTING.md"),
+    path.join(stagingAppRoot, "METADATA_DEPLOYMENT_TROUBLESHOOTING.md")
+  );
 
   if (args.includeNodeModules) {
     const nodeModulesPath = path.join(appRoot, "node_modules");
