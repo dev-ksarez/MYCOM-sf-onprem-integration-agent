@@ -1,75 +1,144 @@
-# Windows service and update assistant
+# Windows Deployment Runbook
 
-This project includes PowerShell assistants to install the agent as a Windows service and to manage automatic updates with rollback.
+Dieses Runbook beschreibt die Kundeninstallation als Windows-Dienst inklusive Auto-Update mit Rollback.
 
-## Prerequisites
+## Zielbild
 
-- Windows Server or Windows 10/11
-- Node.js 22+
-- Built project output in dist (run npm run build)
-- Local admin privileges
-- PowerShell execution policy that allows local scripts
+- Dienstname: `SfOnpremIntegrationAgent`
+- Starttyp: automatisch
+- Laufzeit: `node dist/main.js`
+- Updates: über GitHub Releases
+- Fallback: automatischer Rollback bei fehlerhaftem Update
 
-## 1) Install as Windows service
+## Voraussetzungen beim Kunden
 
-Run:
+- Windows Server oder Windows 10/11
+- Lokale Administratorrechte
+- Node.js 22+ in `PATH`
+- Ausgehender Zugriff auf:
+	- `https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases`
+	- Salesforce (`login`/`instance` URL)
+	- ggf. MSSQL-Server
+- AppRoot-Ordner, z. B. `C:\apps\sf-onprem-integration-agent`
+- Konfigurationsdatei `.env` (aus `.env.example` ableiten)
 
-npm run win:install-service
+## Variante A (empfohlen): Deployment mit `node_modules`
 
-The installer validates node.exe and dist/main.js, creates the service, configures restart-on-failure, and starts it.
+Diese Variante ist robuster in abgeschotteten Netzen, da kein `npm install` beim Kunden notwendig ist.
 
-Optional parameters:
+### 1) Release-Inhalt auf Zielserver kopieren
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-agent-service.ps1 -ServiceName "SfOnpremIntegrationAgent" -DisplayName "SF OnPrem Integration Agent" -Description "Runs the Salesforce On-Prem Integration Agent" -AppRoot "C:\\apps\\sf-onprem-integration-agent"
+Mindestens enthalten:
 
-## 2) Uninstall service
+- `dist/`
+- `package.json`
+- `scripts/windows/`
+- `node_modules/`
 
-Run:
+### 2) `.env` konfigurieren
 
+Beispielbasis siehe `.env.example`.
+
+### 3) Dienst installieren
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:install-service -- -AppRoot "C:\apps\sf-onprem-integration-agent"
+```
+
+### 4) Auto-Updater als Scheduled Task registrieren
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:register-updater -- -EveryMinutes 15 -AppRoot "C:\apps\sf-onprem-integration-agent"
+```
+
+Die Standard-Manifest-URL ist bereits gesetzt auf:
+
+`https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json`
+
+## Variante B: Deployment ohne `node_modules`
+
+Diese Variante ist kleiner, benötigt aber einmalig Paketinstallation beim Kunden.
+
+### 1) Release-Inhalt auf Zielserver kopieren
+
+Mindestens enthalten:
+
+- `dist/`
+- `package.json`
+- `package-lock.json`
+- `scripts/windows/`
+
+### 2) Abhängigkeiten auf dem Zielsystem installieren
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm ci --omit=dev
+```
+
+### 3) `.env` konfigurieren
+
+Beispielbasis siehe `.env.example`.
+
+### 4) Dienst installieren und Updater registrieren
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:install-service -- -AppRoot "C:\apps\sf-onprem-integration-agent"
+npm run win:register-updater -- -EveryMinutes 15 -AppRoot "C:\apps\sf-onprem-integration-agent"
+```
+
+## Manuelles Update (on demand)
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:update-now -- -ServiceName "SfOnpremIntegrationAgent" -UpdateManifestUrl "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json" -AppRoot "C:\apps\sf-onprem-integration-agent"
+```
+
+## Was beim Update automatisch passiert
+
+- Manifest laden (`version`, `packageUrl`, `sha256`)
+- ZIP herunterladen
+- SHA256 prüfen (falls vorhanden)
+- Dienst stoppen
+- Backup nach `backups/<timestamp>` erstellen
+- Dateien ersetzen (`dist`, `package.json`, optional `node_modules`)
+- Dienst starten und Running prüfen
+- Bei Fehler: automatischer Rollback
+
+## Betriebschecks nach Installation
+
+```powershell
+Get-Service SfOnpremIntegrationAgent
+Get-ScheduledTask -TaskName "SfOnpremIntegrationAgent-Updater"
+```
+
+Erwartung:
+
+- Service-Status: `Running`
+- Scheduled Task vorhanden und aktiviert
+
+## Optional: Salesforce Metadaten einmalig bereitstellen
+
+Wenn die benötigten Custom Objects im Ziel-Org noch nicht existieren:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run sf:deploy-metadata
+```
+
+Benötigte Umgebungsvariablen für diesen Schritt:
+
+- `SF_LOGIN_URL`
+- `SF_CLIENT_ID`
+- `SF_CLIENT_SECRET`
+- `SF_USERNAME`
+- `SF_PASSWORD`
+
+## Deinstallation
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
 npm run win:uninstall-service
-
-## 3) Manual update with rollback
-
-Run:
-
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/update-agent.ps1 -ServiceName "SfOnpremIntegrationAgent" -UpdateManifestUrl "https://example.org/releases/update-manifest.json" -AppRoot "C:\\apps\\sf-onprem-integration-agent"
-
-Update behavior:
-
-- Reads remote manifest (version, packageUrl, sha256)
-- Downloads update ZIP
-- Verifies SHA256 (if provided)
-- Stops service
-- Backs up current runtime files into backups/<timestamp>
-- Applies update
-- Starts service and verifies Running state
-- If start fails, restores backup automatically (fallback)
-
-## 4) Automatic update management
-
-Register a scheduled updater task:
-
-npm run win:register-updater -- -ManifestUrl "https://example.org/releases/update-manifest.json" -EveryMinutes 15
-
-This creates a Windows Scheduled Task running as SYSTEM and executes update-agent.ps1 periodically.
-
-## 5) Update package expectations
-
-The ZIP package should contain at least:
-
-- dist/
-- package.json
-
-Optional:
-
-- node_modules/
-
-Example manifest template:
-
-scripts/windows/update-manifest.example.json
-
-## Notes
-
-- Backups are retained in backups/ and automatically trimmed to the latest KeepBackupCount entries.
-- The service binary path uses node.exe with dist/main.js.
-- If you deploy with a different folder layout, pass -AppRoot explicitly.
+```
