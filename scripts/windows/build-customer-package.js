@@ -122,6 +122,14 @@ async function main() {
     path.join(appRoot, "WINDOWS_DEPLOYMENT.md"),
     path.join(stagingAppRoot, "WINDOWS_DEPLOYMENT.md")
   );
+  await copyIfExists(
+    path.join(appRoot, "OAUTH_ERROR_QUICK_FIX.md"),
+    path.join(stagingAppRoot, "OAUTH_ERROR_QUICK_FIX.md")
+  );
+  await copyIfExists(
+    path.join(appRoot, "SALESFORCE_OAUTH_TROUBLESHOOTING.md"),
+    path.join(stagingAppRoot, "SALESFORCE_OAUTH_TROUBLESHOOTING.md")
+  );
 
   if (args.includeNodeModules) {
     const nodeModulesPath = path.join(appRoot, "node_modules");
