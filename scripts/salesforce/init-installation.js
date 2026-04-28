@@ -786,6 +786,7 @@ function buildSage100Templates() {
   return [
     {
       name: "SAGE100 - KHKAdressen -> Account",
+      activate: false,
       objectName: "Account",
       sourceDefinition: [
         "SELECT",
@@ -813,6 +814,7 @@ function buildSage100Templates() {
     },
     {
       name: "SAGE100 - KHKAnsprechpartner -> Contact",
+      activate: false,
       objectName: "Contact",
       sourceDefinition: [
         "SELECT",
@@ -1186,8 +1188,12 @@ async function main() {
   const connectorResult = await upsertConnectorByName(connection, connectorTemplate, true);
   console.log(`- ${connectorResult.action.toUpperCase()}: ${connectorTemplate.name} (${connectorResult.id})`);
 
+  if (args.activate) {
+    console.log("⚠️  --activate is ignored during setup. Only example schedules are created, no imports are started automatically.");
+  }
+
   for (const template of templates) {
-    const shouldActivate = typeof template.activate === "boolean" ? template.activate : args.activate;
+    const shouldActivate = false;
     const { action, id } = await upsertScheduleByName(
       connection,
       template,
@@ -1197,9 +1203,7 @@ async function main() {
     console.log(`- ${action.toUpperCase()}: ${template.name} (${id})`);
   }
 
-  if (!args.activate) {
-    console.log("Schedules were created/updated as inactive. Use --activate if they should start immediately.");
-  }
+  console.log("Schedules were created/updated as inactive example configurations. Activate them manually after reviewing the setup.");
 
   console.log("Installation profile bootstrap finished.");
 }
