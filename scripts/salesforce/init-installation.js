@@ -275,11 +275,11 @@ async function deployMetadata(connection) {
         } else {
           const failures = status.details?.componentFailures ?? [];
           const failList = Array.isArray(failures) ? failures : [failures];
-          console.warn("⚠️  Metadata deployment had errors:");
+          console.error("❌ Metadata deployment had errors:");
           for (const f of failList) {
-            console.warn(`  [${f.componentType}] ${f.fullName}: ${f.problem}`);
+            console.error(`  [${f.componentType}] ${f.fullName}: ${f.problem}`);
           }
-          // Don't throw - try to continue anyway
+          throw new Error(`Metadata deployment failed: ${failList.length} error(s) occurred`);
         }
         break;
       }
