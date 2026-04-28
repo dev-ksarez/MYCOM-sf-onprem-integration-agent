@@ -272,6 +272,18 @@ async function deployMetadata(connection) {
           console.log(
             `  ✅ Metadata deployed successfully! (${status.numberComponentsDeployed} components)`
           );
+          
+          // Wait for Salesforce to make fields available and refresh metadata cache
+          console.log("  ⏳ Waiting for metadata to become available in org...");
+          await new Promise((r) => setTimeout(r, 3000)); // 3 second delay
+          
+          // Refresh org metadata by describing a custom object
+          try {
+            await connection.describe("MSD_Connector__c");
+            console.log("  ✓ Metadata cache refreshed");
+          } catch (err) {
+            console.warn(`  ⚠️  Could not refresh metadata: ${err.message}`);
+          }
         } else {
           const failures = status.details?.componentFailures ?? [];
           const failList = Array.isArray(failures) ? failures : [failures];
@@ -292,6 +304,31 @@ async function deployMetadata(connection) {
     }
   } catch (err) {
     console.error(`❌ Metadata deployment failed: ${err.message}`);
+    throw err;
+  }
+}
+
+async function validateCustomObjectFields(connection, objectName, requiredFields) {
+  try {
+    const describe = await connection.describe(objectName);
+    const existingFields = new Map(describe.fields.map((f) => [f.name, f]));
+
+    const missing = requiredFields.filter((fieldName) => !existingFields.has(fieldName));
+    
+    if (missing.length > 0) {
+      console.error(`❌ Custom object '${objectName}' is missing required fields:`);
+      for (const field of missing) {
+        console.error(`  - ${field}`);
+      }
+      throw new Error(`Missing ${missing.length} field(s) on ${objectName}. Metadata deployment may have failed.`);
+    }
+
+    console.log(`  ✓ All required fields exist on ${objectName}`);
+    return true;
+  } catch (err) {
+    if (err.message?.includes("not found")) {
+      throw new Error(`Custom object '${objectName}' does not exist. Metadata deployment failed.`);
+    }
     throw err;
   }
 }
@@ -598,6 +635,25 @@ async function main() {
   
   // Deploy metadata first (creates custom objects if they don't exist)
   await deployMetadata(connection);
+
+  // Validate that required fields were created
+  console.log("🔍 Validating deployed metadata...");
+  await validateCustomObjectFields(connection, "MSD_Connector__c", [
+    "Name",
+    "MSD_Active__c",
+    "MSD_ConnectorType__c",
+    "MSD_TargetSystem__c",
+    "MSD_Direction__c",
+    "MSD_Parameters__c",
+  ]);
+  await validateCustomObjectFields(connection, "MSD_Schedule__c", [
+    "Name",
+    "Active__c",
+    "MSD_Connector__c",
+    "MSD_SourceDefinition__c",
+    "MSD_TargetDefinition__c",
+  ]);
+  console.log("  ✓ All metadata validated successfully\n");
 
   const connectorResult = await upsertConnectorByName(connection, connectorTemplate, true);
   console.log(`- ${connectorResult.action.toUpperCase()}: ${connectorTemplate.name} (${connectorResult.id})`);
