@@ -1,18 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
-    <deploymentStatus>Deployed</deploymentStatus>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata">
     <label>MSD Field Mapping</label>
     <pluralLabel>MSD Field Mappings</pluralLabel>
     <fields>
         <fullName>MSD_ObjectMapping__c</fullName>
         <fieldManageability>DeveloperControlled</fieldManageability>
         <label>Object Mapping</label>
-        <metadataRelationship>MSD_ObjectMapping__mdt</metadataRelationship>
         <referenceTo>MSD_ObjectMapping__mdt</referenceTo>
         <relationshipLabel>Field Mappings</relationshipLabel>
         <relationshipName>FieldMappings</relationshipName>
         <required>false</required>
-        <type>MetadataRelationship</type>
+        <type>Metadata</type>
     </fields>
     <fields>
         <fullName>SourceFieldApi__c</fullName>
@@ -46,4 +44,4 @@
         <type>Number</type>
         <unique>false</unique>
     </fields>
-</CustomObject>
+</CustomMetadata>
