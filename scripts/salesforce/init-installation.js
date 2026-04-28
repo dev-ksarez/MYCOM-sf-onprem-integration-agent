@@ -193,6 +193,109 @@ async function login(loginUrl, clientId, clientSecret) {
   });
 }
 
+async function deployMetadata(connection) {
+  const metadataDir = path.join(appRoot(), "salesforce", "metadata");
+  const packageXml = path.join(metadataDir, "package.xml");
+  const objectsDir = path.join(metadataDir, "objects");
+
+  if (!fs.existsSync(packageXml)) {
+    console.warn(`⚠️  Metadata package.xml not found at: ${packageXml}`);
+    console.warn("   Skipping metadata deployment. Custom objects may not be created.");
+    return;
+  }
+
+  if (!fs.existsSync(objectsDir)) {
+    console.warn(`⚠️  Metadata objects directory not found at: ${objectsDir}`);
+    console.warn("   Skipping metadata deployment. Custom objects may not be created.");
+    return;
+  }
+
+  console.log("📦 Deploying Salesforce metadata...");
+
+  // Build deploy ZIP in memory
+  const Archiver = require("archiver");
+  let zipBuffer = Buffer.alloc(0);
+
+  const zipData = await new Promise((resolve, reject) => {
+    const chunks = [];
+    const archive = Archiver("zip", { zlib: { level: 9 } });
+
+    archive.on("data", (chunk) => chunks.push(chunk));
+    archive.on("end", () => {
+      resolve(Buffer.concat(chunks));
+    });
+    archive.on("error", reject);
+
+    // Add package.xml at root
+    archive.file(packageXml, { name: "package.xml" });
+
+    // Add all .object files inside objects/
+    const objectFiles = fs.readdirSync(objectsDir).filter((f) => f.endsWith(".object"));
+    for (const objFile of objectFiles) {
+      archive.file(path.join(objectsDir, objFile), { name: `objects/${objFile}` });
+    }
+
+    archive.finalize();
+  });
+
+  try {
+    const deployOptions = {
+      rollbackOnError: true,
+      checkOnly: false,
+      singlePackage: true,
+      runTests: [],
+    };
+
+    console.log(`  Deploying ZIP (${(zipData.length / 1024).toFixed(1)} KB)...`);
+    const deployResult = await connection.metadata.deploy(
+      zipData.toString("base64"),
+      deployOptions
+    );
+    const deployId = deployResult.id;
+    console.log(`  Deploy ID: ${deployId}`);
+
+    // Poll for result
+    const POLL_INTERVAL = 3000;
+    const MAX_WAIT = 5 * 60 * 1000; // 5 minutes
+    const startTime = Date.now();
+
+    while (true) {
+      const status = await connection.metadata.checkDeployStatus(deployId, true);
+      console.log(
+        `  Status: ${status.status} | Done: ${status.done} | Errors: ${
+          status.numberComponentErrors ?? 0
+        }`
+      );
+
+      if (status.done) {
+        if (status.success) {
+          console.log(
+            `  ✅ Metadata deployed successfully! (${status.numberComponentsDeployed} components)`
+          );
+        } else {
+          const failures = status.details?.componentFailures ?? [];
+          const failList = Array.isArray(failures) ? failures : [failures];
+          console.warn("⚠️  Metadata deployment had errors:");
+          for (const f of failList) {
+            console.warn(`  [${f.componentType}] ${f.fullName}: ${f.problem}`);
+          }
+          // Don't throw - try to continue anyway
+        }
+        break;
+      }
+
+      if (Date.now() - startTime > MAX_WAIT) {
+        throw new Error("Metadata deployment timed out after 5 minutes");
+      }
+
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+    }
+  } catch (err) {
+    console.error(`❌ Metadata deployment failed: ${err.message}`);
+    throw err;
+  }
+}
+
 function buildSage100Templates() {
   const accountExternalId =
     String(process.env.SAGE100_ACCOUNT_EXTERNAL_ID_FIELD || "AccountNumber").trim() || "AccountNumber";
@@ -492,6 +595,9 @@ async function main() {
   };
 
   console.log(`Initializing installation mode ${args.mode} ...`);
+  
+  // Deploy metadata first (creates custom objects if they don't exist)
+  await deployMetadata(connection);
 
   const connectorResult = await upsertConnectorByName(connection, connectorTemplate, true);
   console.log(`- ${connectorResult.action.toUpperCase()}: ${connectorTemplate.name} (${connectorResult.id})`);
