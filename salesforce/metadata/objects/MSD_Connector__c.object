@@ -80,6 +80,7 @@
     </fields>
     <listViews>
         <fullName>All</fullName>
+        <columns>NAME</columns>
         <columns>MSD_Active__c</columns>
         <columns>MSD_ConnectorType__c</columns>
         <columns>MSD_TargetSystem__c</columns>

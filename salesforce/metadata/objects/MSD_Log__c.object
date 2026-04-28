@@ -78,6 +78,7 @@
     </fields>
     <listViews>
         <fullName>All</fullName>
+        <columns>NAME</columns>
         <columns>MSD_Level__c</columns>
         <columns>MSD_Step__c</columns>
         <columns>MSD_RecordKey__c</columns>

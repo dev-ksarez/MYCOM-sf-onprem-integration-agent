@@ -780,6 +780,17 @@ function buildSage100Templates() {
           name: "basis",
           active: true,
           schedulerEnabled: true,
+          scheduler: {
+            mode: "rules",
+            rules: [
+              {
+                days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+                startTime: "00:00",
+                endTime: "23:59",
+                intervalMinutes: 2,
+              },
+            ],
+          },
           mode: "object",
           objectApiName: "Account",
           operation: "upsert",
@@ -800,6 +811,17 @@ function buildSage100Templates() {
           name: "basis",
           active: true,
           schedulerEnabled: true,
+          scheduler: {
+            mode: "rules",
+            rules: [
+              {
+                days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+                startTime: "00:00",
+                endTime: "23:59",
+                intervalMinutes: 2,
+              },
+            ],
+          },
           mode: "object",
           objectApiName: "Contact",
           operation: "upsert",
@@ -820,6 +842,17 @@ function buildSage100Templates() {
           name: "artikelgruppen-beispiel",
           active: true,
           schedulerEnabled: true,
+          scheduler: {
+            mode: "rules",
+            rules: [
+              {
+                days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+                startTime: "01:00",
+                endTime: "01:00",
+                intervalMinutes: 1440,
+              },
+            ],
+          },
           mode: "picklist",
           target: {
             globalValueSetApiName: "MSD_Artikelgruppen",

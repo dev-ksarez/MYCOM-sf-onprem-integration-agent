@@ -123,6 +123,7 @@
     </fields>
     <listViews>
         <fullName>All</fullName>
+        <columns>NAME</columns>
         <columns>MSD_Status__c</columns>
         <columns>MSD_StartedAt__c</columns>
         <columns>MSD_FinishedAt__c</columns>
