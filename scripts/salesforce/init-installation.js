@@ -214,7 +214,6 @@ async function deployMetadata(connection) {
 
   // Build deploy ZIP in memory
   const Archiver = require("archiver");
-  let zipBuffer = Buffer.alloc(0);
 
   const zipData = await new Promise((resolve, reject) => {
     const chunks = [];
@@ -224,18 +223,33 @@ async function deployMetadata(connection) {
     archive.on("end", () => {
       resolve(Buffer.concat(chunks));
     });
-    archive.on("error", reject);
+    archive.on("error", (err) => {
+      reject(new Error(`ZIP creation failed: ${err.message}`));
+    });
 
     // Add package.xml at root
     archive.file(packageXml, { name: "package.xml" });
 
     // Add all .object files inside objects/
     const objectFiles = fs.readdirSync(objectsDir).filter((f) => f.endsWith(".object"));
+    if (process.env.DEBUG_DEPLOY) {
+      console.log(`  📦 Adding ${objectFiles.length} .object files to ZIP:`);
+      for (const f of objectFiles) {
+        console.log(`     - objects/${f}`);
+      }
+    }
+    
     for (const objFile of objectFiles) {
-      archive.file(path.join(objectsDir, objFile), { name: `objects/${objFile}` });
+      const filePath = path.join(objectsDir, objFile);
+      const fileSize = fs.statSync(filePath).size;
+      if (process.env.DEBUG_DEPLOY) {
+        console.log(`     ✓ objects/${objFile} (${fileSize} bytes)`);
+      }
+      archive.file(filePath, { name: `objects/${objFile}` });
     }
 
-    archive.finalize();
+    // Important: finalize must be called after all files are added
+    archive.finalize().catch(reject);
   });
 
   try {
@@ -268,6 +282,18 @@ async function deployMetadata(connection) {
       );
 
       if (status.done) {
+        // Debug: Log full status for analysis
+        if (process.env.DEBUG_DEPLOY) {
+          console.log("  🔍 Full deployment status:", JSON.stringify({
+            success: status.success,
+            done: status.done,
+            numberComponentErrors: status.numberComponentErrors,
+            numberComponentsDeployed: status.numberComponentsDeployed,
+            runTestResult: status.runTestResult,
+            details: status.details
+          }, null, 2));
+        }
+
         if (status.success) {
           console.log(
             `  ✅ Metadata deployed successfully! (${status.numberComponentsDeployed} components)`
@@ -279,8 +305,8 @@ async function deployMetadata(connection) {
           
           // Refresh org metadata by describing a custom object
           try {
-            await connection.describe("MSD_Connector__c");
-            console.log("  ✓ Metadata cache refreshed");
+            const describe = await connection.describe("MSD_Connector__c");
+            console.log(`  ✓ Metadata cache refreshed (found ${describe.fields.length} fields)`);
           } catch (err) {
             console.warn(`  ⚠️  Could not refresh metadata: ${err.message}`);
           }
