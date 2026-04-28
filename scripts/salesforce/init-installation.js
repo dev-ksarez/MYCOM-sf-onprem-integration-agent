@@ -734,10 +734,36 @@ function buildSage100Templates() {
     2
   );
 
+  const articleGroupPicklistExampleTargetDefinition = JSON.stringify(
+    {
+      selectedImportProfileName: "artikelgruppen-beispiel",
+      importProfiles: [
+        {
+          name: "artikelgruppen-beispiel",
+          active: false,
+          schedulerEnabled: false,
+          mode: "picklist",
+          objectApiName: "Product2",
+          operation: "upsert",
+          externalIdField: "ProductCode",
+          picklists: [
+            {
+              fieldApiName: "MSD_Artikelgruppe__c",
+              source: "global",
+              globalValueSetApiName: "MSD_Artikelgruppen",
+            },
+          ],
+        },
+      ],
+    },
+    null,
+    2
+  );
+
   return [
     {
       name: "SAGE100 - KHKAdressen -> Account",
-      objectName: "KHKAdressen",
+      objectName: "Account",
       sourceDefinition: [
         "SELECT",
         "  Kundennummer AS ExternalKey,",
@@ -764,7 +790,7 @@ function buildSage100Templates() {
     },
     {
       name: "SAGE100 - KHKAnsprechpartner -> Contact",
-      objectName: "KHKAnsprechpartner",
+      objectName: "Contact",
       sourceDefinition: [
         "SELECT",
         "  AnsprechpartnerNr AS ExternalKey,",
@@ -785,6 +811,25 @@ function buildSage100Templates() {
         "MobilePhone;string=MobilePhone;TRIM",
       ].join("\n"),
       targetDefinition: contactTargetDefinition,
+    },
+    {
+      name: "SAGE100 - Artikelgruppen -> Product2 Picklist Example",
+      objectName: "Product2",
+      activate: false,
+      sourceDefinition: [
+        "SELECT",
+        "  Artikelgruppe AS ExternalKey,",
+        "  Artikelgruppe AS ProductCode,",
+        "  Artikelgruppe AS ArtikelgruppeApiName,",
+        "  Bezeichnung AS ProductName",
+        "FROM KHKArtikelgruppen",
+      ].join("\n"),
+      mappingDefinition: [
+        "ProductCode;string=ProductCode;TRIM",
+        "Name;string=ProductName;TRIM",
+        "MSD_Artikelgruppe__c;string=ArtikelgruppeApiName;TRIM",
+      ].join("\n"),
+      targetDefinition: articleGroupPicklistExampleTargetDefinition,
     },
   ];
 }
@@ -1119,11 +1164,12 @@ async function main() {
   console.log(`- ${connectorResult.action.toUpperCase()}: ${connectorTemplate.name} (${connectorResult.id})`);
 
   for (const template of templates) {
+    const shouldActivate = typeof template.activate === "boolean" ? template.activate : args.activate;
     const { action, id } = await upsertScheduleByName(
       connection,
       template,
       connectorResult.id,
-      args.activate
+      shouldActivate
     );
     console.log(`- ${action.toUpperCase()}: ${template.name} (${id})`);
   }
