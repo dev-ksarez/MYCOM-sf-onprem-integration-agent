@@ -745,6 +745,7 @@ async function upsertScheduleByName(connection, scheduleTemplate, connectorId, a
       Id,
       Name,
       Active__c,
+      MSD_Connector__c,
       ObjectName__c,
       SourceSystem__c,
       TargetSystem__c,
@@ -760,7 +761,8 @@ async function upsertScheduleByName(connection, scheduleTemplate, connectorId, a
     LIMIT 50
   `);
 
-  const existingRecord = (result.records || []).find((record) => {
+  const matchingRecords = (result.records || []).filter((record) => {
+    const connectorMatches = String(record.MSD_Connector__c || "").trim() === String(connectorId).trim();
     const objectNameMatches = String(record.ObjectName__c || "").trim() === scheduleTemplate.objectName;
     const sourceDefinitionMatches =
       String(record.MSD_SourceDefinition__c || "").trim() === scheduleTemplate.sourceDefinition;
@@ -769,12 +771,14 @@ async function upsertScheduleByName(connection, scheduleTemplate, connectorId, a
     const mappingDefinitionMatches =
       String(record.MSD_MappingDefinition__c || "").trim() === scheduleTemplate.mappingDefinition;
 
-    if (objectNameMatches && sourceDefinitionMatches) {
+    if (connectorMatches && objectNameMatches && sourceDefinitionMatches) {
       return true;
     }
 
-    return sourceDefinitionMatches && targetDefinitionMatches && mappingDefinitionMatches;
+    return connectorMatches && sourceDefinitionMatches && targetDefinitionMatches && mappingDefinitionMatches;
   });
+
+  const [existingRecord, ...duplicateRecords] = matchingRecords;
 
   const payload = {
     Active__c: activate,
@@ -791,6 +795,30 @@ async function upsertScheduleByName(connection, scheduleTemplate, connectorId, a
     MSD_TargetDefinition__c: scheduleTemplate.targetDefinition,
     BatchSize__c: 200,
   };
+
+  if (duplicateRecords.length > 0) {
+    const duplicateUpdatePayloads = duplicateRecords.map((record) => ({
+      Id: record.Id,
+      Active__c: false,
+    }));
+
+    const deactivateResult = await connection
+      .sobject("MSD_Schedule__c")
+      .update(duplicateUpdatePayloads);
+
+    const results = Array.isArray(deactivateResult) ? deactivateResult : [deactivateResult];
+    const failedResults = results.filter((entry) => !entry.success);
+    if (failedResults.length > 0) {
+      const details = failedResults
+        .map((entry) => ("errors" in entry ? JSON.stringify(entry.errors) : "unknown deactivate error"))
+        .join("; ");
+      throw new Error(`Failed to deactivate duplicate schedules for ${scheduleTemplate.name}: ${details}`);
+    }
+
+    console.log(
+      `  ✓ Deactivated ${duplicateRecords.length} duplicate schedule(s) for ${scheduleTemplate.name}`
+    );
+  }
 
   if (existingRecord) {
     const existingId = existingRecord.Id;
@@ -810,7 +838,11 @@ async function upsertScheduleByName(connection, scheduleTemplate, connectorId, a
       throw new Error(`Failed to update schedule ${scheduleTemplate.name}: ${details}`);
     }
 
-    return { action: "updated", id: existingId };
+    return {
+      action: "updated",
+      id: existingId,
+      deactivatedCount: duplicateRecords.length,
+    };
   }
 
   const createPayload = await sanitizePayloadForWrite(
@@ -829,7 +861,11 @@ async function upsertScheduleByName(connection, scheduleTemplate, connectorId, a
     throw new Error(`Failed to create schedule ${scheduleTemplate.name}: ${details}`);
   }
 
-  return { action: "created", id: createResult.id };
+  return {
+    action: "created",
+    id: createResult.id,
+    deactivatedCount: duplicateRecords.length,
+  };
 }
 
 async function main() {
