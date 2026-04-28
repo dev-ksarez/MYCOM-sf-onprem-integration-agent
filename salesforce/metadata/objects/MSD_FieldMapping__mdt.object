@@ -6,11 +6,9 @@
         <fullName>MSD_ObjectMapping__c</fullName>
         <fieldManageability>DeveloperControlled</fieldManageability>
         <label>Object Mapping</label>
-        <referenceTo>MSD_ObjectMapping__mdt</referenceTo>
-        <relationshipLabel>Field Mappings</relationshipLabel>
-        <relationshipName>FieldMappings</relationshipName>
+        <length>255</length>
         <required>false</required>
-        <type>Lookup</type>
+        <type>Text</type>
     </fields>
     <fields>
         <fullName>SourceFieldApi__c</fullName>
