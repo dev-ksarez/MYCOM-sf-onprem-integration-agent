@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <label>MSD Log</label>
+    <nameField>
+        <displayFormat>LOG-{00000}</displayFormat>
+        <label>Log Number</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <pluralLabel>MSD Logs</pluralLabel>
+    <sharingModel>ReadWrite</sharingModel>
+    <fields>
+        <fullName>MSD_Run__c</fullName>
+        <deleteConstraint>SetNull</deleteConstraint>
+        <label>Run</label>
+        <referenceTo>MSD_Run__c</referenceTo>
+        <relationshipLabel>Logs</relationshipLabel>
+        <relationshipName>Logs</relationshipName>
+        <required>false</required>
+        <type>Lookup</type>
+    </fields>
+    <fields>
+        <fullName>MSD_Level__c</fullName>
+        <label>Level</label>
+        <required>false</required>
+        <type>Picklist</type>
+        <valueSet>
+            <valueSetDefinition>
+                <sorted>false</sorted>
+                <value>
+                    <fullName>INFO</fullName>
+                    <default>true</default>
+                    <label>INFO</label>
+                </value>
+                <value>
+                    <fullName>WARN</fullName>
+                    <default>false</default>
+                    <label>WARN</label>
+                </value>
+                <value>
+                    <fullName>ERROR</fullName>
+                    <default>false</default>
+                    <label>ERROR</label>
+                </value>
+            </valueSetDefinition>
+        </valueSet>
+    </fields>
+    <fields>
+        <fullName>MSD_Step__c</fullName>
+        <label>Step</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>MSD_Message__c</fullName>
+        <label>Message</label>
+        <length>32768</length>
+        <type>LongTextArea</type>
+        <visibleLines>5</visibleLines>
+    </fields>
+    <fields>
+        <fullName>MSD_RecordKey__c</fullName>
+        <label>Record Key</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>MSD_CorrelationId__c</fullName>
+        <label>Correlation ID</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+</CustomObject>

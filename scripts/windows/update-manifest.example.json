@@ -1,0 +1,5 @@
+{
+  "version": "0.2.0",
+  "packageUrl": "https://example.org/releases/sf-onprem-integration-agent-0.2.0.zip",
+  "sha256": "PUT_SHA256_OF_ZIP_HERE"
+}

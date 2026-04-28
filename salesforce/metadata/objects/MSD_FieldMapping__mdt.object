@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <label>MSD Field Mapping</label>
+    <pluralLabel>MSD Field Mappings</pluralLabel>
+    <fields>
+        <fullName>MSD_ObjectMapping__c</fullName>
+        <fieldManageability>DeveloperControlled</fieldManageability>
+        <label>Object Mapping</label>
+        <metadataRelationship>MSD_ObjectMapping__mdt</metadataRelationship>
+        <referenceTo>MSD_ObjectMapping__mdt</referenceTo>
+        <relationshipLabel>Field Mappings</relationshipLabel>
+        <relationshipName>FieldMappings</relationshipName>
+        <required>false</required>
+        <type>MetadataRelationship</type>
+    </fields>
+    <fields>
+        <fullName>SourceFieldApi__c</fullName>
+        <fieldManageability>DeveloperControlled</fieldManageability>
+        <label>Source Field API Name</label>
+        <length>255</length>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>CanonicalField__c</fullName>
+        <fieldManageability>DeveloperControlled</fieldManageability>
+        <label>Canonical Field</label>
+        <length>255</length>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>Active__c</fullName>
+        <defaultValue>true</defaultValue>
+        <fieldManageability>DeveloperControlled</fieldManageability>
+        <label>Active</label>
+        <type>Checkbox</type>
+    </fields>
+    <fields>
+        <fullName>Sequence__c</fullName>
+        <fieldManageability>DeveloperControlled</fieldManageability>
+        <label>Sequence</label>
+        <precision>18</precision>
+        <scale>0</scale>
+        <type>Number</type>
+        <unique>false</unique>
+    </fields>
+</CustomObject>

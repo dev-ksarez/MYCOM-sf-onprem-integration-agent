@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <label>MSD Checkpoint</label>
+    <nameField>
+        <displayFormat>CHK-{0000}</displayFormat>
+        <label>Checkpoint Number</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <pluralLabel>MSD Checkpoints</pluralLabel>
+    <sharingModel>ReadWrite</sharingModel>
+    <fields>
+        <fullName>MSD_Schedule__c</fullName>
+        <deleteConstraint>SetNull</deleteConstraint>
+        <label>Schedule</label>
+        <referenceTo>MSD_Schedule__c</referenceTo>
+        <relationshipLabel>Checkpoints</relationshipLabel>
+        <relationshipName>Checkpoints</relationshipName>
+        <required>false</required>
+        <type>Lookup</type>
+    </fields>
+    <fields>
+        <fullName>MSD_Run__c</fullName>
+        <deleteConstraint>SetNull</deleteConstraint>
+        <label>Run</label>
+        <referenceTo>MSD_Run__c</referenceTo>
+        <relationshipLabel>Checkpoints</relationshipLabel>
+        <relationshipName>Checkpoints</relationshipName>
+        <required>false</required>
+        <type>Lookup</type>
+    </fields>
+    <fields>
+        <fullName>MSD_ObjectName__c</fullName>
+        <label>Object Name</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>MSD_LastCheckpoint__c</fullName>
+        <label>Last Checkpoint Value</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>MSD_LastRecordId__c</fullName>
+        <label>Last Record ID</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+</CustomObject>

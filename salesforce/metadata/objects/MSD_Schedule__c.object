@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <label>MSD Schedule</label>
+    <nameField>
+        <displayFormat>SCH-{0000}</displayFormat>
+        <label>Schedule Number</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <pluralLabel>MSD Schedules</pluralLabel>
+    <sharingModel>ReadWrite</sharingModel>
+    <fields>
+        <fullName>Active__c</fullName>
+        <defaultValue>true</defaultValue>
+        <label>Active</label>
+        <type>Checkbox</type>
+    </fields>
+    <fields>
+        <fullName>SourceSystem__c</fullName>
+        <label>Source System</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>TargetSystem__c</fullName>
+        <label>Target System</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>ObjectName__c</fullName>
+        <label>Object Name</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>Operation__c</fullName>
+        <label>Operation</label>
+        <length>100</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>MSD_Connector__c</fullName>
+        <deleteConstraint>SetNull</deleteConstraint>
+        <label>Connector</label>
+        <referenceTo>MSD_Connector__c</referenceTo>
+        <relationshipLabel>Schedules</relationshipLabel>
+        <relationshipName>Schedules</relationshipName>
+        <required>false</required>
+        <type>Lookup</type>
+    </fields>
+    <fields>
+        <fullName>MSD_MappingDefinition__c</fullName>
+        <label>Mapping Definition (JSON)</label>
+        <length>32768</length>
+        <type>LongTextArea</type>
+        <visibleLines>10</visibleLines>
+    </fields>
+    <fields>
+        <fullName>MSD_Direction__c</fullName>
+        <label>Direction</label>
+        <length>50</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>MSD_SourceType__c</fullName>
+        <label>Source Type</label>
+        <length>50</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>MSD_TargetType__c</fullName>
+        <label>Target Type</label>
+        <length>50</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>MSD_SourceDefinition__c</fullName>
+        <label>Source Definition (JSON)</label>
+        <length>32768</length>
+        <type>LongTextArea</type>
+        <visibleLines>5</visibleLines>
+    </fields>
+    <fields>
+        <fullName>MSD_TargetDefinition__c</fullName>
+        <label>Target Definition (JSON)</label>
+        <length>32768</length>
+        <type>LongTextArea</type>
+        <visibleLines>5</visibleLines>
+    </fields>
+    <fields>
+        <fullName>BatchSize__c</fullName>
+        <label>Batch Size</label>
+        <precision>18</precision>
+        <required>false</required>
+        <scale>0</scale>
+        <type>Number</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>NextRunAt__c</fullName>
+        <label>Next Run At</label>
+        <required>false</required>
+        <type>DateTime</type>
+    </fields>
+    <fields>
+        <fullName>LastRunAt__c</fullName>
+        <label>Last Run At</label>
+        <required>false</required>
+        <type>DateTime</type>
+    </fields>
+</CustomObject>

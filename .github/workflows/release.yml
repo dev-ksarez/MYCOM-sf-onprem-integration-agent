@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build
+        run: npm run build
+
+      - name: Resolve version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "zip_name=sf-onprem-integration-agent-${VERSION}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Create update package ZIP
+        id: zip
+        run: |
+          STAGING="staging-package"
+          mkdir -p "$STAGING"
+          cp -r dist "$STAGING/"
+          cp package.json "$STAGING/"
+          # Exclude dev sources and secrets from the package
+          zip -r "${{ steps.version.outputs.zip_name }}" "$STAGING/" -x "*.env*"
+          echo "zip_path=${{ steps.version.outputs.zip_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute SHA256 of package
+        id: sha
+        run: |
+          HASH=$(sha256sum "${{ steps.zip.outputs.zip_path }}" | awk '{print $1}')
+          echo "sha256=$HASH" >> "$GITHUB_OUTPUT"
+
+      - name: Write update manifest
+        id: manifest
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          ZIP_NAME: ${{ steps.version.outputs.zip_name }}
+          SHA256: ${{ steps.sha.outputs.sha256 }}
+        run: |
+          MANIFEST_FILE="update-manifest.json"
+          cat > "$MANIFEST_FILE" <<EOF
+          {
+            "version": "${VERSION}",
+            "packageUrl": "https://github.com/${REPO}/releases/download/${TAG}/${ZIP_NAME}",
+            "sha256": "${SHA256}",
+            "releasedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          echo "manifest_path=$MANIFEST_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Create initial installer ZIP
+        id: installer_zip
+        run: |
+          INSTALLER="sf-onprem-integration-agent-installer.zip"
+          zip -r "$INSTALLER" scripts/ .env.example
+          echo "installer_path=$INSTALLER" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Release ${{ steps.version.outputs.tag }}"
+          body: |
+            ## Installation
+
+            ### Erstinstallation (einmalig beim Kunden)
+            1. `${{ steps.installer_zip.outputs.installer_path }}` herunterladen und entpacken
+            2. `npm install` im App-Verzeichnis ausführen
+            3. `.env` aus `.env.example` anlegen und befüllen
+            4. `npm run build` ausführen
+            5. Als Admin: `npm run win:install-service` ausführen
+            6. Als Admin: `npm run win:register-updater` mit der Manifest-URL ausführen:
+               ```
+               https://github.com/${{ github.repository }}/releases/latest/download/update-manifest.json
+               ```
+
+            ### Update-Manifest URL (für Updater-Konfiguration)
+            ```
+            https://github.com/${{ github.repository }}/releases/latest/download/update-manifest.json
+            ```
+
+            ### Manuelles Update
+            ```powershell
+            powershell -File scripts\windows\update-agent.ps1 `
+              -UpdateManifestUrl "https://github.com/${{ github.repository }}/releases/latest/download/update-manifest.json"
+            ```
+          files: |
+            ${{ steps.zip.outputs.zip_path }}
+            ${{ steps.manifest.outputs.manifest_path }}
+            ${{ steps.installer_zip.outputs.installer_path }}
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false

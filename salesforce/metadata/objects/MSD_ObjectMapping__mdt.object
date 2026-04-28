@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <label>MSD Object Mapping</label>
+    <pluralLabel>MSD Object Mappings</pluralLabel>
+    <fields>
+        <fullName>SourceObject__c</fullName>
+        <fieldManageability>DeveloperControlled</fieldManageability>
+        <label>Source Object</label>
+        <length>255</length>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>TargetSystem__c</fullName>
+        <fieldManageability>DeveloperControlled</fieldManageability>
+        <label>Target System</label>
+        <length>255</length>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>TargetEntity__c</fullName>
+        <fieldManageability>DeveloperControlled</fieldManageability>
+        <label>Target Entity</label>
+        <length>255</length>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>Operation__c</fullName>
+        <fieldManageability>DeveloperControlled</fieldManageability>
+        <label>Operation</label>
+        <length>100</length>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>Active__c</fullName>
+        <defaultValue>true</defaultValue>
+        <fieldManageability>DeveloperControlled</fieldManageability>
+        <label>Active</label>
+        <type>Checkbox</type>
+    </fields>
+</CustomObject>

@@ -1,0 +1,33 @@
+{
+  "name": "sf-onprem-integration-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Salesforce controlled on-prem integration agent",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "dev": "ts-node src/main.ts",
+    "win:install-service": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-agent-service.ps1",
+    "win:uninstall-service": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/uninstall-agent-service.ps1",
+    "win:update-now": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/update-agent.ps1",
+    "win:register-updater": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/register-agent-updater-task.ps1",
+    "sf:deploy-metadata": "ts-node scripts/salesforce/deploy-metadata.ts"
+  },
+  "dependencies": {
+    "@types/archiver": "^7.0.0",
+    "archiver": "^7.0.1",
+    "dotenv": "^16.4.5",
+    "jsforce": "^3.10.14",
+    "mssql": "^12.2.0",
+    "pino": "^9.4.0",
+    "sqlite3": "^5.1.7",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/mssql": "^9.1.9",
+    "@types/node": "^22.7.4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.2"
+  }
+}

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+    <types>
+        <members>MSD_Connector__c</members>
+        <members>MSD_Schedule__c</members>
+        <members>MSD_Run__c</members>
+        <members>MSD_Checkpoint__c</members>
+        <members>MSD_Log__c</members>
+        <members>MSD_ObjectMapping__mdt</members>
+        <members>MSD_FieldMapping__mdt</members>
+        <name>CustomObject</name>
+    </types>
+    <version>61.0</version>
+</Package>

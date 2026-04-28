@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Local data / SQLite
+.data/
+*.db
+*.sqlite
+
+# Windows Service Backups (created by update-agent.ps1)
+backups/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Temp
+temp/
+tmp/

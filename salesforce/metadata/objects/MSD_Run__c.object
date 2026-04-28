@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <label>MSD Run</label>
+    <nameField>
+        <displayFormat>RUN-{0000}</displayFormat>
+        <label>Run Number</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <pluralLabel>MSD Runs</pluralLabel>
+    <sharingModel>ReadWrite</sharingModel>
+    <fields>
+        <fullName>MSD_Schedule__c</fullName>
+        <deleteConstraint>SetNull</deleteConstraint>
+        <label>Schedule</label>
+        <referenceTo>MSD_Schedule__c</referenceTo>
+        <relationshipLabel>Runs</relationshipLabel>
+        <relationshipName>Runs</relationshipName>
+        <required>false</required>
+        <type>Lookup</type>
+    </fields>
+    <fields>
+        <fullName>MSD_Status__c</fullName>
+        <label>Status</label>
+        <required>false</required>
+        <type>Picklist</type>
+        <valueSet>
+            <valueSetDefinition>
+                <sorted>false</sorted>
+                <value>
+                    <fullName>Running</fullName>
+                    <default>false</default>
+                    <label>Running</label>
+                </value>
+                <value>
+                    <fullName>Success</fullName>
+                    <default>false</default>
+                    <label>Success</label>
+                </value>
+                <value>
+                    <fullName>Partial Success</fullName>
+                    <default>false</default>
+                    <label>Partial Success</label>
+                </value>
+                <value>
+                    <fullName>Failed</fullName>
+                    <default>false</default>
+                    <label>Failed</label>
+                </value>
+            </valueSetDefinition>
+        </valueSet>
+    </fields>
+    <fields>
+        <fullName>MSD_StartedAt__c</fullName>
+        <label>Started At</label>
+        <required>false</required>
+        <type>DateTime</type>
+    </fields>
+    <fields>
+        <fullName>MSD_FinishedAt__c</fullName>
+        <label>Finished At</label>
+        <required>false</required>
+        <type>DateTime</type>
+    </fields>
+    <fields>
+        <fullName>MSD_CorrelationId__c</fullName>
+        <label>Correlation ID</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>MSD_AgentId__c</fullName>
+        <label>Agent ID</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>MSD_RecordsRead__c</fullName>
+        <label>Records Read</label>
+        <precision>18</precision>
+        <required>false</required>
+        <scale>0</scale>
+        <type>Number</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>MSD_RecordsProcessed__c</fullName>
+        <label>Records Processed</label>
+        <precision>18</precision>
+        <required>false</required>
+        <scale>0</scale>
+        <type>Number</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>MSD_RecordsSucceeded__c</fullName>
+        <label>Records Succeeded</label>
+        <precision>18</precision>
+        <required>false</required>
+        <scale>0</scale>
+        <type>Number</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>MSD_RecordsFailed__c</fullName>
+        <label>Records Failed</label>
+        <precision>18</precision>
+        <required>false</required>
+        <scale>0</scale>
+        <type>Number</type>
+        <unique>false</unique>
+    </fields>
+    <fields>
+        <fullName>MSD_ErrorMessage__c</fullName>
+        <label>Error Message</label>
+        <length>32768</length>
+        <type>LongTextArea</type>
+        <visibleLines>5</visibleLines>
+    </fields>
+</CustomObject>
