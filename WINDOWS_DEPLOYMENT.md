@@ -56,6 +56,13 @@ cd C:\apps\sf-onprem-integration-agent
 npm run init:installation -- --mode SAGE100
 ```
 
+Bei diesem Schritt werden interaktiv abgefragt:
+
+- Salesforce Login URL, Client ID, Client Secret
+- SAGE100 SQL Server Host, Port, Datenbank, User, Passwort
+
+Die Werte werden in `.env` gespeichert. Zusaetzlich wird ein `MSD_Connector__c` fuer MSSQL angelegt/aktualisiert und mit den erzeugten Schedules verknuepft.
+
 Optional direkt aktivieren:
 
 ```powershell

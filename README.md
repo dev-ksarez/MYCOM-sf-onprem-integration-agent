@@ -52,7 +52,7 @@ npm run dev
 - `npm run win:register-updater` - Scheduled Task fuer Auto-Update registrieren
 - `npm run win:build-package` - Kunden-ZIP erzeugen
 - `npm run win:build-package:with-node-modules` - Kunden-ZIP inkl. `node_modules`
-- `npm run init:installation -- --mode SAGE100` - Basis-Importprofile fuer Erstinstallation anlegen
+- `npm run init:installation -- --mode SAGE100` - Interaktive Erstinstallation (Salesforce + SAGE100 SQL + Basis-Importprofile)
 - `npm run sf:deploy-metadata` - Salesforce Metadaten deployen
 
 ## Kunden-Deployment (Windows)
@@ -63,7 +63,7 @@ Kurzablauf:
 
 1. Release-Paket auf Zielserver entpacken
 2. `.env` konfigurieren
-3. Optional: `npm run init:installation -- --mode SAGE100`
+3. Optional: `npm run init:installation -- --mode SAGE100` (fragt Salesforce URL/Client und SQL Server fuer SAGE100 ab)
 4. Dienst installieren
 5. Auto-Updater registrieren
 
