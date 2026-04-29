@@ -16,4 +16,7 @@ export interface IntegrationSchedule {
   batchSize: number;
   nextRunAt?: string;
   lastRunAt?: string;
+  timingDefinition?: string;
+  parentScheduleId?: string;
+  inheritTimingFromParent?: boolean;
 }

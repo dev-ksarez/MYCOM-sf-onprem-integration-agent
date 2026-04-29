@@ -2,7 +2,9 @@ param(
   [string]$ServiceName = "SfOnpremIntegrationAgent",
   [string]$DisplayName = "SF OnPrem Integration Agent",
   [string]$Description = "Runs the Salesforce On-Prem Integration Agent",
-  [string]$AppRoot
+  [string]$AppRoot,
+  [int]$WebUiPort = 8080,
+  [int]$SchedulerIntervalMs = 60000
 )
 
 Set-StrictMode -Version Latest
@@ -143,6 +145,8 @@ Write-Host "  AppRoot     : $appRootResolved"
 Write-Host "  Node.exe    : $nodeExe"
 Write-Host "  EntryPoint  : $entryPoint"
 Write-Host "  NSSM.exe    : $nssmExe"
+Write-Host "  WEB_UI_PORT : $WebUiPort"
+Write-Host "  SCHED_INTMS : $SchedulerIntervalMs"
 
 if (-not (Ask-YesNo -Prompt "Continue with installation?" -Default $true)) {
   Write-Host "Aborted."
@@ -181,6 +185,9 @@ if ($LASTEXITCODE -ne 0) {
 & $nssmExe set $ServiceName DisplayName $DisplayName | Out-Null
 & $nssmExe set $ServiceName Description $Description | Out-Null
 & $nssmExe set $ServiceName AppDirectory $appRootResolved | Out-Null
+& $nssmExe set $ServiceName AppEnvironmentExtra WEB_UI_ENABLED=1 | Out-Null
+& $nssmExe set $ServiceName AppEnvironmentExtra WEB_UI_PORT=$WebUiPort | Out-Null
+& $nssmExe set $ServiceName AppEnvironmentExtra SCHEDULER_INTERVAL_MS=$SchedulerIntervalMs | Out-Null
 & $nssmExe set $ServiceName AppStdout $stdoutLog | Out-Null
 & $nssmExe set $ServiceName AppStderr $stderrLog | Out-Null
 & $nssmExe set $ServiceName AppRotateFiles 1 | Out-Null

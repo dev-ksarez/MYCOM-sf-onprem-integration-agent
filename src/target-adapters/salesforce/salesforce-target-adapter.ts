@@ -35,9 +35,11 @@ interface SalesforcePicklistDefinition {
   sqlMapping?: SalesforcePicklistSqlMapping;
 }
 
+type SalesforceOperation = "upsert" | "insert" | "update";
+
 interface SalesforceObjectTargetDefinition {
   objectApiName: string;
-  operation: "upsert";
+  operation: SalesforceOperation;
   externalIdField: string;
   picklists: SalesforcePicklistDefinition[];
 }
@@ -194,18 +196,27 @@ function parseTargetDefinition(rawDefinition: string): SalesforceTargetDefinitio
       throw new Error(`${path}.objectApiName is required`);
     }
 
-    if (operation !== "upsert") {
-      throw new Error(`${path}.operation currently supports only 'upsert'`);
+    const validOperations: SalesforceOperation[] = ["upsert", "insert", "update"];
+    if (!validOperations.includes(operation as SalesforceOperation)) {
+      throw new Error(`${path}.operation must be one of: ${validOperations.join(", ")}. Got: '${String(operation)}'`);
     }
 
-    if (typeof externalIdField !== "string" || !externalIdField.trim()) {
-      throw new Error(`${path}.externalIdField is required`);
+    const resolvedOperation = operation as SalesforceOperation;
+    const needsExternalId = resolvedOperation === "upsert" || resolvedOperation === "update";
+
+    if (needsExternalId && (typeof externalIdField !== "string" || !externalIdField.trim())) {
+      throw new Error(`${path}.externalIdField is required for operation '${resolvedOperation}'`);
     }
+
+    const resolvedExternalIdField =
+      typeof externalIdField === "string" && externalIdField.trim()
+        ? validateIdentifier(externalIdField.trim(), `${path}.externalIdField`)
+        : "Id";
 
     return {
       objectApiName: validateIdentifier(objectApiName.trim(), `${path}.objectApiName`),
-      operation,
-      externalIdField: validateIdentifier(externalIdField.trim(), `${path}.externalIdField`),
+      operation: resolvedOperation,
+      externalIdField: resolvedExternalIdField,
       picklists: parsePicklists(picklists, `${path}.picklists`)
     };
   };
@@ -362,12 +373,111 @@ function parseTargetDefinition(rawDefinition: string): SalesforceTargetDefinitio
   };
 }
 
+// Pattern: JS Date toString / toLocaleString / toISOString values with timezone info
+const JS_DATE_STRING_RE = /^\w{3}\s+\w{3}\s+\d{2}\s+\d{4}|^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+
+function normalizeDateValue(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmed = value.trim();
+
+  // Already ISO date YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  // ISO datetime – strip to date only if it has timezone or T separator
+  if (/^\d{4}-\d{2}-\d{2}T/.test(trimmed)) {
+    return trimmed.slice(0, 10);
+  }
+
+  // JS Date.toString() e.g. "Tue May 12 2026 02:00:00 GMT+0200 (Central European Summer Time)"
+  if (/^\w{3}\s+\w{3}\s+\d{2}\s+\d{4}/.test(trimmed)) {
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString().slice(0, 10);
+    }
+  }
+
+  return value;
+}
+
 function normalizeRecordValues(values: Record<string, unknown>): Record<string, unknown> {
   const normalizedEntries = Object.entries(values)
     .filter(([, value]) => value !== undefined)
-    .map(([key, value]) => [validateIdentifier(key, `field ${key}`), value]);
+    .map(([key, value]) => [validateIdentifier(key, `field ${key}`), normalizeDateValue(value)]);
 
   return Object.fromEntries(normalizedEntries);
+}
+
+function validateRequiredRelationshipLookups(
+  objectApiName: string,
+  values: Record<string, unknown>
+): void {
+  if (
+    objectApiName === "Contact" &&
+    Object.prototype.hasOwnProperty.call(values, "AccountId") &&
+    (values.AccountId === null || values.AccountId === undefined || values.AccountId === "")
+  ) {
+    throw new Error("Missing required Account lookup for Contact.AccountId");
+  }
+}
+
+function isDuplicateSalesforceError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("duplicate_value") ||
+    normalized.includes("duplicates_detected") ||
+    normalized.includes("duplicate record") ||
+    normalized.includes("duplicate value") ||
+    normalized.includes("you're creating a duplicate record")
+  );
+}
+
+function isExternalIdConfigurationError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("provided external id field does not exist or is not accessible") ||
+    normalized.includes("missing external id value for field") ||
+    normalized.includes("externalidfield is required") ||
+    normalized.includes("pricebookentry upsert missing required key field") ||
+    normalized.includes("unable to create/update fields")
+  );
+}
+
+function formatUnknownError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "Unknown error";
+  }
+
+  const errorWithData = error as Error & {
+    data?: Array<Record<string, unknown>> | Record<string, unknown>;
+  };
+
+  const details = errorWithData.data;
+  if (!details) {
+    return error.message;
+  }
+
+  try {
+    if (Array.isArray(details)) {
+      const summarized = details
+        .map((entry) => {
+          const statusCode = typeof entry.statusCode === "string" ? entry.statusCode : undefined;
+          const message = typeof entry.message === "string" ? entry.message : JSON.stringify(entry);
+          return statusCode ? `${statusCode}: ${message}` : message;
+        })
+        .join(" | ");
+
+      return `${error.message} | Salesforce details: ${summarized}`;
+    }
+
+    return `${error.message} | Salesforce details: ${JSON.stringify(details)}`;
+  } catch {
+    return error.message;
+  }
 }
 
 export class SalesforceTargetAdapter implements TargetAdapter {
@@ -432,9 +542,11 @@ export class SalesforceTargetAdapter implements TargetAdapter {
 
       try {
         if (externalKeyValue === undefined || externalKeyValue === null || externalKeyValue === "") {
-          throw new Error(
-            `Mapped record is missing required external id field: ${target.externalIdField}`
-          );
+          if (target.operation !== "insert") {
+            throw new Error(
+              `Mapped record is missing required external id field: ${target.externalIdField}`
+            );
+          }
         }
 
         const valuesToWrite =
@@ -442,29 +554,67 @@ export class SalesforceTargetAdapter implements TargetAdapter {
             ? this.filterPicklistValuesForWrite(normalizedValues)
             : normalizedValues;
 
-        const targetId = await this.salesforceClient.upsertGenericRecord({
-          objectApiName: target.objectApiName,
-          externalIdField: target.externalIdField,
-          values: valuesToWrite
-        });
+        validateRequiredRelationshipLookups(target.objectApiName, valuesToWrite);
+
+        let targetId: string;
+
+        if (target.operation === "insert") {
+          targetId = await this.salesforceClient.createGenericRecord(target.objectApiName, valuesToWrite);
+        } else if (target.operation === "update") {
+          targetId = await this.salesforceClient.updateGenericRecord(target.objectApiName, valuesToWrite);
+        } else {
+          // upsert (default)
+          const shouldUsePricebookCompositeKey =
+            target.objectApiName === "PricebookEntry" &&
+            target.externalIdField === "ProductCode" &&
+            valuesToWrite.Product2Id !== undefined &&
+            valuesToWrite.Pricebook2Id !== undefined;
+
+          const shouldUseProductCodeLookupForProduct2 =
+            target.objectApiName === "Product2" && target.externalIdField === "ProductCode";
+
+          targetId = shouldUsePricebookCompositeKey
+            ? await this.salesforceClient.upsertPricebookEntryByCompositeKey(valuesToWrite)
+            : shouldUseProductCodeLookupForProduct2
+              ? await this.salesforceClient.upsertProduct2ByProductCode(valuesToWrite)
+              : await this.salesforceClient.upsertGenericRecord({
+                  objectApiName: target.objectApiName,
+                  externalIdField: target.externalIdField,
+                  values: valuesToWrite
+                });
+        }
+
+        const statusLabel =
+          target.operation === "insert"
+            ? "INSERT_OK"
+            : target.operation === "update"
+              ? "UPDATE_OK"
+              : "UPSERT_OK";
 
         results.push({
           externalKey,
           success: true,
           targetId,
-          statusCode: "UPSERT_OK",
-          message: `Salesforce record upserted in run ${context.runId}`,
+          statusCode: statusLabel,
+          message: `Salesforce record ${target.operation}ed in run ${context.runId}`,
           retryable: false
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown error";
+        const message = formatUnknownError(error);
+        const isDuplicateError = isDuplicateSalesforceError(message);
+        const isExternalIdConfigError = isExternalIdConfigurationError(message);
+        const isNonRetryable = isDuplicateError || isExternalIdConfigError;
 
         results.push({
           externalKey,
           success: false,
-          statusCode: "TECHNICAL_ERROR",
+          statusCode: isDuplicateError
+            ? "DUPLICATE_ERROR"
+            : isExternalIdConfigError
+              ? "CONFIGURATION_ERROR"
+              : "TECHNICAL_ERROR",
           message,
-          retryable: true
+          retryable: !isNonRetryable
         });
       }
     }

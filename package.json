@@ -15,13 +15,18 @@
     "win:build-package": "node scripts/windows/build-customer-package.js",
     "win:build-package:with-node-modules": "node scripts/windows/build-customer-package.js --include-node-modules",
     "init:installation": "node scripts/salesforce/init-installation.js",
+    "sf:seed-dev-sandbox-scenarios": "node scripts/salesforce/seed-dev-sandbox-scenarios.js",
     "sf:deploy-metadata": "ts-node scripts/salesforce/deploy-metadata.ts",
     "sf:debug-oauth": "node scripts/salesforce/debug-oauth.js"
   },
   "dependencies": {
     "@types/archiver": "^7.0.0",
     "archiver": "^7.0.1",
+    "bootstrap": "^5.3.3",
+    "chart.js": "^4.5.1",
     "dotenv": "^16.4.5",
+    "footable": "^2.0.6",
+    "jquery": "^3.7.1",
     "jsforce": "^3.10.14",
     "mssql": "^12.2.0",
     "pino": "^9.4.0",

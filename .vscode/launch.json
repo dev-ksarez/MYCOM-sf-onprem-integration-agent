@@ -1,0 +1,53 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Smoke Test: Agent (dev) + Web UI",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "cleanup: stop running dev server",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "env": {
+        "WEB_UI_ENABLED": "1",
+        "WEB_UI_PORT": "9010",
+        "SCHEDULER_INTERVAL_MS": "300000",
+        "LOG_LEVEL": "debug"
+      },
+      "outputCapture": "std",
+      "serverReadyAction": {
+        "pattern": "Web UI and health API started",
+        "action": "openExternally",
+        "uriFormat": "http://127.0.0.1:9010/"
+      },
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Smoke Test: Agent (build) + Web UI",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "prepare: cleanup and build",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "start"],
+      "env": {
+        "WEB_UI_ENABLED": "1",
+        "WEB_UI_PORT": "9010",
+        "SCHEDULER_INTERVAL_MS": "300000",
+        "LOG_LEVEL": "info"
+      },
+      "outputCapture": "std",
+      "serverReadyAction": {
+        "pattern": "Web UI and health API started",
+        "action": "openExternally",
+        "uriFormat": "http://127.0.0.1:9010/"
+      },
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ]
+}

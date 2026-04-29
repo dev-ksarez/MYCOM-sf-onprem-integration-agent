@@ -2,13 +2,14 @@
 
 import {
   MappingDefinitionLine,
+  MappingPicklistEntry,
   MappingDefinitionParseResult,
   MappingTargetType,
   MappingTransformType,
   ParsedTransform
 } from "./mapping-definition-types";
 
-const SUPPORTED_TARGET_TYPES: MappingTargetType[] = ["string", "integer", "boolean", "datetime"];
+const SUPPORTED_TARGET_TYPES: MappingTargetType[] = ["string", "integer", "number", "boolean", "datetime"];
 
 const SIMPLE_TRANSFORMS: MappingTransformType[] = [
   "NONE",
@@ -19,6 +20,35 @@ const SIMPLE_TRANSFORMS: MappingTransformType[] = [
   "TO_BOOLEAN",
   "DATETIME_ISO"
 ];
+
+interface StoredMappingRule {
+  sourceField?: unknown;
+  targetField?: unknown;
+  targetType?: unknown;
+  sourceType?: unknown;
+  transformFunction?: unknown;
+  lookupEnabled?: unknown;
+  lookupObject?: unknown;
+  lookupField?: unknown;
+  picklistMappings?: unknown;
+}
+
+function normalizeStoredPicklistMappings(value: unknown): MappingPicklistEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry))
+    .map((entry) => {
+      const candidate = entry as { source?: unknown; target?: unknown };
+      return {
+        source: String(candidate.source ?? "").trim(),
+        target: String(candidate.target ?? "").trim()
+      };
+    })
+    .filter((entry) => entry.source.length > 0 || entry.target.length > 0);
+}
 
 function isSupportedTargetType(value: string): value is MappingTargetType {
   return SUPPORTED_TARGET_TYPES.includes(value as MappingTargetType);
@@ -107,8 +137,60 @@ function parseLine(rawLine: string, lineNumber: number): MappingDefinitionLine {
   };
 }
 
+function parseStoredRule(rule: StoredMappingRule, lineNumber: number): MappingDefinitionLine | null {
+  const sourceField = String(rule.sourceField ?? "").trim();
+  const targetField = String(rule.targetField ?? "").trim();
+
+  if (!sourceField && !targetField) {
+    return null;
+  }
+
+  if (!targetField) {
+    throw new Error(`Invalid JSON mapping at index ${lineNumber - 1}: missing targetField`);
+  }
+
+  const rawTargetType = String(rule.targetType ?? rule.sourceType ?? "string").trim() || "string";
+  const targetType = isSupportedTargetType(rawTargetType) ? rawTargetType : "string";
+  const lookupEnabled = Boolean(rule.lookupEnabled);
+  const lookupObject = String(rule.lookupObject ?? "").trim();
+  const lookupField = String(rule.lookupField ?? "").trim();
+  const rawTransformFunction = String(rule.transformFunction ?? "NONE").trim() || "NONE";
+  const rawTransform = lookupEnabled && lookupObject && lookupField
+    ? `LOOKUP[${lookupObject}|${lookupField}]`
+    : rawTransformFunction;
+  const transform = parseTransform(rawTransform, lineNumber);
+
+  return {
+    lineNumber,
+    rawLine: JSON.stringify(rule),
+    targetField,
+    targetType,
+    sourceField,
+    transform,
+    picklistMappings: normalizeStoredPicklistMappings(rule.picklistMappings)
+  };
+}
+
 export class MappingDefinitionParser {
   public parse(definition: string): MappingDefinitionParseResult {
+    const trimmedDefinition = definition.trim();
+    if (!trimmedDefinition) {
+      return { lines: [] };
+    }
+
+    if (trimmedDefinition.startsWith("[")) {
+      const parsed = JSON.parse(trimmedDefinition) as unknown;
+      if (!Array.isArray(parsed)) {
+        throw new Error("Invalid JSON mapping definition: expected an array of mapping rules");
+      }
+
+      const lines = parsed
+        .map((entry, index) => parseStoredRule((entry ?? {}) as StoredMappingRule, index + 1))
+        .filter((line): line is MappingDefinitionLine => line !== null);
+
+      return { lines };
+    }
+
     const rawLines = definition
       .split(/\r?\n/)
       .map((line) => line.trim())

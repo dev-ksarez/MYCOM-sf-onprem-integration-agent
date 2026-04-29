@@ -1,7 +1,7 @@
 
 
 import { Logger } from "pino";
-import { MappingDefinitionEngine } from "../mapping-dsl/mapping-definition-engine";
+import { MappingDefinitionEngine, LookupResolverFn } from "../mapping-dsl/mapping-definition-engine";
 import { MappingDefinitionParser } from "../mapping-dsl/mapping-definition-parser";
 import { ConnectorResult } from "../../types/connector-result";
 import { GenericRecord } from "../../types/generic-record";
@@ -29,12 +29,12 @@ export class DataTransferJob {
   private readonly mappingDefinitionParser: MappingDefinitionParser;
   private readonly mappingDefinitionEngine: MappingDefinitionEngine;
 
-  public constructor(logger: Logger, sourceAdapter: SourceAdapter, targetAdapter: TargetAdapter) {
+  public constructor(logger: Logger, sourceAdapter: SourceAdapter, targetAdapter: TargetAdapter, lookupResolver?: LookupResolverFn) {
     this.logger = logger;
     this.sourceAdapter = sourceAdapter;
     this.targetAdapter = targetAdapter;
     this.mappingDefinitionParser = new MappingDefinitionParser();
-    this.mappingDefinitionEngine = new MappingDefinitionEngine();
+    this.mappingDefinitionEngine = new MappingDefinitionEngine(lookupResolver);
   }
 
   public async execute(
@@ -64,10 +64,12 @@ export class DataTransferJob {
 
     const parsedDefinition = this.mappingDefinitionParser.parse(mappingDefinition);
 
-    const mappedRecords: GenericRecord[] = sourceRecords.map((record) => {
-      const mapped = this.mappingDefinitionEngine.mapRecord(record.values, parsedDefinition.lines);
-      return { values: mapped.values };
-    });
+    const mappedRecords: GenericRecord[] = await Promise.all(
+      sourceRecords.map(async (record) => {
+        const mapped = await this.mappingDefinitionEngine.mapRecord(record.values, parsedDefinition.lines);
+        return { values: mapped.values };
+      })
+    );
 
     const results: ConnectorResult[] = await this.targetAdapter.writeRecords(mappedRecords, context);
 

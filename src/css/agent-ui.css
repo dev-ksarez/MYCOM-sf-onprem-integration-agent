@@ -1,0 +1,463 @@
+body {
+  background: #f3f3f4;
+  min-height: 100vh;
+  font-family: "Open Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  color: #676a6c;
+}
+
+.navbar {
+  background: #ffffff !important;
+  border-bottom: 1px solid #e7eaec !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.navbar-brand {
+  color: #2f4050 !important;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+#main-tabs {
+  border-bottom: 1px solid #e7eaec;
+}
+
+#main-tabs .nav-link {
+  border: 0;
+  border-radius: 0;
+  color: #676a6c;
+  font-weight: 600;
+  padding: 0.75rem 1rem;
+}
+
+#main-tabs .nav-link:hover {
+  color: #1ab394;
+  background: #ffffff;
+}
+
+#main-tabs .nav-link.active {
+  color: #1ab394;
+  background: #ffffff;
+  border-bottom: 2px solid #1ab394;
+}
+
+.soft-card {
+  background: #ffffff;
+  border: 1px solid #e7eaec;
+  border-top: 3px solid #1ab394;
+  border-radius: 2px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.soft-card .card-header {
+  background: #ffffff !important;
+  border-bottom: 1px solid #e7eaec;
+  color: #676a6c;
+  font-weight: 600;
+}
+
+.mini-kpi {
+  min-height: 102px;
+}
+
+.mini-kpi h5 {
+  color: #2f4050;
+  font-weight: 700;
+}
+
+.table td {
+  vertical-align: middle;
+}
+
+.graph-wrap {
+  background: linear-gradient(180deg, #fbfcfd 0%, #f3f6f8 100%);
+  border-radius: 2px;
+  border: 1px solid #e7eaec;
+  overflow: auto;
+}
+
+.graph-node {
+  cursor: pointer;
+}
+
+.graph-node text {
+  fill: #2f4050;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.graph-node .graph-card-bg {
+  stroke-width: 2;
+}
+
+.graph-node .graph-accent {
+  stroke: none;
+}
+
+.graph-node .graph-icon-badge {
+  stroke: rgba(47, 64, 80, 0.12);
+  stroke-width: 1;
+}
+
+.graph-node .graph-title,
+.graph-node .graph-title-line {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.graph-node .graph-subtitle,
+.graph-node .graph-subtitle-line {
+  font-size: 11px;
+  fill: #66717d;
+}
+
+.graph-node .graph-meta,
+.graph-node .graph-meta-line {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+}
+
+.graph-node .graph-icon {
+  font-size: 18px;
+  text-anchor: middle;
+}
+
+.graph-connector .graph-card-bg {
+  fill: #ffffff;
+  stroke: #8f9ba8;
+}
+
+.graph-connector .graph-accent {
+  fill: #95a5b2;
+}
+
+.graph-connector .graph-icon-badge {
+  fill: #eef2f5;
+}
+
+.graph-connector .graph-meta-line {
+  fill: #5f6b76;
+}
+
+.graph-connector-salesforce .graph-card-bg {
+  fill: #eef8ff;
+  stroke: #3a8dde;
+}
+
+.graph-connector-salesforce .graph-accent,
+.graph-connector-salesforce .graph-icon {
+  fill: #2d7dd2;
+}
+
+.graph-connector-salesforce .graph-icon-badge {
+  fill: #dceefe;
+}
+
+.graph-connector-mssql .graph-card-bg {
+  fill: #f3f8f3;
+  stroke: #2f8f5b;
+}
+
+.graph-connector-mssql .graph-accent,
+.graph-connector-mssql .graph-icon {
+  fill: #2f8f5b;
+}
+
+.graph-connector-mssql .graph-icon-badge {
+  fill: #e0f1e6;
+}
+
+.graph-connector-file .graph-card-bg {
+  fill: #fff8ec;
+  stroke: #d78c1d;
+}
+
+.graph-connector-file .graph-accent,
+.graph-connector-file .graph-icon {
+  fill: #d78c1d;
+}
+
+.graph-connector-file .graph-icon-badge {
+  fill: #ffefcf;
+}
+
+.graph-connector-mock .graph-card-bg {
+  fill: #f6eefc;
+  stroke: #8a56c2;
+}
+
+.graph-connector-mock .graph-accent,
+.graph-connector-mock .graph-icon {
+  fill: #8a56c2;
+}
+
+.graph-connector-mock .graph-icon-badge {
+  fill: #eadcf8;
+}
+
+.graph-connector-erp .graph-card-bg {
+  fill: #fff2ea;
+  stroke: #c7683b;
+}
+
+.graph-connector-erp .graph-accent,
+.graph-connector-erp .graph-icon {
+  fill: #c7683b;
+}
+
+.graph-connector-erp .graph-icon-badge {
+  fill: #fde2d6;
+}
+
+.graph-connector-generic .graph-card-bg {
+  fill: #f7f8f9;
+  stroke: #7f8b95;
+}
+
+.graph-connector-generic .graph-accent,
+.graph-connector-generic .graph-icon {
+  fill: #7f8b95;
+}
+
+.graph-connector-generic .graph-icon-badge {
+  fill: #e9edf0;
+}
+
+.graph-inbound .graph-card-bg {
+  fill: #edf5ff;
+  stroke: #2276d2;
+}
+
+.graph-inbound .graph-accent,
+.graph-inbound .graph-icon,
+.graph-inbound .graph-meta-line {
+  fill: #2276d2;
+}
+
+.graph-inbound .graph-icon-badge {
+  fill: #dcebff;
+}
+
+.graph-outbound .graph-card-bg {
+  fill: #eefaf0;
+  stroke: #2e9b4d;
+}
+
+.graph-outbound .graph-accent,
+.graph-outbound .graph-icon,
+.graph-outbound .graph-meta-line {
+  fill: #2e9b4d;
+}
+
+.graph-outbound .graph-icon-badge {
+  fill: #dcf3e0;
+}
+
+.graph-edge {
+  stroke-width: 3;
+  fill: none;
+  opacity: 0.95;
+}
+
+.graph-edge-inbound {
+  stroke: #2276d2;
+  marker-end: url(#arrowInbound);
+}
+
+.graph-edge-outbound {
+  stroke: #2e9b4d;
+  marker-end: url(#arrowOutbound);
+}
+
+.logs-chart-wrap {
+  position: relative;
+  height: 320px;
+  min-height: 320px;
+}
+
+.logs-chart-wrap #logs-chart {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+.schedule-helper-card {
+  background: #f8f8f9;
+}
+
+#sch-mapping-rules-dropzone {
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+#sch-mapping-rules-dropzone.mapping-dropzone-active {
+  border-color: #1ab394 !important;
+  background: #ecfbf7 !important;
+}
+
+#sch-mapping-rules tr {
+  cursor: pointer;
+}
+
+#sch-mapping-rules tr.mapping-rule-selected {
+  background: #e9f4fb;
+}
+
+.weekday-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #d2d2d2;
+  border-radius: 999px;
+  padding: 0.2rem 0.65rem;
+  background: #ffffff;
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.85rem;
+}
+
+.weekday-chip input {
+  margin: 0;
+}
+
+.weekday-chip.active {
+  border-color: #1ab394;
+  background: #ecfbf7;
+}
+
+/* ===== TABLE STYLING ===== */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table thead {
+  background: #ffffff;
+  border-bottom: 1px solid #e7eaec;
+}
+
+table thead th {
+  padding: 0.75rem;
+  font-weight: 600;
+  color: #676a6c;
+  text-align: left;
+  border-right: 0;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+}
+
+table tbody tr {
+  border-bottom: 1px solid #efefef;
+  transition: background-color 0.2s ease;
+}
+
+table tbody tr:hover {
+  background-color: #fafafa;
+}
+
+table tbody td {
+  padding: 0.75rem;
+  color: #676a6c;
+  vertical-align: middle;
+}
+
+table td button {
+  margin: 0.25rem;
+}
+
+/* Search/Filter Input */
+input[type="search"].form-control-sm {
+  font-size: 0.875rem;
+  padding: 0.375rem 0.75rem;
+  border-radius: 2px;
+  border-color: #e5e6e7;
+}
+
+.form-control,
+.form-select,
+.btn {
+  border-radius: 2px;
+}
+
+.btn-primary {
+  background-color: #1ab394;
+  border-color: #1ab394;
+}
+
+.btn-primary:hover {
+  background-color: #18a689;
+  border-color: #18a689;
+}
+
+.query-highlight-wrap {
+  border: 1px solid #d8e2ec;
+  border-radius: 0.5rem;
+  background: #fbfcfe;
+  padding: 0.75rem;
+}
+
+.query-highlight {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: #213547;
+}
+
+.sql-keyword {
+  color: #0b63b6;
+  font-weight: 600;
+}
+
+.sql-string {
+  color: #b54708;
+}
+
+.sql-number {
+  color: #047857;
+}
+
+/* ===== TEXT TRUNCATION ===== */
+
+.text-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+/* ===== BADGE STYLING ===== */
+
+.badge {
+  font-weight: 600;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  letter-spacing: 0.3px;
+}
+
+.badge.bg-success {
+  background-color: #1ab394 !important;
+  color: #ffffff;
+}
+
+.badge.bg-info {
+  background-color: #23c6c8 !important;
+  color: #ffffff;
+}
+
+.badge.bg-danger {
+  background-color: #d9534f !important;
+  color: #ffffff;
+}
+
+.badge.bg-warning {
+  background-color: #f8ac59 !important;
+}
+
+.badge.bg-secondary {
+  background-color: #95a5a6 !important;
+  color: #ffffff;
+}

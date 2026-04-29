@@ -1,0 +1,17 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cleanup: stop running dev server",
+      "type": "shell",
+      "command": "pkill -f \"ts-node src/main.ts|npm run dev\" || true",
+      "problemMatcher": []
+    },
+    {
+      "label": "prepare: cleanup and build",
+      "type": "shell",
+      "command": "pkill -f \"ts-node src/main.ts|npm run dev\" || true && npm run build",
+      "problemMatcher": ["$tsc"]
+    }
+  ]
+}

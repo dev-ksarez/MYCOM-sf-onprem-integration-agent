@@ -1,4 +1,4 @@
-export type MappingTargetType = "string" | "integer" | "boolean" | "datetime";
+export type MappingTargetType = "string" | "integer" | "number" | "boolean" | "datetime";
 
 export type MappingTransformType =
   | "NONE"
@@ -10,6 +10,11 @@ export type MappingTransformType =
   | "DATETIME_ISO"
   | "STATIC"
   | "LOOKUP";
+
+export interface MappingPicklistEntry {
+  source: string;
+  target: string;
+}
 
 export interface ParsedTransform {
   type: MappingTransformType;
@@ -26,6 +31,7 @@ export interface MappingDefinitionLine {
   targetType: MappingTargetType;
   sourceField: string;
   transform: ParsedTransform;
+  picklistMappings?: MappingPicklistEntry[];
 }
 
 export interface MappingDefinitionParseResult {

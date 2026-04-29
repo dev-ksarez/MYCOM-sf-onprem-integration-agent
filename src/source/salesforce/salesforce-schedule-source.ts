@@ -1,6 +1,56 @@
 import { SalesforceClient } from "../../clients/salesforce/salesforce-client";
 import { IntegrationSchedule } from "../../types/integration-schedule";
 
+function extractHierarchySettings(targetDefinition?: string): {
+  parentScheduleId?: string;
+  inheritTimingFromParent?: boolean;
+} {
+  const raw = String(targetDefinition || "").trim();
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const candidate = parsed as Record<string, unknown>;
+    const parentScheduleId =
+      typeof candidate.parentScheduleId === "string" && candidate.parentScheduleId.trim()
+        ? candidate.parentScheduleId.trim()
+        : undefined;
+    const inheritTimingFromParent = candidate.inheritTimingFromParent === true;
+
+    return {
+      parentScheduleId,
+      inheritTimingFromParent
+    };
+  } catch {
+    return {};
+  }
+}
+
+function extractTimingDefinition(targetDefinition?: string): string | undefined {
+  const raw = String(targetDefinition || "").trim();
+  if (!raw) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+
+    const timingDefinition = (parsed as Record<string, unknown>).timingDefinition;
+    return typeof timingDefinition === "string" && timingDefinition.trim() ? timingDefinition.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export class SalesforceScheduleSource {
   private readonly salesforceClient: SalesforceClient;
 
@@ -12,6 +62,7 @@ export class SalesforceScheduleSource {
     const records = await this.salesforceClient.querySchedules();
 
     return records.map((record) => ({
+      ...extractHierarchySettings(record.MSD_TargetDefinition__c),
       id: record.Id,
       name: record.Name,
       active: record.Active__c,
@@ -28,7 +79,8 @@ export class SalesforceScheduleSource {
       targetDefinition: record.MSD_TargetDefinition__c,
       batchSize: record.BatchSize__c || 100,
       nextRunAt: record.NextRunAt__c,
-      lastRunAt: record.LastRunAt__c
+      lastRunAt: record.LastRunAt__c,
+      timingDefinition: extractTimingDefinition(record.MSD_TargetDefinition__c)
     }));
   }
 }
