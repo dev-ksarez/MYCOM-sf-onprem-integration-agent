@@ -22,6 +22,7 @@ import {
   getSalesforceConfig,
   SalesforceConfig
 } from "../infrastructure/config/salesforce-config";
+import { MigrationStagingSqlite } from "../infrastructure/db/migration-staging-sqlite";
 import { MssqlDatabase } from "../infrastructure/db/mssql";
 import { IntegrationSchedule } from "../types/integration-schedule";
 import { runScheduleNow } from "../agent/agent-runner";
@@ -506,6 +507,10 @@ export interface MigrationObjectConfig {
   fileRecordCount?: number;
   fileColumns?: string[];
   previewRows?: Record<string, unknown>[];
+  stagingMode?: "file" | "sqlite";
+  stagingDatabasePath?: string;
+  stagingImportedAt?: string;
+  stagingStatus?: "pending" | "ready" | "processing" | "done" | "error";
   fieldMappings: MigrationFieldMapping[];
   externalIdField?: string;
   operation: "insert" | "upsert" | "update";
@@ -730,6 +735,8 @@ function resolveInstances(): ResolvedInstance[] {
 }
 
 export class AdminDataService {
+  private readonly migrationStaging = new MigrationStagingSqlite();
+
   private toMappingTargetType(fieldType?: string): MappingTargetType {
     const normalized = String(fieldType || "").trim().toLowerCase();
     if (["int", "integer"].includes(normalized)) {
@@ -2795,15 +2802,226 @@ export class AdminDataService {
     rows: Record<string, unknown>[];
     recordCount: number;
   } {
+    const parsed = this.parseMigrationSourceBuffer(fileName, fileBuffer, options);
+    return {
+      format: parsed.format,
+      charset: parsed.charset,
+      delimiter: parsed.delimiter,
+      textQualifier: parsed.textQualifier,
+      fields: parsed.fields,
+      rows: parsed.previewRows,
+      recordCount: parsed.recordCount
+    };
+  }
+
+  public async stageMigrationSourceFile(
+    migrationId: string,
+    objectId: string,
+    fileName: string,
+    fileBuffer: Buffer,
+    options?: { charset?: string; delimiter?: string; textQualifier?: string }
+  ): Promise<{
+    filePath: string;
+    format: "csv" | "excel" | "json";
+    charset: string;
+    delimiter: string;
+    textQualifier: string;
+    fields: string[];
+    rows: Record<string, unknown>[];
+    recordCount: number;
+    stagingMode: "sqlite";
+    stagingDatabasePath: string;
+    stagingImportedAt: string;
+    stagingStatus: "ready";
+  }> {
+    const migration = this.getMigration(migrationId);
+    if (!migration) {
+      throw new Error(`Migration ${migrationId} not found`);
+    }
+
+    const obj = migration.objects.find((item) => item.id === objectId);
+    if (!obj) {
+      throw new Error(`Object ${objectId} not found in migration`);
+    }
+
+    const safeFileName = path.basename(String(fileName || "").trim());
+    if (!safeFileName) {
+      throw new Error("fileName ist erforderlich");
+    }
+
+    const targetDir = path.resolve(process.cwd(), "artifacts/files/inbound/migrations", migrationId);
+    await fs.promises.mkdir(targetDir, { recursive: true });
+    const absolutePath = path.resolve(targetDir, safeFileName);
+    await fs.promises.writeFile(absolutePath, fileBuffer);
+
+    const parsed = this.parseMigrationSourceBuffer(safeFileName, fileBuffer, options);
+    const relativePath = path.relative(process.cwd(), absolutePath).split(path.sep).join("/");
+    const stagingDatabasePath = path.relative(process.cwd(), this.migrationStaging.getFilePath()).split(path.sep).join("/");
+    const importedAt = new Date().toISOString();
+
+    await this.migrationStaging.replaceObjectRows(
+      {
+        migrationId,
+        objectId,
+        filePath: relativePath,
+        sourceFileName: safeFileName,
+        fileFormat: parsed.format,
+        fileCharset: parsed.charset,
+        fileDelimiter: parsed.delimiter,
+        fileTextQualifier: parsed.textQualifier,
+        recordCount: parsed.recordCount,
+        columns: parsed.fields,
+        uploadedAt: importedAt
+      },
+      parsed.allRows
+    );
+
+    obj.filePath = relativePath;
+    obj.fileFormat = parsed.format;
+    obj.fileCharset = parsed.charset;
+    obj.fileDelimiter = parsed.delimiter;
+    obj.fileTextQualifier = parsed.textQualifier;
+    obj.fileRecordCount = parsed.recordCount;
+    obj.fileColumns = parsed.fields;
+    obj.previewRows = parsed.previewRows.slice(0, 3);
+    obj.stagingMode = "sqlite";
+    obj.stagingDatabasePath = stagingDatabasePath;
+    obj.stagingImportedAt = importedAt;
+    obj.stagingStatus = "ready";
+    this.saveMigration(migration);
+
+    return {
+      filePath: relativePath,
+      format: parsed.format,
+      charset: parsed.charset,
+      delimiter: parsed.delimiter,
+      textQualifier: parsed.textQualifier,
+      fields: parsed.fields,
+      rows: parsed.previewRows,
+      recordCount: parsed.recordCount,
+      stagingMode: "sqlite",
+      stagingDatabasePath,
+      stagingImportedAt: importedAt,
+      stagingStatus: "ready"
+    };
+  }
+
+  public async analyzeMigrationObjectSource(
+    migrationId: string,
+    objectId: string,
+    options?: { offset?: number; limit?: number }
+  ): Promise<{
+    format: "csv" | "excel" | "json";
+    charset: string;
+    delimiter: string;
+    textQualifier: string;
+    fields: string[];
+    rows: Record<string, unknown>[];
+    recordCount: number;
+    stagingMode?: "sqlite" | "file";
+    stagingDatabasePath?: string;
+    stagingImportedAt?: string;
+    stagingStatus?: string;
+    previewOffset?: number;
+    previewLimit?: number;
+    statusSummary?: Record<string, number>;
+  }> {
+    const migration = this.getMigration(migrationId);
+    if (!migration) {
+      throw new Error(`Migration ${migrationId} not found`);
+    }
+
+    const obj = migration.objects.find((item) => item.id === objectId);
+    if (!obj) {
+      throw new Error(`Object ${objectId} not found in migration`);
+    }
+
+    if (obj.stagingMode === "sqlite") {
+      const meta = await this.migrationStaging.getObjectMeta(migrationId, objectId);
+      if (meta) {
+        const desiredCharset = String(obj.fileCharset || meta.fileCharset || "utf8");
+        const desiredDelimiter = String(obj.fileDelimiter || meta.fileDelimiter || ";");
+        const desiredTextQualifier = String(obj.fileTextQualifier ?? meta.fileTextQualifier ?? '"');
+        const stagingNeedsRefresh = desiredCharset !== meta.fileCharset
+          || desiredDelimiter !== meta.fileDelimiter
+          || desiredTextQualifier !== meta.fileTextQualifier;
+
+        if (stagingNeedsRefresh && obj.filePath) {
+          const absolutePath = path.isAbsolute(obj.filePath)
+            ? obj.filePath
+            : path.resolve(process.cwd(), obj.filePath);
+          const fileBuffer = await fs.promises.readFile(absolutePath);
+          const fileName = path.basename(absolutePath);
+          await this.stageMigrationSourceFile(migrationId, objectId, fileName, fileBuffer, {
+            charset: desiredCharset,
+            delimiter: desiredDelimiter,
+            textQualifier: desiredTextQualifier
+          });
+          return this.analyzeMigrationObjectSource(migrationId, objectId, options);
+        }
+
+        const previewLimit = typeof options?.limit === "number" && options.limit > 0 ? Math.floor(options.limit) : 10;
+        const previewOffset = typeof options?.offset === "number" && options.offset > 0 ? Math.floor(options.offset) : 0;
+        const [stagedRows, statusSummary] = await Promise.all([
+          this.migrationStaging.listObjectRows(migrationId, objectId, { limit: previewLimit, offset: previewOffset }),
+          this.migrationStaging.getObjectStatusSummary(migrationId, objectId)
+        ]);
+        return {
+          format: meta.fileFormat,
+          charset: meta.fileCharset,
+          delimiter: meta.fileDelimiter,
+          textQualifier: meta.fileTextQualifier,
+          fields: meta.columns,
+          rows: stagedRows.map((row) => row.payload),
+          recordCount: meta.recordCount,
+          stagingMode: "sqlite",
+          stagingDatabasePath: obj.stagingDatabasePath,
+          stagingImportedAt: meta.uploadedAt,
+          stagingStatus: obj.stagingStatus || "ready",
+          previewOffset,
+          previewLimit,
+          statusSummary: statusSummary.byStatus
+        };
+      }
+    }
+
+    if (!obj.filePath) {
+      throw new Error(`Kein Dateipfad konfiguriert für Objekt ${obj.salesforceObject}`);
+    }
+
+    const absolutePath = path.isAbsolute(obj.filePath)
+      ? obj.filePath
+      : path.resolve(process.cwd(), obj.filePath);
+    const fileBuffer = await fs.promises.readFile(absolutePath);
+    const fileName = path.basename(absolutePath);
+    return this.analyzeFileBuffer(fileName, fileBuffer, {
+      charset: obj.fileCharset,
+      delimiter: obj.fileDelimiter,
+      textQualifier: obj.fileTextQualifier
+    });
+  }
+
+  private parseMigrationSourceBuffer(
+    fileName: string,
+    fileBuffer: Buffer,
+    options?: { charset?: string; delimiter?: string; textQualifier?: string }
+  ): {
+    format: "csv" | "excel" | "json";
+    charset: string;
+    delimiter: string;
+    textQualifier: string;
+    fields: string[];
+    previewRows: Record<string, unknown>[];
+    allRows: Record<string, unknown>[];
+    recordCount: number;
+  } {
     const analysis = analyzeUploadedFile(fileName, fileBuffer);
     const fields = analysis.headers || [];
     const format = analysis.format;
     const charset = String(options?.charset || analysis.charset || "utf8").trim() || "utf8";
     const delimiter = String(options?.delimiter || analysis.delimiter || ';');
     const textQualifier = String(options?.textQualifier || '"') || '"';
-    
-    // For rows, we parse based on format
-    let rows: Record<string, unknown>[] = [];
+    let allRows: Record<string, unknown>[] = [];
     let recordCount = 0;
     try {
       if (analysis.format === 'excel') {
@@ -2812,12 +3030,12 @@ export class AdminDataService {
         const firstSheet = workbook.SheetNames[0];
         const worksheetRows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheet]) as Record<string, unknown>[];
         recordCount = worksheetRows.length;
-        rows = worksheetRows.slice(0, 10);
+        allRows = worksheetRows;
       } else if (analysis.format === 'json') {
         const parsed = JSON.parse(fileBuffer.toString(charset as BufferEncoding));
         const normalizedRows = Array.isArray(parsed) ? parsed : [];
         recordCount = normalizedRows.length;
-        rows = normalizedRows.slice(0, 10);
+        allRows = normalizedRows;
       } else {
         const splitCsvLine = (line: string): string[] => {
           const values: string[] = [];
@@ -2860,32 +3078,31 @@ export class AdminDataService {
 
         const headerLine = lines[0] || '';
         const headers = splitCsvLine(headerLine).map((h) => h.trim());
-        const parsedRows: Record<string, unknown>[] = [];
-        for (let i = 1; i < Math.min(11, lines.length); i++) {
-          const values = splitCsvLine(lines[i]);
-          const record: Record<string, unknown> = {};
-          headers.forEach((h, idx) => {
-            record[h] = values[idx] ?? '';
-          });
-          rows.push(record);
-        }
         for (let i = 1; i < lines.length; i++) {
           const values = splitCsvLine(lines[i]);
           const record: Record<string, unknown> = {};
           headers.forEach((h, idx) => {
             record[h] = values[idx] ?? '';
           });
-          parsedRows.push(record);
+          allRows.push(record);
         }
-        recordCount = parsedRows.length;
-        rows = parsedRows.slice(0, 10);
+        recordCount = allRows.length;
       }
     } catch {
-      rows = [];
+      allRows = [];
       recordCount = 0;
     }
-    
-    return { format, charset, delimiter, textQualifier, fields, rows, recordCount };
+
+    return {
+      format,
+      charset,
+      delimiter,
+      textQualifier,
+      fields,
+      previewRows: allRows.slice(0, 10),
+      allRows,
+      recordCount
+    };
   }
 
   private mapFieldTypeToSalesforceType(fieldType: string): { type: string; extra?: Record<string, unknown> } {
@@ -2904,6 +3121,35 @@ export class AdminDataService {
     return map[fieldType] || { type: "Text", extra: { length: 255 } };
   }
 
+  private async loadMigrationSourceRows(
+    migrationId: string,
+    obj: MigrationObjectConfig
+  ): Promise<Array<{ rowIndex: number; row: Record<string, unknown> }>> {
+    if (obj.stagingMode === "sqlite") {
+      const stagedRows = await this.migrationStaging.listObjectRows(migrationId, obj.id);
+      if (stagedRows.length > 0) {
+        return stagedRows.map((entry) => ({ rowIndex: entry.rowIndex, row: entry.payload }));
+      }
+    }
+
+    if (!obj.filePath) {
+      throw new Error(`Kein Dateipfad konfiguriert für Objekt ${obj.salesforceObject}`);
+    }
+
+    const absolutePath = path.isAbsolute(obj.filePath)
+      ? obj.filePath
+      : path.resolve(process.cwd(), obj.filePath);
+    const fileBuffer = await fs.promises.readFile(absolutePath);
+    const fileName = path.basename(absolutePath);
+    const parsed = this.parseMigrationSourceBuffer(fileName, fileBuffer, {
+      charset: obj.fileCharset,
+      delimiter: obj.fileDelimiter,
+      textQualifier: obj.fileTextQualifier
+    });
+
+    return parsed.allRows.map((row, index) => ({ rowIndex: index + 1, row }));
+  }
+
   public async createCustomObjectFromSource(
     input: CreateCustomObjectFromSourceInput,
     instanceId?: string
@@ -2914,10 +3160,11 @@ export class AdminDataService {
     result: unknown;
     tabResult: unknown;
   }> {
-    const objectApiName = this.normalizeCustomObjectApiName(input.objectApiName);
-    const label = String(input.label || "").trim() || this.customObjectLabelFromApiName(objectApiName);
     const sourceFields = Array.isArray(input.sourceFields) ? input.sourceFields : [];
     const fieldOverrides = Array.isArray(input.fieldOverrides) ? input.fieldOverrides : [];
+    const objectApiName = this.normalizeCustomObjectApiName(input.objectApiName);
+    const label = String(input.label || this.customObjectLabelFromApiName(objectApiName)).trim()
+      || this.customObjectLabelFromApiName(objectApiName);
 
     if (!sourceFields.length) {
       throw new Error("sourceFields darf nicht leer sein");
@@ -2925,13 +3172,13 @@ export class AdminDataService {
 
     const fieldMetadata = this.buildCustomFieldMetadataFromSource(sourceFields, fieldOverrides);
     if (!fieldMetadata.length) {
-      throw new Error("Aus den Quellfeldern konnten keine gültigen Salesforce-Felder erstellt werden");
+      throw new Error("Es konnten keine Felder aus den Quelldaten erzeugt werden");
     }
 
-    const metadata = {
+    const client = await this.createClient(instanceId);
+    const result = await client.createOrUpdateMetadata("CustomObject", objectApiName, {
       fullName: objectApiName,
       label,
-      pluralLabel: `${label}s`,
       nameField: {
         displayFormat: `${objectApiName.replace(/__c$/, "")}-{000000}`,
         label: "Record ID",
@@ -2939,9 +3186,8 @@ export class AdminDataService {
       },
       sharingModel: "ReadWrite",
       fields: fieldMetadata
-    };
+    });
 
-    const result = await this.createCustomObjectMetadata(metadata, instanceId);
     const tabResult = await this.createCustomTabMetadata(objectApiName, instanceId);
 
     return {
@@ -3428,6 +3674,7 @@ export class AdminDataService {
 
     try {
       for (const obj of orderedObjects) {
+        obj.stagingStatus = obj.stagingMode === "sqlite" ? "processing" : obj.stagingStatus;
         const stepResult: MigrationRunResult["steps"][number] = {
           objectId: obj.id,
           salesforceObject: obj.salesforceObject,
@@ -3439,22 +3686,8 @@ export class AdminDataService {
         };
 
         try {
-          if (!obj.filePath) {
-            throw new Error(`Kein Dateipfad konfiguriert für Objekt ${obj.salesforceObject}`);
-          }
-
-          const absolutePath = path.isAbsolute(obj.filePath)
-            ? obj.filePath
-            : path.resolve(process.cwd(), obj.filePath);
-
-          // Read and analyze file
-          const fileBuffer = await fs.promises.readFile(absolutePath);
-          const fileName = path.basename(absolutePath);
-          const { rows } = this.analyzeFileBuffer(fileName, fileBuffer, {
-            charset: obj.fileCharset,
-            delimiter: obj.fileDelimiter,
-            textQualifier: obj.fileTextQualifier
-          });
+          const sourceRows = await this.loadMigrationSourceRows(migration.id, obj);
+          const rows = sourceRows.map((entry) => entry.row);
 
           stepResult.recordsProcessed = rows.length;
 
@@ -3482,8 +3715,9 @@ export class AdminDataService {
           }> = [];
           const mappingErrorsPreview: string[] = [];
 
-          for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
-            const row = rows[rowIndex];
+          for (let rowIndex = 0; rowIndex < sourceRows.length; rowIndex++) {
+            const sourceRow = sourceRows[rowIndex];
+            const row = sourceRow.row;
             try {
               if (mappingLines.length > 0) {
                 const mapped = await engine.mapRecord(row, mappingLines);
@@ -3491,18 +3725,18 @@ export class AdminDataService {
                 for (const [key, value] of Object.entries(mapped.values)) {
                   record[key] = value !== undefined && value !== "" ? value : null;
                 }
-                recordStates.push({ rowIndex, sourceRecord: row, sfRecord: record });
+                recordStates.push({ rowIndex: sourceRow.rowIndex, sourceRecord: row, sfRecord: record });
               } else {
                 const record: Record<string, unknown> = {};
                 for (const mapping of obj.fieldMappings) {
                   const rawValue = row[mapping.sourceColumn];
                   record[mapping.targetField] = rawValue !== undefined && rawValue !== "" ? rawValue : null;
                 }
-                recordStates.push({ rowIndex, sourceRecord: row, sfRecord: record });
+                recordStates.push({ rowIndex: sourceRow.rowIndex, sourceRecord: row, sfRecord: record });
               }
             } catch (error) {
               const errorMsg = error instanceof Error ? error.message : String(error);
-              recordStates.push({ rowIndex, sourceRecord: row, mappingError: errorMsg });
+              recordStates.push({ rowIndex: sourceRow.rowIndex, sourceRecord: row, mappingError: errorMsg });
               if (mappingErrorsPreview.length < 3) {
                 mappingErrorsPreview.push(errorMsg);
               }
@@ -3560,12 +3794,24 @@ export class AdminDataService {
           const failedRecords: MigrationFailedRecord[] = recordStates
             .filter((s) => s.mappingError)
             .map((s) => ({
-              rowIndex: s.rowIndex + 1,
+              rowIndex: s.rowIndex,
               sourceRecord: s.sourceRecord,
               mappedRecord: s.sfRecord,
               error: s.mappingError!,
               errorType: s.mappingError && s.sfRecord ? 'salesforce' : 'mapping'
             }));
+
+          if (obj.stagingMode === "sqlite") {
+            await this.migrationStaging.updateRowStatuses(
+              migration.id,
+              obj.id,
+              recordStates.map((state) => ({
+                rowIndex: state.rowIndex,
+                status: state.mappingError ? (state.sfRecord ? "salesforce_error" : "mapping_error") : "success",
+                errorMessage: state.mappingError
+              }))
+            );
+          }
 
           if (failedRecords.length > 0) {
             const failedRecordsId = `${obj.id}-${Date.now()}`;
@@ -3593,9 +3839,13 @@ export class AdminDataService {
           if (mappingFailed > 0 && succeeded === 0 && failed === 0) {
             stepResult.status = "error";
           }
+          obj.stagingStatus = obj.stagingMode === "sqlite"
+            ? (stepResult.status === "error" ? "error" : "done")
+            : obj.stagingStatus;
         } catch (err: unknown) {
           stepResult.status = "error";
           stepResult.errorMessage = err instanceof Error ? err.message : String(err);
+          obj.stagingStatus = obj.stagingMode === "sqlite" ? "error" : obj.stagingStatus;
         }
 
         stepResults.push(stepResult);
@@ -3786,6 +4036,18 @@ export class AdminDataService {
         path.join(failedDir, `${newFailedRecordsId}.json`),
         JSON.stringify(stillFailed, null, 2),
         "utf-8"
+      );
+    }
+
+    if (obj.stagingMode === "sqlite") {
+      await this.migrationStaging.updateRowStatuses(
+        migrationId,
+        objectId,
+        recordStates.map((state) => ({
+          rowIndex: state.rowIndex,
+          status: state.mappingError ? (state.sfRecord ? "salesforce_error" : "mapping_error") : "success",
+          errorMessage: state.mappingError
+        }))
       );
     }
 

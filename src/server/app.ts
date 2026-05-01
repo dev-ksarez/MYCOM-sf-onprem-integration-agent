@@ -1058,8 +1058,102 @@ function htmlShell(): string {
         if (obj.fileCharset) details.push('Charset: ' + obj.fileCharset);
         if (obj.fileDelimiter) details.push('Trennzeichen: ' + (obj.fileDelimiter === '\t' ? 'TAB' : obj.fileDelimiter));
         if (obj.fileTextQualifier) details.push('Textqualifier: ' + obj.fileTextQualifier);
+        if (obj.stagingMode) details.push('Staging: ' + String(obj.stagingMode).toUpperCase());
+        if (obj.stagingStatus) details.push('Staging-Status: ' + formatMigStageStatus(obj.stagingStatus));
+        if (obj.stagingDatabasePath) details.push('SQLite: ' + obj.stagingDatabasePath);
         if (obj.fileColumns && obj.fileColumns.length) details.push('Spalten: ' + obj.fileColumns.join(', '));
+        const statusSummary = renderMigStatusSummaryText(obj);
+        if (statusSummary) details.push(statusSummary);
         return details.length ? details.join(' | ') : '';
+      }
+
+      function formatMigStageStatus(status) {
+        const normalized = String(status || '').toLowerCase();
+        if (normalized === 'ready') return 'Bereit';
+        if (normalized === 'processing') return 'Verarbeitung';
+        if (normalized === 'done') return 'Fertig';
+        if (normalized === 'error') return 'Fehler';
+        if (normalized === 'success') return 'Erfolgreich';
+        if (normalized === 'mapping_error') return 'Mapping-Fehler';
+        if (normalized === 'salesforce_error') return 'Salesforce-Fehler';
+        if (normalized === 'pending') return 'Offen';
+        return status || '-';
+      }
+
+      function renderMigStatusSummaryText(obj) {
+        const summary = obj && obj.statusSummary && typeof obj.statusSummary === 'object' ? obj.statusSummary : null;
+        if (!summary) return '';
+        const keys = Object.keys(summary).filter((key) => Number(summary[key] || 0) > 0);
+        if (!keys.length) return '';
+        return keys.sort().map((key) => formatMigStageStatus(key) + ': ' + summary[key]).join(', ');
+      }
+
+      function applyMigAnalysisData(obj, data) {
+        obj.filePath = data.filePath || obj.filePath || '';
+        obj.fileFormat = data.format || obj.fileFormat || 'csv';
+        obj.fileCharset = data.charset || obj.fileCharset || 'utf8';
+        obj.fileDelimiter = data.delimiter || obj.fileDelimiter || ';';
+        obj.fileTextQualifier = data.textQualifier || obj.fileTextQualifier || '"';
+        obj.fileRecordCount = typeof data.recordCount === 'number' ? data.recordCount : obj.fileRecordCount;
+        obj.fileColumns = data.fields || [];
+        obj.previewRows = Array.isArray(data.rows) ? data.rows.slice(0, 10) : [];
+        obj.stagingMode = data.stagingMode || obj.stagingMode || '';
+        obj.stagingDatabasePath = data.stagingDatabasePath || obj.stagingDatabasePath || '';
+        obj.stagingImportedAt = data.stagingImportedAt || obj.stagingImportedAt;
+        obj.stagingStatus = data.stagingStatus || obj.stagingStatus || '';
+        obj.previewOffset = typeof data.previewOffset === 'number' ? data.previewOffset : (obj.previewOffset || 0);
+        obj.previewLimit = typeof data.previewLimit === 'number' ? data.previewLimit : (obj.previewLimit || 10);
+        obj.statusSummary = data.statusSummary || obj.statusSummary || {};
+      }
+
+      async function loadMigObjectPreview(obj, offset, limit) {
+        const previewOffset = Math.max(0, Number(offset || 0) || 0);
+        const previewLimit = Math.max(1, Math.min(100, Number(limit || obj.previewLimit || 10) || 10));
+        const res = await fetch(
+          '/api/migrations/' + encodeURIComponent(migState.id) + '/analyze-file/' + encodeURIComponent(obj.id) +
+          '?offset=' + encodeURIComponent(String(previewOffset)) + '&limit=' + encodeURIComponent(String(previewLimit))
+        );
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        applyMigAnalysisData(obj, data);
+        return data;
+      }
+
+      function renderMigPreviewTable(obj) {
+        if (!obj.previewRows || !obj.previewRows.length || !obj.fileColumns || !obj.fileColumns.length) {
+          return '';
+        }
+
+        const previewOffset = Math.max(0, Number(obj.previewOffset || 0) || 0);
+        const previewLimit = Math.max(1, Number(obj.previewLimit || 10) || 10);
+        const totalRows = Math.max(0, Number(obj.fileRecordCount || 0) || 0);
+        const fromRow = totalRows > 0 ? previewOffset + 1 : 0;
+        const toRow = totalRows > 0 ? Math.min(previewOffset + obj.previewRows.length, totalRows) : obj.previewRows.length;
+        const summary = obj.statusSummary && typeof obj.statusSummary === 'object' ? obj.statusSummary : {};
+        const summaryKeys = Object.keys(summary).filter((key) => Number(summary[key] || 0) > 0);
+
+        return '<div class="small text-secondary mt-2">' +
+          '<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">' +
+            '<span>Vorschau (' + fromRow + ' - ' + toRow + ' von ' + totalRows + ')</span>' +
+            '<span class="d-flex gap-1 flex-wrap">' +
+              (summaryKeys.length
+                ? summaryKeys.map((key) => '<span class="badge text-bg-light border">' + esc(formatMigStageStatus(key) + ': ' + String(summary[key])) + '</span>').join('')
+                : '<span class="badge text-bg-light border">' + esc(formatMigStageStatus(obj.stagingStatus || 'ready')) + '</span>') +
+            '</span>' +
+          '</div>' +
+          '<table class="table table-sm table-bordered"><thead><tr>' +
+            obj.fileColumns.map((c) => '<th class="small">' + esc(c) + '</th>').join('') +
+          '</tr></thead><tbody>' +
+            obj.previewRows.map((row) => '<tr>' + obj.fileColumns.map((c) => '<td class="small">' + esc(String(row[c] ?? '')) + '</td>').join('') + '</tr>').join('') +
+          '</tbody></table>' +
+          '<div class="d-flex justify-content-between align-items-center flex-wrap gap-2">' +
+            '<span class="small">Seitenlaenge: ' + previewLimit + '</span>' +
+            '<div class="btn-group btn-group-sm">' +
+              '<button type="button" class="btn btn-outline-secondary" data-preview-prev="' + esc(obj.id) + '"' + (previewOffset <= 0 ? ' disabled' : '') + '>Zurück</button>' +
+              '<button type="button" class="btn btn-outline-secondary" data-preview-next="' + esc(obj.id) + '"' + (previewOffset + previewLimit >= totalRows ? ' disabled' : '') + '>Weiter</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
       }
 
       let logsChart;
@@ -5477,14 +5571,7 @@ function htmlShell(): string {
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || 'Datei konnte nicht hochgeladen werden');
 
-                obj.filePath = data.filePath || '';
-                obj.fileFormat = data.format || obj.fileFormat || 'csv';
-                obj.fileCharset = data.charset || obj.fileCharset || 'utf8';
-                obj.fileDelimiter = data.delimiter || obj.fileDelimiter || ';';
-                obj.fileTextQualifier = data.textQualifier || obj.fileTextQualifier || '"';
-                obj.fileRecordCount = typeof data.recordCount === 'number' ? data.recordCount : obj.fileRecordCount;
-                obj.fileColumns = data.fields || [];
-                obj.previewRows = Array.isArray(data.rows) ? data.rows.slice(0, 3) : [];
+                applyMigAnalysisData(obj, data);
 
                 if (fileInput) fileInput.value = obj.filePath || '';
                 const colDiv = document.getElementById('mig-file-cols-' + obj.id);
@@ -5515,16 +5602,7 @@ function htmlShell(): string {
               analyzeBtn.textContent = '…';
               try {
                 await migSave();
-                const res = await fetch('/api/migrations/' + encodeURIComponent(migState.id) + '/analyze-file/' + encodeURIComponent(obj.id));
-                if (!res.ok) throw new Error(await res.text());
-                const data = await res.json();
-                obj.fileFormat = data.format || obj.fileFormat || 'csv';
-                obj.fileCharset = data.charset || obj.fileCharset || 'utf8';
-                obj.fileDelimiter = data.delimiter || obj.fileDelimiter || ';';
-                obj.fileTextQualifier = data.textQualifier || obj.fileTextQualifier || '"';
-                obj.fileRecordCount = typeof data.recordCount === 'number' ? data.recordCount : obj.fileRecordCount;
-                obj.fileColumns = data.fields || [];
-                if (data.rows && data.rows.length) obj.previewRows = data.rows.slice(0, 3);
+                await loadMigObjectPreview(obj, 0, obj.previewLimit || 10);
                 const colDiv = document.getElementById('mig-file-cols-' + obj.id);
                 if (colDiv) colDiv.textContent = renderMigFileSummary(obj);
                 await migSave();
@@ -5558,6 +5636,14 @@ function htmlShell(): string {
         if (!obj) { panel.innerHTML = '<div class="text-secondary small">Kein Objekt ausgewählt.</div>'; return; }
         if (!obj.fileColumns || !obj.fileColumns.length) {
           panel.innerHTML = '<div class="text-secondary small">Bitte zuerst die Datei in Schritt 2 analysieren.</div>'; return;
+        }
+
+        if (obj.stagingMode === 'sqlite' && (!obj.previewRows || !obj.previewRows.length) && Number(obj.fileRecordCount || 0) >= 0) {
+          try {
+            await loadMigObjectPreview(obj, obj.previewOffset || 0, obj.previewLimit || 10);
+          } catch {
+            // preview bootstrap falls back to current state
+          }
         }
 
         panel.innerHTML = '<div class="spinner-border spinner-border-sm me-2"></div>Salesforce-Felder laden…';
@@ -5647,14 +5733,7 @@ function htmlShell(): string {
             return '<option value="' + esc(f.name) + '">' + esc(label) + '</option>';
           }).join('') +
           '</datalist>' +
-          (obj.previewRows && obj.previewRows.length
-            ? '<div class="small text-secondary mt-1">Vorschau (3 Zeilen): ' +
-              '<table class="table table-sm table-bordered"><thead><tr>' +
-              obj.fileColumns.map((c) => '<th class="small">' + esc(c) + '</th>').join('') +
-              '</tr></thead><tbody>' +
-              obj.previewRows.map((row) => '<tr>' + obj.fileColumns.map((c) => '<td class="small">' + esc(String(row[c] ?? '')) + '</td>').join('') + '</tr>').join('') +
-              '</tbody></table></div>'
-            : '');
+          renderMigPreviewTable(obj);
 
         const updateMappingEntry = (col) => {
           const objId = objectId;
@@ -5782,6 +5861,23 @@ function htmlShell(): string {
           if (existing?.lookupObject) {
             loadLookupFields(col, existing.lookupObject);
           }
+        });
+
+        panel.querySelectorAll('[data-preview-prev], [data-preview-next]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const isNext = btn.hasAttribute('data-preview-next');
+            const pageSize = Math.max(1, Number(obj.previewLimit || 10) || 10);
+            const currentOffset = Math.max(0, Number(obj.previewOffset || 0) || 0);
+            const nextOffset = isNext ? currentOffset + pageSize : Math.max(0, currentOffset - pageSize);
+            btn.disabled = true;
+            try {
+              await loadMigObjectPreview(obj, nextOffset, pageSize);
+              renderMigMappingPanel();
+            } catch (err) {
+              alert('Fehler: ' + (err instanceof Error ? err.message : String(err)));
+              btn.disabled = false;
+            }
+          });
         });
 
         renderMigMissingFields();
@@ -6884,40 +6980,26 @@ export function createAppServer(
           return;
         }
 
-        const migration = adminDataService.getMigration(migrationId);
-        if (!migration) {
-          sendJson(404, { error: "Migration not found" });
-          return;
-        }
-
-        const obj = migration.objects.find((item) => item.id === objectId);
-        if (!obj) {
-          sendJson(404, { error: "Object not found" });
-          return;
-        }
-
         const fileBuffer = Buffer.from(contentBase64, "base64");
-        const targetDir = path.resolve(process.cwd(), "artifacts/files/inbound/migrations", migrationId);
-        await fs.mkdir(targetDir, { recursive: true });
-        const absolutePath = path.resolve(targetDir, fileName);
-        await fs.writeFile(absolutePath, fileBuffer);
-
-        const analysis = adminDataService.analyzeFileBuffer(fileName, fileBuffer, {
+        const analysis = await adminDataService.stageMigrationSourceFile(migrationId, objectId, fileName, fileBuffer, {
           charset: String(body.charset || '').trim() || undefined,
           delimiter: body.delimiter,
           textQualifier: body.textQualifier
         });
-        const relativePath = path.relative(process.cwd(), absolutePath).split(path.sep).join("/");
 
         sendJson(200, {
-          filePath: relativePath,
+          filePath: analysis.filePath,
           format: analysis.format,
           charset: analysis.charset,
           delimiter: analysis.delimiter,
           textQualifier: analysis.textQualifier,
           recordCount: analysis.recordCount,
           fields: analysis.fields,
-          rows: analysis.rows
+          rows: analysis.rows,
+          stagingMode: analysis.stagingMode,
+          stagingDatabasePath: analysis.stagingDatabasePath,
+          stagingImportedAt: analysis.stagingImportedAt,
+          stagingStatus: analysis.stagingStatus
         });
         return;
       }
@@ -6938,19 +7020,15 @@ export function createAppServer(
           return;
         }
         const obj = migration.objects.find((o) => o.id === objectId);
-        if (!obj || !obj.filePath) {
-          sendJson(404, { error: "Object or filePath not found" });
+        if (!obj) {
+          sendJson(404, { error: "Object not found" });
           return;
         }
-        const absolutePath = path.isAbsolute(obj.filePath)
-          ? obj.filePath
-          : path.resolve(process.cwd(), obj.filePath);
-        const fileBuffer = await fs.readFile(absolutePath);
-        const fileName = path.basename(absolutePath);
-        const analysis = adminDataService.analyzeFileBuffer(fileName, fileBuffer, {
-          charset: obj.fileCharset,
-          delimiter: obj.fileDelimiter,
-          textQualifier: obj.fileTextQualifier
+        const previewOffset = Math.max(0, Number(requestUrl.searchParams.get("offset") || 0) || 0);
+        const previewLimit = Math.max(1, Math.min(100, Number(requestUrl.searchParams.get("limit") || 10) || 10));
+        const analysis = await adminDataService.analyzeMigrationObjectSource(migId, objectId, {
+          offset: previewOffset,
+          limit: previewLimit
         });
         sendJson(200, analysis);
         return;
