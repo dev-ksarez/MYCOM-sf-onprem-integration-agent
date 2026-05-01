@@ -1008,6 +1008,53 @@ body.theme-midnight table thead {
   border-bottom-color: #2a374b;
 }
 
+body.theme-midnight #migration-modal .soft-card,
+body.theme-midnight #migration-modal .card,
+body.theme-midnight #migration-modal .table-responsive,
+body.theme-midnight #migration-modal .rounded,
+body.theme-midnight #migration-modal .border {
+  background: #132032 !important;
+  border-color: #31415a !important;
+}
+
+body.theme-midnight #migration-modal h1,
+body.theme-midnight #migration-modal h2,
+body.theme-midnight #migration-modal h3,
+body.theme-midnight #migration-modal h4,
+body.theme-midnight #migration-modal h5,
+body.theme-midnight #migration-modal h6,
+body.theme-midnight #migration-modal strong,
+body.theme-midnight #migration-modal ol,
+body.theme-midnight #migration-modal ul,
+body.theme-midnight #migration-modal li,
+body.theme-midnight #migration-modal span:not(.badge),
+body.theme-midnight #migration-modal p {
+  color: #dfe9f6 !important;
+}
+
+body.theme-midnight #migration-modal code {
+  background: rgba(124, 164, 212, 0.14) !important;
+  color: #ffd7d7 !important;
+}
+
+body.theme-midnight #migration-modal .alert-success {
+  background: #cfe4d8 !important;
+  border-color: #8eb6a0 !important;
+  color: #163124 !important;
+}
+
+body.theme-midnight #migration-modal .alert-info {
+  background: #c8e7f3 !important;
+  border-color: #8ab6c8 !important;
+  color: #102a3a !important;
+}
+
+body.theme-midnight #migration-modal .alert-warning {
+  background: #f0e0b8 !important;
+  border-color: #caaa59 !important;
+  color: #3f2f06 !important;
+}
+
 body.theme-midnight .graph-wrap {
   background: #111a27;
   border-color: #2a374b;
