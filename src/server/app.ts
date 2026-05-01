@@ -5383,12 +5383,23 @@ function htmlShell(): string {
             '<button class="btn btn-sm btn-outline-secondary" data-analyze-file="' + safeId + '">Analysieren</button>' +
             '</div>' +
             '<div class="row g-2 mb-2">' +
-            '<div class="col-md-4"><label class="form-label small mb-1">Charset</label><input class="form-control form-control-sm" list="mig-charset-options-' + safeId + '" value="' + esc(obj.fileCharset || 'utf8') + '" data-file-charset="' + safeId + '" placeholder="utf8" />' +
-            '<datalist id="mig-charset-options-' + safeId + '"><option value="utf8"></option><option value="latin1"></option><option value="utf-16le"></option><option value="ascii"></option></datalist></div>' +
-            '<div class="col-md-4"><label class="form-label small mb-1">Trennzeichen</label><input class="form-control form-control-sm" list="mig-delimiter-options-' + safeId + '" value="' + esc(obj.fileDelimiter || ';') + '" data-file-delimiter="' + safeId + '" placeholder=";" />' +
-            '<datalist id="mig-delimiter-options-' + safeId + '"><option value=";"></option><option value=","></option><option value="|"></option><option value="\t"></option></datalist></div>' +
-            '<div class="col-md-4"><label class="form-label small mb-1">Textqualifier</label><input class="form-control form-control-sm" list="mig-textqualifier-options-' + safeId + '" value="' + esc(obj.fileTextQualifier || '"') + '" data-file-text-qualifier="' + safeId + '" placeholder="&quot;" />' +
-            '<datalist id="mig-textqualifier-options-' + safeId + '"><option value="&quot;"></option></datalist></div>' +
+            '<div class="col-md-4"><label class="form-label small mb-1">Charset</label><select class="form-select form-select-sm" data-file-charset="' + safeId + '">' +
+            '<option value="utf8"' + ((obj.fileCharset || 'utf8') === 'utf8' ? ' selected' : '') + '>UTF-8</option>' +
+            '<option value="latin1"' + (obj.fileCharset === 'latin1' ? ' selected' : '') + '>Latin-1</option>' +
+            '<option value="utf-16le"' + (obj.fileCharset === 'utf-16le' ? ' selected' : '') + '>UTF-16 LE</option>' +
+            '<option value="ascii"' + (obj.fileCharset === 'ascii' ? ' selected' : '') + '>ASCII</option>' +
+            '</select></div>' +
+            '<div class="col-md-4"><label class="form-label small mb-1">Trennzeichen</label><select class="form-select form-select-sm" data-file-delimiter="' + safeId + '">' +
+            '<option value=";"' + ((obj.fileDelimiter || ';') === ';' ? ' selected' : '') + '>Semikolon (;)</option>' +
+            '<option value=","' + (obj.fileDelimiter === ',' ? ' selected' : '') + '>Komma (,)</option>' +
+            '<option value="|"' + (obj.fileDelimiter === '|' ? ' selected' : '') + '>Pipe (|)</option>' +
+            '<option value="\t"' + (obj.fileDelimiter === '\t' ? ' selected' : '') + '>Tabulator</option>' +
+            '</select></div>' +
+            '<div class="col-md-4"><label class="form-label small mb-1">Textqualifier</label><select class="form-select form-select-sm" data-file-text-qualifier="' + safeId + '">' +
+            '<option value="\""' + ((obj.fileTextQualifier || '"') === '"' ? ' selected' : '') + '>Doppelte Anführungszeichen (")</option>' +
+            '<option value="&#39;"' + (obj.fileTextQualifier === "'" ? ' selected' : '') + '>Einfache Anführungszeichen (&#39;)</option>' +
+            '<option value=""' + (obj.fileTextQualifier === '' ? ' selected' : '') + '>Keiner</option>' +
+            '</select></div>' +
             '</div>' +
             '<div id="mig-file-cols-' + safeId + '" class="small text-secondary">' +
             esc(renderMigFileSummary(obj)) +
