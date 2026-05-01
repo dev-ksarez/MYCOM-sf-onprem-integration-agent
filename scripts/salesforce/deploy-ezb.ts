@@ -9,14 +9,12 @@
  *   - Salesforce org with API access
  */
 
-import * as fs from "fs";
-import * as path from "path";
-import * as archiver from "archiver";
-import * as jsforce from "jsforce";
+import fs from "node:fs";
+import path from "node:path";
+import archiver from "archiver";
+import { Connection } from "jsforce";
 
 const SF_LOGIN_URL = process.env.SF_LOGIN_URL || "https://login.salesforce.com";
-const SF_CLIENT_ID = process.env.SF_CLIENT_ID;
-const SF_CLIENT_SECRET = process.env.SF_CLIENT_SECRET;
 const SF_USERNAME = process.env.SF_USERNAME;
 const SF_PASSWORD = process.env.SF_PASSWORD;
 
@@ -45,22 +43,33 @@ async function createDeployZip(): Promise<void> {
       name: "tabs/EZB__c.tab"
     });
 
-    archive.finalize();
+    void archive.finalize();
   });
+}
+
+function requireEnv(name: string, value: string | undefined): string {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return normalized;
+}
+
+async function wait(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function deployToSalesforce(): Promise<void> {
   try {
     console.log("🔐 Connecting to Salesforce...");
     
-    const conn = new jsforce.Connection({
-      loginUrl: SF_LOGIN_URL,
-      clientId: SF_CLIENT_ID,
-      clientSecret: SF_CLIENT_SECRET
-    });
+    const conn = new Connection({ loginUrl: SF_LOGIN_URL });
+
+    const username = requireEnv("SF_USERNAME", SF_USERNAME);
+    const password = requireEnv("SF_PASSWORD", SF_PASSWORD);
 
     // Login with OAuth
-    await conn.login(SF_USERNAME, SF_PASSWORD);
+    await conn.login(username, password);
     console.log("✅ Connected to Salesforce");
 
     // Create deployment ZIP
@@ -75,40 +84,49 @@ async function deployToSalesforce(): Promise<void> {
     // Deploy via Metadata API
     console.log("🚀 Deploying EZB__c CustomObject...");
     const deployResult = await conn.metadata.deploy(zipBase64, {
-      apiVersion: "61.0",
       rollbackOnError: true
     });
 
-    console.log("\n📋 Deploy Status:", deployResult.status);
-    console.log("   ID:", deployResult.id);
+    console.log("\n📋 Deployment ID:", deployResult.id);
 
-    // Wait for deployment to complete
-    const deployCheck = setInterval(async () => {
-      const status = await conn.metadata.checkDeployStatus(deployResult.id);
-      
+    if (!deployResult.id) {
+      throw new Error("Metadata deploy did not return a deployment id");
+    }
+
+    // Wait for deployment to complete.
+    for (let attempt = 0; attempt < 180; attempt += 1) {
+      const status = await conn.metadata.checkDeployStatus(deployResult.id, true);
       if (status.done) {
-        clearInterval(deployCheck);
-        
         console.log("\n✅ Deployment Complete!");
         console.log("   Status:", status.status);
         console.log("   Success:", status.success);
         console.log("   Number Deployed:", status.numberComponentsDeployed);
         console.log("   Number Errors:", status.numberComponentErrors);
-        
-        if (status.details?.componentFailures) {
+
+        const failures = Array.isArray(status.details?.componentFailures)
+          ? status.details?.componentFailures
+          : status.details?.componentFailures
+            ? [status.details.componentFailures]
+            : [];
+
+        if (failures.length > 0) {
           console.log("\n❌ Errors:");
-          status.details.componentFailures.forEach((failure: any) => {
-            console.log(`   - ${failure.fullName}: ${failure.problem}`);
+          failures.forEach((failure) => {
+            console.log(`   - ${failure.fullName || "unknown"}: ${failure.problem || "unknown error"}`);
           });
         }
-        
+
         if (status.success) {
           console.log("\n🎉 EZB__c CustomObject successfully deployed to Salesforce!");
         }
-        
+
         process.exit(status.success ? 0 : 1);
       }
-    }, 2000);
+
+      await wait(2000);
+    }
+
+    throw new Error("Timed out waiting for metadata deployment result");
 
   } catch (error) {
     console.error("❌ Deployment failed:", error);
