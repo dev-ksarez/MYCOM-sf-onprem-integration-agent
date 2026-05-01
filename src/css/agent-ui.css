@@ -1114,6 +1114,55 @@ body.theme-midnight #mapping-output {
   color: #d7e4f5 !important;
 }
 
+body.theme-midnight .text-secondary,
+body.theme-midnight .small.text-secondary,
+body.theme-midnight .stats-label,
+body.theme-midnight .connector-wizard-hint,
+body.theme-midnight .connector-review-label {
+  color: #b8c7da !important;
+}
+
+body.theme-midnight label,
+body.theme-midnight .form-check-label {
+  color: #d7e4f5 !important;
+}
+
+body.theme-midnight #migration-list-table,
+body.theme-midnight #migration-list-table thead,
+body.theme-midnight #migration-list-table tbody,
+body.theme-midnight #migration-list-table tr,
+body.theme-midnight #migration-list-table th,
+body.theme-midnight #migration-list-table td {
+  background: #132032 !important;
+  background-color: #132032 !important;
+  color: #d7e4f5 !important;
+}
+
+body.theme-midnight #migration-list-table > :not(caption) > * > * {
+  background: #132032 !important;
+  background-color: #132032 !important;
+  box-shadow: none !important;
+}
+
+body.theme-midnight #migration-list-table tbody tr:hover,
+body.theme-midnight #migration-list-table tbody tr:nth-child(even) {
+  background: #1a2a3f !important;
+}
+
+body.theme-midnight #tab-migration .list-group-item,
+body.theme-midnight #tab-migration .list-group-item-action,
+body.theme-midnight .mig-wizard-panel .list-group-item {
+  background: #132032 !important;
+  color: #d7e4f5 !important;
+  border-color: #31415a !important;
+}
+
+body.theme-midnight #tab-migration .border,
+body.theme-midnight .mig-wizard-panel .border,
+body.theme-midnight .mig-wizard-panel .rounded {
+  border-color: #31415a !important;
+}
+
 @media (max-width: 992px) {
   .soft-card {
     border-radius: 0.7rem;

@@ -6153,7 +6153,7 @@ function htmlShell(): string {
                     const csvEscape = (value) => {
                       const delimiter = ';';
                       const str = String(value ?? '');
-                      if (str.includes('"') || str.includes('\n') || str.includes('\r') || str.includes(delimiter)) {
+                      if (str.includes('"') || str.includes('\\n') || str.includes('\\r') || str.includes(delimiter)) {
                         return '"' + str.replace(/"/g, '""') + '"';
                       }
                       return str;
