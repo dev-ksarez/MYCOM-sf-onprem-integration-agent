@@ -499,6 +499,11 @@ export interface MigrationObjectConfig {
   salesforceObject: string;
   salesforceObjectLabel?: string;
   filePath?: string;
+  fileFormat?: "csv" | "excel" | "json";
+  fileCharset?: string;
+  fileDelimiter?: string;
+  fileTextQualifier?: string;
+  fileRecordCount?: number;
   fileColumns?: string[];
   previewRows?: Record<string, unknown>[];
   fieldMappings: MigrationFieldMapping[];
@@ -2777,25 +2782,43 @@ export class AdminDataService {
     return await client.createOrUpdateMetadata("CustomField", objectApiName + "." + ensuredApiName, metadata);
   }
 
-  public analyzeFileBuffer(fileName: string, fileBuffer: Buffer): { fields: string[]; rows: Record<string, unknown>[] } {
+  public analyzeFileBuffer(
+    fileName: string,
+    fileBuffer: Buffer,
+    options?: { charset?: string; delimiter?: string; textQualifier?: string }
+  ): {
+    format: "csv" | "excel" | "json";
+    charset: string;
+    delimiter: string;
+    textQualifier: string;
+    fields: string[];
+    rows: Record<string, unknown>[];
+    recordCount: number;
+  } {
     const analysis = analyzeUploadedFile(fileName, fileBuffer);
     const fields = analysis.headers || [];
+    const format = analysis.format;
+    const charset = String(options?.charset || analysis.charset || "utf8").trim() || "utf8";
+    const delimiter = String(options?.delimiter || analysis.delimiter || ';');
+    const textQualifier = String(options?.textQualifier || '"') || '"';
     
     // For rows, we parse based on format
     let rows: Record<string, unknown>[] = [];
+    let recordCount = 0;
     try {
       if (analysis.format === 'excel') {
         const XLSX = require('xlsx') as any;
         const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
         const firstSheet = workbook.SheetNames[0];
         const worksheetRows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheet]) as Record<string, unknown>[];
+        recordCount = worksheetRows.length;
         rows = worksheetRows.slice(0, 10);
       } else if (analysis.format === 'json') {
-        const parsed = JSON.parse(fileBuffer.toString('utf8'));
-        rows = (Array.isArray(parsed) ? parsed : []).slice(0, 10);
+        const parsed = JSON.parse(fileBuffer.toString(charset as BufferEncoding));
+        const normalizedRows = Array.isArray(parsed) ? parsed : [];
+        recordCount = normalizedRows.length;
+        rows = normalizedRows.slice(0, 10);
       } else {
-        // CSV parsing with detected delimiter and basic quote handling
-        const delimiter = String(analysis.delimiter || ';');
         const splitCsvLine = (line: string): string[] => {
           const values: string[] = [];
           let current = '';
@@ -2805,9 +2828,9 @@ export class AdminDataService {
             const char = line[index];
             const nextChar = line[index + 1];
 
-            if (char === '"') {
-              if (inQuotes && nextChar === '"') {
-                current += '"';
+            if (char === textQualifier) {
+              if (inQuotes && nextChar === textQualifier) {
+                current += textQualifier;
                 index += 1;
               } else {
                 inQuotes = !inQuotes;
@@ -2829,7 +2852,7 @@ export class AdminDataService {
         };
 
         const lines = fileBuffer
-          .toString('utf8')
+          .toString(charset as BufferEncoding)
           .replace(/^\uFEFF/, '')
           .split(/\r?\n/)
           .map((line) => line.trimEnd())
@@ -2837,6 +2860,7 @@ export class AdminDataService {
 
         const headerLine = lines[0] || '';
         const headers = splitCsvLine(headerLine).map((h) => h.trim());
+        const parsedRows: Record<string, unknown>[] = [];
         for (let i = 1; i < Math.min(11, lines.length); i++) {
           const values = splitCsvLine(lines[i]);
           const record: Record<string, unknown> = {};
@@ -2845,12 +2869,23 @@ export class AdminDataService {
           });
           rows.push(record);
         }
+        for (let i = 1; i < lines.length; i++) {
+          const values = splitCsvLine(lines[i]);
+          const record: Record<string, unknown> = {};
+          headers.forEach((h, idx) => {
+            record[h] = values[idx] ?? '';
+          });
+          parsedRows.push(record);
+        }
+        recordCount = parsedRows.length;
+        rows = parsedRows.slice(0, 10);
       }
     } catch {
       rows = [];
+      recordCount = 0;
     }
     
-    return { fields, rows };
+    return { format, charset, delimiter, textQualifier, fields, rows, recordCount };
   }
 
   private mapFieldTypeToSalesforceType(fieldType: string): { type: string; extra?: Record<string, unknown> } {
@@ -3415,7 +3450,11 @@ export class AdminDataService {
           // Read and analyze file
           const fileBuffer = await fs.promises.readFile(absolutePath);
           const fileName = path.basename(absolutePath);
-          const { rows } = this.analyzeFileBuffer(fileName, fileBuffer);
+          const { rows } = this.analyzeFileBuffer(fileName, fileBuffer, {
+            charset: obj.fileCharset,
+            delimiter: obj.fileDelimiter,
+            textQualifier: obj.fileTextQualifier
+          });
 
           stepResult.recordsProcessed = rows.length;
 

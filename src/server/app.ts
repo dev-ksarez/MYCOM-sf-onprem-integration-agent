@@ -1051,6 +1051,17 @@ function htmlShell(): string {
         sfObjects: []
       };
 
+      function renderMigFileSummary(obj) {
+        const details = [];
+        if (obj.fileFormat) details.push('Format: ' + obj.fileFormat.toUpperCase());
+        if (typeof obj.fileRecordCount === 'number') details.push('Datensaetze: ' + obj.fileRecordCount);
+        if (obj.fileCharset) details.push('Charset: ' + obj.fileCharset);
+        if (obj.fileDelimiter) details.push('Trennzeichen: ' + (obj.fileDelimiter === '\t' ? 'TAB' : obj.fileDelimiter));
+        if (obj.fileTextQualifier) details.push('Textqualifier: ' + obj.fileTextQualifier);
+        if (obj.fileColumns && obj.fileColumns.length) details.push('Spalten: ' + obj.fileColumns.join(', '));
+        return details.length ? details.join(' | ') : '';
+      }
+
       let logsChart;
       let recordsChart;
 
@@ -5371,8 +5382,16 @@ function htmlShell(): string {
             '<button class="btn btn-sm btn-outline-primary" data-pick-file="' + safeId + '">Datei wählen</button>' +
             '<button class="btn btn-sm btn-outline-secondary" data-analyze-file="' + safeId + '">Analysieren</button>' +
             '</div>' +
+            '<div class="row g-2 mb-2">' +
+            '<div class="col-md-4"><label class="form-label small mb-1">Charset</label><input class="form-control form-control-sm" list="mig-charset-options-' + safeId + '" value="' + esc(obj.fileCharset || 'utf8') + '" data-file-charset="' + safeId + '" placeholder="utf8" />' +
+            '<datalist id="mig-charset-options-' + safeId + '"><option value="utf8"></option><option value="latin1"></option><option value="utf-16le"></option><option value="ascii"></option></datalist></div>' +
+            '<div class="col-md-4"><label class="form-label small mb-1">Trennzeichen</label><input class="form-control form-control-sm" list="mig-delimiter-options-' + safeId + '" value="' + esc(obj.fileDelimiter || ';') + '" data-file-delimiter="' + safeId + '" placeholder=";" />' +
+            '<datalist id="mig-delimiter-options-' + safeId + '"><option value=";"></option><option value=","></option><option value="|"></option><option value="\t"></option></datalist></div>' +
+            '<div class="col-md-4"><label class="form-label small mb-1">Textqualifier</label><input class="form-control form-control-sm" list="mig-textqualifier-options-' + safeId + '" value="' + esc(obj.fileTextQualifier || '"') + '" data-file-text-qualifier="' + safeId + '" placeholder="&quot;" />' +
+            '<datalist id="mig-textqualifier-options-' + safeId + '"><option value="&quot;"></option></datalist></div>' +
+            '</div>' +
             '<div id="mig-file-cols-' + safeId + '" class="small text-secondary">' +
-            (obj.fileColumns && obj.fileColumns.length ? 'Spalten: ' + obj.fileColumns.map(esc).join(', ') : '') +
+            esc(renderMigFileSummary(obj)) +
             '</div></div></div>';
         }).join('');
 
@@ -5398,6 +5417,20 @@ function htmlShell(): string {
             });
           }
           const analyzeBtn = container.querySelector('[data-analyze-file="' + obj.id + '"]');
+          const charsetInput = container.querySelector('[data-file-charset="' + obj.id + '"]');
+          const delimiterInput = container.querySelector('[data-file-delimiter="' + obj.id + '"]');
+          const textQualifierInput = container.querySelector('[data-file-text-qualifier="' + obj.id + '"]');
+
+          const syncCsvOptions = () => {
+            obj.fileCharset = charsetInput ? charsetInput.value.trim() || 'utf8' : (obj.fileCharset || 'utf8');
+            obj.fileDelimiter = delimiterInput ? delimiterInput.value || ';' : (obj.fileDelimiter || ';');
+            obj.fileTextQualifier = textQualifierInput ? textQualifierInput.value || '"' : (obj.fileTextQualifier || '"');
+          };
+
+          [charsetInput, delimiterInput, textQualifierInput].forEach((input) => {
+            if (!input) return;
+            input.addEventListener('change', syncCsvOptions);
+          });
 
           if (pickBtn && fileDialog) {
             pickBtn.addEventListener('click', () => {
@@ -5413,6 +5446,7 @@ function htmlShell(): string {
               pickBtn.textContent = 'Upload…';
 
               try {
+                syncCsvOptions();
                 await migSave();
                 const contentBase64 = await fileToBase64(file);
                 const res = await fetch('/api/migrations/upload-file', {
@@ -5422,22 +5456,28 @@ function htmlShell(): string {
                     migrationId: migState.id,
                     objectId: obj.id,
                     fileName: file.name,
-                    contentBase64
+                    contentBase64,
+                    charset: obj.fileCharset,
+                    delimiter: obj.fileDelimiter,
+                    textQualifier: obj.fileTextQualifier
                   })
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || 'Datei konnte nicht hochgeladen werden');
 
                 obj.filePath = data.filePath || '';
+                obj.fileFormat = data.format || obj.fileFormat || 'csv';
+                obj.fileCharset = data.charset || obj.fileCharset || 'utf8';
+                obj.fileDelimiter = data.delimiter || obj.fileDelimiter || ';';
+                obj.fileTextQualifier = data.textQualifier || obj.fileTextQualifier || '"';
+                obj.fileRecordCount = typeof data.recordCount === 'number' ? data.recordCount : obj.fileRecordCount;
                 obj.fileColumns = data.fields || [];
                 obj.previewRows = Array.isArray(data.rows) ? data.rows.slice(0, 3) : [];
 
                 if (fileInput) fileInput.value = obj.filePath || '';
                 const colDiv = document.getElementById('mig-file-cols-' + obj.id);
                 if (colDiv) {
-                  colDiv.textContent = obj.fileColumns && obj.fileColumns.length
-                    ? 'Spalten: ' + obj.fileColumns.join(', ')
-                    : '';
+                  colDiv.textContent = renderMigFileSummary(obj);
                 }
 
                 await migSave();
@@ -5457,6 +5497,7 @@ function htmlShell(): string {
             analyzeBtn.addEventListener('click', async () => {
               const pathEl = container.querySelector('[data-file-path="' + obj.id + '"]');
               obj.filePath = pathEl ? pathEl.value.trim() : obj.filePath;
+              syncCsvOptions();
               if (!obj.filePath) { alert('Bitte zuerst eine Datei auswählen.'); return; }
               analyzeBtn.disabled = true;
               analyzeBtn.textContent = '…';
@@ -5465,10 +5506,16 @@ function htmlShell(): string {
                 const res = await fetch('/api/migrations/' + encodeURIComponent(migState.id) + '/analyze-file/' + encodeURIComponent(obj.id));
                 if (!res.ok) throw new Error(await res.text());
                 const data = await res.json();
+                obj.fileFormat = data.format || obj.fileFormat || 'csv';
+                obj.fileCharset = data.charset || obj.fileCharset || 'utf8';
+                obj.fileDelimiter = data.delimiter || obj.fileDelimiter || ';';
+                obj.fileTextQualifier = data.textQualifier || obj.fileTextQualifier || '"';
+                obj.fileRecordCount = typeof data.recordCount === 'number' ? data.recordCount : obj.fileRecordCount;
                 obj.fileColumns = data.fields || [];
                 if (data.rows && data.rows.length) obj.previewRows = data.rows.slice(0, 3);
                 const colDiv = document.getElementById('mig-file-cols-' + obj.id);
-                if (colDiv) colDiv.textContent = 'Spalten: ' + (obj.fileColumns || []).join(', ');
+                if (colDiv) colDiv.textContent = renderMigFileSummary(obj);
+                await migSave();
                 renderMigMappingObjectSelect();
               } catch (err) {
                 alert('Fehler: ' + (err instanceof Error ? err.message : String(err)));
@@ -6810,6 +6857,9 @@ export function createAppServer(
           objectId?: string;
           fileName?: string;
           contentBase64?: string;
+          charset?: string;
+          delimiter?: string;
+          textQualifier?: string;
         };
 
         const migrationId = String(body.migrationId || "").trim();
@@ -6840,11 +6890,20 @@ export function createAppServer(
         const absolutePath = path.resolve(targetDir, fileName);
         await fs.writeFile(absolutePath, fileBuffer);
 
-        const analysis = adminDataService.analyzeFileBuffer(fileName, fileBuffer);
+        const analysis = adminDataService.analyzeFileBuffer(fileName, fileBuffer, {
+          charset: String(body.charset || '').trim() || undefined,
+          delimiter: body.delimiter,
+          textQualifier: body.textQualifier
+        });
         const relativePath = path.relative(process.cwd(), absolutePath).split(path.sep).join("/");
 
         sendJson(200, {
           filePath: relativePath,
+          format: analysis.format,
+          charset: analysis.charset,
+          delimiter: analysis.delimiter,
+          textQualifier: analysis.textQualifier,
+          recordCount: analysis.recordCount,
           fields: analysis.fields,
           rows: analysis.rows
         });
@@ -6876,7 +6935,11 @@ export function createAppServer(
           : path.resolve(process.cwd(), obj.filePath);
         const fileBuffer = await fs.readFile(absolutePath);
         const fileName = path.basename(absolutePath);
-        const analysis = adminDataService.analyzeFileBuffer(fileName, fileBuffer);
+        const analysis = adminDataService.analyzeFileBuffer(fileName, fileBuffer, {
+          charset: obj.fileCharset,
+          delimiter: obj.fileDelimiter,
+          textQualifier: obj.fileTextQualifier
+        });
         sendJson(200, analysis);
         return;
       }
