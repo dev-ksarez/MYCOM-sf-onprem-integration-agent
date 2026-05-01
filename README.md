@@ -110,3 +110,60 @@ Noetige Umgebungsvariablen:
 Der Updater ist auf dieses Repository konfiguriert:
 
 - `https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json`
+
+## Datei-Import/Export Beispiele (CSV und Excel)
+
+Fuer schnelle Tests sind fertige Beispielartefakte vorhanden unter:
+
+- [artifacts/file-examples/account-import.csv](artifacts/file-examples/account-import.csv)
+- [artifacts/file-examples/contact-import.csv](artifacts/file-examples/contact-import.csv)
+- [artifacts/file-examples/account-import.xlsx](artifacts/file-examples/account-import.xlsx)
+- [artifacts/file-examples/contact-import.xlsx](artifacts/file-examples/contact-import.xlsx)
+- [artifacts/file-examples/account-export-example.csv](artifacts/file-examples/account-export-example.csv)
+- [artifacts/file-examples/contact-export-example.csv](artifacts/file-examples/contact-export-example.csv)
+- [artifacts/file-examples/account-export-example.xlsx](artifacts/file-examples/account-export-example.xlsx)
+- [artifacts/file-examples/contact-export-example.xlsx](artifacts/file-examples/contact-export-example.xlsx)
+- [artifacts/file-examples/setup-file-import-export.example.json](artifacts/file-examples/setup-file-import-export.example.json)
+
+Enthaltene Szenarien:
+
+- Account Import (Datei nach Salesforce)
+- Ansprechpartner Import (Datei nach Salesforce)
+- Account Export (Salesforce nach Datei)
+- Ansprechpartner Export (Salesforce nach Datei)
+
+### Setup mit einem Klick importieren
+
+1. Web UI oeffnen
+2. Quellinstanz im Instanz-Dropdown waehlen und Setup exportieren klicken (JSON wird heruntergeladen)
+3. Zielinstanz im Instanz-Dropdown waehlen
+4. Setup importieren klicken
+5. Exportierte JSON-Datei auswaehlen
+
+Die Datei legt einen Beispiel-Datei-Connector und vier deaktivierte Scheduler an.
+
+Hinweis: Parent-Child Scheduler-Hierarchien werden beim Import instanzuebergreifend ueber Namen aufgeloest.
+
+### CSV Beispiele direkt anlegen
+
+1. Zielinstanz im Instanz-Dropdown waehlen
+2. Oben in der Leiste auf CSV Beispiele anlegen klicken
+
+Dadurch wird automatisch artifacts/file-examples/setup-file-import-export.example.json importiert und die vier CSV Beispiel-Scheduler (Account/Ansprechpartner Import/Export) werden sofort angelegt.
+
+### DragDrop Schnelltest
+
+1. In der Uebersicht einen Datei-Connector oeffnen
+2. Eine CSV/XLSX Datei auf den Connector-Knoten ziehen
+3. Es wird automatisch ein neuer Scheduler erzeugt und mit Header-Mapping vorbelegt
+
+### Beispielpfade im Connector
+
+Das Beispiel-Setup nutzt folgende Parameter:
+
+- basePath: artifacts/file-examples
+- importPath: .
+- exportPath: .
+- archivePath: archive
+
+Damit werden die Importdateien direkt aus [artifacts/file-examples](artifacts/file-examples) gelesen und Exporte dort geschrieben.

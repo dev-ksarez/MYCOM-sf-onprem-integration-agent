@@ -62,6 +62,11 @@ function getOptionalBoolean(parameters: Record<string, unknown>, key: string): b
 }
 
 function resolvePassword(config: ConnectorConfig): string {
+  const inlinePassword = config.parameters.password;
+  if (typeof inlinePassword === "string" && inlinePassword.trim() !== "") {
+    return inlinePassword;
+  }
+
   if (!config.secretKey) {
     throw new Error(`MSSQL source connector ${config.name} is missing MSD_SecretKey__c`);
   }

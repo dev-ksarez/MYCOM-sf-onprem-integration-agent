@@ -73,6 +73,11 @@ function getRequiredUpsertKey(config: ConnectorConfig): string {
 }
 
 function resolvePassword(config: ConnectorConfig): string {
+  const inlinePassword = config.parameters.password;
+  if (typeof inlinePassword === "string" && inlinePassword.trim() !== "") {
+    return inlinePassword;
+  }
+
   if (!config.secretKey) {
     throw new Error(`MSSQL connector ${config.name} is missing MSD_SecretKey__c`);
   }
