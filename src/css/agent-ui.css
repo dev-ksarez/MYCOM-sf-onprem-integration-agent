@@ -1116,6 +1116,8 @@ body.theme-midnight #mapping-output {
 
 body.theme-midnight .text-secondary,
 body.theme-midnight .small.text-secondary,
+body.theme-midnight .text-muted,
+body.theme-midnight .small,
 body.theme-midnight .stats-label,
 body.theme-midnight .connector-wizard-hint,
 body.theme-midnight .connector-review-label {
@@ -1123,7 +1125,13 @@ body.theme-midnight .connector-review-label {
 }
 
 body.theme-midnight label,
-body.theme-midnight .form-check-label {
+body.theme-midnight .form-check-label,
+body.theme-midnight .nav-link,
+body.theme-midnight .modal-body,
+body.theme-midnight .card-body,
+body.theme-midnight .card-body .small,
+body.theme-midnight .list-group-item,
+body.theme-midnight .list-group-item-action {
   color: #d7e4f5 !important;
 }
 
