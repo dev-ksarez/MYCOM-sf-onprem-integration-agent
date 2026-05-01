@@ -508,6 +508,9 @@ export interface MigrationObjectConfig {
   fileRecordCount?: number;
   fileColumns?: string[];
   previewRows?: Record<string, unknown>[];
+  previewFilter?: string;
+  previewStatusFilter?: string;
+  filteredRecordCount?: number;
   stagingMode?: "file" | "sqlite";
   stagingDatabasePath?: string;
   stagingImportedAt?: string;
@@ -2919,7 +2922,7 @@ export class AdminDataService {
   public async analyzeMigrationObjectSource(
     migrationId: string,
     objectId: string,
-    options?: { offset?: number; limit?: number }
+    options?: { offset?: number; limit?: number; filter?: string; status?: string }
   ): Promise<{
     format: "csv" | "excel" | "json";
     charset: string;
@@ -2935,6 +2938,9 @@ export class AdminDataService {
     stagingStatus?: string;
     previewOffset?: number;
     previewLimit?: number;
+    filteredRecordCount?: number;
+    previewFilter?: string;
+    previewStatusFilter?: string;
     statusSummary?: Record<string, number>;
   }> {
     const migration = this.getMigration(migrationId);
@@ -2974,8 +2980,19 @@ export class AdminDataService {
 
         const previewLimit = typeof options?.limit === "number" && options.limit > 0 ? Math.floor(options.limit) : 10;
         const previewOffset = typeof options?.offset === "number" && options.offset > 0 ? Math.floor(options.offset) : 0;
-        const [stagedRows, statusSummary] = await Promise.all([
-          this.migrationStaging.listObjectRows(migrationId, objectId, { limit: previewLimit, offset: previewOffset }),
+        const previewFilter = String(options?.filter || "").trim();
+        const previewStatusFilter = String(options?.status || "").trim();
+        const [stagedRows, filteredRecordCount, statusSummary] = await Promise.all([
+          this.migrationStaging.listObjectRows(migrationId, objectId, {
+            limit: previewLimit,
+            offset: previewOffset,
+            searchTerm: previewFilter,
+            status: previewStatusFilter
+          }),
+          this.migrationStaging.countObjectRows(migrationId, objectId, {
+            searchTerm: previewFilter,
+            status: previewStatusFilter
+          }),
           this.migrationStaging.getObjectStatusSummary(migrationId, objectId)
         ]);
         return {
@@ -2993,6 +3010,9 @@ export class AdminDataService {
           stagingStatus: obj.stagingStatus || "ready",
           previewOffset,
           previewLimit,
+          filteredRecordCount,
+          previewFilter,
+          previewStatusFilter,
           statusSummary: statusSummary.byStatus
         };
       }
@@ -3021,6 +3041,9 @@ export class AdminDataService {
       stagingStatus: obj.stagingStatus,
       previewOffset: 0,
       previewLimit: analysis.rows.length,
+      filteredRecordCount: analysis.recordCount,
+      previewFilter: String(options?.filter || "").trim(),
+      previewStatusFilter: String(options?.status || "").trim(),
       statusSummary: undefined
     };
   }
@@ -3949,6 +3972,20 @@ export class AdminDataService {
       editedByRow.set(record.rowIndex, record.sourceRecord);
     }
 
+    if (obj.stagingMode === "sqlite" && editedByRow.size > 0) {
+      await this.migrationStaging.updateRowPayloads(
+        migrationId,
+        objectId,
+        [...editedByRow.entries()].map(([rowIndex, sourceRecord]) => ({
+          rowIndex,
+          payload: sourceRecord,
+          status: "pending"
+        }))
+      );
+      obj.stagingStatus = "ready";
+      this.saveMigration(migration);
+    }
+
     const client = await this.createClient(instanceId ?? migration.instanceId);
     const mappingLines = this.buildMigrationMappingLines(obj);
     const lookupResolver = async (lookupObject: string, lookupField: string, value: unknown): Promise<string | null> => {
@@ -4083,6 +4120,52 @@ export class AdminDataService {
       recordsFailed: stillFailed.length,
       failedRecordsId: newFailedRecordsId,
       errorMessage: stillFailed.length > 0 ? `${stillFailed.length} Datensätze konnten weiterhin nicht importiert werden.` : undefined
+    };
+  }
+
+  public async saveFailedMigrationRecordCorrections(
+    migrationId: string,
+    objectId: string,
+    editedRecords: Array<{ rowIndex: number; sourceRecord: Record<string, unknown> }> = []
+  ): Promise<{ updatedRows: number; statusSummary?: Record<string, number> }> {
+    const migration = this.getMigration(migrationId);
+    if (!migration) {
+      throw new Error(`Migration ${migrationId} not found`);
+    }
+
+    const obj = migration.objects.find((item) => item.id === objectId);
+    if (!obj) {
+      throw new Error(`Object ${objectId} not found in migration`);
+    }
+
+    if (obj.stagingMode !== "sqlite") {
+      throw new Error(`Objekt ${obj.salesforceObject} verwendet kein SQLite-Staging`);
+    }
+
+    const normalizedUpdates = editedRecords.filter(
+      (record) => record && typeof record.rowIndex === "number" && record.sourceRecord && typeof record.sourceRecord === "object"
+    );
+
+    if (!normalizedUpdates.length) {
+      return { updatedRows: 0, statusSummary: (await this.migrationStaging.getObjectStatusSummary(migrationId, objectId)).byStatus };
+    }
+
+    await this.migrationStaging.updateRowPayloads(
+      migrationId,
+      objectId,
+      normalizedUpdates.map((record) => ({
+        rowIndex: record.rowIndex,
+        payload: record.sourceRecord,
+        status: "pending"
+      }))
+    );
+
+    obj.stagingStatus = "ready";
+    this.saveMigration(migration);
+
+    return {
+      updatedRows: normalizedUpdates.length,
+      statusSummary: (await this.migrationStaging.getObjectStatusSummary(migrationId, objectId)).byStatus
     };
   }
 }

@@ -27,6 +27,11 @@ export interface MigrationStageStatusSummary {
   byStatus: Record<string, number>;
 }
 
+interface MigrationStageRowFilters {
+  searchTerm?: string;
+  status?: string;
+}
+
 interface StageObjectMetaRow {
   migration_id: string;
   object_id: string;
@@ -225,19 +230,20 @@ export class MigrationStagingSqlite {
   public async listObjectRows(
     migrationId: string,
     objectId: string,
-    options?: { limit?: number; offset?: number }
+    options?: { limit?: number; offset?: number; searchTerm?: string; status?: string }
   ): Promise<MigrationStageRow[]> {
     await this.initialize();
     const limitClause = typeof options?.limit === "number" && options.limit > 0 ? ` LIMIT ${Math.floor(options.limit)}` : "";
     const offsetClause = typeof options?.offset === "number" && options.offset > 0 ? ` OFFSET ${Math.floor(options.offset)}` : "";
+    const { clause, params } = this.buildRowFilterClause(migrationId, objectId, options);
     const rows = await this.database.all<StageRowRecord>(
       `
         SELECT row_index, payload_json, status_code, error_message
         FROM migration_stage_rows
-        WHERE migration_id = ? AND object_id = ?
+        ${clause}
         ORDER BY row_index ASC${limitClause}${offsetClause}
       `,
-      [migrationId, objectId]
+      params
     );
 
     return rows.map((row) => ({
@@ -246,6 +252,25 @@ export class MigrationStagingSqlite {
       status: String(row.status_code || "pending"),
       errorMessage: row.error_message || undefined
     }));
+  }
+
+  public async countObjectRows(
+    migrationId: string,
+    objectId: string,
+    filters?: MigrationStageRowFilters
+  ): Promise<number> {
+    await this.initialize();
+    const { clause, params } = this.buildRowFilterClause(migrationId, objectId, filters);
+    const row = await this.database.get<{ count_value?: number }>(
+      `
+        SELECT COUNT(*) AS count_value
+        FROM migration_stage_rows
+        ${clause}
+      `,
+      params
+    );
+
+    return Number(row?.count_value || 0);
   }
 
   public async getObjectStatusSummary(migrationId: string, objectId: string): Promise<MigrationStageStatusSummary> {
@@ -309,6 +334,72 @@ export class MigrationStagingSqlite {
       await this.database.run("ROLLBACK");
       throw error;
     }
+  }
+
+  public async updateRowPayloads(
+    migrationId: string,
+    objectId: string,
+    updates: Array<{ rowIndex: number; payload: Record<string, unknown>; status?: string; errorMessage?: string }>
+  ): Promise<void> {
+    await this.initialize();
+    const now = new Date().toISOString();
+
+    await this.database.run("BEGIN TRANSACTION");
+    try {
+      for (const update of updates) {
+        if (!update || typeof update.rowIndex !== "number" || !update.payload || typeof update.payload !== "object") {
+          continue;
+        }
+
+        await this.database.run(
+          `
+            UPDATE migration_stage_rows
+            SET payload_json = ?, status_code = ?, error_message = ?, updated_at = ?
+            WHERE migration_id = ? AND object_id = ? AND row_index = ?
+          `,
+          [
+            JSON.stringify(update.payload),
+            update.status || "pending",
+            update.errorMessage || null,
+            now,
+            migrationId,
+            objectId,
+            update.rowIndex
+          ]
+        );
+      }
+
+      await this.database.run("COMMIT");
+    } catch (error) {
+      await this.database.run("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private buildRowFilterClause(
+    migrationId: string,
+    objectId: string,
+    filters?: MigrationStageRowFilters
+  ): { clause: string; params: unknown[] } {
+    const whereParts = ["migration_id = ?", "object_id = ?"];
+    const params: unknown[] = [migrationId, objectId];
+
+    const normalizedStatus = String(filters?.status || "").trim();
+    if (normalizedStatus) {
+      whereParts.push("status_code = ?");
+      params.push(normalizedStatus);
+    }
+
+    const normalizedSearchTerm = String(filters?.searchTerm || "").trim().toLowerCase();
+    if (normalizedSearchTerm) {
+      whereParts.push("LOWER(payload_json) LIKE ?");
+      params.push(`%${normalizedSearchTerm}%`);
+    }
+
+    return {
+      clause: `WHERE ${whereParts.join(" AND ")}`,
+      params
+    };
   }
 
   private parseJsonArray(input: string): string[] {

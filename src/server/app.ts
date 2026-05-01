@@ -1090,6 +1090,10 @@ function htmlShell(): string {
         return keys.sort().map((key) => formatMigStageStatus(key) + ': ' + summary[key]).join(', ');
       }
 
+      function isMigServerPreview(obj) {
+        return (obj?.processingMode || obj?.stagingMode || '') === 'sqlite';
+      }
+
       function getMigLatestFailedStep(objectId) {
         const steps = Array.isArray(migState.lastRunResult && migState.lastRunResult.steps) ? migState.lastRunResult.steps : [];
         return steps.find((step) => step && step.objectId === objectId && step.failedRecordsId) || null;
@@ -1121,15 +1125,23 @@ function htmlShell(): string {
         obj.stagingStatus = data.stagingStatus || obj.stagingStatus || '';
         obj.previewOffset = typeof data.previewOffset === 'number' ? data.previewOffset : (obj.previewOffset || 0);
         obj.previewLimit = typeof data.previewLimit === 'number' ? data.previewLimit : (obj.previewLimit || 10);
+        obj.filteredRecordCount = typeof data.filteredRecordCount === 'number' ? data.filteredRecordCount : (obj.filteredRecordCount ?? obj.fileRecordCount ?? 0);
+        obj.previewFilter = typeof data.previewFilter === 'string' ? data.previewFilter : (obj.previewFilter || '');
+        obj.previewStatusFilter = typeof data.previewStatusFilter === 'string' ? data.previewStatusFilter : (obj.previewStatusFilter || '');
         obj.statusSummary = data.statusSummary || obj.statusSummary || {};
       }
 
       async function loadMigObjectPreview(obj, offset, limit) {
         const previewOffset = Math.max(0, Number(offset || 0) || 0);
         const previewLimit = Math.max(1, Math.min(100, Number(limit || obj.previewLimit || 10) || 10));
+        const previewFilter = String(obj.previewFilter || '').trim();
+        const previewStatusFilter = String(obj.previewStatusFilter || '').trim();
         const res = await fetch(
           '/api/migrations/' + encodeURIComponent(migState.id) + '/analyze-file/' + encodeURIComponent(obj.id) +
-          '?offset=' + encodeURIComponent(String(previewOffset)) + '&limit=' + encodeURIComponent(String(previewLimit))
+          '?offset=' + encodeURIComponent(String(previewOffset)) +
+          '&limit=' + encodeURIComponent(String(previewLimit)) +
+          '&filter=' + encodeURIComponent(previewFilter) +
+          '&status=' + encodeURIComponent(previewStatusFilter)
         );
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
@@ -1144,21 +1156,31 @@ function htmlShell(): string {
 
         const previewOffset = Math.max(0, Number(obj.previewOffset || 0) || 0);
         const previewLimit = Math.max(1, Number(obj.previewLimit || 10) || 10);
+        const serverPreview = isMigServerPreview(obj);
         const totalRows = Math.max(0, Number(obj.fileRecordCount || 0) || 0);
-        const fromRow = totalRows > 0 ? previewOffset + 1 : 0;
-        const toRow = totalRows > 0 ? Math.min(previewOffset + obj.previewRows.length, totalRows) : obj.previewRows.length;
         const summary = obj.statusSummary && typeof obj.statusSummary === 'object' ? obj.statusSummary : {};
         const summaryKeys = Object.keys(summary).filter((key) => Number(summary[key] || 0) > 0);
-        const filterValue = String(obj.previewFilter || '').toLowerCase();
-        const filteredRows = filterValue
+        const filterValue = String(obj.previewFilter || '');
+        const statusFilterValue = String(obj.previewStatusFilter || '');
+        const filteredRows = serverPreview
+          ? obj.previewRows
+          : String(filterValue).toLowerCase()
           ? obj.previewRows.filter((row) => obj.fileColumns.some((column) => String(row[column] ?? '').toLowerCase().includes(filterValue)))
           : obj.previewRows;
+        const filteredTotal = serverPreview
+          ? Math.max(0, Number(obj.filteredRecordCount ?? totalRows) || 0)
+          : (filterValue ? filteredRows.length : totalRows);
+        const fromRow = filteredTotal > 0 ? previewOffset + 1 : 0;
+        const toRow = filteredTotal > 0 ? Math.min(previewOffset + filteredRows.length, filteredTotal) : filteredRows.length;
         const failedStep = getMigLatestFailedStep(obj.id);
         const failedPreviewRecords = Array.isArray(obj.failedPreviewRecords) ? obj.failedPreviewRecords : [];
+        const previewLabel = serverPreview && (filterValue || statusFilterValue)
+          ? 'Vorschau (' + fromRow + ' - ' + toRow + ' von ' + filteredTotal + ' Treffer' + (filteredTotal !== totalRows ? ', ' + totalRows + ' gesamt' : '') + ')'
+          : 'Vorschau (' + fromRow + ' - ' + toRow + ' von ' + totalRows + ')';
 
         return '<div class="small text-secondary mt-2">' +
           '<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">' +
-            '<span>Vorschau (' + fromRow + ' - ' + toRow + ' von ' + totalRows + ')</span>' +
+            '<span>' + esc(previewLabel) + '</span>' +
             '<span class="d-flex gap-1 flex-wrap">' +
               (summaryKeys.length
                 ? summaryKeys.map((key) => '<span class="badge text-bg-light border">' + esc(formatMigStageStatus(key) + ': ' + String(summary[key])) + '</span>').join('')
@@ -1168,9 +1190,18 @@ function htmlShell(): string {
           '<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">' +
             '<span class="small">Seitenlaenge: ' + previewLimit + '</span>' +
             '<input type="search" class="form-control form-control-sm" style="max-width: 240px" placeholder="Vorschau filtern" value="' + esc(obj.previewFilter || '') + '" data-preview-filter="' + esc(obj.id) + '" />' +
+            (serverPreview
+              ? '<select class="form-select form-select-sm" style="max-width: 220px" data-preview-status-filter="' + esc(obj.id) + '">' +
+                  '<option value="">Alle Status</option>' +
+                  '<option value="pending"' + (statusFilterValue === 'pending' ? ' selected' : '') + '>Offen</option>' +
+                  '<option value="success"' + (statusFilterValue === 'success' ? ' selected' : '') + '>Erfolg</option>' +
+                  '<option value="mapping_error"' + (statusFilterValue === 'mapping_error' ? ' selected' : '') + '>Mapping-Fehler</option>' +
+                  '<option value="salesforce_error"' + (statusFilterValue === 'salesforce_error' ? ' selected' : '') + '>Salesforce-Fehler</option>' +
+                '</select>'
+              : '') +
             '<div class="btn-group btn-group-sm">' +
               '<button type="button" class="btn btn-outline-secondary" data-preview-prev="' + esc(obj.id) + '"' + (previewOffset <= 0 ? ' disabled' : '') + '>Zurück</button>' +
-              '<button type="button" class="btn btn-outline-secondary" data-preview-next="' + esc(obj.id) + '"' + (previewOffset + previewLimit >= totalRows ? ' disabled' : '') + '>Weiter</button>' +
+              '<button type="button" class="btn btn-outline-secondary" data-preview-next="' + esc(obj.id) + '"' + (previewOffset + previewLimit >= filteredTotal ? ' disabled' : '') + '>Weiter</button>' +
             '</div>' +
           '</div>' +
           '<table class="table table-sm table-bordered"><thead><tr>' +
@@ -5941,7 +5972,32 @@ function htmlShell(): string {
         panel.querySelectorAll('[data-preview-filter]').forEach((input) => {
           input.addEventListener('input', () => {
             obj.previewFilter = input.value || '';
-            renderMigMappingPanel();
+            if (!isMigServerPreview(obj)) {
+              renderMigMappingPanel();
+              return;
+            }
+
+            window.clearTimeout(obj._previewFilterTimer || 0);
+            obj._previewFilterTimer = window.setTimeout(async () => {
+              try {
+                await loadMigObjectPreview(obj, 0, obj.previewLimit || 10);
+                renderMigMappingPanel();
+              } catch (err) {
+                alert('Fehler: ' + (err instanceof Error ? err.message : String(err)));
+              }
+            }, 250);
+          });
+        });
+
+        panel.querySelectorAll('[data-preview-status-filter]').forEach((input) => {
+          input.addEventListener('change', async () => {
+            obj.previewStatusFilter = input.value || '';
+            try {
+              await loadMigObjectPreview(obj, 0, obj.previewLimit || 10);
+              renderMigMappingPanel();
+            } catch (err) {
+              alert('Fehler: ' + (err instanceof Error ? err.message : String(err)));
+            }
           });
         });
 
@@ -6306,6 +6362,8 @@ function htmlShell(): string {
                     if (!failedRes.ok) throw new Error('Fehler beim Laden der Fehlerdetails');
                     const failedData = await failedRes.json();
                     const records = Array.isArray(failedData.records) ? failedData.records : [];
+                    const migrationObject = (migState.objects || []).find((item) => item && item.id === objectId);
+                    const allowStageSave = !!migrationObject && (migrationObject.stagingMode === 'sqlite' || migrationObject.processingMode === 'sqlite');
 
                     if (!records.length) {
                       detailsDiv.innerHTML = '<div class="alert alert-info">Keine fehlgeschlagenen Datensätze gefunden.</div>';
@@ -6317,6 +6375,9 @@ function htmlShell(): string {
                       '<div class="d-flex align-items-center gap-2 mb-2 flex-wrap">' +
                         '<button class="btn btn-sm btn-primary" data-retry-failed-records data-mode="all" data-mig-id="' + esc(migId) + '" data-object-id="' + esc(objectId) + '" data-failed-records-id="' + esc(failedRecordsId) + '" data-details-id="' + esc(detailsId) + '">Korrigierte Datensätze neu importieren</button>' +
                         '<button class="btn btn-sm btn-outline-primary" data-retry-failed-records data-mode="partial" data-mig-id="' + esc(migId) + '" data-object-id="' + esc(objectId) + '" data-failed-records-id="' + esc(failedRecordsId) + '" data-details-id="' + esc(detailsId) + '">Nur erfolgreiche Korrekturen übernehmen</button>' +
+                        (allowStageSave
+                          ? '<button class="btn btn-sm btn-outline-secondary" data-save-failed-corrections data-mig-id="' + esc(migId) + '" data-object-id="' + esc(objectId) + '" data-failed-records-id="' + esc(failedRecordsId) + '">Korrekturen ins Staging übernehmen</button>'
+                          : '') +
                         '<button class="btn btn-sm btn-outline-secondary" data-export-failed-csv>Restfehler als CSV exportieren</button>' +
                         '<span class="small text-secondary" data-retry-status></span>' +
                       '</div>' +
@@ -6352,6 +6413,7 @@ function htmlShell(): string {
                       '</tbody></table></div>';
 
                     const retryButtons = Array.from(detailsDiv.querySelectorAll('[data-retry-failed-records]'));
+                    const saveCorrectionsBtn = detailsDiv.querySelector('[data-save-failed-corrections]');
                     const exportCsvBtn = detailsDiv.querySelector('[data-export-failed-csv]');
                     const retryStatus = detailsDiv.querySelector('[data-retry-status]');
 
@@ -6413,6 +6475,7 @@ function htmlShell(): string {
                     const runRetry = async (mode) => {
                       const payloadRecords = collectEditedRows().map((row) => ({ rowIndex: row.rowIndex, sourceRecord: row.sourceRecord }));
                       retryButtons.forEach((button) => { button.disabled = true; });
+                      if (saveCorrectionsBtn) saveCorrectionsBtn.disabled = true;
                       if (retryStatus) {
                         retryStatus.textContent = mode === 'partial'
                           ? 'Neuimport läuft (nur erfolgreiche Korrekturen werden übernommen)...'
@@ -6445,8 +6508,48 @@ function htmlShell(): string {
                         if (retryStatus) retryStatus.textContent = 'Fehler: ' + (err instanceof Error ? err.message : String(err));
                       } finally {
                         retryButtons.forEach((button) => { button.disabled = false; });
+                        if (saveCorrectionsBtn) saveCorrectionsBtn.disabled = false;
                       }
                     };
+
+                    if (saveCorrectionsBtn) {
+                      saveCorrectionsBtn.addEventListener('click', async () => {
+                        const payloadRecords = collectEditedRows().map((row) => ({ rowIndex: row.rowIndex, sourceRecord: row.sourceRecord }));
+                        retryButtons.forEach((button) => { button.disabled = true; });
+                        saveCorrectionsBtn.disabled = true;
+                        if (retryStatus) {
+                          retryStatus.textContent = 'Korrekturen werden ins SQLite-Staging übernommen...';
+                        }
+
+                        try {
+                          const saveRes = await fetch(
+                            '/api/migrations/' + encodeURIComponent(migId) + '/failed-records/' + encodeURIComponent(objectId) + '/' + encodeURIComponent(failedRecordsId) + '/retry',
+                            {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ records: payloadRecords, mode: 'stage' })
+                            }
+                          );
+                          const saveResult = await saveRes.json();
+                          if (!saveRes.ok) throw new Error(saveResult.error || 'Speichern ins Staging fehlgeschlagen');
+
+                          if (retryStatus) {
+                            retryStatus.textContent = (saveResult.updatedRows || 0) + ' Zeilen im Staging aktualisiert.';
+                          }
+
+                          if (migrationObject) {
+                            migrationObject.statusSummary = saveResult.statusSummary || migrationObject.statusSummary || {};
+                            await loadMigObjectPreview(migrationObject, migrationObject.previewOffset || 0, migrationObject.previewLimit || 10);
+                            renderMigMappingPanel();
+                          }
+                        } catch (err) {
+                          if (retryStatus) retryStatus.textContent = 'Fehler: ' + (err instanceof Error ? err.message : String(err));
+                        } finally {
+                          retryButtons.forEach((button) => { button.disabled = false; });
+                          saveCorrectionsBtn.disabled = false;
+                        }
+                      });
+                    }
 
                     retryButtons.forEach((button) => {
                       button.addEventListener('click', () => {
@@ -7094,9 +7197,13 @@ export function createAppServer(
         }
         const previewOffset = Math.max(0, Number(requestUrl.searchParams.get("offset") || 0) || 0);
         const previewLimit = Math.max(1, Math.min(100, Number(requestUrl.searchParams.get("limit") || 10) || 10));
+        const previewFilter = String(requestUrl.searchParams.get("filter") || "").trim();
+        const previewStatusFilter = String(requestUrl.searchParams.get("status") || "").trim();
         const analysis = await adminDataService.analyzeMigrationObjectSource(migId, objectId, {
           offset: previewOffset,
-          limit: previewLimit
+          limit: previewLimit,
+          filter: previewFilter,
+          status: previewStatusFilter
         });
         sendJson(200, analysis);
         return;
@@ -7123,14 +7230,22 @@ export function createAppServer(
         const failedRecordsId = decodeURIComponent(retryFailedRecordsMatch[3]);
         const body = (await readJsonBody(req)) as {
           records?: Array<{ rowIndex: number; sourceRecord: Record<string, unknown> }>;
+          mode?: string;
         };
-        const result = await adminDataService.retryFailedMigrationRecords(
-          migId,
-          objectId,
-          failedRecordsId,
-          Array.isArray(body.records) ? body.records : [],
-          instanceId || undefined
-        );
+        const records = Array.isArray(body.records) ? body.records : [];
+        const result = String(body.mode || '') === 'stage'
+          ? await adminDataService.saveFailedMigrationRecordCorrections(
+              migId,
+              objectId,
+              records
+            )
+          : await adminDataService.retryFailedMigrationRecords(
+              migId,
+              objectId,
+              failedRecordsId,
+              records,
+              instanceId || undefined
+            );
         sendJson(200, result);
         return;
       }
