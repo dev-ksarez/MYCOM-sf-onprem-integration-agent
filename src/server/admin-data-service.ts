@@ -499,6 +499,7 @@ export interface MigrationObjectConfig {
   id: string;
   salesforceObject: string;
   salesforceObjectLabel?: string;
+  processingMode?: "file" | "sqlite";
   filePath?: string;
   fileFormat?: "csv" | "excel" | "json";
   fileCharset?: string;
@@ -736,6 +737,14 @@ function resolveInstances(): ResolvedInstance[] {
 
 export class AdminDataService {
   private readonly migrationStaging = new MigrationStagingSqlite();
+
+  private getEffectiveMigrationProcessingMode(obj: MigrationObjectConfig): "file" | "sqlite" {
+    if (obj.processingMode === "file" || obj.processingMode === "sqlite") {
+      return obj.processingMode;
+    }
+
+    return obj.stagingMode === "sqlite" ? "sqlite" : "file";
+  }
 
   private toMappingTargetType(fieldType?: string): MappingTargetType {
     const normalized = String(fieldType || "").trim().toLowerCase();
@@ -2884,6 +2893,7 @@ export class AdminDataService {
     obj.fileRecordCount = parsed.recordCount;
     obj.fileColumns = parsed.fields;
     obj.previewRows = parsed.previewRows.slice(0, 3);
+    obj.processingMode = obj.processingMode || "sqlite";
     obj.stagingMode = "sqlite";
     obj.stagingDatabasePath = stagingDatabasePath;
     obj.stagingImportedAt = importedAt;
@@ -2918,6 +2928,7 @@ export class AdminDataService {
     fields: string[];
     rows: Record<string, unknown>[];
     recordCount: number;
+    processingMode?: "file" | "sqlite";
     stagingMode?: "sqlite" | "file";
     stagingDatabasePath?: string;
     stagingImportedAt?: string;
@@ -2937,8 +2948,9 @@ export class AdminDataService {
     }
 
     if (obj.stagingMode === "sqlite") {
+      const effectiveProcessingMode = this.getEffectiveMigrationProcessingMode(obj);
       const meta = await this.migrationStaging.getObjectMeta(migrationId, objectId);
-      if (meta) {
+      if (meta && effectiveProcessingMode === "sqlite") {
         const desiredCharset = String(obj.fileCharset || meta.fileCharset || "utf8");
         const desiredDelimiter = String(obj.fileDelimiter || meta.fileDelimiter || ";");
         const desiredTextQualifier = String(obj.fileTextQualifier ?? meta.fileTextQualifier ?? '"');
@@ -2974,6 +2986,7 @@ export class AdminDataService {
           fields: meta.columns,
           rows: stagedRows.map((row) => row.payload),
           recordCount: meta.recordCount,
+          processingMode: effectiveProcessingMode,
           stagingMode: "sqlite",
           stagingDatabasePath: obj.stagingDatabasePath,
           stagingImportedAt: meta.uploadedAt,
@@ -2994,11 +3007,22 @@ export class AdminDataService {
       : path.resolve(process.cwd(), obj.filePath);
     const fileBuffer = await fs.promises.readFile(absolutePath);
     const fileName = path.basename(absolutePath);
-    return this.analyzeFileBuffer(fileName, fileBuffer, {
+    const analysis = this.analyzeFileBuffer(fileName, fileBuffer, {
       charset: obj.fileCharset,
       delimiter: obj.fileDelimiter,
       textQualifier: obj.fileTextQualifier
     });
+    return {
+      ...analysis,
+      processingMode: this.getEffectiveMigrationProcessingMode(obj),
+      stagingMode: obj.stagingMode || "file",
+      stagingDatabasePath: obj.stagingDatabasePath,
+      stagingImportedAt: obj.stagingImportedAt,
+      stagingStatus: obj.stagingStatus,
+      previewOffset: 0,
+      previewLimit: analysis.rows.length,
+      statusSummary: undefined
+    };
   }
 
   private parseMigrationSourceBuffer(
@@ -3125,7 +3149,7 @@ export class AdminDataService {
     migrationId: string,
     obj: MigrationObjectConfig
   ): Promise<Array<{ rowIndex: number; row: Record<string, unknown> }>> {
-    if (obj.stagingMode === "sqlite") {
+    if (this.getEffectiveMigrationProcessingMode(obj) === "sqlite") {
       const stagedRows = await this.migrationStaging.listObjectRows(migrationId, obj.id);
       if (stagedRows.length > 0) {
         return stagedRows.map((entry) => ({ rowIndex: entry.rowIndex, row: entry.payload }));

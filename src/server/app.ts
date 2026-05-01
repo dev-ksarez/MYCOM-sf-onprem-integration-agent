@@ -1048,7 +1048,8 @@ function htmlShell(): string {
         objects: [],
         dependencies: [],
         executionPlan: [],
-        sfObjects: []
+        sfObjects: [],
+        lastRunResult: null
       };
 
       function renderMigFileSummary(obj) {
@@ -1058,6 +1059,7 @@ function htmlShell(): string {
         if (obj.fileCharset) details.push('Charset: ' + obj.fileCharset);
         if (obj.fileDelimiter) details.push('Trennzeichen: ' + (obj.fileDelimiter === '\t' ? 'TAB' : obj.fileDelimiter));
         if (obj.fileTextQualifier) details.push('Textqualifier: ' + obj.fileTextQualifier);
+        if (obj.processingMode) details.push('Verarbeitung: ' + (obj.processingMode === 'sqlite' ? 'SQLite-Staging' : 'Datei direkt'));
         if (obj.stagingMode) details.push('Staging: ' + String(obj.stagingMode).toUpperCase());
         if (obj.stagingStatus) details.push('Staging-Status: ' + formatMigStageStatus(obj.stagingStatus));
         if (obj.stagingDatabasePath) details.push('SQLite: ' + obj.stagingDatabasePath);
@@ -1088,6 +1090,21 @@ function htmlShell(): string {
         return keys.sort().map((key) => formatMigStageStatus(key) + ': ' + summary[key]).join(', ');
       }
 
+      function getMigLatestFailedStep(objectId) {
+        const steps = Array.isArray(migState.lastRunResult && migState.lastRunResult.steps) ? migState.lastRunResult.steps : [];
+        return steps.find((step) => step && step.objectId === objectId && step.failedRecordsId) || null;
+      }
+
+      async function loadMigLatestFailedPreview(obj) {
+        const failedStep = getMigLatestFailedStep(obj.id);
+        if (!failedStep || obj.failedPreviewLoadedFor === failedStep.failedRecordsId) return;
+        const failedRes = await fetch('/api/migrations/' + encodeURIComponent(migState.id) + '/failed-records/' + encodeURIComponent(failedStep.failedRecordsId));
+        if (!failedRes.ok) throw new Error('Fehler beim Laden der Fehlerdetails');
+        const failedData = await failedRes.json();
+        obj.failedPreviewRecords = Array.isArray(failedData.records) ? failedData.records.slice(0, 5) : [];
+        obj.failedPreviewLoadedFor = failedStep.failedRecordsId;
+      }
+
       function applyMigAnalysisData(obj, data) {
         obj.filePath = data.filePath || obj.filePath || '';
         obj.fileFormat = data.format || obj.fileFormat || 'csv';
@@ -1097,6 +1114,7 @@ function htmlShell(): string {
         obj.fileRecordCount = typeof data.recordCount === 'number' ? data.recordCount : obj.fileRecordCount;
         obj.fileColumns = data.fields || [];
         obj.previewRows = Array.isArray(data.rows) ? data.rows.slice(0, 10) : [];
+        obj.processingMode = data.processingMode || obj.processingMode || 'sqlite';
         obj.stagingMode = data.stagingMode || obj.stagingMode || '';
         obj.stagingDatabasePath = data.stagingDatabasePath || obj.stagingDatabasePath || '';
         obj.stagingImportedAt = data.stagingImportedAt || obj.stagingImportedAt;
@@ -1131,6 +1149,12 @@ function htmlShell(): string {
         const toRow = totalRows > 0 ? Math.min(previewOffset + obj.previewRows.length, totalRows) : obj.previewRows.length;
         const summary = obj.statusSummary && typeof obj.statusSummary === 'object' ? obj.statusSummary : {};
         const summaryKeys = Object.keys(summary).filter((key) => Number(summary[key] || 0) > 0);
+        const filterValue = String(obj.previewFilter || '').toLowerCase();
+        const filteredRows = filterValue
+          ? obj.previewRows.filter((row) => obj.fileColumns.some((column) => String(row[column] ?? '').toLowerCase().includes(filterValue)))
+          : obj.previewRows;
+        const failedStep = getMigLatestFailedStep(obj.id);
+        const failedPreviewRecords = Array.isArray(obj.failedPreviewRecords) ? obj.failedPreviewRecords : [];
 
         return '<div class="small text-secondary mt-2">' +
           '<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">' +
@@ -1141,18 +1165,38 @@ function htmlShell(): string {
                 : '<span class="badge text-bg-light border">' + esc(formatMigStageStatus(obj.stagingStatus || 'ready')) + '</span>') +
             '</span>' +
           '</div>' +
-          '<table class="table table-sm table-bordered"><thead><tr>' +
-            obj.fileColumns.map((c) => '<th class="small">' + esc(c) + '</th>').join('') +
-          '</tr></thead><tbody>' +
-            obj.previewRows.map((row) => '<tr>' + obj.fileColumns.map((c) => '<td class="small">' + esc(String(row[c] ?? '')) + '</td>').join('') + '</tr>').join('') +
-          '</tbody></table>' +
-          '<div class="d-flex justify-content-between align-items-center flex-wrap gap-2">' +
+          '<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">' +
             '<span class="small">Seitenlaenge: ' + previewLimit + '</span>' +
+            '<input type="search" class="form-control form-control-sm" style="max-width: 240px" placeholder="Vorschau filtern" value="' + esc(obj.previewFilter || '') + '" data-preview-filter="' + esc(obj.id) + '" />' +
             '<div class="btn-group btn-group-sm">' +
               '<button type="button" class="btn btn-outline-secondary" data-preview-prev="' + esc(obj.id) + '"' + (previewOffset <= 0 ? ' disabled' : '') + '>Zurück</button>' +
               '<button type="button" class="btn btn-outline-secondary" data-preview-next="' + esc(obj.id) + '"' + (previewOffset + previewLimit >= totalRows ? ' disabled' : '') + '>Weiter</button>' +
             '</div>' +
           '</div>' +
+          '<table class="table table-sm table-bordered"><thead><tr>' +
+            obj.fileColumns.map((c) => '<th class="small">' + esc(c) + '</th>').join('') +
+          '</tr></thead><tbody>' +
+            (filteredRows.length
+              ? filteredRows.map((row) => '<tr>' + obj.fileColumns.map((c) => '<td class="small">' + esc(String(row[c] ?? '')) + '</td>').join('') + '</tr>').join('')
+              : '<tr><td colspan="' + obj.fileColumns.length + '" class="text-secondary">Keine Datensätze für den aktuellen Filter.</td></tr>') +
+          '</tbody></table>' +
+          (failedStep
+            ? '<div class="mt-3">' +
+                '<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">' +
+                  '<strong>Letzte Fehlerzeilen aus dem letzten Lauf</strong>' +
+                  '<span class="badge bg-danger">' + esc(String(failedStep.recordsFailed || failedPreviewRecords.length || 0)) + ' Fehler</span>' +
+                '</div>' +
+                (failedPreviewRecords.length
+                  ? '<div class="table-responsive"><table class="table table-sm table-striped"><thead><tr><th>Zeile</th><th>Typ</th><th>Fehler</th><th>Vorschau</th></tr></thead><tbody>' +
+                    failedPreviewRecords.map((record) => '<tr>' +
+                      '<td>' + esc(String(record.rowIndex || '')) + '</td>' +
+                      '<td><span class="badge bg-' + (record.errorType === 'salesforce' ? 'warning' : 'danger') + '">' + esc(String(record.errorType || 'mapping')) + '</span></td>' +
+                      '<td class="small text-danger">' + esc(String(record.error || '')) + '</td>' +
+                      '<td class="small">' + esc(Object.entries(record.sourceRecord || {}).slice(0, 3).map(([key, value]) => key + ': ' + String(value ?? '')).join(' | ')) + '</td>' +
+                    '</tr>').join('') + '</tbody></table></div>'
+                  : '<div class="text-secondary small">Fehlerdetails werden geladen oder sind nicht mehr verfügbar.</div>') +
+              '</div>'
+            : '') +
         '</div>';
       }
 
@@ -5495,6 +5539,10 @@ function htmlShell(): string {
             '<option value="&#39;"' + (obj.fileTextQualifier === "'" ? ' selected' : '') + '>Einfache Anführungszeichen (&#39;)</option>' +
             '<option value=""' + (obj.fileTextQualifier === '' ? ' selected' : '') + '>Keiner</option>' +
             '</select></div>' +
+            '<div class="col-md-4"><label class="form-label small mb-1">Verarbeitungsmodus</label><select class="form-select form-select-sm" data-processing-mode="' + safeId + '">' +
+            '<option value="sqlite"' + (((obj.processingMode || obj.stagingMode || 'sqlite') === 'sqlite') ? ' selected' : '') + '>SQLite-Staging</option>' +
+            '<option value="file"' + (obj.processingMode === 'file' ? ' selected' : '') + '>Datei direkt</option>' +
+            '</select></div>' +
             '</div>' +
             '<div id="mig-file-cols-' + safeId + '" class="small text-secondary">' +
             esc(renderMigFileSummary(obj)) +
@@ -5526,14 +5574,16 @@ function htmlShell(): string {
           const charsetInput = container.querySelector('[data-file-charset="' + obj.id + '"]');
           const delimiterInput = container.querySelector('[data-file-delimiter="' + obj.id + '"]');
           const textQualifierInput = container.querySelector('[data-file-text-qualifier="' + obj.id + '"]');
+          const processingModeInput = container.querySelector('[data-processing-mode="' + obj.id + '"]');
 
           const syncCsvOptions = () => {
             obj.fileCharset = charsetInput ? charsetInput.value.trim() || 'utf8' : (obj.fileCharset || 'utf8');
             obj.fileDelimiter = delimiterInput ? delimiterInput.value || ';' : (obj.fileDelimiter || ';');
             obj.fileTextQualifier = textQualifierInput ? textQualifierInput.value || '"' : (obj.fileTextQualifier || '"');
+            obj.processingMode = processingModeInput ? processingModeInput.value || 'sqlite' : (obj.processingMode || 'sqlite');
           };
 
-          [charsetInput, delimiterInput, textQualifierInput].forEach((input) => {
+          [charsetInput, delimiterInput, textQualifierInput, processingModeInput].forEach((input) => {
             if (!input) return;
             input.addEventListener('change', syncCsvOptions);
           });
@@ -5643,6 +5693,14 @@ function htmlShell(): string {
             await loadMigObjectPreview(obj, obj.previewOffset || 0, obj.previewLimit || 10);
           } catch {
             // preview bootstrap falls back to current state
+          }
+        }
+
+        if (getMigLatestFailedStep(obj.id) && !obj.failedPreviewLoadedFor) {
+          try {
+            await loadMigLatestFailedPreview(obj);
+          } catch {
+            obj.failedPreviewRecords = [];
           }
         }
 
@@ -5880,6 +5938,13 @@ function htmlShell(): string {
           });
         });
 
+        panel.querySelectorAll('[data-preview-filter]').forEach((input) => {
+          input.addEventListener('input', () => {
+            obj.previewFilter = input.value || '';
+            renderMigMappingPanel();
+          });
+        });
+
         renderMigMissingFields();
       }
 
@@ -6024,6 +6089,7 @@ function htmlShell(): string {
             const obj = migState.objects.find((o) => o.id === step.objectId);
             if (!obj) return '';
             return '<li>' + esc(obj.salesforceObject) + ' — ' + esc(obj.operation) +
+              ' — Modus: ' + esc(obj.processingMode === 'file' ? 'Datei direkt' : 'SQLite-Staging') +
               ' — Datei: <code>' + esc(obj.filePath || '(keine)') + '</code>' +
               ' — Felder gemappt: ' + (obj.fieldMappings || []).length + '</li>';
           }).join('') +
@@ -6080,6 +6146,7 @@ function htmlShell(): string {
         migState.dependencies = migration ? JSON.parse(JSON.stringify(migration.dependencies || [])) : [];
         migState.executionPlan = migration ? JSON.parse(JSON.stringify(migration.executionPlan || [])) : [];
         migState.sfObjects = [];
+        migState.lastRunResult = migration ? JSON.parse(JSON.stringify(migration.lastRunResult || null)) : null;
 
         const nameEl = document.getElementById('mig-name');
         const descEl = document.getElementById('mig-description');
@@ -6192,6 +6259,7 @@ function htmlShell(): string {
             await migSave();
             const res = await fetch('/api/migrations/' + encodeURIComponent(migState.id) + '/run', { method: 'POST' });
             const result = await res.json();
+            migState.lastRunResult = result;
             progressEl.classList.add('d-none');
             resultEl.classList.remove('d-none');
             const allOk = result.steps.every((s) => s.status !== 'error');
@@ -6473,7 +6541,7 @@ function htmlShell(): string {
             const name = btn.getAttribute('data-sf-obj');
             const label = btn.getAttribute('data-sf-label');
             if (migState.objects.some((o) => o.salesforceObject === name)) return;
-            migState.objects.push({ id: migUuidV4(), salesforceObject: name, salesforceObjectLabel: label, filePath: '', fileColumns: [], fieldMappings: [], operation: 'insert' });
+            migState.objects.push({ id: migUuidV4(), salesforceObject: name, salesforceObjectLabel: label, processingMode: 'sqlite', filePath: '', fileColumns: [], fieldMappings: [], operation: 'insert' });
             renderMigSelectedObjects();
             btn.className = 'btn btn-sm btn-success disabled me-1 mb-1';
           });
@@ -6485,7 +6553,7 @@ function htmlShell(): string {
         const name = input ? input.value.trim() : '';
         if (!name) return;
         if (migState.objects.some((o) => o.salesforceObject === name)) { alert('Objekt bereits hinzugefügt.'); return; }
-        migState.objects.push({ id: migUuidV4(), salesforceObject: name, salesforceObjectLabel: name, filePath: '', fileColumns: [], fieldMappings: [], operation: 'insert' });
+        migState.objects.push({ id: migUuidV4(), salesforceObject: name, salesforceObjectLabel: name, processingMode: 'sqlite', filePath: '', fileColumns: [], fieldMappings: [], operation: 'insert' });
         renderMigSelectedObjects();
         if (input) input.value = '';
       });
