@@ -1,14 +1,23 @@
 import pino from "pino";
 import fs from "node:fs";
 import path from "node:path";
+import { PassThrough } from "node:stream";
+import archiver from "archiver";
 import {
   ConnectorConfig,
   SalesforceClient,
+  SalesforceOrgOverview,
   SalesforceScheduleRecord
 } from "../clients/salesforce/salesforce-client";
 import { ConnectorRegistry } from "../core/connector-registry/connector-registry";
 import { MappingDefinitionEngine } from "../core/mapping-dsl/mapping-definition-engine";
 import { MappingDefinitionParser } from "../core/mapping-dsl/mapping-definition-parser";
+import {
+  MappingDefinitionLine,
+  MappingPicklistEntry,
+  MappingTargetType,
+  MappingTransformType
+} from "../core/mapping-dsl/mapping-definition-types";
 import {
   getSalesforceConfig,
   SalesforceConfig
@@ -16,6 +25,8 @@ import {
 import { MssqlDatabase } from "../infrastructure/db/mssql";
 import { IntegrationSchedule } from "../types/integration-schedule";
 import { runScheduleNow } from "../agent/agent-runner";
+import { analyzeUploadedFile, parseFileFromConnector } from "../utils/file-transfer";
+import { fetchRestRows } from "../source-adapters/rest/rest-api-source-adapter";
 
 interface SalesforceInstanceEnvConfig {
   id: string;
@@ -45,6 +56,9 @@ interface ResolvedInstance {
 
 const LOCAL_INSTANCES_FILE = process.env.SF_INSTANCES_FILE || path.resolve(process.cwd(), "artifacts/sf-instances.json");
 const LOCAL_SCHEDULE_TIMING_FILE = process.env.SF_SCHEDULE_TIMING_FILE || path.resolve(process.cwd(), "artifacts/schedule-timing.json");
+const LOCAL_SCHEDULE_HEALTH_FILE = process.env.SF_SCHEDULE_HEALTH_FILE || path.resolve(process.cwd(), "artifacts/schedule-health.json");
+const LOCAL_MIGRATIONS_FILE = path.resolve(process.cwd(), "artifacts/migrations.json");
+const SALESFORCE_METADATA_DIR = path.resolve(process.cwd(), "salesforce/metadata");
 const LOCAL_SCHEDULE_TIMING_VERSION = 1;
 
 type LocalScheduleTimingStore = Record<string, Record<string, string>>;
@@ -53,6 +67,18 @@ interface LocalScheduleTimingDocument {
   version: number;
   updatedAt: string;
   instances: LocalScheduleTimingStore;
+}
+
+interface LocalScheduleHealthItem {
+  consecutiveFailures: number;
+  autoDisabled?: boolean;
+  autoDisabledAt?: string;
+}
+
+interface LocalScheduleHealthDocument {
+  version: number;
+  updatedAt: string;
+  schedules: Record<string, LocalScheduleHealthItem>;
 }
 
 function normalizeLocalScheduleTimingStore(parsed: unknown): LocalScheduleTimingStore {
@@ -115,6 +141,57 @@ function writeLocalScheduleTimingStore(store: LocalScheduleTimingStore): void {
     instances: store
   };
   fs.writeFileSync(LOCAL_SCHEDULE_TIMING_FILE, JSON.stringify(document, null, 2), "utf8");
+}
+
+function readLocalScheduleHealthStore(): Record<string, LocalScheduleHealthItem> {
+  try {
+    if (!fs.existsSync(LOCAL_SCHEDULE_HEALTH_FILE)) {
+      return {};
+    }
+
+    const raw = fs.readFileSync(LOCAL_SCHEDULE_HEALTH_FILE, "utf8").trim();
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    const schedulesCandidate = (
+      parsed && typeof parsed === "object" && !Array.isArray(parsed) && "schedules" in parsed
+        ? (parsed as { schedules?: unknown }).schedules
+        : parsed
+    );
+
+    if (!schedulesCandidate || typeof schedulesCandidate !== "object" || Array.isArray(schedulesCandidate)) {
+      return {};
+    }
+
+    return Object.entries(schedulesCandidate).reduce<Record<string, LocalScheduleHealthItem>>((acc, [scheduleId, item]) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return acc;
+      }
+
+      const candidate = item as Record<string, unknown>;
+      acc[scheduleId] = {
+        consecutiveFailures: Math.max(0, Number(candidate.consecutiveFailures || 0) || 0),
+        autoDisabled: candidate.autoDisabled === true,
+        autoDisabledAt: typeof candidate.autoDisabledAt === "string" ? candidate.autoDisabledAt : undefined
+      };
+      return acc;
+    }, {});
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalScheduleHealthStore(store: Record<string, LocalScheduleHealthItem>): void {
+  const directory = path.dirname(LOCAL_SCHEDULE_HEALTH_FILE);
+  fs.mkdirSync(directory, { recursive: true });
+  const document: LocalScheduleHealthDocument = {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    schedules: store
+  };
+  fs.writeFileSync(LOCAL_SCHEDULE_HEALTH_FILE, JSON.stringify(document, null, 2), "utf8");
 }
 
 function readLocalInstances(): SalesforceInstanceEnvConfig[] {
@@ -204,6 +281,8 @@ export interface ScheduleListItem {
   timingDefinition?: string;
   parentScheduleId?: string;
   inheritTimingFromParent?: boolean;
+  autoDisabledDueToErrors?: boolean;
+  autoDisabledAt?: string;
 }
 
 export interface ConnectorListItem {
@@ -213,11 +292,45 @@ export interface ConnectorListItem {
   connectorType: string;
   targetSystem?: string;
   direction?: string;
+  secretKey?: string;
   timeoutMs?: number;
   maxRetries?: number;
   description?: string;
+  parameters?: Record<string, unknown>;
   hasSecret: boolean;
   parameterKeys: string[];
+}
+
+interface SetupExportScheduleItem extends ScheduleMutationInput {
+  connectorName?: string;
+  parentScheduleName?: string;
+}
+
+export interface SetupExportDocument {
+  version: number;
+  exportedAt: string;
+  instanceId: string;
+  connectors: ConnectorMutationInput[];
+  schedules: SetupExportScheduleItem[];
+}
+
+export interface SetupImportResult {
+  connectorsCreated: number;
+  connectorsUpdated: number;
+  schedulesCreated: number;
+  schedulesUpdated: number;
+}
+
+export interface UploadedFileAnalysisResult {
+  connectorId: string;
+  fileName: string;
+  format: "csv" | "excel" | "json";
+  charset: string;
+  delimiter: string;
+  headers: string[];
+  sourceType: "FILE_CSV" | "FILE_EXCEL" | "FILE_JSON";
+  sourceDefinition: string;
+  mappingDefinition: string;
 }
 
 export interface ConnectorTestResult {
@@ -286,6 +399,13 @@ export interface SourceFieldMetadata {
   type: string;
 }
 
+export interface CreateCustomObjectFromSourceInput {
+  objectApiName: string;
+  sourceFields: SourceFieldMetadata[];
+  label?: string;
+  fieldOverrides?: Array<{ sourceName: string; type?: string }>;
+}
+
 export interface MappingPreviewResult {
   fields: string[];
   rows: Record<string, unknown>[];
@@ -352,9 +472,103 @@ export interface GraphNode {
   objectName?: string;
   directionIcon?: string;
   connectorType?: string;
+  sourceType?: string;
+  targetType?: string;
   x: number;
   y: number;
   refId: string;
+}
+
+export interface MigrationFieldMapping {
+  sourceColumn: string;
+  targetField: string;
+  targetFieldLabel?: string;
+  targetFieldType?: string;
+  targetType?: MappingTargetType;
+  transformFunction?: MappingTransformType;
+  lookupEnabled?: boolean;
+  lookupObject?: string;
+  lookupField?: string;
+  picklistMappings?: MappingPicklistEntry[];
+  isRequired?: boolean;
+  transformExpression?: string;
+}
+
+export interface MigrationObjectConfig {
+  id: string;
+  salesforceObject: string;
+  salesforceObjectLabel?: string;
+  filePath?: string;
+  fileColumns?: string[];
+  previewRows?: Record<string, unknown>[];
+  fieldMappings: MigrationFieldMapping[];
+  externalIdField?: string;
+  operation: "insert" | "upsert" | "update";
+}
+
+export interface MigrationDependency {
+  fromObjectId: string;
+  toObjectId: string;
+  fromField: string;
+  toField: string;
+  description?: string;
+}
+
+export interface MigrationExecutionStep {
+  order: number;
+  objectId: string;
+  description?: string;
+}
+
+export interface MigrationConfig {
+  id: string;
+  name: string;
+  description?: string;
+  instanceId?: string;
+  status: "draft" | "ready" | "running" | "done" | "error";
+  createdAt: string;
+  updatedAt: string;
+  objects: MigrationObjectConfig[];
+  dependencies: MigrationDependency[];
+  executionPlan: MigrationExecutionStep[];
+  lastRunAt?: string;
+  lastRunResult?: {
+    startedAt: string;
+    finishedAt?: string;
+    steps: Array<{
+      objectId: string;
+      salesforceObject: string;
+      status: "pending" | "running" | "done" | "error";
+      recordsProcessed?: number;
+      recordsSucceeded?: number;
+      recordsFailed?: number;
+      errorMessage?: string;
+    }>;
+  };
+}
+
+export interface MigrationFailedRecord {
+  rowIndex: number;
+  sourceRecord: Record<string, unknown>;
+  mappedRecord?: Record<string, unknown>;
+  error: string;
+  errorType: 'mapping' | 'salesforce';
+}
+
+export interface MigrationRunResult {
+  migrationId: string;
+  startedAt: string;
+  reportPath?: string;
+  steps: Array<{
+    objectId: string;
+    salesforceObject: string;
+    status: "done" | "error";
+    recordsProcessed: number;
+    recordsSucceeded: number;
+    recordsFailed: number;
+    errorMessage?: string;
+    failedRecordsId?: string;
+  }>;
 }
 
 export interface ScheduleFormOptions {
@@ -441,8 +655,15 @@ function getOptionalBoolean(parameters: Record<string, unknown>, key: string): b
 }
 
 function resolvePassword(config: ConnectorConfig): string {
+  const inlinePassword = typeof config.parameters?.password === "string"
+    ? config.parameters.password.trim()
+    : "";
+  if (inlinePassword) {
+    return inlinePassword;
+  }
+
   if (!config.secretKey) {
-    throw new Error(`Connector ${config.name} is missing MSD_SecretKey__c`);
+    throw new Error(`Connector ${config.name} has no password configured. Set parameters.password or configure MSD_SecretKey__c.`);
   }
 
   const password = process.env[config.secretKey];
@@ -504,6 +725,77 @@ function resolveInstances(): ResolvedInstance[] {
 }
 
 export class AdminDataService {
+  private toMappingTargetType(fieldType?: string): MappingTargetType {
+    const normalized = String(fieldType || "").trim().toLowerCase();
+    if (["int", "integer"].includes(normalized)) {
+      return "integer";
+    }
+    if (["double", "currency", "percent", "number"].includes(normalized)) {
+      return "number";
+    }
+    if (["boolean", "checkbox"].includes(normalized)) {
+      return "boolean";
+    }
+    if (["date", "datetime"].includes(normalized)) {
+      return "datetime";
+    }
+    return "string";
+  }
+
+  private toMappingTransformType(value?: string): MappingTransformType {
+    const normalized = String(value || "NONE").trim().toUpperCase();
+    const allowed: MappingTransformType[] = [
+      "NONE",
+      "TRIM",
+      "UPPERCASE",
+      "LOWERCASE",
+      "TO_INTEGER",
+      "TO_BOOLEAN",
+      "DATETIME_ISO",
+      "STATIC",
+      "LOOKUP"
+    ];
+    return allowed.includes(normalized as MappingTransformType)
+      ? (normalized as MappingTransformType)
+      : "NONE";
+  }
+
+  private buildMigrationMappingLines(obj: MigrationObjectConfig): MappingDefinitionLine[] {
+    return (obj.fieldMappings || [])
+      .filter((mapping) => String(mapping.sourceColumn || "").trim() && String(mapping.targetField || "").trim())
+      .map((mapping, index) => {
+        const lookupEnabled = mapping.lookupEnabled === true;
+        const lookupObject = String(mapping.lookupObject || "").trim();
+        const lookupField = String(mapping.lookupField || "").trim();
+        const transformType = lookupEnabled && lookupObject && lookupField
+          ? "LOOKUP"
+          : this.toMappingTransformType(mapping.transformFunction);
+
+        const transformExpression = String(mapping.transformExpression || "").trim();
+
+        return {
+          lineNumber: index + 1,
+          rawLine: JSON.stringify(mapping),
+          targetField: String(mapping.targetField).trim(),
+          targetType: mapping.targetType || this.toMappingTargetType(mapping.targetFieldType),
+          sourceField: String(mapping.sourceColumn).trim(),
+          transform: {
+            type: transformType,
+            raw: transformType,
+            argument: transformType === "STATIC" ? transformExpression : undefined,
+            lookupObject: transformType === "LOOKUP" ? lookupObject : undefined,
+            lookupField: transformType === "LOOKUP" ? lookupField : undefined
+          },
+          picklistMappings: Array.isArray(mapping.picklistMappings) ? mapping.picklistMappings : []
+        } satisfies MappingDefinitionLine;
+      });
+  }
+
+  private toSoqlLiteral(value: unknown): string {
+    const raw = String(value ?? "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    return `'${raw}'`;
+  }
+
   public listInstances(): SalesforceInstanceOption[] {
     const instances = resolveInstances();
     return instances.map((instance, index) => ({
@@ -549,6 +841,7 @@ export class AdminDataService {
     const client = await this.createClient(resolvedInstance.id);
     const records = await client.querySchedules(false);
     const localTiming = readLocalScheduleTimingStore()[resolvedInstance.id] || {};
+    const localHealth = readLocalScheduleHealthStore();
 
     return records.map((record) => {
       const schedule = this.toIntegrationSchedule(record);
@@ -579,7 +872,9 @@ export class AdminDataService {
         batchSize: schedule.batchSize,
         timingDefinition: persistedTimingDefinition,
         parentScheduleId: schedule.parentScheduleId,
-        inheritTimingFromParent: schedule.inheritTimingFromParent
+        inheritTimingFromParent: schedule.inheritTimingFromParent,
+        autoDisabledDueToErrors: localHealth[schedule.id]?.autoDisabled === true,
+        autoDisabledAt: localHealth[schedule.id]?.autoDisabledAt
       };
     });
   }
@@ -644,9 +939,11 @@ export class AdminDataService {
       connectorType: connector.connectorType,
       targetSystem: connector.targetSystem,
       direction: connector.direction,
+      secretKey: connector.secretKey,
       timeoutMs: connector.timeoutMs,
       maxRetries: connector.maxRetries,
       description: connector.description,
+      parameters: connector.parameters,
       hasSecret: Boolean(connector.secretKey),
       parameterKeys: Object.keys(connector.parameters).sort()
     }));
@@ -655,6 +952,27 @@ export class AdminDataService {
   public async testConnector(connectorId: string, instanceId?: string): Promise<ConnectorTestResult> {
     const client = await this.createClient(instanceId);
     const config = await client.queryConnector(connectorId);
+
+    if (this.isFileConnectorType(config.connectorType)) {
+      return {
+        ok: true,
+        connectorId: config.id,
+        connectorName: config.name,
+        connectorType: config.connectorType,
+        message: "Datei-Connector bereit (Pfad-/Datei-Pruefung erfolgt zur Laufzeit pro Scheduler)."
+      };
+    }
+
+    if (this.isRestConnectorType(config.connectorType)) {
+      return {
+        ok: true,
+        connectorId: config.id,
+        connectorName: config.name,
+        connectorType: config.connectorType,
+        message: "REST-Connector konfiguriert (Endpunkt-Pruefung erfolgt zur Laufzeit pro Scheduler)."
+      };
+    }
+
     const registry = new ConnectorRegistry();
     const connector = registry.getConnectorByConfig(config);
 
@@ -899,6 +1217,41 @@ export class AdminDataService {
       return this.previewSql(connectorId, trimmedDefinition, normalizedLimit, instanceId);
     }
 
+    if (normalizedType === "FILE_CSV" || normalizedType === "FILE_EXCEL" || normalizedType === "FILE_JSON") {
+      if (!connectorId) {
+        throw new Error("Fuer Datei-Vorschau muss ein Datei-Connector ausgewaehlt sein");
+      }
+
+      const client = await this.createClient(instanceId);
+      const connector = await client.queryConnector(connectorId);
+      if (!this.isFileConnectorType(connector.connectorType)) {
+        throw new Error(`Connector ${connector.name} ist kein Datei-Connector`);
+      }
+
+      const payload = await parseFileFromConnector(connector, trimmedDefinition, { archiveOnRead: false });
+      return {
+        fields: payload.headers,
+        rows: payload.rows.slice(0, normalizedLimit),
+        rowCount: payload.rows.length
+      };
+    }
+
+    if (normalizedType === "REST_API") {
+      if (!connectorId) {
+        throw new Error("Fuer REST-Vorschau muss ein REST-Connector ausgewaehlt sein");
+      }
+
+      const client = await this.createClient(instanceId);
+      const connector = await client.queryConnector(connectorId);
+      const rows = await fetchRestRows(connector, trimmedDefinition, normalizedLimit);
+      const fields = rows.length > 0 ? Object.keys(rows[0] || {}) : [];
+      return {
+        fields,
+        rows,
+        rowCount: rows.length
+      };
+    }
+
     if (normalizedType === "SALESFORCE_SOQL") {
       const client = await this.createClient(instanceId);
       const limitedSoql = /\bLIMIT\s+\d+\b/i.test(trimmedDefinition)
@@ -994,6 +1347,42 @@ export class AdminDataService {
       return this.getMssqlSourceFields(connectorId, sourceDefinition, instanceId);
     }
 
+    if (normalizedType === "FILE_CSV" || normalizedType === "FILE_EXCEL" || normalizedType === "FILE_JSON") {
+      if (!connectorId) {
+        throw new Error("Fuer Datei-Feldmetadaten muss ein Datei-Connector ausgewaehlt sein");
+      }
+
+      const client = await this.createClient(instanceId);
+      const connector = await client.queryConnector(connectorId);
+      if (!this.isFileConnectorType(connector.connectorType)) {
+        throw new Error(`Connector ${connector.name} ist kein Datei-Connector`);
+      }
+
+      const payload = await parseFileFromConnector(connector, sourceDefinition, { archiveOnRead: false });
+      return payload.headers.map((header) => ({
+        name: header,
+        label: header,
+        type: "string"
+      }));
+    }
+
+    if (normalizedType === "REST_API") {
+      if (!connectorId) {
+        throw new Error("Fuer REST-Feldmetadaten muss ein REST-Connector ausgewaehlt sein");
+      }
+
+      const client = await this.createClient(instanceId);
+      const connector = await client.queryConnector(connectorId);
+      const rows = await fetchRestRows(connector, sourceDefinition, 1);
+      const fields = rows.length > 0 ? Object.keys(rows[0] || {}) : [];
+
+      return fields.map((fieldName) => ({
+        name: fieldName,
+        label: fieldName,
+        type: "string"
+      }));
+    }
+
     throw new Error(`Source Type ${sourceType} wird für Feldmetadaten noch nicht unterstützt`);
   }
 
@@ -1012,6 +1401,30 @@ export class AdminDataService {
   ): Promise<{ id: string; action: "created" | "updated" }> {
     const resolvedInstance = this.resolveInstance(instanceId);
     const client = await this.createClient(resolvedInstance.id);
+    const sourceType = String(input.sourceType || "").toUpperCase();
+    const targetType = String(input.targetType || "").toUpperCase();
+    const usesFileSource = sourceType === "FILE_CSV" || sourceType === "FILE_EXCEL" || sourceType === "FILE_JSON";
+    const usesFileTarget = targetType === "FILE_CSV" || targetType === "FILE_EXCEL" || targetType === "FILE_JSON";
+
+    if (usesFileSource && !String(input.sourceDefinition || "").trim()) {
+      throw new Error("FILE SourceType erfordert eine SourceDefinition mit Dateiangaben");
+    }
+
+    if (usesFileTarget && !String(input.targetDefinition || "").trim()) {
+      throw new Error("FILE TargetType erfordert eine TargetDefinition mit Dateiangaben");
+    }
+
+    if ((usesFileSource || usesFileTarget) && !String(input.connectorId || "").trim()) {
+      throw new Error("Datei-Scheduler benoetigt einen Datei-Connector");
+    }
+
+    if ((usesFileSource || usesFileTarget) && input.connectorId) {
+      const connector = await client.queryConnector(input.connectorId);
+      if (!this.isFileConnectorType(connector.connectorType)) {
+        throw new Error(`Ausgewaehlter Connector ${connector.name} ist kein Datei-Connector`);
+      }
+    }
+
     const normalizedParentScheduleId =
       input.parentScheduleId && input.parentScheduleId !== input.id
         ? input.parentScheduleId
@@ -1043,6 +1456,9 @@ export class AdminDataService {
       // Update existing record - Name field is read-only (auto-number), never update it
       await client.updateScheduleRecord(input.id, fields);
       this.saveLocalTimingDefinition(resolvedInstance.id, input.id, input.timingDefinition);
+      if (input.active) {
+        this.clearScheduleAutoDisabledFlag(input.id);
+      }
       return { id: input.id, action: "updated" };
     }
 
@@ -1130,6 +1546,7 @@ export class AdminDataService {
     for (const id of deletedIds) {
       await client.deleteScheduleRecord(id);
       this.removeLocalTimingDefinition(resolvedInstance.id, id);
+      this.removeScheduleHealthState(id);
     }
 
     return { deletedIds, deletedNames };
@@ -1160,6 +1577,242 @@ export class AdminDataService {
 
     const id = await client.createConnectorRecord(fields);
     return { id, action: "created" };
+  }
+
+  public async exportSetup(instanceId?: string): Promise<SetupExportDocument> {
+    const resolved = this.resolveInstance(instanceId);
+    const client = await this.createClient(resolved.id);
+    const [connectorConfigs, schedules] = await Promise.all([
+      client.queryConnectors(),
+      this.listSchedules(resolved.id)
+    ]);
+
+    const connectorById = new Map(connectorConfigs.map((item) => [item.id, item]));
+    const scheduleById = new Map(schedules.map((item) => [item.id, item]));
+
+    const connectors: ConnectorMutationInput[] = connectorConfigs.map((connector) => ({
+      name: connector.name,
+      active: connector.active,
+      connectorType: connector.connectorType,
+      targetSystem: connector.targetSystem,
+      direction: connector.direction,
+      secretKey: connector.secretKey,
+      timeoutMs: connector.timeoutMs,
+      maxRetries: connector.maxRetries,
+      description: connector.description,
+      parameters: connector.parameters
+    }));
+
+    const scheduleItems: SetupExportScheduleItem[] = schedules.map((schedule) => ({
+      name: schedule.name,
+      active: schedule.active,
+      sourceSystem: schedule.sourceSystem,
+      targetSystem: schedule.targetSystem,
+      objectName: schedule.objectName,
+      operation: schedule.operation,
+      connectorName: schedule.connectorId ? connectorById.get(schedule.connectorId)?.name : undefined,
+      mappingDefinition: schedule.mappingDefinition,
+      direction: schedule.direction,
+      sourceType: schedule.sourceType,
+      targetType: schedule.targetType,
+      sourceDefinition: schedule.sourceDefinition,
+      targetDefinition: schedule.targetDefinition,
+      batchSize: schedule.batchSize,
+      nextRunAt: schedule.nextRunAt,
+      lastRunAt: schedule.lastRunAt,
+      timingDefinition: schedule.timingDefinition,
+      parentScheduleId: schedule.parentScheduleId,
+      parentScheduleName: schedule.parentScheduleId
+        ? scheduleById.get(schedule.parentScheduleId)?.name
+        : undefined,
+      inheritTimingFromParent: schedule.inheritTimingFromParent
+    }));
+
+    return {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      instanceId: resolved.id,
+      connectors,
+      schedules: scheduleItems
+    };
+  }
+
+  public async importSetup(document: SetupExportDocument, instanceId?: string): Promise<SetupImportResult> {
+    if (!document || typeof document !== "object") {
+      throw new Error("Import-Dokument ist ungueltig");
+    }
+
+    if (!Array.isArray(document.connectors) || !Array.isArray(document.schedules)) {
+      throw new Error("Import-Dokument muss connectors und schedules als Arrays enthalten");
+    }
+
+    const resolved = this.resolveInstance(instanceId);
+    const client = await this.createClient(resolved.id);
+    const existingConnectors = await client.queryConnectors();
+    const connectorByName = new Map(existingConnectors.map((item) => [item.name, item]));
+    const connectorIdByName = new Map(existingConnectors.map((item) => [item.name, item.id]));
+
+    let connectorsCreated = 0;
+    let connectorsUpdated = 0;
+
+    for (const entry of document.connectors) {
+      const existing = connectorByName.get(entry.name);
+      const result = await this.saveConnector(
+        {
+          ...entry,
+          id: existing?.id
+        },
+        resolved.id
+      );
+
+      if (result.action === "created") {
+        connectorsCreated += 1;
+      } else {
+        connectorsUpdated += 1;
+      }
+
+      connectorIdByName.set(entry.name, result.id);
+    }
+
+    const existingSchedules = await this.listSchedules(resolved.id);
+    const scheduleByName = new Map(existingSchedules.map((item) => [item.name, item]));
+    const scheduleIdByName = new Map(existingSchedules.map((item) => [item.name, item.id]));
+
+    let schedulesCreated = 0;
+    let schedulesUpdated = 0;
+
+    let pending = [...document.schedules];
+    let guard = 0;
+
+    while (pending.length > 0) {
+      guard += 1;
+      if (guard > document.schedules.length + 5) {
+        throw new Error("Scheduler-Import konnte nicht aufgeloest werden (moeglicher Parent-Zyklus)");
+      }
+
+      const remaining: SetupExportScheduleItem[] = [];
+      let progressed = false;
+
+      for (const entry of pending) {
+        const existing = scheduleByName.get(entry.name);
+        const connectorId = entry.connectorName ? connectorIdByName.get(entry.connectorName) : undefined;
+
+        if (entry.connectorName && !connectorId) {
+          throw new Error(`Connector fuer Scheduler nicht gefunden: ${entry.connectorName}`);
+        }
+
+        const desiredParentName = String(entry.parentScheduleName || "").trim();
+        const resolvedParentId = desiredParentName
+          ? scheduleIdByName.get(desiredParentName)
+          : undefined;
+
+        if (desiredParentName && !resolvedParentId) {
+          remaining.push(entry);
+          continue;
+        }
+
+        const result = await this.saveSchedule(
+          {
+            ...entry,
+            id: existing?.id,
+            connectorId,
+            parentScheduleId: resolvedParentId,
+            inheritTimingFromParent: resolvedParentId ? entry.inheritTimingFromParent : false
+          },
+          resolved.id
+        );
+
+        scheduleIdByName.set(entry.name, result.id);
+        progressed = true;
+
+        if (result.action === "created") {
+          schedulesCreated += 1;
+        } else {
+          schedulesUpdated += 1;
+        }
+      }
+
+      if (!progressed && remaining.length > 0) {
+        const unresolved = remaining
+          .map((item) => `${item.name} -> ${String(item.parentScheduleName || "unbekannt")}`)
+          .join(", ");
+        throw new Error(`Parent-Scheduler konnten nicht aufgeloest werden: ${unresolved}`);
+      }
+
+      pending = remaining;
+    }
+
+    return {
+      connectorsCreated,
+      connectorsUpdated,
+      schedulesCreated,
+      schedulesUpdated
+    };
+  }
+
+  public async analyzeUploadedSourceFile(
+    connectorId: string,
+    fileName: string,
+    contentBase64: string,
+    instanceId?: string
+  ): Promise<UploadedFileAnalysisResult> {
+    if (!connectorId) {
+      throw new Error("connectorId ist erforderlich");
+    }
+    if (!fileName) {
+      throw new Error("fileName ist erforderlich");
+    }
+    if (!contentBase64) {
+      throw new Error("contentBase64 ist erforderlich");
+    }
+
+    const client = await this.createClient(instanceId);
+    const connector = await client.queryConnector(connectorId);
+    if (!this.isFileConnectorType(connector.connectorType)) {
+      throw new Error(`Connector ${connector.name} unterstuetzt keinen Datei-Import`);
+    }
+
+    const fileBuffer = Buffer.from(contentBase64, "base64");
+    const analysis = analyzeUploadedFile(fileName, fileBuffer);
+    const sourceType: "FILE_CSV" | "FILE_EXCEL" | "FILE_JSON" =
+      analysis.format === "excel" ? "FILE_EXCEL" : analysis.format === "json" ? "FILE_JSON" : "FILE_CSV";
+
+    // Save the uploaded file to the connector's importPath so that source preview works afterwards
+    const params = connector.parameters || {};
+    const basePath = path.resolve(
+      process.cwd(),
+      String(params.basePath || params.fileBasePath || "artifacts/files")
+    );
+    const importPath = path.resolve(basePath, String(params.importPath || "inbound"));
+    await fs.promises.mkdir(importPath, { recursive: true });
+    await fs.promises.writeFile(path.resolve(importPath, fileName), fileBuffer);
+
+    const sourceDefinition = {
+      fileName,
+      format: analysis.format,
+      charset: analysis.charset,
+      delimiter: analysis.delimiter,
+      hasHeader: true
+    };
+
+    const mappingDefinition = analysis.headers.map((header) => ({
+      sourceField: header,
+      sourceType: "string",
+      targetField: "",
+      transformFunction: "NONE"
+    }));
+
+    return {
+      connectorId,
+      fileName,
+      format: analysis.format,
+      charset: analysis.charset,
+      delimiter: analysis.delimiter,
+      headers: analysis.headers,
+      sourceType,
+      sourceDefinition: JSON.stringify(sourceDefinition, null, 2),
+      mappingDefinition: JSON.stringify(mappingDefinition, null, 2)
+    };
   }
 
   public async getConnectionGraph(instanceId?: string): Promise<ConnectionGraph> {
@@ -1235,6 +1888,8 @@ export class AdminDataService {
       subtitle: `${schedule.objectName || "-"} | ${schedule.direction || "source-to-target"}${schedule.parentScheduleId ? " | Parent" : ""}`,
       direction: schedule.direction,
       objectName: schedule.objectName,
+      sourceType: schedule.sourceType,
+      targetType: schedule.targetType,
       directionIcon: this.toDirectionIcon(schedule.direction),
       x: 456 + (scheduleDepth.get(schedule.id) || 0) * 300,
       y: 70 + index * 104,
@@ -1442,6 +2097,22 @@ export class AdminDataService {
     return pino({
       level: process.env.LOG_LEVEL || "info"
     });
+  }
+
+  private isFileConnectorType(connectorType: string | undefined): boolean {
+    const normalized = String(connectorType || "").toLowerCase();
+    return (
+      normalized.includes("file") ||
+      normalized.includes("csv") ||
+      normalized.includes("excel") ||
+      normalized.includes("xlsx") ||
+      normalized.includes("json")
+    );
+  }
+
+  private isRestConnectorType(connectorType: string | undefined): boolean {
+    const normalized = String(connectorType || "").trim().toLowerCase();
+    return normalized.includes("rest") || normalized.includes("http") || normalized.includes("api");
   }
 
   private toDirectionIcon(direction?: string): string {
@@ -1873,6 +2544,31 @@ export class AdminDataService {
     writeLocalScheduleTimingStore(store);
   }
 
+  private clearScheduleAutoDisabledFlag(scheduleId: string): void {
+    const store = readLocalScheduleHealthStore();
+    const entry = store[scheduleId];
+    if (!entry || entry.autoDisabled !== true) {
+      return;
+    }
+
+    store[scheduleId] = {
+      ...entry,
+      autoDisabled: false,
+      autoDisabledAt: undefined
+    };
+    writeLocalScheduleHealthStore(store);
+  }
+
+  private removeScheduleHealthState(scheduleId: string): void {
+    const store = readLocalScheduleHealthStore();
+    if (!(scheduleId in store)) {
+      return;
+    }
+
+    delete store[scheduleId];
+    writeLocalScheduleHealthStore(store);
+  }
+
   public getTransformFunctions(): Promise<{ functions: Array<{ id: string; label: string; description?: string }> }> {
     return Promise.resolve({
       functions: [
@@ -1993,20 +2689,16 @@ export class AdminDataService {
       return { fields: [] };
     }
 
-    if (normalizedTargetSystem === "SALESFORCE" && targetObject && instanceId) {
-      try {
-        const client = await this.createClient(instanceId);
-        const fields = await client.describeObjectFields(targetObject);
-        return {
-          fields: (fields || []).map((field: any) => ({
-            name: field.name || '',
-            type: field.type || 'string',
-            label: field.label
-          }))
-        };
-      } catch {
-        return { fields: [] };
-      }
+    if (normalizedTargetSystem === "SALESFORCE" && targetObject) {
+      const client = await this.createClient(instanceId);
+      const fields = await client.describeObjectFields(targetObject);
+      return {
+        fields: (fields || []).map((field: any) => ({
+          name: field.name || '',
+          type: field.type || 'string',
+          label: field.label
+        }))
+      };
     }
 
     if (this.isMssqlTargetSystem(normalizedTargetSystem) && connectorId) {
@@ -2019,5 +2711,1053 @@ export class AdminDataService {
     }
 
     return { fields: [] };
+  }
+
+  public async createCustomObjectMetadata(
+    metadata: Record<string, unknown>,
+    instanceId?: string
+  ): Promise<unknown> {
+    const client = await this.createClient(instanceId);
+    try {
+      const fullName = String(metadata.fullName ?? "").trim();
+      if (!fullName) {
+        throw new Error("Custom object metadata requires a fullName");
+      }
+
+      return await client.createOrUpdateMetadata("CustomObject", fullName, metadata);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async deployEzbMetadata(instanceId?: string): Promise<unknown> {
+    const client = await this.createClient(instanceId);
+    const zipBase64 = await this.createEzbDeployZipBase64();
+    const result = await client.deployMetadataZip(zipBase64);
+
+    if (!result.success) {
+      const details = result.details ? `: ${JSON.stringify(result.details)}` : "";
+      throw new Error(`EZB metadata deployment failed with status ${result.status || "unknown"}${details}`);
+    }
+
+    const psAssignment = await client.ensurePermissionSetAssigned("MSD_Integration_Agent");
+
+    return { ...result, permissionSetAssignment: psAssignment };
+  }
+
+  public async getSalesforceOverview(instanceId?: string): Promise<SalesforceOrgOverview> {
+    const client = await this.createClient(instanceId);
+    return await client.getOrgOverview();
+  }
+
+  public async listSalesforceObjects(instanceId?: string): Promise<{ name: string; label: string }[]> {
+    const client = await this.createClient(instanceId);
+    return await client.listObjectMetadata();
+  }
+
+  public async describeSalesforceObjectFields(objectApiName: string, instanceId?: string): Promise<{ name: string; label: string; type: string; nillable: boolean }[]> {
+    const client = await this.createClient(instanceId);
+    return await client.describeObjectFields(objectApiName);
+  }
+
+  public async createSalesforceCustomField(
+    objectApiName: string,
+    fieldApiName: string,
+    fieldType: string,
+    instanceId?: string
+  ): Promise<unknown> {
+    const client = await this.createClient(instanceId);
+    const ensuredApiName = fieldApiName.endsWith("__c") ? fieldApiName : fieldApiName + "__c";
+    const sfType = this.mapFieldTypeToSalesforceType(fieldType);
+    const metadata: Record<string, unknown> = {
+      label: fieldApiName.replace(/__c$/, "").replace(/_/g, " "),
+      type: sfType.type,
+      ...sfType.extra
+    };
+    return await client.createOrUpdateMetadata("CustomField", objectApiName + "." + ensuredApiName, metadata);
+  }
+
+  public analyzeFileBuffer(fileName: string, fileBuffer: Buffer): { fields: string[]; rows: Record<string, unknown>[] } {
+    const analysis = analyzeUploadedFile(fileName, fileBuffer);
+    const fields = analysis.headers || [];
+    
+    // For rows, we parse based on format
+    let rows: Record<string, unknown>[] = [];
+    try {
+      if (analysis.format === 'excel') {
+        const XLSX = require('xlsx') as any;
+        const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+        const firstSheet = workbook.SheetNames[0];
+        const worksheetRows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheet]) as Record<string, unknown>[];
+        rows = worksheetRows.slice(0, 10);
+      } else if (analysis.format === 'json') {
+        const parsed = JSON.parse(fileBuffer.toString('utf8'));
+        rows = (Array.isArray(parsed) ? parsed : []).slice(0, 10);
+      } else {
+        // CSV parsing with detected delimiter and basic quote handling
+        const delimiter = String(analysis.delimiter || ';');
+        const splitCsvLine = (line: string): string[] => {
+          const values: string[] = [];
+          let current = '';
+          let inQuotes = false;
+
+          for (let index = 0; index < line.length; index += 1) {
+            const char = line[index];
+            const nextChar = line[index + 1];
+
+            if (char === '"') {
+              if (inQuotes && nextChar === '"') {
+                current += '"';
+                index += 1;
+              } else {
+                inQuotes = !inQuotes;
+              }
+              continue;
+            }
+
+            if (!inQuotes && char === delimiter) {
+              values.push(current);
+              current = '';
+              continue;
+            }
+
+            current += char;
+          }
+
+          values.push(current);
+          return values.map((value) => value.trim());
+        };
+
+        const lines = fileBuffer
+          .toString('utf8')
+          .replace(/^\uFEFF/, '')
+          .split(/\r?\n/)
+          .map((line) => line.trimEnd())
+          .filter((line) => line.length > 0);
+
+        const headerLine = lines[0] || '';
+        const headers = splitCsvLine(headerLine).map((h) => h.trim());
+        for (let i = 1; i < Math.min(11, lines.length); i++) {
+          const values = splitCsvLine(lines[i]);
+          const record: Record<string, unknown> = {};
+          headers.forEach((h, idx) => {
+            record[h] = values[idx] ?? '';
+          });
+          rows.push(record);
+        }
+      }
+    } catch {
+      rows = [];
+    }
+    
+    return { fields, rows };
+  }
+
+  private mapFieldTypeToSalesforceType(fieldType: string): { type: string; extra?: Record<string, unknown> } {
+    const map: Record<string, { type: string; extra?: Record<string, unknown> }> = {
+      Text: { type: "Text", extra: { length: 255 } },
+      Number: { type: "Number", extra: { precision: 18, scale: 0 } },
+      Date: { type: "Date" },
+      DateTime: { type: "DateTime" },
+      Checkbox: { type: "Checkbox", extra: { defaultValue: false } },
+      Currency: { type: "Currency", extra: { precision: 18, scale: 2 } },
+      Percent: { type: "Percent", extra: { precision: 18, scale: 2 } },
+      Email: { type: "Email" },
+      Phone: { type: "Phone" },
+      Url: { type: "Url" }
+    };
+    return map[fieldType] || { type: "Text", extra: { length: 255 } };
+  }
+
+  public async createCustomObjectFromSource(
+    input: CreateCustomObjectFromSourceInput,
+    instanceId?: string
+  ): Promise<{
+    objectApiName: string;
+    label: string;
+    fieldsCreated: number;
+    result: unknown;
+    tabResult: unknown;
+  }> {
+    const objectApiName = this.normalizeCustomObjectApiName(input.objectApiName);
+    const label = String(input.label || "").trim() || this.customObjectLabelFromApiName(objectApiName);
+    const sourceFields = Array.isArray(input.sourceFields) ? input.sourceFields : [];
+    const fieldOverrides = Array.isArray(input.fieldOverrides) ? input.fieldOverrides : [];
+
+    if (!sourceFields.length) {
+      throw new Error("sourceFields darf nicht leer sein");
+    }
+
+    const fieldMetadata = this.buildCustomFieldMetadataFromSource(sourceFields, fieldOverrides);
+    if (!fieldMetadata.length) {
+      throw new Error("Aus den Quellfeldern konnten keine gültigen Salesforce-Felder erstellt werden");
+    }
+
+    const metadata = {
+      fullName: objectApiName,
+      label,
+      pluralLabel: `${label}s`,
+      nameField: {
+        displayFormat: `${objectApiName.replace(/__c$/, "")}-{000000}`,
+        label: "Record ID",
+        type: "AutoNumber"
+      },
+      sharingModel: "ReadWrite",
+      fields: fieldMetadata
+    };
+
+    const result = await this.createCustomObjectMetadata(metadata, instanceId);
+    const tabResult = await this.createCustomTabMetadata(objectApiName, instanceId);
+
+    return {
+      objectApiName,
+      label,
+      fieldsCreated: fieldMetadata.length,
+      result,
+      tabResult
+    };
+  }
+
+  private async createCustomTabMetadata(objectApiName: string, instanceId?: string): Promise<unknown> {
+    const client = await this.createClient(instanceId);
+    return await client.createOrUpdateMetadata("CustomTab", objectApiName, {
+      fullName: objectApiName,
+      customObject: true,
+      motif: "Custom40: Currency"
+    });
+  }
+
+  private normalizeCustomObjectApiName(rawValue: string): string {
+    const normalized = String(rawValue || "")
+      .trim()
+      .replace(/[^A-Za-z0-9_]/g, "_")
+      .replace(/^_+|_+$/g, "");
+
+    if (!normalized) {
+      throw new Error("objectApiName ist erforderlich");
+    }
+
+    const baseName = /__c$/i.test(normalized)
+      ? normalized.replace(/__c$/i, "")
+      : normalized;
+
+    const safeBaseName = /^[A-Za-z]/.test(baseName)
+      ? baseName
+      : `X_${baseName}`;
+
+    return `${safeBaseName}__c`;
+  }
+
+  private customObjectLabelFromApiName(objectApiName: string): string {
+    const base = objectApiName.replace(/__c$/i, "");
+    const words = base
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/_/g, " ")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((word) => word.slice(0, 1).toUpperCase() + word.slice(1).toLowerCase());
+    return words.join(" ") || "Custom Object";
+  }
+
+  private normalizeCustomFieldApiName(rawValue: string): string {
+    const normalized = String(rawValue || "")
+      .trim()
+      .replace(/[^A-Za-z0-9_]/g, "_")
+      .replace(/^_+|_+$/g, "");
+
+    if (!normalized) {
+      return "Field";
+    }
+
+    const baseName = /__c$/i.test(normalized)
+      ? normalized.replace(/__c$/i, "")
+      : normalized;
+
+    const safeBaseName = /^[A-Za-z]/.test(baseName)
+      ? baseName
+      : `F_${baseName}`;
+
+    return `${safeBaseName}__c`;
+  }
+
+  private fieldLabelFromSource(field: SourceFieldMetadata): string {
+    const raw = String(field.label || field.name || "").trim();
+    const words = raw
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/_/g, " ")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((word) => word.slice(0, 1).toUpperCase() + word.slice(1));
+    return words.join(" ") || "Field";
+  }
+
+  private mapSourceTypeToSalesforceField(typeName: string): Record<string, unknown> {
+    const normalized = String(typeName || "").trim().toLowerCase();
+
+    if (normalized === "boolean" || normalized === "bool") {
+      return { type: "Checkbox", defaultValue: false };
+    }
+
+    if (normalized === "date") {
+      return { type: "Date" };
+    }
+
+    if (normalized === "datetime" || normalized === "timestamp") {
+      return { type: "DateTime" };
+    }
+
+    if (normalized.includes("int") || normalized === "number" || normalized === "double" || normalized === "float" || normalized === "decimal") {
+      return { type: "Number", precision: 18, scale: 6 };
+    }
+
+    return { type: "Text", length: 255 };
+  }
+
+  private buildCustomFieldMetadataFromSource(
+    sourceFields: SourceFieldMetadata[],
+    fieldOverrides: Array<{ sourceName: string; type?: string }> = []
+  ): Record<string, unknown>[] {
+    const usedApiNames = new Set<string>();
+    const result: Record<string, unknown>[] = [];
+    const overrideBySourceName = new Map<string, string>();
+
+    for (const override of fieldOverrides) {
+      const sourceName = String(override?.sourceName || "").trim().toLowerCase();
+      const fieldType = String(override?.type || "").trim();
+      if (sourceName && fieldType) {
+        overrideBySourceName.set(sourceName, fieldType);
+      }
+    }
+
+    for (const sourceField of sourceFields) {
+      const sourceName = String(sourceField?.name || "").trim();
+      if (!sourceName) {
+        continue;
+      }
+
+      let apiName = this.normalizeCustomFieldApiName(sourceName);
+      if (apiName.toLowerCase() === "name" || apiName.toLowerCase() === "name__c") {
+        apiName = "SourceName__c";
+      }
+
+      let uniqueApiName = apiName;
+      let suffix = 2;
+      while (usedApiNames.has(uniqueApiName.toLowerCase())) {
+        uniqueApiName = apiName.replace(/__c$/i, `_${suffix}__c`);
+        suffix += 1;
+      }
+      usedApiNames.add(uniqueApiName.toLowerCase());
+
+      result.push({
+        fullName: uniqueApiName,
+        label: this.fieldLabelFromSource(sourceField),
+        required: false,
+        ...this.mapSourceTypeToSalesforceField(
+          overrideBySourceName.get(sourceName.toLowerCase()) || sourceField.type
+        )
+      });
+    }
+
+    return result;
+  }
+
+  private async createEzbDeployZipBase64(): Promise<string> {
+    const files = [
+      {
+        source: path.join(SALESFORCE_METADATA_DIR, "objects/EZB__c.object"),
+        target: "objects/EZB__c.object"
+      },
+      {
+        source: path.join(SALESFORCE_METADATA_DIR, "tabs/EZB__c.tab"),
+        target: "tabs/EZB__c.tab"
+      },
+      {
+        source: path.join(SALESFORCE_METADATA_DIR, "permissionsets/MSD_Integration_Agent.permissionset"),
+        target: "permissionsets/MSD_Integration_Agent.permissionset"
+      },
+      {
+        source: path.join(SALESFORCE_METADATA_DIR, "applications/MSD_Integration.app"),
+        target: "applications/MSD_Integration.app"
+      }
+    ];
+
+    for (const file of files) {
+      if (!fs.existsSync(file.source)) {
+        throw new Error(`Required metadata file is missing: ${file.source}`);
+      }
+    }
+
+    const packageXml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<Package xmlns="http://soap.sforce.com/2006/04/metadata">',
+      '  <types>',
+      '    <members>EZB__c</members>',
+      '    <name>CustomObject</name>',
+      '  </types>',
+      '  <types>',
+      '    <members>MSD_Integration</members>',
+      '    <name>CustomApplication</name>',
+      '  </types>',
+      '  <types>',
+      '    <members>MSD_Integration_Agent</members>',
+      '    <name>PermissionSet</name>',
+      '  </types>',
+      '  <types>',
+      '    <members>EZB__c</members>',
+      '    <name>CustomTab</name>',
+      '  </types>',
+      '  <version>61.0</version>',
+      '</Package>'
+    ].join('\n');
+
+    const stream = new PassThrough();
+    const chunks: Buffer[] = [];
+    stream.on("data", (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+
+    const archive = archiver("zip", { zlib: { level: 9 } });
+
+    const zipPromise = new Promise<string>((resolve, reject) => {
+      stream.on("end", () => {
+        resolve(Buffer.concat(chunks).toString("base64"));
+      });
+      stream.on("error", reject);
+      archive.on("error", reject);
+    });
+
+    archive.pipe(stream);
+    archive.append(packageXml, { name: "package.xml" });
+    for (const file of files) {
+      archive.file(file.source, { name: file.target });
+    }
+    void archive.finalize();
+
+    return await zipPromise;
+  }
+
+  // ─── Migration Config Storage ─────────────────────────────────────────────
+
+  private readMigrationsStore(): MigrationConfig[] {
+    if (!fs.existsSync(LOCAL_MIGRATIONS_FILE)) {
+      return [];
+    }
+    try {
+      const raw = fs.readFileSync(LOCAL_MIGRATIONS_FILE, "utf8").trim();
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? (parsed as MigrationConfig[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private writeMigrationsStore(migrations: MigrationConfig[]): void {
+    const dir = path.dirname(LOCAL_MIGRATIONS_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(LOCAL_MIGRATIONS_FILE, JSON.stringify(migrations, null, 2), "utf8");
+  }
+
+  public listMigrations(): MigrationConfig[] {
+    return this.readMigrationsStore();
+  }
+
+  public getMigration(id: string): MigrationConfig | undefined {
+    return this.readMigrationsStore().find((m) => m.id === id);
+  }
+
+  public saveMigration(input: Omit<MigrationConfig, "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string }): MigrationConfig {
+    const migrations = this.readMigrationsStore();
+    const now = new Date().toISOString();
+    const existing = migrations.find((m) => m.id === input.id);
+    const saved: MigrationConfig = {
+      ...input,
+      createdAt: existing?.createdAt ?? input.createdAt ?? now,
+      updatedAt: now
+    };
+    if (existing) {
+      const idx = migrations.indexOf(existing);
+      migrations[idx] = saved;
+    } else {
+      migrations.push(saved);
+    }
+    this.writeMigrationsStore(migrations);
+    return saved;
+  }
+
+  public deleteMigration(id: string): boolean {
+    const migrations = this.readMigrationsStore();
+    const filtered = migrations.filter((m) => m.id !== id);
+    if (filtered.length === migrations.length) {
+      return false;
+    }
+    this.writeMigrationsStore(filtered);
+    return true;
+  }
+
+  private classifyMigrationError(errorMessage: string): string {
+    const message = String(errorMessage || "").toLowerCase();
+    if (!message) {
+      return "Sonstige";
+    }
+
+    if (
+      message.includes("duplicate") ||
+      message.includes("duplik") ||
+      message.includes("duplicate value found") ||
+      message.includes("duplicate external")
+    ) {
+      return "Dubletten";
+    }
+
+    if (
+      message.includes("invalid field") ||
+      message.includes("no such column") ||
+      message.includes("unknown field")
+    ) {
+      return "Invalid Field";
+    }
+
+    if (
+      message.includes("picklist") ||
+      message.includes("invalid_or_null_for_restricted_picklist")
+    ) {
+      return "Picklist Fehler";
+    }
+
+    if (
+      message.includes("required") ||
+      message.includes("required field") ||
+      message.includes("required fields are missing")
+    ) {
+      return "Pflichtfeld fehlt";
+    }
+
+    if (
+      message.includes("invalid cross reference") ||
+      message.includes("reference") ||
+      message.includes("lookup")
+    ) {
+      return "Lookup/Referenz Fehler";
+    }
+
+    if (
+      message.includes("string too long") ||
+      message.includes("max length") ||
+      message.includes("value too long")
+    ) {
+      return "Feldlaenge";
+    }
+
+    return "Sonstige";
+  }
+
+  private formatDuration(durationMs: number): string {
+    const safeMs = Math.max(0, Math.floor(durationMs));
+    const totalSeconds = Math.floor(safeMs / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  private async writeMigrationRunReport(
+    migration: MigrationConfig,
+    runResult: MigrationRunResult,
+    finishedAt: string,
+    failedRecordsByObjectId: Record<string, MigrationFailedRecord[]>
+  ): Promise<string> {
+    const startedAtMs = new Date(runResult.startedAt).getTime();
+    const finishedAtMs = new Date(finishedAt).getTime();
+    const durationMs = Math.max(0, finishedAtMs - startedAtMs);
+
+    const totalSource = runResult.steps.reduce((sum, step) => sum + (step.recordsProcessed || 0), 0);
+    const totalSuccess = runResult.steps.reduce((sum, step) => sum + (step.recordsSucceeded || 0), 0);
+    const totalFailed = runResult.steps.reduce((sum, step) => sum + (step.recordsFailed || 0), 0);
+
+    const errorGroupCounter = new Map<string, number>();
+    for (const failedRecords of Object.values(failedRecordsByObjectId)) {
+      for (const record of failedRecords) {
+        const group = this.classifyMigrationError(record.error);
+        errorGroupCounter.set(group, (errorGroupCounter.get(group) || 0) + 1);
+      }
+    }
+
+    const reportLines: string[] = [];
+    reportLines.push(`# Migrationsprotokoll: ${migration.name}`);
+    reportLines.push("");
+    reportLines.push(`- Migration-ID: ${migration.id}`);
+    reportLines.push(`- Start: ${runResult.startedAt}`);
+    reportLines.push(`- Ende: ${finishedAt}`);
+    reportLines.push(`- Dauer: ${this.formatDuration(durationMs)} (${durationMs} ms)`);
+    reportLines.push("");
+    reportLines.push("## Gesamtübersicht");
+    reportLines.push("");
+    reportLines.push(`- Anzahl Quelldatensätze: ${totalSource}`);
+    reportLines.push(`- Erfolgreich importiert: ${totalSuccess}`);
+    reportLines.push(`- Fehlerhaft: ${totalFailed}`);
+    reportLines.push("");
+
+    reportLines.push("## Ergebnis pro Objekt");
+    reportLines.push("");
+    reportLines.push("| Objekt | Verarbeitet | Erfolgreich | Fehlerhaft | Status |");
+    reportLines.push("| --- | ---: | ---: | ---: | --- |");
+    for (const step of runResult.steps) {
+      reportLines.push(
+        `| ${step.salesforceObject} | ${step.recordsProcessed || 0} | ${step.recordsSucceeded || 0} | ${step.recordsFailed || 0} | ${step.status} |`
+      );
+    }
+    reportLines.push("");
+
+    reportLines.push("## Fehlergruppen");
+    reportLines.push("");
+    if (!errorGroupCounter.size) {
+      reportLines.push("Keine Fehlergruppen vorhanden.");
+    } else {
+      reportLines.push("| Fehlerbild | Anzahl |");
+      reportLines.push("| --- | ---: |");
+      for (const [group, count] of [...errorGroupCounter.entries()].sort((a, b) => b[1] - a[1])) {
+        reportLines.push(`| ${group} | ${count} |`);
+      }
+    }
+    reportLines.push("");
+
+    reportLines.push("## Mapping-Tabellen");
+    reportLines.push("");
+    for (const obj of migration.objects) {
+      reportLines.push(`### ${obj.salesforceObject}`);
+      reportLines.push("");
+      if (!obj.fieldMappings.length) {
+        reportLines.push("Keine Mappings definiert.");
+        reportLines.push("");
+        continue;
+      }
+
+      reportLines.push("| Quelle | Ziel | Typ | Transform | Lookup | Picklist-Mapping |");
+      reportLines.push("| --- | --- | --- | --- | --- | --- |");
+      for (const mapping of obj.fieldMappings) {
+        const lookup = mapping.lookupEnabled
+          ? `${mapping.lookupObject || ""}.${mapping.lookupField || ""}`
+          : "-";
+        const transform = mapping.transformFunction === "STATIC"
+          ? `STATIC(${mapping.transformExpression || ""})`
+          : (mapping.transformFunction || "NONE");
+        const picklist = (mapping.picklistMappings || [])
+          .map((entry) => `${entry.source}=${entry.target}`)
+          .join("; ");
+        reportLines.push(
+          `| ${mapping.sourceColumn || ""} | ${mapping.targetField || ""} | ${mapping.targetFieldType || ""} | ${transform} | ${lookup} | ${picklist || "-"} |`
+        );
+      }
+      reportLines.push("");
+    }
+
+    const reportDir = path.join(process.cwd(), "artifacts", "migrations", migration.id, "reports");
+    await fs.promises.mkdir(reportDir, { recursive: true });
+    const reportFileName = `${new Date(finishedAt).toISOString().replace(/[:.]/g, "-")}-migration-report.md`;
+    const reportFilePath = path.join(reportDir, reportFileName);
+    await fs.promises.writeFile(reportFilePath, reportLines.join("\n"), "utf-8");
+
+    return path.relative(process.cwd(), reportFilePath).split(path.sep).join("/");
+  }
+
+  public async runMigration(id: string, instanceId?: string): Promise<MigrationRunResult> {
+    const migration = this.getMigration(id);
+    if (!migration) {
+      throw new Error(`Migration ${id} not found`);
+    }
+
+    const client = await this.createClient(instanceId ?? migration.instanceId);
+
+    const startedAt = new Date().toISOString();
+    const stepResults: MigrationRunResult["steps"] = [];
+    const failedRecordsByObjectId: Record<string, MigrationFailedRecord[]> = {};
+
+    // Execute in order defined by executionPlan
+    const orderedObjects = [...migration.executionPlan]
+      .sort((a, b) => a.order - b.order)
+      .map((step) => migration.objects.find((o) => o.id === step.objectId))
+      .filter((o): o is MigrationObjectConfig => !!o);
+
+    // Objects not in plan appended at end
+    for (const obj of migration.objects) {
+      if (!orderedObjects.find((o) => o.id === obj.id)) {
+        orderedObjects.push(obj);
+      }
+    }
+
+    // Mark running
+    migration.status = "running";
+    this.saveMigration(migration);
+
+    try {
+      for (const obj of orderedObjects) {
+        const stepResult: MigrationRunResult["steps"][number] = {
+          objectId: obj.id,
+          salesforceObject: obj.salesforceObject,
+          status: "done",
+          recordsProcessed: 0,
+          recordsSucceeded: 0,
+          recordsFailed: 0,
+          failedRecordsId: undefined
+        };
+
+        try {
+          if (!obj.filePath) {
+            throw new Error(`Kein Dateipfad konfiguriert für Objekt ${obj.salesforceObject}`);
+          }
+
+          const absolutePath = path.isAbsolute(obj.filePath)
+            ? obj.filePath
+            : path.resolve(process.cwd(), obj.filePath);
+
+          // Read and analyze file
+          const fileBuffer = await fs.promises.readFile(absolutePath);
+          const fileName = path.basename(absolutePath);
+          const { rows } = this.analyzeFileBuffer(fileName, fileBuffer);
+
+          stepResult.recordsProcessed = rows.length;
+
+          const mappingLines = this.buildMigrationMappingLines(obj);
+          const lookupResolver = async (lookupObject: string, lookupField: string, value: unknown): Promise<string | null> => {
+            if (value === undefined || value === null || value === "") {
+              return null;
+            }
+            const soql = `SELECT Id FROM ${lookupObject} WHERE ${lookupField} = ${this.toSoqlLiteral(value)} LIMIT 1`;
+            const result = await client.queryGeneric(soql);
+            if (!result.length) {
+              return null;
+            }
+            const idValue = result[0].Id;
+            return typeof idValue === "string" ? idValue : null;
+          };
+          const engine = new MappingDefinitionEngine(lookupResolver);
+
+          // Track each record: {index in original rows, mapped SF record or error, source record}
+          const recordStates: Array<{
+            rowIndex: number;
+            sourceRecord: Record<string, unknown>;
+            sfRecord?: Record<string, unknown>;
+            mappingError?: string;
+          }> = [];
+          const mappingErrorsPreview: string[] = [];
+
+          for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+            const row = rows[rowIndex];
+            try {
+              if (mappingLines.length > 0) {
+                const mapped = await engine.mapRecord(row, mappingLines);
+                const record: Record<string, unknown> = {};
+                for (const [key, value] of Object.entries(mapped.values)) {
+                  record[key] = value !== undefined && value !== "" ? value : null;
+                }
+                recordStates.push({ rowIndex, sourceRecord: row, sfRecord: record });
+              } else {
+                const record: Record<string, unknown> = {};
+                for (const mapping of obj.fieldMappings) {
+                  const rawValue = row[mapping.sourceColumn];
+                  record[mapping.targetField] = rawValue !== undefined && rawValue !== "" ? rawValue : null;
+                }
+                recordStates.push({ rowIndex, sourceRecord: row, sfRecord: record });
+              }
+            } catch (error) {
+              const errorMsg = error instanceof Error ? error.message : String(error);
+              recordStates.push({ rowIndex, sourceRecord: row, mappingError: errorMsg });
+              if (mappingErrorsPreview.length < 3) {
+                mappingErrorsPreview.push(errorMsg);
+              }
+            }
+          }
+
+          const sfRecords = recordStates.filter((s) => s.sfRecord).map((s) => s.sfRecord!);
+
+          const batchSize = 200;
+          let succeeded = 0;
+          let failed = 0;
+          const sfRecordStateIndexes = recordStates
+            .map((state, idx) => (state.sfRecord ? idx : -1))
+            .filter((idx) => idx >= 0);
+
+          for (let i = 0; i < sfRecords.length; i += batchSize) {
+            const batch = sfRecords.slice(i, i + batchSize);
+            let batchResults: Array<any> = [];
+            if (obj.operation === "upsert" && obj.externalIdField) {
+              const results = await (client as any).connection.sobject(obj.salesforceObject).upsert(batch, obj.externalIdField);
+              batchResults = Array.isArray(results) ? results : [results];
+            } else if (obj.operation === "update") {
+              const results = await (client as any).connection.sobject(obj.salesforceObject).update(batch);
+              batchResults = Array.isArray(results) ? results : [results];
+            } else {
+              const results = await (client as any).connection.sobject(obj.salesforceObject).insert(batch);
+              batchResults = Array.isArray(results) ? results : [results];
+            }
+
+            // Map batch results back to the exact recordStates slice for this batch.
+            const batchStateIndexes = sfRecordStateIndexes.slice(i, i + batch.length);
+            for (let batchIdx = 0; batchIdx < batchResults.length; batchIdx++) {
+              const stateIdx = batchStateIndexes[batchIdx];
+              if (stateIdx === undefined) continue;
+              const res = batchResults[batchIdx];
+              if (res.success) {
+                succeeded++;
+              } else {
+                failed++;
+                if (!recordStates[stateIdx].mappingError) {
+                  const sfError = Array.isArray(res.errors) && res.errors.length
+                    ? res.errors.map((e: { message?: string }) => e.message || String(e)).join("; ")
+                    : (res.error?.message || String(res.error || "Unknown Salesforce error"));
+                  recordStates[stateIdx].mappingError = sfError;
+                }
+              }
+            }
+          }
+
+          stepResult.recordsSucceeded = succeeded;
+          const mappingFailed = recordStates.filter((s) => s.mappingError).length;
+          stepResult.recordsFailed = mappingFailed;
+
+          // Save failed records to artifact
+          const failedRecords: MigrationFailedRecord[] = recordStates
+            .filter((s) => s.mappingError)
+            .map((s) => ({
+              rowIndex: s.rowIndex + 1,
+              sourceRecord: s.sourceRecord,
+              mappedRecord: s.sfRecord,
+              error: s.mappingError!,
+              errorType: s.mappingError && s.sfRecord ? 'salesforce' : 'mapping'
+            }));
+
+          if (failedRecords.length > 0) {
+            const failedRecordsId = `${obj.id}-${Date.now()}`;
+            const failedDir = path.join(process.cwd(), 'artifacts', 'migrations', migration.id, 'failed-records');
+            await fs.promises.mkdir(failedDir, { recursive: true });
+            await fs.promises.writeFile(
+              path.join(failedDir, `${failedRecordsId}.json`),
+              JSON.stringify(failedRecords, null, 2),
+              'utf-8'
+            );
+            stepResult.failedRecordsId = failedRecordsId;
+          }
+          failedRecordsByObjectId[obj.id] = failedRecords;
+
+          if (mappingFailed > 0) {
+            const prefix = `${mappingFailed} Datensätze fehlgeschlagen.`;
+            const detail = mappingErrorsPreview.length ? ` Beispiele: ${mappingErrorsPreview.join(" | ")}` : "";
+            stepResult.errorMessage = (stepResult.errorMessage ? `${stepResult.errorMessage} ` : "") + prefix + detail;
+          }
+
+          if (failed > 0 && succeeded === 0) {
+            stepResult.status = "error";
+            stepResult.errorMessage = `Alle ${failed} Datensätze fehlgeschlagen`;
+          }
+          if (mappingFailed > 0 && succeeded === 0 && failed === 0) {
+            stepResult.status = "error";
+          }
+        } catch (err: unknown) {
+          stepResult.status = "error";
+          stepResult.errorMessage = err instanceof Error ? err.message : String(err);
+        }
+
+        stepResults.push(stepResult);
+      }
+
+      const hasErrors = stepResults.some((s) => s.status === "error");
+      const finishedAt = new Date().toISOString();
+      const reportPath = await this.writeMigrationRunReport(migration, {
+        migrationId: id,
+        startedAt,
+        steps: stepResults
+      }, finishedAt, failedRecordsByObjectId);
+      migration.status = hasErrors ? "error" : "done";
+      migration.lastRunAt = startedAt;
+      migration.lastRunResult = {
+        startedAt,
+        finishedAt,
+        steps: stepResults.map((s) => ({ ...s }))
+      };
+      this.saveMigration(migration);
+
+      return { migrationId: id, startedAt, reportPath, steps: stepResults };
+    } catch (err: unknown) {
+      migration.status = "error";
+      this.saveMigration(migration);
+      throw err;
+    }
+  }
+
+  public async retryFailedMigrationRecords(
+    migrationId: string,
+    objectId: string,
+    failedRecordsId: string,
+    editedRecords: Array<{ rowIndex: number; sourceRecord: Record<string, unknown> }> = [],
+    instanceId?: string
+  ): Promise<{
+    objectId: string;
+    salesforceObject: string;
+    recordsProcessed: number;
+    recordsSucceeded: number;
+    recordsFailed: number;
+    failedRecordsId?: string;
+    errorMessage?: string;
+  }> {
+    const migration = this.getMigration(migrationId);
+    if (!migration) {
+      throw new Error(`Migration ${migrationId} not found`);
+    }
+
+    const obj = migration.objects.find((item) => item.id === objectId);
+    if (!obj) {
+      throw new Error(`Object ${objectId} not found in migration`);
+    }
+
+    const failedFile = path.join(
+      process.cwd(),
+      "artifacts",
+      "migrations",
+      migrationId,
+      "failed-records",
+      `${failedRecordsId}.json`
+    );
+
+    let previousFailed: MigrationFailedRecord[] = [];
+    try {
+      const raw = await fs.promises.readFile(failedFile, "utf-8");
+      previousFailed = JSON.parse(raw) as MigrationFailedRecord[];
+    } catch {
+      throw new Error(`Failed records ${failedRecordsId} not found`);
+    }
+
+    const editedByRow = new Map<number, Record<string, unknown>>();
+    for (const record of editedRecords) {
+      if (!record || typeof record.rowIndex !== "number" || typeof record.sourceRecord !== "object") {
+        continue;
+      }
+      editedByRow.set(record.rowIndex, record.sourceRecord);
+    }
+
+    const client = await this.createClient(instanceId ?? migration.instanceId);
+    const mappingLines = this.buildMigrationMappingLines(obj);
+    const lookupResolver = async (lookupObject: string, lookupField: string, value: unknown): Promise<string | null> => {
+      if (value === undefined || value === null || value === "") {
+        return null;
+      }
+      const soql = `SELECT Id FROM ${lookupObject} WHERE ${lookupField} = ${this.toSoqlLiteral(value)} LIMIT 1`;
+      const result = await client.queryGeneric(soql);
+      if (!result.length) {
+        return null;
+      }
+      const idValue = result[0].Id;
+      return typeof idValue === "string" ? idValue : null;
+    };
+    const engine = new MappingDefinitionEngine(lookupResolver);
+
+    const recordStates: Array<{
+      rowIndex: number;
+      sourceRecord: Record<string, unknown>;
+      sfRecord?: Record<string, unknown>;
+      mappingError?: string;
+    }> = [];
+
+    for (const failed of previousFailed) {
+      const rowIndex = Number(failed.rowIndex || 0);
+      const sourceRecord = editedByRow.get(rowIndex) || failed.sourceRecord || {};
+      try {
+        if (mappingLines.length > 0) {
+          const mapped = await engine.mapRecord(sourceRecord, mappingLines);
+          const record: Record<string, unknown> = {};
+          for (const [key, value] of Object.entries(mapped.values)) {
+            record[key] = value !== undefined && value !== "" ? value : null;
+          }
+          recordStates.push({ rowIndex: Math.max(1, rowIndex), sourceRecord, sfRecord: record });
+        } else {
+          const record: Record<string, unknown> = {};
+          for (const mapping of obj.fieldMappings) {
+            const rawValue = sourceRecord[mapping.sourceColumn];
+            record[mapping.targetField] = rawValue !== undefined && rawValue !== "" ? rawValue : null;
+          }
+          recordStates.push({ rowIndex: Math.max(1, rowIndex), sourceRecord, sfRecord: record });
+        }
+      } catch (error) {
+        recordStates.push({
+          rowIndex: Math.max(1, rowIndex),
+          sourceRecord,
+          mappingError: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    const sfRecords = recordStates.filter((s) => s.sfRecord).map((s) => s.sfRecord!);
+    const sfRecordStateIndexes = recordStates
+      .map((state, idx) => (state.sfRecord ? idx : -1))
+      .filter((idx) => idx >= 0);
+
+    const batchSize = 200;
+    let succeeded = 0;
+    let failed = 0;
+
+    for (let i = 0; i < sfRecords.length; i += batchSize) {
+      const batch = sfRecords.slice(i, i + batchSize);
+      let batchResults: Array<{ success?: boolean; errors?: Array<{ message?: string }>; error?: { message?: string } }> = [];
+
+      if (obj.operation === "upsert" && obj.externalIdField) {
+        const results = await (client as any).connection.sobject(obj.salesforceObject).upsert(batch, obj.externalIdField);
+        batchResults = Array.isArray(results) ? results : [results];
+      } else if (obj.operation === "update") {
+        const results = await (client as any).connection.sobject(obj.salesforceObject).update(batch);
+        batchResults = Array.isArray(results) ? results : [results];
+      } else {
+        const results = await (client as any).connection.sobject(obj.salesforceObject).insert(batch);
+        batchResults = Array.isArray(results) ? results : [results];
+      }
+
+      const batchStateIndexes = sfRecordStateIndexes.slice(i, i + batch.length);
+      for (let batchIdx = 0; batchIdx < batchResults.length; batchIdx++) {
+        const stateIdx = batchStateIndexes[batchIdx];
+        if (stateIdx === undefined) continue;
+        const res = batchResults[batchIdx];
+        if (res.success) {
+          succeeded++;
+        } else {
+          failed++;
+          const sfError = Array.isArray(res.errors) && res.errors.length
+            ? res.errors.map((e) => e.message || String(e)).join("; ")
+            : (res.error?.message || String(res.error || "Unknown Salesforce error"));
+          recordStates[stateIdx].mappingError = sfError;
+        }
+      }
+    }
+
+    const stillFailed: MigrationFailedRecord[] = recordStates
+      .filter((state) => !!state.mappingError)
+      .map((state) => ({
+        rowIndex: state.rowIndex,
+        sourceRecord: state.sourceRecord,
+        mappedRecord: state.sfRecord,
+        error: state.mappingError || "Unknown error",
+        errorType: state.sfRecord ? "salesforce" : "mapping"
+      }));
+
+    let newFailedRecordsId: string | undefined;
+    if (stillFailed.length > 0) {
+      newFailedRecordsId = `${objectId}-${Date.now()}`;
+      const failedDir = path.join(process.cwd(), "artifacts", "migrations", migrationId, "failed-records");
+      await fs.promises.mkdir(failedDir, { recursive: true });
+      await fs.promises.writeFile(
+        path.join(failedDir, `${newFailedRecordsId}.json`),
+        JSON.stringify(stillFailed, null, 2),
+        "utf-8"
+      );
+    }
+
+    return {
+      objectId: obj.id,
+      salesforceObject: obj.salesforceObject,
+      recordsProcessed: recordStates.length,
+      recordsSucceeded: succeeded,
+      recordsFailed: stillFailed.length,
+      failedRecordsId: newFailedRecordsId,
+      errorMessage: stillFailed.length > 0 ? `${stillFailed.length} Datensätze konnten weiterhin nicht importiert werden.` : undefined
+    };
   }
 }

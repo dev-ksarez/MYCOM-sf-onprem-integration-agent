@@ -1,4 +1,6 @@
 import pino from "pino";
+import fs from "node:fs";
+import path from "node:path";
 import { SalesforceClient, SalesforceScheduleRecord } from "../clients/salesforce/salesforce-client";
 import { ConnectorRegistry } from "../core/connector-registry/connector-registry";
 import { DataTransferJob } from "../core/job-runner/data-transfer-job";
@@ -10,8 +12,11 @@ import { MssqlConnector } from "../connectors/mssql/mssql-connector";
 import { SalesforceAccountSource } from "../source/salesforce/salesforce-account-source";
 import { SalesforceSoqlSourceAdapter } from "../source-adapters/salesforce/salesforce-soql-source-adapter";
 import { MssqlQuerySourceAdapter } from "../source-adapters/mssql/mssql-query-source-adapter";
+import { RestApiSourceAdapter } from "../source-adapters/rest/rest-api-source-adapter";
 import { SalesforceScheduleSource } from "../source/salesforce/salesforce-schedule-source";
 import { MssqlTargetAdapter } from "../target-adapters/mssql/mssql-target-adapter";
+import { FileSourceAdapter } from "../source-adapters/file/file-source-adapter";
+import { FileTargetAdapter } from "../target-adapters/file/file-target-adapter";
 import { SalesforceTargetAdapter } from "../target-adapters/salesforce/salesforce-target-adapter";
 import { SalesforceGlobalPicklistTargetAdapter } from "../target-adapters/salesforce/salesforce-global-picklist-target-adapter";
 import { JobContext } from "../types/job-context";
@@ -30,6 +35,126 @@ export interface ManualRunResult {
   scheduleName: string;
   triggered: boolean;
   message: string;
+}
+
+const AUTO_DISABLE_FAILURE_THRESHOLD = Math.max(
+  2,
+  Number.parseInt(process.env.SCHEDULE_AUTO_DISABLE_FAILURE_THRESHOLD || "3", 10) || 3
+);
+const LOCAL_SCHEDULE_HEALTH_FILE =
+  process.env.SF_SCHEDULE_HEALTH_FILE || path.resolve(process.cwd(), "artifacts/schedule-health.json");
+
+interface LocalScheduleHealthItem {
+  consecutiveFailures: number;
+  lastError?: string;
+  lastFailedAt?: string;
+  autoDisabled?: boolean;
+  autoDisabledAt?: string;
+}
+
+interface LocalScheduleHealthDocument {
+  version: number;
+  updatedAt: string;
+  schedules: Record<string, LocalScheduleHealthItem>;
+}
+
+function readLocalScheduleHealth(): Record<string, LocalScheduleHealthItem> {
+  try {
+    if (!fs.existsSync(LOCAL_SCHEDULE_HEALTH_FILE)) {
+      return {};
+    }
+
+    const raw = fs.readFileSync(LOCAL_SCHEDULE_HEALTH_FILE, "utf8").trim();
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    const schedulesCandidate = (
+      parsed && typeof parsed === "object" && !Array.isArray(parsed) && "schedules" in parsed
+        ? (parsed as { schedules?: unknown }).schedules
+        : parsed
+    );
+
+    if (!schedulesCandidate || typeof schedulesCandidate !== "object" || Array.isArray(schedulesCandidate)) {
+      return {};
+    }
+
+    return Object.entries(schedulesCandidate).reduce<Record<string, LocalScheduleHealthItem>>((acc, [scheduleId, item]) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return acc;
+      }
+
+      const candidate = item as Record<string, unknown>;
+      acc[scheduleId] = {
+        consecutiveFailures: Math.max(0, Number(candidate.consecutiveFailures || 0) || 0),
+        lastError: typeof candidate.lastError === "string" ? candidate.lastError : undefined,
+        lastFailedAt: typeof candidate.lastFailedAt === "string" ? candidate.lastFailedAt : undefined,
+        autoDisabled: candidate.autoDisabled === true,
+        autoDisabledAt: typeof candidate.autoDisabledAt === "string" ? candidate.autoDisabledAt : undefined
+      };
+      return acc;
+    }, {});
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalScheduleHealth(store: Record<string, LocalScheduleHealthItem>): void {
+  const directory = path.dirname(LOCAL_SCHEDULE_HEALTH_FILE);
+  fs.mkdirSync(directory, { recursive: true });
+  const document: LocalScheduleHealthDocument = {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    schedules: store
+  };
+  fs.writeFileSync(LOCAL_SCHEDULE_HEALTH_FILE, JSON.stringify(document, null, 2), "utf8");
+}
+
+function markScheduleRunSuccess(scheduleId: string): void {
+  const store = readLocalScheduleHealth();
+  const existing = store[scheduleId];
+  if (!existing) {
+    return;
+  }
+
+  if ((existing.consecutiveFailures || 0) === 0 && existing.autoDisabled !== true) {
+    return;
+  }
+
+  store[scheduleId] = {
+    ...existing,
+    consecutiveFailures: 0,
+    autoDisabled: false,
+    autoDisabledAt: undefined,
+    lastError: undefined
+  };
+  writeLocalScheduleHealth(store);
+}
+
+function markScheduleRunFailure(scheduleId: string, errorMessage: string): LocalScheduleHealthItem {
+  const store = readLocalScheduleHealth();
+  const existing = store[scheduleId] || { consecutiveFailures: 0 };
+  const updated: LocalScheduleHealthItem = {
+    ...existing,
+    consecutiveFailures: Math.max(0, Number(existing.consecutiveFailures || 0) || 0) + 1,
+    lastError: errorMessage,
+    lastFailedAt: new Date().toISOString()
+  };
+  store[scheduleId] = updated;
+  writeLocalScheduleHealth(store);
+  return updated;
+}
+
+function markScheduleAutoDisabled(scheduleId: string): void {
+  const store = readLocalScheduleHealth();
+  const existing = store[scheduleId] || { consecutiveFailures: 0 };
+  store[scheduleId] = {
+    ...existing,
+    autoDisabled: true,
+    autoDisabledAt: new Date().toISOString()
+  };
+  writeLocalScheduleHealth(store);
 }
 
 function extractHierarchySettings(targetDefinition?: string): {
@@ -237,19 +362,37 @@ async function executeSchedule(
   options?: { forceRun?: boolean }
 ): Promise<boolean> {
   const forceRun = options?.forceRun ?? false;
+  const isFileSource = schedule.sourceType === "FILE_CSV" || schedule.sourceType === "FILE_EXCEL" || schedule.sourceType === "FILE_JSON";
+  const isFileTarget = schedule.targetType === "FILE_CSV" || schedule.targetType === "FILE_EXCEL" || schedule.targetType === "FILE_JSON";
+  const isRestSource = schedule.sourceType === "REST_API";
+
   const isGenericSalesforceToMssql =
     schedule.sourceType === "SALESFORCE_SOQL" && schedule.targetType === "MSSQL";
+  const isGenericSalesforceToFile = schedule.sourceType === "SALESFORCE_SOQL" && isFileTarget;
   const isGenericMssqlToSalesforce =
     schedule.sourceType === "MSSQL_SQL" && schedule.targetType === "SALESFORCE";
   const isGenericMssqlToGlobalPicklist =
     schedule.sourceType === "MSSQL_SQL" && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
+  const isGenericMssqlToFile = schedule.sourceType === "MSSQL_SQL" && isFileTarget;
+  const isGenericRestToSalesforce = isRestSource && schedule.targetType === "SALESFORCE";
+  const isGenericRestToGlobalPicklist = isRestSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
+  const isGenericFileToSalesforce = isFileSource && schedule.targetType === "SALESFORCE";
+  const isGenericFileToGlobalPicklist = isFileSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
+  const isGenericFileToMssql = isFileSource && schedule.targetType === "MSSQL";
 
-  if (
-    !isGenericSalesforceToMssql &&
-    !isGenericMssqlToSalesforce &&
-    !isGenericMssqlToGlobalPicklist &&
-    schedule.objectName !== "Account"
-  ) {
+  const isHandledGenericFlow =
+    isGenericSalesforceToMssql ||
+    isGenericSalesforceToFile ||
+    isGenericMssqlToSalesforce ||
+    isGenericMssqlToGlobalPicklist ||
+    isGenericMssqlToFile ||
+    isGenericRestToSalesforce ||
+    isGenericRestToGlobalPicklist ||
+    isGenericFileToSalesforce ||
+    isGenericFileToGlobalPicklist ||
+    isGenericFileToMssql;
+
+  if (!isHandledGenericFlow && schedule.objectName !== "Account") {
     logger.info(
       { scheduleId: schedule.id, objectName: schedule.objectName },
       "Skipping schedule because object is not supported yet"
@@ -261,9 +404,9 @@ async function executeSchedule(
     throw new Error(`Schedule ${schedule.name} is missing MSD_Connector__c`);
   }
 
-  const registry = new ConnectorRegistry();
   const connectorConfig = await salesforceClient.queryConnector(schedule.connectorId);
-  const connector = registry.getConnectorByConfig(connectorConfig);
+  const isFileConnector = /file|csv|excel|xlsx|json/i.test(connectorConfig.connectorType || "");
+  const connector = (isFileConnector || isRestSource) ? undefined : new ConnectorRegistry().getConnectorByConfig(connectorConfig);
 
   const context: JobContext = {
     runId: `RUN-${Date.now()}`,
@@ -326,14 +469,14 @@ async function executeSchedule(
   });
 
   try {
-    const connectionOk = await connector.testConnection();
+    const connectionOk = (isFileConnector || isRestSource) ? true : await connector!.testConnection();
     if (!connectionOk) {
       throw new Error(`Connection test failed for target system: ${schedule.targetSystem}`);
     }
 
     let result;
 
-    if (isGenericSalesforceToMssql) {
+    if (isGenericSalesforceToMssql || isGenericSalesforceToFile) {
       if (!schedule.sourceDefinition?.trim()) {
         throw new Error(`Schedule ${schedule.name} is missing MSD_SourceDefinition__c`);
       }
@@ -342,8 +485,12 @@ async function executeSchedule(
         throw new Error(`Schedule ${schedule.name} is missing MSD_MappingDefinition__c`);
       }
 
-      if (!(connector instanceof MssqlConnector)) {
+      if (isGenericSalesforceToMssql && !(connector instanceof MssqlConnector)) {
         throw new Error(`Connector type ${connectorConfig.connectorType} is not supported by MssqlTargetAdapter`);
+      }
+
+      if (isGenericSalesforceToFile && !schedule.targetDefinition?.trim()) {
+        throw new Error(`Schedule ${schedule.name} is missing MSD_TargetDefinition__c`);
       }
 
       const transferContext: TransferContext = {
@@ -352,16 +499,27 @@ async function executeSchedule(
         scheduleId: context.scheduleId,
         direction: schedule.direction || "Outbound",
         sourceType: schedule.sourceType || "SALESFORCE_SOQL",
-        targetType: schedule.targetType || "MSSQL",
+        targetType: schedule.targetType || (isGenericSalesforceToFile ? "FILE_CSV" : "MSSQL"),
         batchSize: context.batchSize,
         maxRetries: context.maxRetries
       };
 
       const sourceAdapter = new SalesforceSoqlSourceAdapter(salesforceClient, schedule.sourceDefinition);
-      const targetAdapter = new MssqlTargetAdapter(connector);
+      const targetAdapter = isGenericSalesforceToFile
+        ? new FileTargetAdapter(connectorConfig, schedule.targetDefinition || "")
+        : new MssqlTargetAdapter(connector as MssqlConnector);
       const job = new DataTransferJob(logger, sourceAdapter, targetAdapter);
       result = await job.execute(transferContext, schedule.mappingDefinition);
-    } else if (isGenericMssqlToSalesforce || isGenericMssqlToGlobalPicklist) {
+    } else if (
+      isGenericMssqlToSalesforce ||
+      isGenericMssqlToGlobalPicklist ||
+      isGenericMssqlToFile ||
+      isGenericRestToSalesforce ||
+      isGenericRestToGlobalPicklist ||
+      isGenericFileToSalesforce ||
+      isGenericFileToGlobalPicklist ||
+      isGenericFileToMssql
+    ) {
       if (!schedule.sourceDefinition?.trim()) {
         throw new Error(`Schedule ${schedule.name} is missing MSD_SourceDefinition__c`);
       }
@@ -374,23 +532,42 @@ async function executeSchedule(
         throw new Error(`Schedule ${schedule.name} is missing MSD_TargetDefinition__c`);
       }
 
+      if ((isGenericFileToMssql || isGenericMssqlToFile) && !(connector instanceof MssqlConnector) && !isFileConnector) {
+        throw new Error(`Connector type ${connectorConfig.connectorType} is not supported by MssqlTargetAdapter`);
+      }
+
       const transferContext: TransferContext = {
         runId: context.runId,
         correlationId: context.correlationId,
         scheduleId: context.scheduleId,
         direction: schedule.direction || "Inbound",
-        sourceType: schedule.sourceType || "MSSQL_SQL",
+        sourceType: schedule.sourceType || (isFileSource ? "FILE_CSV" : isRestSource ? "REST_API" : "MSSQL_SQL"),
         targetType:
           schedule.targetType ||
-          (isGenericMssqlToGlobalPicklist ? "SALESFORCE_GLOBAL_PICKLIST" : "SALESFORCE"),
+          (isGenericMssqlToGlobalPicklist || isGenericFileToGlobalPicklist
+            ? "SALESFORCE_GLOBAL_PICKLIST"
+            : isGenericMssqlToFile
+              ? "FILE_CSV"
+              : isGenericFileToMssql
+                ? "MSSQL"
+                : "SALESFORCE"),
         batchSize: context.batchSize,
         maxRetries: context.maxRetries
       };
 
-      const sourceAdapter = new MssqlQuerySourceAdapter(connectorConfig, schedule.sourceDefinition);
-      const targetAdapter = isGenericMssqlToGlobalPicklist
-        ? new SalesforceGlobalPicklistTargetAdapter(salesforceClient, schedule.targetDefinition)
-        : new SalesforceTargetAdapter(salesforceClient, schedule.targetDefinition, connectorConfig);
+      const sourceAdapter = isFileSource
+        ? new FileSourceAdapter(connectorConfig, schedule.sourceDefinition)
+        : isRestSource
+          ? new RestApiSourceAdapter(connectorConfig, schedule.sourceDefinition)
+        : new MssqlQuerySourceAdapter(connectorConfig, schedule.sourceDefinition);
+
+      const targetAdapter = isGenericMssqlToFile
+        ? new FileTargetAdapter(connectorConfig, schedule.targetDefinition)
+        : isGenericFileToMssql
+          ? new MssqlTargetAdapter(connector as MssqlConnector)
+          : isGenericMssqlToGlobalPicklist || isGenericFileToGlobalPicklist
+            ? new SalesforceGlobalPicklistTargetAdapter(salesforceClient, schedule.targetDefinition)
+            : new SalesforceTargetAdapter(salesforceClient, schedule.targetDefinition, connectorConfig);
 
       const salesforceLookupResolver: LookupResolverFn = async (objectName, field, value) => {
         const escapedValue = String(value).replace(/'/g, "\\'");
@@ -399,7 +576,11 @@ async function executeSchedule(
         return records.length > 0 ? String(records[0].Id) : null;
       };
 
-      if (!forceRun && !targetAdapter.isProfileSchedulerDue()) {
+      if (
+        !forceRun &&
+        (targetAdapter instanceof SalesforceTargetAdapter || targetAdapter instanceof SalesforceGlobalPicklistTargetAdapter) &&
+        !targetAdapter.isProfileSchedulerDue()
+      ) {
         logger.info(
           { scheduleId: schedule.id, profileName: targetAdapter.getActiveProfileName() },
           "Skipping schedule because selected import profile scheduler is not active/due"
@@ -429,7 +610,7 @@ async function executeSchedule(
       result = await job.execute(transferContext, schedule.mappingDefinition);
     } else {
       const source = new SalesforceAccountSource(salesforceClient);
-      const job = new AccountExportJob(logger, source, connector);
+      const job = new AccountExportJob(logger, source, connector!);
       result = await job.execute(context, lastCheckpoint, lastRecordId, schedule.mappingDefinition);
     }
 
@@ -483,6 +664,7 @@ async function executeSchedule(
     }
 
     await salesforceClient.updateScheduleRecord(schedule.id, scheduleFields);
+    markScheduleRunSuccess(schedule.id);
 
     if (result.lastProcessedRecord) {
       await salesforceClient.upsertCheckpoint({
@@ -537,6 +719,39 @@ async function executeSchedule(
       finishedAt: new Date().toISOString(),
       errorMessage
     });
+
+    const health = markScheduleRunFailure(schedule.id, errorMessage);
+    const shouldAutoDisable =
+      !forceRun &&
+      schedule.active &&
+      health.consecutiveFailures >= AUTO_DISABLE_FAILURE_THRESHOLD;
+
+    if (shouldAutoDisable) {
+      await salesforceClient.updateScheduleRecord(schedule.id, {
+        Active__c: false,
+        LastRunAt__c: new Date().toISOString()
+      });
+
+      markScheduleAutoDisabled(schedule.id);
+
+      await salesforceClient.createLog({
+        runId,
+        level: "ERROR",
+        step: "RUN_AUTO_DISABLED",
+        message: `Scheduler automatisch deaktiviert nach ${health.consecutiveFailures} aufeinanderfolgenden Fehlern`,
+        correlationId: context.correlationId
+      });
+
+      logger.warn(
+        {
+          scheduleId: schedule.id,
+          scheduleName: schedule.name,
+          consecutiveFailures: health.consecutiveFailures,
+          threshold: AUTO_DISABLE_FAILURE_THRESHOLD
+        },
+        "Schedule auto-disabled after consecutive failures"
+      );
+    }
 
     throw error;
   }

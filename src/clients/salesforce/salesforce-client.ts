@@ -207,6 +207,43 @@ export interface SalesforceObjectMetadata {
   label: string;
 }
 
+export interface SalesforceOrgOverview {
+  domain: string;
+  instanceUrl?: string;
+  organizationId?: string;
+  organizationName?: string;
+  environment: "Sandbox" | "Production" | "Unknown";
+  apiUsage?: {
+    max: number;
+    used: number;
+    remaining: number;
+  };
+  dataStorageMb?: {
+    max: number;
+    used: number;
+    remaining: number;
+  };
+  fileStorageMb?: {
+    max: number;
+    used: number;
+    remaining: number;
+  };
+  licenses?: {
+    total: number;
+    used: number;
+    remaining: number;
+  };
+}
+
+export interface SalesforceMetadataDeployResult {
+  id?: string;
+  status?: string;
+  success: boolean;
+  numberComponentsDeployed?: number;
+  numberComponentErrors?: number;
+  details?: unknown;
+}
+
 export interface GlobalPicklistEntry {
   apiName: string;
   label: string;
@@ -421,6 +458,43 @@ export class SalesforceClient {
 
     const result = await this.connection.query<Record<string, unknown>>(trimmedSoql);
     return result.records.map((record) => ({ ...record }));
+  }
+
+  public async ensurePermissionSetAssigned(permissionSetName: string): Promise<{ assigned: boolean; alreadyExisted: boolean }> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const identity = await this.connection.identity();
+    const userId = (identity as unknown as { user_id?: string }).user_id;
+    if (!userId) {
+      throw new Error("Could not determine current Salesforce user ID from identity endpoint.");
+    }
+
+    const psResult = await this.connection.query<{ Id: string }>(
+      `SELECT Id FROM PermissionSet WHERE Name = '${permissionSetName}' LIMIT 1`
+    );
+    if (!psResult.records.length) {
+      throw new Error(`PermissionSet '${permissionSetName}' not found in Salesforce.`);
+    }
+    const permissionSetId = psResult.records[0].Id;
+
+    const assignResult = await this.connection.query<{ Id: string }>(
+      `SELECT Id FROM PermissionSetAssignment WHERE AssigneeId = '${userId}' AND PermissionSetId = '${permissionSetId}' LIMIT 1`
+    );
+    if (assignResult.records.length > 0) {
+      return { assigned: true, alreadyExisted: true };
+    }
+
+    const createResult = await this.connection.sobject("PermissionSetAssignment").create({
+      AssigneeId: userId,
+      PermissionSetId: permissionSetId
+    });
+    if (!createResult.success) {
+      const errors = "errors" in createResult ? JSON.stringify(createResult.errors) : "unknown error";
+      throw new Error(`Failed to assign PermissionSet '${permissionSetName}': ${errors}`);
+    }
+    return { assigned: true, alreadyExisted: false };
   }
 
   public async querySchedules(activeOnly = true): Promise<SalesforceScheduleRecord[]> {
@@ -1295,6 +1369,106 @@ export class SalesforceClient {
       .sort((a: SalesforceObjectMetadata, b: SalesforceObjectMetadata) => a.name.localeCompare(b.name));
   }
 
+  public async getOrgOverview(): Promise<SalesforceOrgOverview> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const domain = this.config.loginUrl.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+    const instanceUrl = String((this.connection as unknown as { instanceUrl?: string }).instanceUrl || "").trim();
+
+    const overview: SalesforceOrgOverview = {
+      domain,
+      instanceUrl,
+      environment: "Unknown"
+    };
+
+    try {
+      const orgResult = await this.connection.query<{
+        Id?: string;
+        Name?: string;
+        IsSandbox?: boolean;
+      }>("SELECT Id, Name, IsSandbox FROM Organization LIMIT 1");
+
+      const org = orgResult.records[0] || {};
+      overview.organizationId = org.Id;
+      overview.organizationName = org.Name;
+      overview.environment = org.IsSandbox === true ? "Sandbox" : "Production";
+    } catch {
+      // Keep partial overview if org query is not accessible.
+    }
+
+    try {
+      const limitsApi = this.connection as unknown as {
+        limits: () => Promise<Record<string, { Max?: number; Remaining?: number }>>;
+      };
+      const limits = await limitsApi.limits();
+
+      const apiLimit = limits?.DailyApiRequests;
+      if (apiLimit && Number.isFinite(apiLimit.Max) && Number.isFinite(apiLimit.Remaining)) {
+        const max = Number(apiLimit.Max);
+        const remaining = Number(apiLimit.Remaining);
+        overview.apiUsage = {
+          max,
+          remaining,
+          used: Math.max(0, max - remaining)
+        };
+      }
+
+      const dataStorageLimit = limits?.DataStorageMB;
+      if (dataStorageLimit && Number.isFinite(dataStorageLimit.Max) && Number.isFinite(dataStorageLimit.Remaining)) {
+        const max = Number(dataStorageLimit.Max);
+        const remaining = Number(dataStorageLimit.Remaining);
+        overview.dataStorageMb = {
+          max,
+          remaining,
+          used: Math.max(0, max - remaining)
+        };
+      }
+
+      const fileStorageLimit = limits?.FileStorageMB;
+      if (fileStorageLimit && Number.isFinite(fileStorageLimit.Max) && Number.isFinite(fileStorageLimit.Remaining)) {
+        const max = Number(fileStorageLimit.Max);
+        const remaining = Number(fileStorageLimit.Remaining);
+        overview.fileStorageMb = {
+          max,
+          remaining,
+          used: Math.max(0, max - remaining)
+        };
+      }
+    } catch {
+      // Limits are optional in the dashboard panel.
+    }
+
+    try {
+      const licensesResult = await this.connection.query<{
+        TotalLicenses?: number;
+        UsedLicenses?: number;
+      }>("SELECT TotalLicenses, UsedLicenses FROM UserLicense");
+
+      const totals = licensesResult.records.reduce(
+        (acc, item) => {
+          acc.total += Number(item.TotalLicenses || 0);
+          acc.used += Number(item.UsedLicenses || 0);
+          return acc;
+        },
+        { total: 0, used: 0 }
+      );
+
+      if (totals.total > 0) {
+        overview.licenses = {
+          total: totals.total,
+          used: totals.used,
+          remaining: Math.max(0, totals.total - totals.used)
+        };
+      }
+    } catch {
+      // License visibility can depend on org permissions.
+    }
+
+    return overview;
+  }
+
   public async getGlobalPicklistValues(
     globalValueSetApiName: string
   ): Promise<SalesforcePicklistValue[]> {
@@ -1470,5 +1644,131 @@ export class SalesforceClient {
 
     this.globalPicklistCache.delete(globalValueSetApiName);
     return { added, updated, total: normalizedEntries.length };
+  }
+
+  public async createOrUpdateMetadata(
+    metadataType: string,
+    fullName: string,
+    metadata: Record<string, unknown>
+  ): Promise<unknown> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const metadataApi = this.connection.metadata as unknown as {
+      read: (type: string, fullName: string) => Promise<unknown>;
+      update: (type: string, metadata: unknown) => Promise<unknown>;
+      create: (type: string, metadata: unknown) => Promise<unknown>;
+    };
+
+    const payload: Record<string, unknown> = {
+      ...metadata,
+      fullName
+    };
+
+    let exists = false;
+    if (metadataType === "CustomObject") {
+      try {
+        const objects = await this.listObjectMetadata();
+        exists = objects.some((entry) => String(entry.name || "").toLowerCase() === fullName.toLowerCase());
+      } catch {
+        exists = false;
+      }
+    } else {
+      try {
+        const readResult = await metadataApi.read(metadataType, fullName);
+        const metadataEntry = Array.isArray(readResult) ? readResult[0] : readResult;
+        if (metadataEntry && typeof metadataEntry === "object") {
+          const entryFullName = String((metadataEntry as Record<string, unknown>).fullName || "").trim();
+          exists = entryFullName
+            ? entryFullName.toLowerCase() === fullName.toLowerCase()
+            : true;
+        } else {
+          exists = false;
+        }
+      } catch {
+        exists = false;
+      }
+    }
+
+    if (exists) {
+      return {
+        success: true,
+        action: "exists",
+        type: metadataType,
+        fullName
+      };
+    }
+
+    const writeResult = await metadataApi.create(metadataType, payload);
+
+    const resultArray = Array.isArray(writeResult) ? writeResult : [writeResult];
+    const failed = resultArray.find(
+      (entry) => entry && typeof entry === "object" && "success" in (entry as Record<string, unknown>) && (entry as Record<string, unknown>).success === false
+    ) as Record<string, unknown> | undefined;
+
+    if (failed) {
+      const errors = failed.errors ? JSON.stringify(failed.errors) : "unknown metadata error";
+
+      if (metadataType === "CustomObject") {
+        try {
+          const objects = await this.listObjectMetadata();
+          const present = objects.some((entry) => String(entry.name || "").toLowerCase() === fullName.toLowerCase());
+          if (present) {
+            return {
+              success: true,
+              action: "exists",
+              type: metadataType,
+              fullName
+            };
+          }
+        } catch {
+          // Keep original error if fallback object lookup fails.
+        }
+      }
+
+      throw new Error(`Failed to create ${metadataType} ${fullName}: ${errors}`);
+    }
+
+    return writeResult;
+  }
+
+  public async deployMetadataZip(zipBase64: string): Promise<SalesforceMetadataDeployResult> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const metadataApi = this.connection.metadata as unknown as {
+      deploy: (zipContent: string, options: { rollbackOnError: boolean; singlePackage: boolean }) => Promise<{ id?: string; status?: string }>;
+      checkDeployStatus: (id: string, includeDetails?: boolean) => Promise<Record<string, unknown>>;
+    };
+
+    const deployResult = await metadataApi.deploy(zipBase64, {
+      rollbackOnError: true,
+      singlePackage: true
+    });
+
+    const deployId = String(deployResult?.id || "").trim();
+    if (!deployId) {
+      throw new Error("Metadata deploy did not return a deployment id");
+    }
+
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      const status = await metadataApi.checkDeployStatus(deployId, true);
+      if (status.done === true) {
+        return {
+          id: deployId,
+          status: String(status.status || "").trim() || undefined,
+          success: status.success === true,
+          numberComponentsDeployed: Number(status.numberComponentsDeployed || 0),
+          numberComponentErrors: Number(status.numberComponentErrors || 0),
+          details: status.details
+        };
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    throw new Error(`Metadata deploy timed out: ${deployId}`);
   }
 }
