@@ -10,7 +10,7 @@ import {
   SalesforceScheduleRecord
 } from "../clients/salesforce/salesforce-client";
 import { ConnectorRegistry } from "../core/connector-registry/connector-registry";
-import { MappingDefinitionEngine } from "../core/mapping-dsl/mapping-definition-engine";
+import { LookupResolverFn, MappingDefinitionEngine } from "../core/mapping-dsl/mapping-definition-engine";
 import { MappingDefinitionParser } from "../core/mapping-dsl/mapping-definition-parser";
 import {
   MappingDefinitionLine,
@@ -22,11 +22,23 @@ import {
   getSalesforceConfig,
   SalesforceConfig
 } from "../infrastructure/config/salesforce-config";
+import { isImportProfileSchedulerRuleDue, type SchedulerDay } from "../core/scheduler/import-profile-scheduler";
+import { getDefaultStaleRunInactivityThresholdMinutes, getStaleRunInactivityThresholdMinutesForSchedule } from "../core/scheduler/stale-run-policy";
 import { MigrationStagingSqlite } from "../infrastructure/db/migration-staging-sqlite";
 import { MssqlDatabase } from "../infrastructure/db/mssql";
+import {
+  ConnectorTemplateDraft,
+  listBuiltInTemplates,
+  ScheduleTemplateDraft,
+  TemplateDefinition,
+  TemplateKind,
+  TemplateBundleDraft,
+  TemplateMutationInput
+} from "./template-library";
 import { IntegrationSchedule } from "../types/integration-schedule";
 import { runScheduleNow } from "../agent/agent-runner";
-import { analyzeUploadedFile, parseFileFromConnector } from "../utils/file-transfer";
+import { analyzeUploadedFile, decodeTextBuffer, parseDelimitedRows, parseFileFromConnector } from "../utils/file-transfer";
+import { parseQuerySourceDefinition } from "../utils/query-source-definition";
 import { fetchRestRows } from "../source-adapters/rest/rest-api-source-adapter";
 
 interface SalesforceInstanceEnvConfig {
@@ -264,7 +276,7 @@ export interface ScheduleListItem {
   id: string;
   name: string;
   active: boolean;
-  status: "due" | "scheduled" | "inactive";
+  status: "due" | "scheduled" | "inactive" | "running";
   sourceSystem: string;
   targetSystem: string;
   sourceType?: string;
@@ -334,6 +346,34 @@ export interface UploadedFileAnalysisResult {
   mappingDefinition: string;
 }
 
+export interface MigrationImportSuggestion {
+  objectApiName: string;
+  label: string;
+  score: number;
+  confidence: "high" | "medium" | "low";
+  matchedHeaders: string[];
+  reason: string;
+}
+
+export interface MigrationImportSheetAnalysis {
+  sheetName: string;
+  headers: string[];
+  recordCount: number;
+  suggestions: MigrationImportSuggestion[];
+}
+
+export interface MigrationImportAnalysisResult {
+  fileName: string;
+  format: "csv" | "excel" | "json";
+  charset: string;
+  delimiter: string;
+  headers: string[];
+  recordCount: number;
+  suggestions: MigrationImportSuggestion[];
+  sheetName?: string;
+  sheets?: MigrationImportSheetAnalysis[];
+}
+
 export interface ConnectorTestResult {
   ok: boolean;
   connectorId: string;
@@ -356,10 +396,30 @@ export interface RunListItem {
   errorMessage?: string;
 }
 
+export interface StaleRunListItem extends RunListItem {
+  ageMinutes: number;
+  staleThresholdMinutes: number;
+  inactivityThresholdMinutes: number;
+}
+
+export interface ReleaseStaleRunsResult {
+  releasedCount: number;
+  releasedRunIds: string[];
+}
+
+export interface CancelRunResult {
+  cancelled: boolean;
+  runId: string;
+  scheduleId?: string;
+  scheduleName?: string;
+  previousStatus?: string;
+}
+
 export interface LogListItem {
   id: string;
   runId?: string;
   scheduleName?: string;
+  connectorName?: string;
   level?: string;
   step?: string;
   message?: string;
@@ -375,11 +435,13 @@ export interface LogChartBucket {
   end: string;
   total: number;
   errors: number;
+  connectorErrors: Record<string, number>;
 }
 
 export interface LogChartSummary {
   range: LogChartRange;
   buckets: LogChartBucket[];
+  connectors: string[];
 }
 
 export interface SqlPreviewResult {
@@ -440,6 +502,13 @@ export interface DeleteScheduleResult {
   deletedNames: string[];
 }
 
+export interface DeleteConnectorResult {
+  connectorId: string;
+  connectorName: string;
+  deletedScheduleIds: string[];
+  deletedScheduleNames: string[];
+}
+
 export interface ScheduleDryRunResult {
   ok: boolean;
   scheduleId: string;
@@ -462,6 +531,15 @@ export interface ConnectorMutationInput {
   maxRetries?: number;
   description?: string;
   parameters?: Record<string, unknown>;
+}
+
+export type { TemplateDefinition, TemplateKind, TemplateMutationInput } from "./template-library";
+
+export interface ApplyTemplateResult {
+  templateId: string;
+  templateKind: TemplateKind;
+  connector?: { id: string; name?: string; action?: "created" | "updated" };
+  schedule?: { id: string; name?: string; action?: "created" | "updated" };
 }
 
 export interface GraphNode {
@@ -502,6 +580,8 @@ export interface MigrationObjectConfig {
   processingMode?: "file" | "sqlite";
   filePath?: string;
   fileFormat?: "csv" | "excel" | "json";
+  fileSheetName?: string;
+  availableSheetNames?: string[];
   fileCharset?: string;
   fileDelimiter?: string;
   fileTextQualifier?: string;
@@ -515,6 +595,7 @@ export interface MigrationObjectConfig {
   stagingDatabasePath?: string;
   stagingImportedAt?: string;
   stagingStatus?: "pending" | "ready" | "processing" | "done" | "error";
+  confirmedSalesforceFields?: string[];
   fieldMappings: MigrationFieldMapping[];
   externalIdField?: string;
   operation: "insert" | "upsert" | "update";
@@ -549,6 +630,7 @@ export interface MigrationConfig {
   lastRunResult?: {
     startedAt: string;
     finishedAt?: string;
+    reportPath?: string;
     steps: Array<{
       objectId: string;
       salesforceObject: string;
@@ -557,6 +639,7 @@ export interface MigrationConfig {
       recordsSucceeded?: number;
       recordsFailed?: number;
       errorMessage?: string;
+      failedRecordsId?: string;
     }>;
   };
 }
@@ -576,7 +659,7 @@ export interface MigrationRunResult {
   steps: Array<{
     objectId: string;
     salesforceObject: string;
-    status: "done" | "error";
+    status: "pending" | "running" | "done" | "error";
     recordsProcessed: number;
     recordsSucceeded: number;
     recordsFailed: number;
@@ -741,6 +824,142 @@ function resolveInstances(): ResolvedInstance[] {
 export class AdminDataService {
   private readonly migrationStaging = new MigrationStagingSqlite();
 
+  private getStaleRunThresholdMinutes(): number {
+    const configured = Number(process.env.SF_STALE_RUN_TIMEOUT_MINUTES?.trim() || "360");
+    return Number.isFinite(configured) && configured > 0 ? configured : 360;
+  }
+
+  private getStaleRunInactivityThresholdMinutes(): number {
+    return getDefaultStaleRunInactivityThresholdMinutes();
+  }
+
+  private normalizeSuggestionKey(value: unknown): string {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/__c$/g, "")
+      .replace(/[^a-z0-9]+/g, "");
+  }
+
+  private tokenizeSuggestionValue(value: unknown): string[] {
+    const normalized = String(value || "")
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/__c$/g, "")
+      .toLowerCase();
+
+    return Array.from(new Set(
+      normalized
+        .split(/[^a-z0-9]+/g)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 3)
+    ));
+  }
+
+  private inferSuggestionConfidence(score: number): "high" | "medium" | "low" {
+    if (score >= 70) {
+      return "high";
+    }
+
+    if (score >= 35) {
+      return "medium";
+    }
+
+    return "low";
+  }
+
+  private buildMigrationImportSuggestions(
+    fileName: string,
+    headers: string[],
+    objects: Array<{ name: string; label: string }>,
+    describedFieldsByObject: Map<string, Array<{ name: string; label: string }>>
+  ): MigrationImportSuggestion[] {
+    const fileBaseName = path.basename(String(fileName || "")).replace(/\.[^.]+$/, "");
+    const fileKey = this.normalizeSuggestionKey(fileBaseName);
+    const fileTokens = this.tokenizeSuggestionValue(fileBaseName);
+    const headerTokens = headers.map((header) => this.normalizeSuggestionKey(header)).filter(Boolean);
+    const genericHeaderKeys = new Set([
+      "id",
+      "name",
+      "active",
+      "operation",
+      "objectname",
+      "source",
+      "target",
+      "direction",
+      "createddate",
+      "lastmodifieddate"
+    ]);
+
+    return objects.map((objectMeta) => {
+      const objectKey = this.normalizeSuggestionKey(objectMeta.name);
+      const objectLabelKey = this.normalizeSuggestionKey(objectMeta.label);
+      const objectTokens = [
+        ...this.tokenizeSuggestionValue(objectMeta.name),
+        ...this.tokenizeSuggestionValue(objectMeta.label)
+      ];
+
+      let score = 0;
+      const reasons: string[] = [];
+
+      if (fileKey && objectKey && (fileKey.includes(objectKey) || objectKey.includes(fileKey))) {
+        score += 50;
+        reasons.push("Dateiname passt zum Objektnamen");
+      } else if (fileKey && objectLabelKey && (fileKey.includes(objectLabelKey) || objectLabelKey.includes(fileKey))) {
+        score += 40;
+        reasons.push("Dateiname passt zum Objektlabel");
+      } else if (fileTokens.some((token) => objectTokens.includes(token))) {
+        score += 28;
+        reasons.push("Dateiname enthält einen passenden Objektbegriff");
+      }
+
+      const fields = describedFieldsByObject.get(objectMeta.name) || [];
+      const matchedHeaders = headers.filter((header) => {
+        const headerKey = this.normalizeSuggestionKey(header);
+        if (!headerKey || genericHeaderKeys.has(headerKey)) {
+          return false;
+        }
+
+        return fields.some((field) => {
+          const fieldNameKey = this.normalizeSuggestionKey(field.name);
+          const fieldLabelKey = this.normalizeSuggestionKey(field.label);
+          return headerKey === fieldNameKey || headerKey === fieldLabelKey;
+        });
+      });
+
+      if (matchedHeaders.length > 0) {
+        score += Math.min(48, matchedHeaders.length * 12);
+        reasons.push(matchedHeaders.length + " Feldübereinstimmungen");
+      } else {
+        const partialHeaderMatches = headerTokens.filter((headerKey) => {
+          if (!headerKey || genericHeaderKeys.has(headerKey)) {
+            return false;
+          }
+
+          return fields.some((field) => {
+            const fieldNameKey = this.normalizeSuggestionKey(field.name);
+            const fieldLabelKey = this.normalizeSuggestionKey(field.label);
+            return fieldNameKey.includes(headerKey) || headerKey.includes(fieldNameKey) || fieldLabelKey.includes(headerKey) || headerKey.includes(fieldLabelKey);
+          });
+        });
+
+        if (partialHeaderMatches.length > 0) {
+          score += Math.min(24, partialHeaderMatches.length * 6);
+          reasons.push(partialHeaderMatches.length + " teilweise passende Felder");
+        }
+      }
+
+      return {
+        objectApiName: objectMeta.name,
+        label: objectMeta.label || objectMeta.name,
+        score,
+        confidence: this.inferSuggestionConfidence(score),
+        matchedHeaders: matchedHeaders.slice(0, 6),
+        reason: reasons.join(", ") || "Allgemeine Heuristik"
+      } satisfies MigrationImportSuggestion;
+    }).filter((suggestion) => suggestion.score > 0)
+      .sort((left, right) => right.score - left.score || left.objectApiName.localeCompare(right.objectApiName, "de"))
+      .slice(0, 5);
+  }
+
   private getEffectiveMigrationProcessingMode(obj: MigrationObjectConfig): "file" | "sqlite" {
     if (obj.processingMode === "file" || obj.processingMode === "sqlite") {
       return obj.processingMode;
@@ -791,7 +1010,9 @@ export class AdminDataService {
         const lookupEnabled = mapping.lookupEnabled === true;
         const lookupObject = String(mapping.lookupObject || "").trim();
         const lookupField = String(mapping.lookupField || "").trim();
-        const transformType = lookupEnabled && lookupObject && lookupField
+        const targetFieldType = String(mapping.targetFieldType || "").trim().toLowerCase();
+        const lookupAllowedForTarget = targetFieldType === "reference" || targetFieldType === "id";
+        const transformType = lookupEnabled && lookupObject && lookupField && lookupAllowedForTarget
           ? "LOOKUP"
           : this.toMappingTransformType(mapping.transformFunction);
 
@@ -818,6 +1039,94 @@ export class AdminDataService {
   private toSoqlLiteral(value: unknown): string {
     const raw = String(value ?? "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     return `'${raw}'`;
+  }
+
+  private async createMigrationLookupResolver(
+    client: SalesforceClient,
+    mappingLines: MappingDefinitionLine[],
+    sourceRecords: Array<Record<string, unknown>>
+  ): Promise<LookupResolverFn> {
+    const lookupLines = mappingLines.filter(
+      (line) => line.transform.type === "LOOKUP" && line.transform.lookupObject && line.transform.lookupField
+    );
+    const lookupCache = new Map<string, string | null>();
+    const groupedLookups = new Map<string, { lookupObject: string; lookupField: string; values: Set<string> }>();
+
+    for (const line of lookupLines) {
+      const lookupObject = String(line.transform.lookupObject || "").trim();
+      const lookupField = String(line.transform.lookupField || "").trim();
+      const sourceField = String(line.sourceField || "").trim();
+      if (!lookupObject || !lookupField || !sourceField) {
+        continue;
+      }
+
+      const groupKey = `${lookupObject}|${lookupField}`;
+      if (!groupedLookups.has(groupKey)) {
+        groupedLookups.set(groupKey, { lookupObject, lookupField, values: new Set<string>() });
+      }
+
+      const group = groupedLookups.get(groupKey)!;
+      for (const record of sourceRecords) {
+        const rawValue = record[sourceField];
+        if (rawValue === undefined || rawValue === null || rawValue === "") {
+          continue;
+        }
+        group.values.add(String(rawValue));
+      }
+    }
+
+    for (const group of groupedLookups.values()) {
+      const uniqueValues = Array.from(group.values);
+      const chunkSize = 200;
+
+      for (let index = 0; index < uniqueValues.length; index += chunkSize) {
+        const chunk = uniqueValues.slice(index, index + chunkSize);
+        if (!chunk.length) {
+          continue;
+        }
+
+        const soql = `SELECT Id, ${group.lookupField} FROM ${group.lookupObject} WHERE ${group.lookupField} IN (${chunk
+          .map((value) => this.toSoqlLiteral(value))
+          .join(", ")})`;
+        const result = await client.queryGeneric(soql);
+
+        for (const row of result) {
+          const fieldValue = row[group.lookupField];
+          if (fieldValue === undefined || fieldValue === null || fieldValue === "") {
+            continue;
+          }
+          const cacheKey = `${group.lookupObject}|${group.lookupField}|${String(fieldValue)}`;
+          if (!lookupCache.has(cacheKey)) {
+            lookupCache.set(cacheKey, typeof row.Id === "string" ? row.Id : null);
+          }
+        }
+
+        for (const value of chunk) {
+          const cacheKey = `${group.lookupObject}|${group.lookupField}|${value}`;
+          if (!lookupCache.has(cacheKey)) {
+            lookupCache.set(cacheKey, null);
+          }
+        }
+      }
+    }
+
+    return async (lookupObject: string, lookupField: string, value: unknown): Promise<string | null> => {
+      if (value === undefined || value === null || value === "") {
+        return null;
+      }
+
+      const normalizedValue = String(value);
+      const cacheKey = `${lookupObject}|${lookupField}|${normalizedValue}`;
+      if (lookupCache.has(cacheKey)) {
+        return lookupCache.get(cacheKey) ?? null;
+      }
+
+      const soql = `SELECT Id FROM ${lookupObject} WHERE ${lookupField} = ${this.toSoqlLiteral(value)} LIMIT 1`;
+      const result = await client.queryGeneric(soql);
+      const resolvedId = result.length && typeof result[0].Id === "string" ? result[0].Id : null;
+      lookupCache.set(cacheKey, resolvedId);
+      return resolvedId;
+    };
   }
 
   public listInstances(): SalesforceInstanceOption[] {
@@ -864,8 +1173,14 @@ export class AdminDataService {
     const resolvedInstance = this.resolveInstance(instanceId);
     const client = await this.createClient(resolvedInstance.id);
     const records = await client.querySchedules(false);
+    const runningRuns = await client.queryRunningRuns(200);
     const localTiming = readLocalScheduleTimingStore()[resolvedInstance.id] || {};
     const localHealth = readLocalScheduleHealthStore();
+    const runningScheduleIds = new Set(
+      runningRuns
+        .map((run) => String(run.MSD_Schedule__c || "").trim())
+        .filter(Boolean)
+    );
 
     return records.map((record) => {
       const schedule = this.toIntegrationSchedule(record);
@@ -879,7 +1194,7 @@ export class AdminDataService {
         id: schedule.id,
         name: schedule.name,
         active: schedule.active,
-        status: this.getScheduleStatus(effectiveSchedule),
+        status: runningScheduleIds.has(schedule.id) ? "running" : this.getScheduleStatus(effectiveSchedule),
         sourceSystem: schedule.sourceSystem,
         targetSystem: schedule.targetSystem,
         sourceType: schedule.sourceType,
@@ -1093,6 +1408,147 @@ export class AdminDataService {
     }));
   }
 
+  public async listStaleRuns(limit = 50, instanceId?: string): Promise<StaleRunListItem[]> {
+    const client = await this.createClient(instanceId);
+    const staleThresholdMinutes = this.getStaleRunThresholdMinutes();
+    const staleThresholdMs = staleThresholdMinutes * 60 * 1000;
+    const inactivityThresholdMinutes = this.getStaleRunInactivityThresholdMinutes();
+    const inactivityThresholdMs = inactivityThresholdMinutes * 60 * 1000;
+    const now = Date.now();
+    const runs = await client.queryRunningRuns(limit);
+
+    const staleCandidates = await Promise.all(runs.map(async (run) => {
+        const startedAt = run.MSD_StartedAt__c;
+        const startedAtMs = startedAt ? new Date(startedAt).getTime() : Number.NaN;
+        const ageMinutes = Number.isNaN(startedAtMs)
+          ? staleThresholdMinutes
+          : Math.max(0, Math.round((now - startedAtMs) / 60000));
+        const latestLogs = await client.queryLogsByRunId(run.Id, 1);
+        const latestLogCreatedAt = latestLogs[0]?.CreatedDate;
+        const latestLogMs = latestLogCreatedAt ? new Date(latestLogCreatedAt).getTime() : Number.NaN;
+        const activityReferenceMs = !Number.isNaN(latestLogMs) ? latestLogMs : startedAtMs;
+        const inactivityThresholdMinutes = getStaleRunInactivityThresholdMinutesForSchedule(
+          run.MSD_Schedule__c,
+          run.MSD_Schedule__r?.Name
+        );
+        const inactivityThresholdMs = inactivityThresholdMinutes * 60 * 1000;
+        const isInactiveStale = Number.isNaN(activityReferenceMs)
+          ? true
+          : now - activityReferenceMs >= inactivityThresholdMs;
+        const isStartedAtStale = Number.isNaN(startedAtMs)
+          ? true
+          : now - startedAtMs >= staleThresholdMs;
+
+        return {
+          id: run.Id,
+          scheduleId: run.MSD_Schedule__c,
+          scheduleName: run.MSD_Schedule__r?.Name,
+          status: run.MSD_Status__c || "Unknown",
+          startedAt: run.MSD_StartedAt__c,
+          finishedAt: run.MSD_FinishedAt__c,
+          recordsRead: run.MSD_RecordsRead__c,
+          recordsProcessed: run.MSD_RecordsProcessed__c,
+          recordsSucceeded: run.MSD_RecordsSucceeded__c,
+          recordsFailed: run.MSD_RecordsFailed__c,
+          errorMessage: run.MSD_ErrorMessage__c,
+          ageMinutes,
+          staleThresholdMinutes,
+          inactivityThresholdMinutes,
+          isStale: isStartedAtStale || isInactiveStale
+        };
+      }));
+
+    return staleCandidates
+      .filter((run) => run.isStale)
+      .map((run) => ({
+        id: run.id,
+        scheduleId: run.scheduleId,
+        scheduleName: run.scheduleName,
+        status: run.status,
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        recordsRead: run.recordsRead,
+        recordsProcessed: run.recordsProcessed,
+        recordsSucceeded: run.recordsSucceeded,
+        recordsFailed: run.recordsFailed,
+        errorMessage: run.errorMessage,
+        ageMinutes: run.ageMinutes,
+        staleThresholdMinutes: run.staleThresholdMinutes,
+        inactivityThresholdMinutes: run.inactivityThresholdMinutes
+      }));
+  }
+
+  public async releaseStaleRuns(runIds: string[] | undefined, instanceId?: string): Promise<ReleaseStaleRunsResult> {
+    const client = await this.createClient(instanceId);
+    const staleRuns = await this.listStaleRuns(200, instanceId);
+    const requestedRunIds = Array.isArray(runIds)
+      ? new Set(runIds.map((runId) => String(runId || "").trim()).filter(Boolean))
+      : null;
+    const runsToRelease = requestedRunIds
+      ? staleRuns.filter((run) => requestedRunIds.has(run.id))
+      : staleRuns;
+
+    const releasedRunIds: string[] = [];
+    for (const run of runsToRelease) {
+      await client.updateRun(run.id, {
+        status: "Failed",
+        finishedAt: new Date().toISOString(),
+        errorMessage: "Manual stale-run release from admin UI"
+      });
+      releasedRunIds.push(run.id);
+    }
+
+    return {
+      releasedCount: releasedRunIds.length,
+      releasedRunIds
+    };
+  }
+
+  public async cancelRun(runId: string, instanceId?: string): Promise<CancelRunResult> {
+    const normalizedRunId = String(runId || "").trim();
+    if (!normalizedRunId) {
+      throw new Error("Run-ID fehlt");
+    }
+
+    const client = await this.createClient(instanceId);
+    const run = await client.queryRunById(normalizedRunId);
+    if (!run) {
+      throw new Error("Run nicht gefunden");
+    }
+
+    const previousStatus = String(run.MSD_Status__c || "Unknown");
+    if (previousStatus !== "Running") {
+      throw new Error(`Run ist nicht aktiv und kann nicht abgebrochen werden (${previousStatus})`);
+    }
+
+    const finishedAt = new Date().toISOString();
+    const errorMessage = "Manual abort from admin UI";
+    await client.updateRun(normalizedRunId, {
+      status: "Failed",
+      finishedAt,
+      recordsRead: run.MSD_RecordsRead__c,
+      recordsProcessed: run.MSD_RecordsProcessed__c,
+      recordsSucceeded: run.MSD_RecordsSucceeded__c,
+      recordsFailed: run.MSD_RecordsFailed__c,
+      errorMessage
+    });
+    await client.createLog({
+      runId: normalizedRunId,
+      level: "WARN",
+      step: "RUN_ABORTED",
+      message: errorMessage,
+      correlationId: run.MSD_CorrelationId__c || `manual-abort-${Date.now()}`
+    });
+
+    return {
+      cancelled: true,
+      runId: normalizedRunId,
+      scheduleId: run.MSD_Schedule__c,
+      scheduleName: run.MSD_Schedule__r?.Name,
+      previousStatus
+    };
+  }
+
   public async listLogs(runId: string, limit = 200, instanceId?: string): Promise<LogListItem[]> {
     const client = await this.createClient(instanceId);
     const logs = await client.queryLogsByRunId(runId, limit);
@@ -1111,7 +1567,8 @@ export class AdminDataService {
   public async summarizeLogsByRange(range: LogChartRange, instanceId?: string): Promise<LogChartSummary> {
     const { from, to } = this.getRangeWindow(range);
     const buckets = this.createLogBuckets(range, from, to);
-    const items = await this.listLogsByRange(from.toISOString(), to.toISOString(), "all", 5000, instanceId);
+    const items = await this.listLogsByRange(from.toISOString(), to.toISOString(), "error", 5000, undefined, instanceId);
+    const connectorNames = new Set<string>();
 
     for (const item of items) {
       if (!item.createdAt) {
@@ -1137,12 +1594,16 @@ export class AdminDataService {
       bucket.total += 1;
       if ((item.level || "").toUpperCase() === "ERROR") {
         bucket.errors += 1;
+        const connectorName = String(item.connectorName || item.scheduleName || "Ohne Connector").trim() || "Ohne Connector";
+        bucket.connectorErrors[connectorName] = Number(bucket.connectorErrors[connectorName] || 0) + 1;
+        connectorNames.add(connectorName);
       }
     }
 
     return {
       range,
-      buckets
+      buckets,
+      connectors: Array.from(connectorNames).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }))
     };
   }
 
@@ -1151,6 +1612,7 @@ export class AdminDataService {
     endIso: string,
     type: "all" | "error" = "all",
     limit = 300,
+    connectorName?: string,
     instanceId?: string
   ): Promise<LogListItem[]> {
     const client = await this.createClient(instanceId);
@@ -1160,6 +1622,7 @@ export class AdminDataService {
       id: log.Id,
       runId: log.MSD_Run__c,
       scheduleName: log.MSD_Run__r?.MSD_Schedule__r?.Name,
+      connectorName: log.MSD_Run__r?.MSD_Schedule__r?.MSD_Connector__r?.Name,
       level: log.MSD_Level__c,
       step: log.MSD_Step__c,
       message: log.MSD_Message__c,
@@ -1167,9 +1630,14 @@ export class AdminDataService {
       createdAt: log.CreatedDate
     }));
 
-    const filtered = type === "error"
+    const filteredByType = type === "error"
       ? mapped.filter((item) => (item.level || "").toUpperCase() === "ERROR")
       : mapped;
+
+    const normalizedConnectorName = String(connectorName || "").trim().toLowerCase();
+    const filtered = normalizedConnectorName
+      ? filteredByType.filter((item) => String(item.connectorName || item.scheduleName || "Ohne Connector").trim().toLowerCase() === normalizedConnectorName)
+      : filteredByType;
 
     return filtered.slice(0, Math.max(1, Math.min(limit, 1000)));
   }
@@ -1238,7 +1706,7 @@ export class AdminDataService {
         throw new Error("Für SQL-Vorschau muss ein MSSQL-Connector ausgewählt sein");
       }
 
-      return this.previewSql(connectorId, trimmedDefinition, normalizedLimit, instanceId);
+      return this.previewSql(connectorId, parseQuerySourceDefinition(trimmedDefinition).queryText, normalizedLimit, instanceId);
     }
 
     if (normalizedType === "FILE_CSV" || normalizedType === "FILE_EXCEL" || normalizedType === "FILE_JSON") {
@@ -1278,9 +1746,10 @@ export class AdminDataService {
 
     if (normalizedType === "SALESFORCE_SOQL") {
       const client = await this.createClient(instanceId);
-      const limitedSoql = /\bLIMIT\s+\d+\b/i.test(trimmedDefinition)
-        ? trimmedDefinition.replace(/;\s*$/, "")
-        : `${trimmedDefinition.replace(/;\s*$/, "")}\nLIMIT ${normalizedLimit}`;
+      const soqlText = parseQuerySourceDefinition(trimmedDefinition).queryText;
+      const limitedSoql = /\bLIMIT\s+\d+\b/i.test(soqlText)
+        ? soqlText.replace(/;\s*$/, "")
+        : `${soqlText.replace(/;\s*$/, "")}\nLIMIT ${normalizedLimit}`;
       const rows = (await client.queryGeneric(limitedSoql)).slice(0, normalizedLimit).map((row) => {
         const normalizedRow = { ...row };
         delete (normalizedRow as { attributes?: unknown }).attributes;
@@ -1309,7 +1778,8 @@ export class AdminDataService {
 
     if (normalizedType === "SALESFORCE_SOQL") {
       const client = await this.createClient(instanceId);
-      const resolvedObjectName = String(objectName || "").trim() || this.extractSalesforceObjectName(sourceDefinition);
+      const soqlText = parseQuerySourceDefinition(sourceDefinition).queryText;
+      const resolvedObjectName = String(objectName || "").trim() || this.extractSalesforceObjectName(soqlText);
       if (!resolvedObjectName) {
         throw new Error("Salesforce-Objekt konnte aus Object oder SOQL-FROM nicht ermittelt werden");
       }
@@ -1319,7 +1789,7 @@ export class AdminDataService {
         objectFields.map((field) => [field.name.toLowerCase(), field])
       );
 
-      const selectedFields = this.extractSalesforceSelectedFields(sourceDefinition);
+      const selectedFields = this.extractSalesforceSelectedFields(soqlText);
       if (!selectedFields.length) {
         return objectFields.map((field) => ({
           name: field.name,
@@ -1368,7 +1838,7 @@ export class AdminDataService {
         throw new Error("Für SQL-Feldmetadaten muss ein MSSQL-Connector ausgewählt sein");
       }
 
-      return this.getMssqlSourceFields(connectorId, sourceDefinition, instanceId);
+      return this.getMssqlSourceFields(connectorId, parseQuerySourceDefinition(sourceDefinition).queryText, instanceId);
     }
 
     if (normalizedType === "FILE_CSV" || normalizedType === "FILE_EXCEL" || normalizedType === "FILE_JSON") {
@@ -1601,6 +2071,365 @@ export class AdminDataService {
 
     const id = await client.createConnectorRecord(fields);
     return { id, action: "created" };
+  }
+
+  public async deleteConnector(connectorId: string, instanceId?: string): Promise<DeleteConnectorResult> {
+    const resolvedInstance = this.resolveInstance(instanceId);
+    const client = await this.createClient(resolvedInstance.id);
+    const connector = await client.queryConnector(connectorId);
+    const schedules = await this.listSchedules(resolvedInstance.id);
+    const scheduleById = new Map(schedules.map((schedule) => [schedule.id, schedule]));
+    const childrenByParent = new Map<string, ScheduleListItem[]>();
+
+    for (const schedule of schedules) {
+      const parentId = String(schedule.parentScheduleId || "").trim();
+      if (!parentId || parentId === schedule.id) {
+        continue;
+      }
+
+      const children = childrenByParent.get(parentId) || [];
+      children.push(schedule);
+      childrenByParent.set(parentId, children);
+    }
+
+    const directlyLinkedSchedules = schedules.filter((schedule) => schedule.connectorId === connectorId);
+    const directlyLinkedIds = new Set(directlyLinkedSchedules.map((schedule) => schedule.id));
+    const rootScheduleIds = directlyLinkedSchedules
+      .filter((schedule) => {
+        const parentId = String(schedule.parentScheduleId || "").trim();
+        return !parentId || !directlyLinkedIds.has(parentId);
+      })
+      .map((schedule) => schedule.id)
+      .sort((leftId, rightId) => {
+        const leftName = String(scheduleById.get(leftId)?.name || leftId);
+        const rightName = String(scheduleById.get(rightId)?.name || rightId);
+        return leftName.localeCompare(rightName, "de", { sensitivity: "base" });
+      });
+
+    const deletedScheduleIds: string[] = [];
+    const deletedScheduleNames: string[] = [];
+    const visited = new Set<string>();
+
+    const collect = (currentId: string) => {
+      if (!currentId || visited.has(currentId)) {
+        return;
+      }
+
+      visited.add(currentId);
+      const children = (childrenByParent.get(currentId) || []).slice().sort((a, b) =>
+        String(a.name || "").localeCompare(String(b.name || ""), "de", { sensitivity: "base" })
+      );
+      children.forEach((child) => collect(child.id));
+      deletedScheduleIds.push(currentId);
+      deletedScheduleNames.push(scheduleById.get(currentId)?.name || currentId);
+    };
+
+    rootScheduleIds.forEach((scheduleId) => collect(scheduleId));
+
+    for (const scheduleId of deletedScheduleIds) {
+      await client.deleteScheduleRecord(scheduleId);
+      this.removeLocalTimingDefinition(resolvedInstance.id, scheduleId);
+      this.removeScheduleHealthState(scheduleId);
+    }
+
+    await client.deleteConnectorRecord(connectorId);
+
+    return {
+      connectorId,
+      connectorName: connector.name,
+      deletedScheduleIds,
+      deletedScheduleNames
+    };
+  }
+
+  public async listTemplates(kind?: TemplateKind): Promise<TemplateDefinition[]> {
+    const normalizedKind = kind === "connector" || kind === "schedule" || kind === "bundle" ? kind : undefined;
+    const customTemplates = await this.readCustomTemplates();
+    return [...listBuiltInTemplates(), ...customTemplates]
+      .filter((item) => {
+        if (!normalizedKind) {
+          return true;
+        }
+        if (normalizedKind === "connector") {
+          return item.kind === "connector" || item.kind === "bundle";
+        }
+        if (normalizedKind === "schedule") {
+          return item.kind === "schedule" || item.kind === "bundle";
+        }
+        return item.kind === normalizedKind;
+      })
+      .sort((left, right) => {
+        if (left.scope !== right.scope) {
+          return left.scope === "system" ? -1 : 1;
+        }
+        return String(left.name || "").localeCompare(String(right.name || ""), "de", { sensitivity: "base" });
+      });
+  }
+
+  public async applyTemplate(templateId: string, instanceId?: string): Promise<ApplyTemplateResult> {
+    const normalizedTemplateId = String(templateId || "").trim();
+    if (!normalizedTemplateId) {
+      throw new Error("Template-ID fehlt");
+    }
+
+    const template = (await this.listTemplates()).find((item) => item.id === normalizedTemplateId);
+    if (!template) {
+      throw new Error("Vorlage nicht gefunden");
+    }
+
+    if (template.kind === "bundle") {
+      return this.applyBundleTemplate(template, instanceId);
+    }
+
+    throw new Error("Diese Vorlage kann nicht direkt ausgerollt werden");
+  }
+
+  public async saveTemplate(input: TemplateMutationInput): Promise<TemplateDefinition> {
+    const kind = input.kind === "connector" || input.kind === "schedule" ? input.kind : null;
+    const name = String(input.name || "").trim();
+    if (!kind) {
+      throw new Error("Vorlagen-Typ fehlt oder ist ungueltig");
+    }
+    if (!name) {
+      throw new Error("Vorlagenname fehlt");
+    }
+
+    const connector = kind === "connector" ? this.sanitizeConnectorTemplateDraft(input.connector) : undefined;
+    const schedule = kind === "schedule" ? this.sanitizeScheduleTemplateDraft(input.schedule) : undefined;
+    if (kind === "connector" && !connector) {
+      throw new Error("Connector-Vorlage enthaelt keine gueltigen Daten");
+    }
+    if (kind === "schedule" && !schedule) {
+      throw new Error("Scheduler-Vorlage enthaelt keine gueltigen Daten");
+    }
+
+    const templates = await this.readCustomTemplates();
+    const existingIndex = templates.findIndex((item) => item.id === input.id);
+    const createdAt = existingIndex >= 0 ? templates[existingIndex].createdAt : new Date().toISOString();
+    const saved: TemplateDefinition = {
+      id: existingIndex >= 0 ? templates[existingIndex].id : this.createTemplateId(kind, name),
+      kind,
+      name,
+      description: String(input.description || "").trim() || undefined,
+      scope: "custom",
+      tags: Array.isArray(input.tags)
+        ? input.tags.map((tag) => String(tag || "").trim()).filter(Boolean)
+        : [],
+      connector,
+      schedule,
+      createdAt,
+      updatedAt: new Date().toISOString()
+    };
+
+    if (existingIndex >= 0) {
+      templates[existingIndex] = saved;
+    } else {
+      templates.push(saved);
+    }
+
+    await this.writeCustomTemplates(templates);
+    return saved;
+  }
+
+  private createTemplateId(kind: TemplateKind, name: string): string {
+    const slug = String(name || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || kind;
+    return `custom-${kind}-${slug}-${Date.now()}`;
+  }
+
+  private getTemplateLibraryPath(): string {
+    return path.join(process.cwd(), "artifacts", "templates", "template-library.json");
+  }
+
+  private async readCustomTemplates(): Promise<TemplateDefinition[]> {
+    try {
+      const raw = await fs.promises.readFile(this.getTemplateLibraryPath(), "utf-8");
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+
+      return parsed
+        .filter((item) => item && typeof item === "object" && (item.kind === "connector" || item.kind === "schedule"))
+        .map((item) => ({
+          id: String(item.id || "").trim(),
+          kind: item.kind,
+          name: String(item.name || "").trim(),
+          description: String(item.description || "").trim() || undefined,
+          scope: "custom" as const,
+          tags: Array.isArray(item.tags) ? item.tags.map((tag: unknown) => String(tag || "").trim()).filter(Boolean) : [],
+          connector: this.sanitizeConnectorTemplateDraft(item.connector),
+          schedule: this.sanitizeScheduleTemplateDraft(item.schedule),
+          createdAt: String(item.createdAt || "").trim() || undefined,
+          updatedAt: String(item.updatedAt || "").trim() || undefined
+        }))
+        .filter((item) => item.id && item.name);
+    } catch (error) {
+      const nodeError = error as NodeJS.ErrnoException;
+      if (nodeError?.code === "ENOENT") {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  private async writeCustomTemplates(templates: TemplateDefinition[]): Promise<void> {
+    const filePath = this.getTemplateLibraryPath();
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.promises.writeFile(filePath, JSON.stringify(templates, null, 2), "utf-8");
+  }
+
+  private sanitizeConnectorTemplateDraft(input?: ConnectorTemplateDraft): ConnectorTemplateDraft | undefined {
+    if (!input || typeof input !== "object") {
+      return undefined;
+    }
+
+    const parameters = { ...(input.parameters || {}) };
+    delete parameters.password;
+    delete parameters.bearerToken;
+    delete parameters.apiKeyValue;
+    delete parameters.clientSecret;
+
+    const draft: ConnectorTemplateDraft = {
+      name: String(input.name || "").trim() || undefined,
+      active: input.active === undefined ? true : !!input.active,
+      connectorType: String(input.connectorType || "").trim() || undefined,
+      targetSystem: String(input.targetSystem || "").trim() || undefined,
+      direction: String(input.direction || "").trim() || undefined,
+      secretKey: String(input.secretKey || "").trim() || undefined,
+      timeoutMs: Number.isFinite(Number(input.timeoutMs)) ? Number(input.timeoutMs) : undefined,
+      maxRetries: Number.isFinite(Number(input.maxRetries)) ? Number(input.maxRetries) : undefined,
+      description: String(input.description || "").trim() || undefined,
+      parameters: Object.keys(parameters).length ? parameters : undefined
+    };
+
+    return draft.connectorType ? draft : undefined;
+  }
+
+  private sanitizeScheduleTemplateDraft(input?: ScheduleTemplateDraft): ScheduleTemplateDraft | undefined {
+    if (!input || typeof input !== "object") {
+      return undefined;
+    }
+
+    const draft: ScheduleTemplateDraft = {
+      name: String(input.name || "").trim() || undefined,
+      active: input.active === undefined ? true : !!input.active,
+      sourceSystem: String(input.sourceSystem || "").trim() || undefined,
+      targetSystem: String(input.targetSystem || "").trim() || undefined,
+      objectName: String(input.objectName || "").trim() || undefined,
+      operation: String(input.operation || "").trim() || undefined,
+      mappingDefinition: String(input.mappingDefinition || "").trim() || undefined,
+      direction: String(input.direction || "").trim() || undefined,
+      sourceType: String(input.sourceType || "").trim() || undefined,
+      targetType: String(input.targetType || "").trim() || undefined,
+      sourceDefinition: String(input.sourceDefinition || "").trim() || undefined,
+      targetDefinition: String(input.targetDefinition || "").trim() || undefined,
+      batchSize: Number.isFinite(Number(input.batchSize)) ? Number(input.batchSize) : undefined,
+      timingDefinition: String(input.timingDefinition || "").trim() || undefined,
+      inheritTimingFromParent: !!input.inheritTimingFromParent
+    };
+
+    return draft.objectName || draft.sourceType || draft.targetType ? draft : undefined;
+  }
+
+  private async applyBundleTemplate(template: TemplateDefinition, instanceId?: string): Promise<ApplyTemplateResult> {
+    const bundle = this.sanitizeBundleTemplateDraft(template.bundle);
+    if (!bundle) {
+      throw new Error("Bundle-Vorlage ist unvollstaendig");
+    }
+    if (!bundle.connector.connectorType) {
+      throw new Error("Bundle-Vorlage enthaelt keinen Connector-Typ");
+    }
+    if (!bundle.schedule.sourceSystem || !bundle.schedule.targetSystem || !bundle.schedule.objectName || !bundle.schedule.operation) {
+      throw new Error("Bundle-Vorlage enthaelt keinen vollstaendigen Scheduler-Entwurf");
+    }
+
+    const resolvedInstance = this.resolveInstance(instanceId);
+    const connectorName = await this.createUniqueConnectorName(bundle.connector.name || `${template.name} Connector`, resolvedInstance.id);
+    const connectorResult = await this.saveConnector(
+      {
+        name: connectorName,
+        active: bundle.connector.active !== false,
+        connectorType: bundle.connector.connectorType,
+        targetSystem: bundle.connector.targetSystem,
+        direction: bundle.connector.direction,
+        secretKey: bundle.connector.secretKey,
+        timeoutMs: bundle.connector.timeoutMs,
+        maxRetries: bundle.connector.maxRetries,
+        description: bundle.connector.description,
+        parameters: bundle.connector.parameters
+      },
+      resolvedInstance.id
+    );
+
+    const scheduleResult = await this.saveSchedule(
+      {
+        name: bundle.schedule.name || template.name,
+        active: bundle.schedule.active !== false,
+        sourceSystem: bundle.schedule.sourceSystem,
+        targetSystem: bundle.schedule.targetSystem,
+        objectName: bundle.schedule.objectName,
+        operation: bundle.schedule.operation,
+        connectorId: connectorResult.id,
+        mappingDefinition: bundle.schedule.mappingDefinition,
+        direction: bundle.schedule.direction,
+        sourceType: bundle.schedule.sourceType,
+        targetType: bundle.schedule.targetType,
+        sourceDefinition: bundle.schedule.sourceDefinition,
+        targetDefinition: bundle.schedule.targetDefinition,
+        batchSize: bundle.schedule.batchSize,
+        timingDefinition: bundle.schedule.timingDefinition,
+        parentScheduleId: bundle.schedule.parentScheduleId,
+        inheritTimingFromParent: bundle.schedule.inheritTimingFromParent
+      },
+      resolvedInstance.id
+    );
+
+    return {
+      templateId: template.id,
+      templateKind: template.kind,
+      connector: {
+        id: connectorResult.id,
+        name: connectorName,
+        action: connectorResult.action
+      },
+      schedule: {
+        id: scheduleResult.id,
+        name: bundle.schedule.name || template.name,
+        action: scheduleResult.action
+      }
+    };
+  }
+
+  private sanitizeBundleTemplateDraft(input?: TemplateBundleDraft): TemplateBundleDraft | undefined {
+    if (!input || typeof input !== "object") {
+      return undefined;
+    }
+
+    const connector = this.sanitizeConnectorTemplateDraft(input.connector);
+    const schedule = this.sanitizeScheduleTemplateDraft(input.schedule);
+    if (!connector || !schedule) {
+      return undefined;
+    }
+
+    return { connector, schedule };
+  }
+
+  private async createUniqueConnectorName(baseName: string, instanceId?: string): Promise<string> {
+    const normalizedBaseName = String(baseName || "").trim() || "Template Connector";
+    const existingNames = new Set((await this.listConnectors(instanceId)).map((item) => String(item.name || "").trim().toLowerCase()));
+    if (!existingNames.has(normalizedBaseName.toLowerCase())) {
+      return normalizedBaseName;
+    }
+
+    let counter = 2;
+    while (existingNames.has(`${normalizedBaseName} ${counter}`.toLowerCase())) {
+      counter += 1;
+    }
+    return `${normalizedBaseName} ${counter}`;
   }
 
   public async exportSetup(instanceId?: string): Promise<SetupExportDocument> {
@@ -1836,6 +2665,93 @@ export class AdminDataService {
       sourceType,
       sourceDefinition: JSON.stringify(sourceDefinition, null, 2),
       mappingDefinition: JSON.stringify(mappingDefinition, null, 2)
+    };
+  }
+
+  public async analyzeMigrationImportFile(
+    fileName: string,
+    contentBase64: string,
+    instanceId?: string
+  ): Promise<MigrationImportAnalysisResult> {
+    if (!fileName) {
+      throw new Error("fileName ist erforderlich");
+    }
+
+    if (!contentBase64) {
+      throw new Error("contentBase64 ist erforderlich");
+    }
+
+    const fileBuffer = Buffer.from(contentBase64, "base64");
+    const parsed = this.analyzeFileBuffer(fileName, fileBuffer);
+    const objects = await this.listSalesforceObjects(instanceId);
+    const fileTokens = this.tokenizeSuggestionValue(path.basename(fileName).replace(/\.[^.]+$/, ""));
+    const preferredObjectNames = new Set([
+      "Account",
+      "Contact",
+      "Lead",
+      "Opportunity",
+      "Case",
+      "Product2",
+      "Order",
+      "OrderItem",
+      "PricebookEntry"
+    ]);
+
+    const candidateObjects = objects.filter((entry) => {
+      const objectTokens = [
+        ...this.tokenizeSuggestionValue(entry.name),
+        ...this.tokenizeSuggestionValue(entry.label)
+      ];
+
+      return preferredObjectNames.has(entry.name) || fileTokens.some((token) => objectTokens.includes(token));
+    });
+
+    const effectiveCandidates = candidateObjects.length > 0
+      ? candidateObjects
+      : objects.filter((entry) => preferredObjectNames.has(entry.name));
+
+    const describedFieldsByObject = new Map<string, Array<{ name: string; label: string }>>();
+    await Promise.all(effectiveCandidates.slice(0, 12).map(async (entry) => {
+      try {
+        const fields = await this.describeSalesforceObjectFields(entry.name, instanceId);
+        describedFieldsByObject.set(entry.name, fields.map((field) => ({ name: field.name, label: field.label })));
+      } catch {
+        describedFieldsByObject.set(entry.name, []);
+      }
+    }));
+
+    const sheetAnalyses = parsed.format === "excel" && Array.isArray(parsed.availableSheetNames) && parsed.availableSheetNames.length
+      ? parsed.availableSheetNames.map((sheetName) => {
+          const fields = this.parseMigrationSourceBuffer(fileName, fileBuffer, { sheetName }).fields;
+          const recordCount = this.parseMigrationSourceBuffer(fileName, fileBuffer, { sheetName }).recordCount;
+          return {
+            sheetName,
+            headers: fields,
+            recordCount,
+            suggestions: this.buildMigrationImportSuggestions(
+              `${fileName} ${sheetName}`,
+              fields,
+              effectiveCandidates.slice(0, 12),
+              describedFieldsByObject
+            )
+          } satisfies MigrationImportSheetAnalysis;
+        })
+      : [];
+    const primarySheetAnalysis = sheetAnalyses[0];
+    const suggestions = primarySheetAnalysis
+      ? primarySheetAnalysis.suggestions
+      : this.buildMigrationImportSuggestions(fileName, parsed.fields, effectiveCandidates.slice(0, 12), describedFieldsByObject);
+
+    return {
+      fileName,
+      format: parsed.format,
+      charset: parsed.charset,
+      delimiter: parsed.delimiter,
+      headers: primarySheetAnalysis ? primarySheetAnalysis.headers : parsed.fields,
+      recordCount: primarySheetAnalysis ? primarySheetAnalysis.recordCount : parsed.recordCount,
+      suggestions,
+      sheetName: parsed.sheetName,
+      sheets: sheetAnalyses.length ? sheetAnalyses : undefined
     };
   }
 
@@ -2179,55 +3095,59 @@ export class AdminDataService {
       const minute = aligned.getMinutes();
       aligned.setMinutes(minute - (minute % 5));
 
-      for (let index = 0; index < 12; index += 1) {
-        const start = new Date(aligned.getTime() + index * 5 * 60_000);
+      const cursor = new Date(aligned);
+      while (cursor < to) {
+        const start = new Date(cursor);
         const end = new Date(start.getTime() + 5 * 60_000);
         buckets.push({
           label: start.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }),
           start: start.toISOString(),
           end: end.toISOString(),
           total: 0,
-          errors: 0
+          errors: 0,
+          connectorErrors: {}
         });
+        cursor.setTime(end.getTime());
       }
-
-      return buckets;
     }
 
     if (range === "last_24h") {
       const aligned = new Date(from);
       aligned.setMinutes(0, 0, 0);
 
-      for (let index = 0; index < 24; index += 1) {
-        const start = new Date(aligned.getTime() + index * 60 * 60_000);
+      const cursor = new Date(aligned);
+      while (cursor < to) {
+        const start = new Date(cursor);
         const end = new Date(start.getTime() + 60 * 60_000);
         buckets.push({
           label: start.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }),
           start: start.toISOString(),
           end: end.toISOString(),
           total: 0,
-          errors: 0
+          errors: 0,
+          connectorErrors: {}
         });
+        cursor.setTime(end.getTime());
       }
+    } else if (range !== "last_hour") {
+      const aligned = new Date(from);
+      aligned.setHours(0, 0, 0, 0);
 
-      return buckets;
-    }
-
-    const aligned = new Date(from);
-    aligned.setHours(0, 0, 0, 0);
-
-    for (let index = 0; index < 30; index += 1) {
-      const start = new Date(aligned);
-      start.setDate(aligned.getDate() + index);
-      const end = new Date(start);
-      end.setDate(start.getDate() + 1);
-      buckets.push({
-        label: start.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" }),
-        start: start.toISOString(),
-        end: end.toISOString(),
-        total: 0,
-        errors: 0
-      });
+      const cursor = new Date(aligned);
+      while (cursor < to) {
+        const start = new Date(cursor);
+        const end = new Date(start);
+        end.setDate(start.getDate() + 1);
+        buckets.push({
+          label: start.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" }),
+          start: start.toISOString(),
+          end: end.toISOString(),
+          total: 0,
+          errors: 0,
+          connectorErrors: {}
+        });
+        cursor.setTime(end.getTime());
+      }
     }
 
     if (buckets.length > 0) {
@@ -2469,12 +3389,14 @@ export class AdminDataService {
           name?: unknown;
           active?: unknown;
           schedulerEnabled?: unknown;
+          nextRunAt?: unknown;
           scheduler?: {
             mode?: unknown;
             rules?: Array<{
               days?: unknown;
               startTime?: unknown;
               endTime?: unknown;
+              intervalMinutes?: unknown;
             }>;
           };
         }>;
@@ -2502,48 +3424,27 @@ export class AdminDataService {
         : [];
 
       if (!rules.length) {
-        return true;
+        const nextRunAt = String(selectedProfile.nextRunAt || "").trim();
+        if (!nextRunAt) {
+          return true;
+        }
+
+        const nextRunTimestamp = new Date(nextRunAt).getTime();
+        return Number.isNaN(nextRunTimestamp) ? true : nextRunTimestamp <= Date.now();
       }
 
-      const now = new Date();
-      const weekdayMap = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
-      const weekday = weekdayMap[now.getDay()];
-      const nowMinutes = now.getHours() * 60 + now.getMinutes();
+      const normalizedRules = rules.map((rule) => ({
+        days: Array.isArray(rule?.days)
+          ? rule.days
+              .map((day) => String(day || "").trim().toLowerCase())
+              .filter((day): day is SchedulerDay => ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].includes(day))
+          : [],
+        startTime: String(rule?.startTime || "").trim(),
+        endTime: String(rule?.endTime || "").trim(),
+        intervalMinutes: Number(rule?.intervalMinutes)
+      }));
 
-      const parseMinutes = (value: unknown, fallback: number): number => {
-        const text = String(value || "").trim();
-        const match = text.match(/^(\d{1,2}):(\d{2})$/);
-        if (!match) {
-          return fallback;
-        }
-        const hours = Number(match[1]);
-        const minutes = Number(match[2]);
-        if (Number.isNaN(hours) || Number.isNaN(minutes)) {
-          return fallback;
-        }
-        return Math.min(23, Math.max(0, hours)) * 60 + Math.min(59, Math.max(0, minutes));
-      };
-
-      const isRuleActiveNow = rules.some((rule) => {
-        const days = Array.isArray(rule?.days)
-          ? rule.days.map((day) => String(day || "").trim().toLowerCase()).filter(Boolean)
-          : [];
-        if (days.length > 0 && !days.includes(weekday)) {
-          return false;
-        }
-
-        const startMinutes = parseMinutes(rule?.startTime, 0);
-        const endMinutes = parseMinutes(rule?.endTime, 23 * 60 + 59);
-
-        if (startMinutes <= endMinutes) {
-          return nowMinutes >= startMinutes && nowMinutes <= endMinutes;
-        }
-
-        // Overnight window, e.g. 22:00-06:00
-        return nowMinutes >= startMinutes || nowMinutes <= endMinutes;
-      });
-
-      return isRuleActiveNow;
+      return isImportProfileSchedulerRuleDue(normalizedRules, new Date());
     } catch {
       return undefined;
     }
@@ -2779,7 +3680,7 @@ export class AdminDataService {
     return await client.listObjectMetadata();
   }
 
-  public async describeSalesforceObjectFields(objectApiName: string, instanceId?: string): Promise<{ name: string; label: string; type: string; nillable: boolean }[]> {
+  public async describeSalesforceObjectFields(objectApiName: string, instanceId?: string): Promise<{ name: string; label: string; type: string; nillable: boolean; isExternalId: boolean }[]> {
     const client = await this.createClient(instanceId);
     return await client.describeObjectFields(objectApiName);
   }
@@ -2788,23 +3689,96 @@ export class AdminDataService {
     objectApiName: string,
     fieldApiName: string,
     fieldType: string,
+    options?: { picklistValues?: string[]; externalId?: boolean; unique?: boolean },
     instanceId?: string
   ): Promise<unknown> {
     const client = await this.createClient(instanceId);
     const ensuredApiName = fieldApiName.endsWith("__c") ? fieldApiName : fieldApiName + "__c";
-    const sfType = this.mapFieldTypeToSalesforceType(fieldType);
+    const sfType = this.mapFieldTypeToSalesforceType(fieldType, options?.picklistValues);
     const metadata: Record<string, unknown> = {
       label: fieldApiName.replace(/__c$/, "").replace(/_/g, " "),
       type: sfType.type,
       ...sfType.extra
     };
-    return await client.createOrUpdateMetadata("CustomField", objectApiName + "." + ensuredApiName, metadata);
+    if (options?.externalId) {
+      metadata.externalId = true;
+      metadata.unique = options.unique !== false;
+      if (metadata.type === "Text") {
+        metadata.length = 100;
+      }
+    }
+    try {
+      const result = await client.createOrUpdateMetadata("CustomField", objectApiName + "." + ensuredApiName, metadata);
+      const fieldAccess = await client.ensurePermissionSetFieldAccess("MSD_Integration_Agent", objectApiName, ensuredApiName);
+      const visible = await client.waitForObjectFieldVisibility(objectApiName, ensuredApiName);
+      if (!visible) {
+        throw new Error(`Field ${objectApiName}.${ensuredApiName} is still not visible after granting permission set access`);
+      }
+      return {
+        result,
+        fieldAccess,
+        visible
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes("DUPLICATE_DEVELOPER_NAME") && !message.includes("not yet visible on the object describe result")) {
+        throw error;
+      }
+
+      const fieldAccess = await client.ensurePermissionSetFieldAccess("MSD_Integration_Agent", objectApiName, ensuredApiName);
+      const visible = await client.waitForObjectFieldVisibility(objectApiName, ensuredApiName);
+      if (!visible) {
+        throw error;
+      }
+
+      return {
+        success: true,
+        action: "granted-access",
+        type: "CustomField",
+        fullName: objectApiName + "." + ensuredApiName,
+        fieldAccess,
+        visible
+      };
+    }
+  }
+
+  public async getMigrationSourceDistinctValues(
+    migrationId: string,
+    objectId: string,
+    columnName: string
+  ): Promise<string[]> {
+    const migration = this.getMigration(migrationId);
+    if (!migration) {
+      throw new Error(`Migration ${migrationId} wurde nicht gefunden`);
+    }
+
+    const obj = (migration.objects || []).find((entry) => entry.id === objectId);
+    if (!obj) {
+      throw new Error(`Objekt ${objectId} wurde in Migration ${migrationId} nicht gefunden`);
+    }
+
+    const column = String(columnName || "").trim();
+    if (!column) {
+      throw new Error("Spaltenname darf nicht leer sein");
+    }
+
+    const rows = await this.loadMigrationSourceRows(migrationId, obj);
+    const distinctValues = new Set<string>();
+    for (const entry of rows) {
+      const rawValue = entry?.row?.[column];
+      const normalizedValue = String(rawValue ?? "").trim();
+      if (normalizedValue) {
+        distinctValues.add(normalizedValue);
+      }
+    }
+
+    return Array.from(distinctValues).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
   }
 
   public analyzeFileBuffer(
     fileName: string,
     fileBuffer: Buffer,
-    options?: { charset?: string; delimiter?: string; textQualifier?: string }
+    options?: { charset?: string; delimiter?: string; textQualifier?: string; sheetName?: string }
   ): {
     format: "csv" | "excel" | "json";
     charset: string;
@@ -2813,6 +3787,8 @@ export class AdminDataService {
     fields: string[];
     rows: Record<string, unknown>[];
     recordCount: number;
+    sheetName?: string;
+    availableSheetNames?: string[];
   } {
     const parsed = this.parseMigrationSourceBuffer(fileName, fileBuffer, options);
     return {
@@ -2822,7 +3798,9 @@ export class AdminDataService {
       textQualifier: parsed.textQualifier,
       fields: parsed.fields,
       rows: parsed.previewRows,
-      recordCount: parsed.recordCount
+      recordCount: parsed.recordCount,
+      sheetName: parsed.sheetName,
+      availableSheetNames: parsed.availableSheetNames
     };
   }
 
@@ -2831,7 +3809,7 @@ export class AdminDataService {
     objectId: string,
     fileName: string,
     fileBuffer: Buffer,
-    options?: { charset?: string; delimiter?: string; textQualifier?: string }
+    options?: { charset?: string; delimiter?: string; textQualifier?: string; sheetName?: string }
   ): Promise<{
     filePath: string;
     format: "csv" | "excel" | "json";
@@ -2841,6 +3819,8 @@ export class AdminDataService {
     fields: string[];
     rows: Record<string, unknown>[];
     recordCount: number;
+    sheetName?: string;
+    availableSheetNames?: string[];
     stagingMode: "sqlite";
     stagingDatabasePath: string;
     stagingImportedAt: string;
@@ -2878,6 +3858,7 @@ export class AdminDataService {
         filePath: relativePath,
         sourceFileName: safeFileName,
         fileFormat: parsed.format,
+        fileSheetName: parsed.sheetName,
         fileCharset: parsed.charset,
         fileDelimiter: parsed.delimiter,
         fileTextQualifier: parsed.textQualifier,
@@ -2890,6 +3871,8 @@ export class AdminDataService {
 
     obj.filePath = relativePath;
     obj.fileFormat = parsed.format;
+    obj.fileSheetName = parsed.sheetName;
+    obj.availableSheetNames = parsed.availableSheetNames;
     obj.fileCharset = parsed.charset;
     obj.fileDelimiter = parsed.delimiter;
     obj.fileTextQualifier = parsed.textQualifier;
@@ -2912,6 +3895,8 @@ export class AdminDataService {
       fields: parsed.fields,
       rows: parsed.previewRows,
       recordCount: parsed.recordCount,
+      sheetName: parsed.sheetName,
+      availableSheetNames: parsed.availableSheetNames,
       stagingMode: "sqlite",
       stagingDatabasePath,
       stagingImportedAt: importedAt,
@@ -2931,6 +3916,8 @@ export class AdminDataService {
     fields: string[];
     rows: Record<string, unknown>[];
     recordCount: number;
+    sheetName?: string;
+    availableSheetNames?: string[];
     processingMode?: "file" | "sqlite";
     stagingMode?: "sqlite" | "file";
     stagingDatabasePath?: string;
@@ -2957,12 +3944,31 @@ export class AdminDataService {
       const effectiveProcessingMode = this.getEffectiveMigrationProcessingMode(obj);
       const meta = await this.migrationStaging.getObjectMeta(migrationId, objectId);
       if (meta && effectiveProcessingMode === "sqlite") {
-        const desiredCharset = String(obj.fileCharset || meta.fileCharset || "utf8");
-        const desiredDelimiter = String(obj.fileDelimiter || meta.fileDelimiter || ";");
+        let desiredCharset = String(obj.fileCharset || meta.fileCharset || "utf8");
+        let desiredDelimiter = String(obj.fileDelimiter || meta.fileDelimiter || ";");
         const desiredTextQualifier = String(obj.fileTextQualifier ?? meta.fileTextQualifier ?? '"');
+        const desiredSheetName = String(obj.fileSheetName || meta.fileSheetName || "").trim() || undefined;
+
+        if (obj.filePath && !String(obj.fileCharset || "").trim()) {
+          const absolutePath = path.isAbsolute(obj.filePath)
+            ? obj.filePath
+            : path.resolve(process.cwd(), obj.filePath);
+          const fileBuffer = await fs.promises.readFile(absolutePath);
+          const fileName = path.basename(absolutePath);
+          const detectedAnalysis = analyzeUploadedFile(fileName, fileBuffer);
+          desiredCharset = String(detectedAnalysis.charset || desiredCharset);
+          if (!String(obj.fileDelimiter || "").trim()) {
+            desiredDelimiter = String(detectedAnalysis.delimiter || desiredDelimiter);
+          }
+          if (!desiredSheetName) {
+            obj.availableSheetNames = detectedAnalysis.sheets?.map((sheet) => sheet.sheetName) || obj.availableSheetNames;
+          }
+        }
+
         const stagingNeedsRefresh = desiredCharset !== meta.fileCharset
           || desiredDelimiter !== meta.fileDelimiter
-          || desiredTextQualifier !== meta.fileTextQualifier;
+          || desiredTextQualifier !== meta.fileTextQualifier
+          || desiredSheetName !== (meta.fileSheetName || undefined);
 
         if (stagingNeedsRefresh && obj.filePath) {
           const absolutePath = path.isAbsolute(obj.filePath)
@@ -2973,7 +3979,8 @@ export class AdminDataService {
           await this.stageMigrationSourceFile(migrationId, objectId, fileName, fileBuffer, {
             charset: desiredCharset,
             delimiter: desiredDelimiter,
-            textQualifier: desiredTextQualifier
+            textQualifier: desiredTextQualifier,
+            sheetName: desiredSheetName
           });
           return this.analyzeMigrationObjectSource(migrationId, objectId, options);
         }
@@ -3003,6 +4010,8 @@ export class AdminDataService {
           fields: meta.columns,
           rows: stagedRows.map((row) => row.payload),
           recordCount: meta.recordCount,
+          sheetName: meta.fileSheetName,
+          availableSheetNames: obj.availableSheetNames,
           processingMode: effectiveProcessingMode,
           stagingMode: "sqlite",
           stagingDatabasePath: obj.stagingDatabasePath,
@@ -3028,6 +4037,7 @@ export class AdminDataService {
     const fileBuffer = await fs.promises.readFile(absolutePath);
     const fileName = path.basename(absolutePath);
     const analysis = this.analyzeFileBuffer(fileName, fileBuffer, {
+      sheetName: obj.fileSheetName,
       charset: obj.fileCharset,
       delimiter: obj.fileDelimiter,
       textQualifier: obj.fileTextQualifier
@@ -3051,7 +4061,7 @@ export class AdminDataService {
   private parseMigrationSourceBuffer(
     fileName: string,
     fileBuffer: Buffer,
-    options?: { charset?: string; delimiter?: string; textQualifier?: string }
+    options?: { charset?: string; delimiter?: string; textQualifier?: string; sheetName?: string }
   ): {
     format: "csv" | "excel" | "json";
     charset: string;
@@ -3061,83 +4071,82 @@ export class AdminDataService {
     previewRows: Record<string, unknown>[];
     allRows: Record<string, unknown>[];
     recordCount: number;
+    sheetName?: string;
+    availableSheetNames?: string[];
   } {
     const analysis = analyzeUploadedFile(fileName, fileBuffer);
-    const fields = analysis.headers || [];
     const format = analysis.format;
     const charset = String(options?.charset || analysis.charset || "utf8").trim() || "utf8";
     const delimiter = String(options?.delimiter || analysis.delimiter || ';');
     const textQualifier = String(options?.textQualifier || '"') || '"';
+    const availableSheetNames = Array.isArray(analysis.sheets) ? analysis.sheets.map((sheet) => sheet.sheetName) : undefined;
+    const selectedSheetName = format === "excel"
+      ? String(options?.sheetName || analysis.primarySheetName || availableSheetNames?.[0] || "").trim()
+      : undefined;
+    const selectedSheet = selectedSheetName
+      ? analysis.sheets?.find((sheet) => sheet.sheetName === selectedSheetName)
+      : undefined;
+    const fields = selectedSheet?.headers || analysis.headers || [];
     let allRows: Record<string, unknown>[] = [];
     let recordCount = 0;
-    try {
-      if (analysis.format === 'excel') {
-        const XLSX = require('xlsx') as any;
-        const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
-        const firstSheet = workbook.SheetNames[0];
-        const worksheetRows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheet]) as Record<string, unknown>[];
-        recordCount = worksheetRows.length;
-        allRows = worksheetRows;
-      } else if (analysis.format === 'json') {
-        const parsed = JSON.parse(fileBuffer.toString(charset as BufferEncoding));
-        const normalizedRows = Array.isArray(parsed) ? parsed : [];
-        recordCount = normalizedRows.length;
-        allRows = normalizedRows;
-      } else {
-        const splitCsvLine = (line: string): string[] => {
-          const values: string[] = [];
-          let current = '';
-          let inQuotes = false;
-
-          for (let index = 0; index < line.length; index += 1) {
-            const char = line[index];
-            const nextChar = line[index + 1];
-
-            if (char === textQualifier) {
-              if (inQuotes && nextChar === textQualifier) {
-                current += textQualifier;
-                index += 1;
-              } else {
-                inQuotes = !inQuotes;
-              }
-              continue;
-            }
-
-            if (!inQuotes && char === delimiter) {
-              values.push(current);
-              current = '';
-              continue;
-            }
-
-            current += char;
-          }
-
-          values.push(current);
-          return values.map((value) => value.trim());
-        };
-
-        const lines = fileBuffer
-          .toString(charset as BufferEncoding)
-          .replace(/^\uFEFF/, '')
-          .split(/\r?\n/)
-          .map((line) => line.trimEnd())
-          .filter((line) => line.length > 0);
-
-        const headerLine = lines[0] || '';
-        const headers = splitCsvLine(headerLine).map((h) => h.trim());
-        for (let i = 1; i < lines.length; i++) {
-          const values = splitCsvLine(lines[i]);
-          const record: Record<string, unknown> = {};
-          headers.forEach((h, idx) => {
-            record[h] = values[idx] ?? '';
-          });
-          allRows.push(record);
-        }
-        recordCount = allRows.length;
+    if (analysis.format === 'excel') {
+      const XLSX = require('xlsx') as any;
+      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+      if (!selectedSheetName || !workbook.Sheets[selectedSheetName]) {
+        throw new Error(`Excel-Datei enthaelt keine lesbare Mappe: ${selectedSheetName || '(leer)'}`);
       }
-    } catch {
-      allRows = [];
-      recordCount = 0;
+
+      const worksheetRows = XLSX.utils.sheet_to_json(workbook.Sheets[selectedSheetName], {
+        defval: '',
+        raw: false
+      }) as Record<string, unknown>[];
+      allRows = worksheetRows.map((row) => ({ ...(row || {}) }));
+      recordCount = allRows.length;
+    } else if (analysis.format === 'json') {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(decodeTextBuffer(fileBuffer, charset));
+      } catch {
+        throw new Error('JSON-Datei ist ungueltig');
+      }
+
+      const normalizedRows = Array.isArray(parsed)
+        ? parsed
+        : (parsed && typeof parsed === 'object' ? [parsed] : []);
+
+      if (!normalizedRows.length && parsed !== null && parsed !== undefined) {
+        throw new Error('JSON-Datei enthaelt keine gueltigen Datensaetze');
+      }
+
+      allRows = normalizedRows.map((entry) => {
+        if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+          return { ...(entry as Record<string, unknown>) };
+        }
+
+        return { value: entry };
+      });
+      recordCount = allRows.length;
+    } else {
+      const parsedRows = parseDelimitedRows(
+        decodeTextBuffer(fileBuffer, charset),
+        delimiter,
+        textQualifier
+      );
+      const headers = (parsedRows[0] || []).map((header, index) => {
+        const normalized = String(header || '').trim();
+        return normalized || `column_${index + 1}`;
+      });
+
+      for (let index = 1; index < parsedRows.length; index += 1) {
+        const values = parsedRows[index] || [];
+        const record: Record<string, unknown> = {};
+        headers.forEach((header, valueIndex) => {
+          record[header] = values[valueIndex] ?? '';
+        });
+        allRows.push(record);
+      }
+
+      recordCount = allRows.length;
     }
 
     return {
@@ -3148,11 +4157,16 @@ export class AdminDataService {
       fields,
       previewRows: allRows.slice(0, 10),
       allRows,
-      recordCount
+      recordCount,
+      sheetName: selectedSheetName,
+      availableSheetNames
     };
   }
 
-  private mapFieldTypeToSalesforceType(fieldType: string): { type: string; extra?: Record<string, unknown> } {
+  private mapFieldTypeToSalesforceType(fieldType: string, picklistValues?: string[]): { type: string; extra?: Record<string, unknown> } {
+    const normalizedPicklistValues = Array.from(new Set((Array.isArray(picklistValues) ? picklistValues : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)));
     const map: Record<string, { type: string; extra?: Record<string, unknown> }> = {
       Text: { type: "Text", extra: { length: 255 } },
       Number: { type: "Number", extra: { precision: 18, scale: 0 } },
@@ -3163,7 +4177,24 @@ export class AdminDataService {
       Percent: { type: "Percent", extra: { precision: 18, scale: 2 } },
       Email: { type: "Email" },
       Phone: { type: "Phone" },
-      Url: { type: "Url" }
+      Url: { type: "Url" },
+      Picklist: {
+        type: "Picklist",
+        extra: {
+          valueSet: {
+            restricted: true,
+            valueSetDefinition: {
+              sorted: false,
+              value: normalizedPicklistValues.map((value, index) => ({
+                fullName: value,
+                default: index === 0,
+                isActive: true,
+                label: value
+              }))
+            }
+          }
+        }
+      }
     };
     return map[fieldType] || { type: "Text", extra: { length: 255 } };
   }
@@ -3195,6 +4226,652 @@ export class AdminDataService {
     });
 
     return parsed.allRows.map((row, index) => ({ rowIndex: index + 1, row }));
+  }
+
+  private normalizeMigrationSalesforceRecord(
+    obj: MigrationObjectConfig,
+    record: Record<string, unknown>
+  ): Record<string, unknown> {
+    const normalized: Record<string, unknown> = { ...record };
+
+    const emailFields = new Set((obj.fieldMappings || [])
+      .filter((mapping) => String(mapping.targetFieldType || "").trim().toLowerCase() === "email")
+      .map((mapping) => String(mapping.targetField || "").trim())
+      .filter(Boolean));
+
+    for (const fieldName of emailFields) {
+      normalized[fieldName] = this.normalizeMigrationEmailValue(normalized[fieldName]);
+    }
+
+    if (obj.salesforceObject === "Account") {
+      if (normalized.Name === undefined || normalized.Name === null || normalized.Name === "") {
+        const fallbackName = [normalized.ERP_Account_Number__c, normalized.ERP_Address_Number__c]
+          .map((value) => (typeof value === "string" ? value.trim() : ""))
+          .find((value) => value.length > 0);
+        if (fallbackName) {
+          normalized.Name = fallbackName;
+        }
+      }
+
+      if (typeof normalized.BillingPostalCode === "string") {
+        const collapsedPostalCode = normalized.BillingPostalCode.replace(/\s+/g, " ").trim();
+        if (!collapsedPostalCode) {
+          normalized.BillingPostalCode = null;
+        } else if (collapsedPostalCode.length > 20) {
+          const firstToken = collapsedPostalCode.split(" ")[0] || collapsedPostalCode;
+          normalized.BillingPostalCode = firstToken.slice(0, 20);
+        } else {
+          normalized.BillingPostalCode = collapsedPostalCode;
+        }
+      }
+    }
+
+    return normalized;
+  }
+
+  private normalizeMigrationEmailValue(value: unknown): string | null | unknown {
+    if (value === undefined || value === null) {
+      return value;
+    }
+
+    if (typeof value !== "string") {
+      return value;
+    }
+
+    const trimmedValue = value.trim();
+    if (!trimmedValue) {
+      return null;
+    }
+
+    const loweredValue = trimmedValue.toLowerCase();
+    if (
+      loweredValue === "nicht vorhanden" ||
+      loweredValue === "nicht vorh" ||
+      loweredValue === "keine" ||
+      loweredValue === "n/a"
+    ) {
+      return null;
+    }
+
+    if (trimmedValue.includes(";") || trimmedValue.includes(",") || /^www\./i.test(trimmedValue)) {
+      return null;
+    }
+
+    const normalizedWhitespace = trimmedValue.replace(/\s*@\s*/g, "@").replace(/\s*\.\s*/g, ".");
+    if (/\s/.test(normalizedWhitespace)) {
+      return null;
+    }
+
+    return /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(normalizedWhitespace)
+      ? normalizedWhitespace
+      : null;
+  }
+
+  private isUnsupportedSalesforceExternalIdError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error || "");
+    return message.includes("does not match an External ID, Salesforce Id, or indexed field");
+  }
+
+  private getSalesforceWriteOptions(): { allOrNone: boolean; headers: Record<string, string> } {
+    return {
+      allOrNone: false,
+      headers: {
+        "Sforce-Duplicate-Rule-Header": "allowSave=true"
+      }
+    };
+  }
+
+  private getMigrationExternalIdValue(record: Record<string, unknown>, externalIdField: string): unknown {
+    const directValue = record[externalIdField];
+    if (directValue !== undefined) {
+      return directValue;
+    }
+
+    const matchedEntry = Object.entries(record).find(([key]) => key.toLowerCase() === externalIdField.toLowerCase());
+    return matchedEntry ? matchedEntry[1] : undefined;
+  }
+
+  private async executeMigrationBatch(
+    client: SalesforceClient,
+    obj: MigrationObjectConfig,
+    batch: Record<string, unknown>[]
+  ): Promise<Array<{ success?: boolean; errors?: Array<{ message?: string }>; error?: { message?: string } }>> {
+    if (obj.operation === "upsert" && !obj.externalIdField) {
+      throw new Error(
+        `Objekt ${obj.salesforceObject} ist auf Upsert gestellt, aber es ist kein External-ID-Feld konfiguriert. Der Lauf wurde zum Schutz vor unbeabsichtigten Inserts abgebrochen.`
+      );
+    }
+
+    if (obj.operation === "upsert" && obj.externalIdField) {
+      const normalizedBatch = batch.map((record) => {
+        const directValue = record[obj.externalIdField!];
+        if (directValue !== undefined) {
+          return record;
+        }
+
+        const matchedEntry = Object.entries(record).find(([key]) => key.toLowerCase() === obj.externalIdField!.toLowerCase());
+        if (!matchedEntry) {
+          return record;
+        }
+
+        return {
+          ...record,
+          [obj.externalIdField!]: matchedEntry[1]
+        };
+      });
+
+      try {
+        const results = await (client as any).connection.sobject(obj.salesforceObject).upsert(
+          normalizedBatch,
+          obj.externalIdField,
+          this.getSalesforceWriteOptions()
+        );
+        return Array.isArray(results) ? results : [results];
+      } catch (error) {
+        if (!this.isUnsupportedSalesforceExternalIdError(error)) {
+          throw error;
+        }
+
+        const fallbackResults: Array<{ success?: boolean; errors?: Array<{ message?: string }>; error?: { message?: string } }> = [];
+        for (const record of normalizedBatch) {
+          const lookupValue = record[obj.externalIdField];
+          if (lookupValue === undefined || lookupValue === null || lookupValue === "") {
+            fallbackResults.push({
+              success: false,
+              errors: [{ message: `Missing lookup value for field ${obj.externalIdField}` }]
+            });
+            continue;
+          }
+
+          try {
+            const lookupSoql = `SELECT Id FROM ${obj.salesforceObject} WHERE ${obj.externalIdField} = ${this.toSoqlLiteral(lookupValue)} LIMIT 1`;
+            const existing = await client.queryGeneric(lookupSoql);
+            const existingId = typeof existing[0]?.Id === "string" ? existing[0].Id : undefined;
+
+            if (existingId) {
+              const updatePayload = { ...record, Id: existingId };
+              const updateResult = await (client as any).connection.sobject(obj.salesforceObject).update(updatePayload, this.getSalesforceWriteOptions());
+              fallbackResults.push(updateResult);
+            } else {
+              const insertResult = await (client as any).connection.sobject(obj.salesforceObject).insert(record, this.getSalesforceWriteOptions());
+              fallbackResults.push(insertResult);
+            }
+          } catch (recordError) {
+            fallbackResults.push({
+              success: false,
+              errors: [{ message: recordError instanceof Error ? recordError.message : String(recordError || "Unknown Salesforce error") }]
+            });
+          }
+        }
+
+        return fallbackResults;
+      }
+    }
+
+    if (obj.operation === "update") {
+      const results = await (client as any).connection.sobject(obj.salesforceObject).update(batch, this.getSalesforceWriteOptions());
+      return Array.isArray(results) ? results : [results];
+    }
+
+    const results = await (client as any).connection.sobject(obj.salesforceObject).insert(batch, this.getSalesforceWriteOptions());
+    return Array.isArray(results) ? results : [results];
+  }
+
+  private resolveMigrationTargetFieldApiName(
+    fieldName: string,
+    availableFields: Array<{ name?: string; label?: string; type?: string }>
+  ): { name: string; label?: string; type?: string; exists: boolean } {
+    const rawName = String(fieldName || "").trim();
+    if (!rawName) {
+      return { name: "", exists: false };
+    }
+
+    const fieldMap = new Map(
+      (Array.isArray(availableFields) ? availableFields : [])
+        .map((field) => ({
+          name: String(field?.name || "").trim(),
+          label: field?.label,
+          type: field?.type
+        }))
+        .filter((field) => field.name)
+        .map((field) => [field.name.toLowerCase(), field] as const)
+    );
+
+    const exactMatch = fieldMap.get(rawName.toLowerCase());
+    if (exactMatch) {
+      return { ...exactMatch, exists: true };
+    }
+
+    if (!rawName.toLowerCase().endsWith("__c")) {
+      const customFieldMatch = fieldMap.get((rawName + "__c").toLowerCase());
+      if (customFieldMatch) {
+        return { ...customFieldMatch, exists: true };
+      }
+    }
+
+    return { name: rawName, exists: false };
+  }
+
+  private inferMigrationTargetFieldType(mapping: MigrationFieldMapping): string {
+    const explicitPicklistValues = Array.isArray((mapping as MigrationFieldMapping & { picklistValues?: string[] }).picklistValues)
+      ? ((mapping as MigrationFieldMapping & { picklistValues?: string[] }).picklistValues || []).map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    if (explicitPicklistValues.length) {
+      return "Picklist";
+    }
+
+    const normalizedType = String(mapping.targetFieldType || "").trim().toLowerCase();
+    if (normalizedType === "picklist") return "Picklist";
+    if (normalizedType === "url") return "Url";
+    if (normalizedType === "date") return "Date";
+    if (normalizedType === "datetime") return "DateTime";
+    if (normalizedType === "boolean") return "Checkbox";
+    if (normalizedType === "email") return "Email";
+    if (normalizedType === "phone") return "Phone";
+    if (normalizedType === "currency") return "Currency";
+    if (normalizedType === "percent") return "Percent";
+    if (["double", "int", "integer", "number"].includes(normalizedType)) return "Number";
+
+    const targetFieldName = String(mapping.targetField || "").trim().toLowerCase();
+    if (targetFieldName.includes("currency")) return "Currency";
+    if (targetFieldName.includes("percent")) return "Percent";
+    if (targetFieldName.includes("email")) return "Email";
+    if (targetFieldName.includes("phone") || targetFieldName.includes("mobile")) return "Phone";
+    if (targetFieldName.includes("date")) return "Date";
+    if (targetFieldName.includes("url") || targetFieldName.includes("website")) return "Url";
+
+    return "Text";
+  }
+
+  private async autoCreateMissingMigrationTargetFields(
+    client: SalesforceClient,
+    obj: MigrationObjectConfig,
+    objectFields: Array<{ name?: string; label?: string; type?: string }>
+  ): Promise<Array<{ name: string }>> {
+    const createdFields: Array<{ name: string }> = [];
+
+    for (const mapping of obj.fieldMappings || []) {
+      const resolvedField = this.resolveMigrationTargetFieldApiName(mapping.targetField, objectFields);
+      if (resolvedField.exists) {
+        continue;
+      }
+
+      const rawFieldName = String(resolvedField.name || "").trim();
+      if (!rawFieldName) {
+        continue;
+      }
+
+      const fieldType = this.inferMigrationTargetFieldType(mapping);
+      const picklistValues = fieldType === "Picklist"
+        ? Array.from(new Set((((mapping as MigrationFieldMapping & { picklistValues?: string[] }).picklistValues) || [])
+            .map((value) => String(value || "").trim())
+            .filter(Boolean)))
+        : [];
+
+      if (fieldType === "Picklist" && !picklistValues.length) {
+        throw new Error(`Feld ${rawFieldName} kann nicht automatisch als Picklist angelegt werden, weil keine Werte hinterlegt sind.`);
+      }
+
+      const ensuredApiName = rawFieldName.endsWith("__c") ? rawFieldName : rawFieldName + "__c";
+      const sfType = this.mapFieldTypeToSalesforceType(fieldType, picklistValues);
+      const metadata: Record<string, unknown> = {
+        label: ensuredApiName.replace(/__c$/, "").replace(/_/g, " "),
+        type: sfType.type,
+        ...sfType.extra
+      };
+
+      await client.createOrUpdateMetadata("CustomField", obj.salesforceObject + "." + ensuredApiName, metadata);
+      createdFields.push({ name: ensuredApiName });
+      objectFields.push({ name: ensuredApiName, label: String(metadata.label || ensuredApiName), type: String(sfType.type || "") });
+    }
+
+    return createdFields;
+  }
+
+  private async ensureMigrationTargetFieldsExist(
+    client: SalesforceClient,
+    obj: MigrationObjectConfig
+  ): Promise<void> {
+    const objectFields = await client.describeObjectFields(obj.salesforceObject);
+    await this.autoCreateMissingMigrationTargetFields(client, obj, objectFields);
+    const missingFields: string[] = [];
+
+    for (const mapping of obj.fieldMappings || []) {
+      const resolvedField = this.resolveMigrationTargetFieldApiName(mapping.targetField, objectFields);
+      if (!resolvedField.exists) {
+        if (resolvedField.name) {
+          missingFields.push(resolvedField.name);
+        }
+        continue;
+      }
+
+      mapping.targetField = resolvedField.name;
+      if (resolvedField.label) {
+        mapping.targetFieldLabel = resolvedField.label;
+      }
+      if (resolvedField.type) {
+        mapping.targetFieldType = resolvedField.type;
+      }
+    }
+
+    if (!missingFields.length) {
+      return;
+    }
+
+    const preview = Array.from(new Set(missingFields)).slice(0, 5).join(", ");
+    throw new Error(
+      `Folgende Zielfelder existieren in Salesforce nicht auf ${obj.salesforceObject}: ${preview}. Bitte in Schritt 6 anlegen oder das Mapping korrigieren.`
+    );
+  }
+
+  private async syncMigrationTargetPicklistValues(
+    client: SalesforceClient,
+    obj: MigrationObjectConfig,
+    recordStates: Array<{
+      rowIndex: number;
+      sourceRecord: Record<string, unknown>;
+      sfRecord?: Record<string, unknown>;
+      mappingError?: string;
+    }>
+  ): Promise<void> {
+    const targetFields = await client.describeObjectFields(obj.salesforceObject);
+
+    for (const mapping of obj.fieldMappings || []) {
+      const fieldType = this.inferMigrationTargetFieldType(mapping);
+      if (fieldType !== "Picklist") {
+        continue;
+      }
+
+      const resolvedField = this.resolveMigrationTargetFieldApiName(mapping.targetField, targetFields);
+      const targetFieldName = String(resolvedField.name || "").trim();
+      if (!resolvedField.exists || !targetFieldName.endsWith("__c")) {
+        continue;
+      }
+
+      const mappedValues = Array.from(new Set(recordStates
+        .map((state) => state.sfRecord?.[targetFieldName])
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean)));
+
+      if (mappedValues.length === 0) {
+        continue;
+      }
+
+      await client.syncCustomFieldPicklistValues({
+        objectApiName: obj.salesforceObject,
+        fieldApiName: targetFieldName,
+        values: mappedValues
+      });
+    }
+  }
+
+  private ensureUniqueMigrationExternalIds(
+    obj: MigrationObjectConfig,
+    recordStates: Array<{
+      rowIndex: number;
+      sourceRecord: Record<string, unknown>;
+      sfRecord?: Record<string, unknown>;
+      mappingError?: string;
+    }>
+  ): void {
+    if (obj.operation !== "upsert" || !obj.externalIdField) {
+      return;
+    }
+
+    const duplicates = new Map<string, number[]>();
+    const firstRowByValue = new Map<string, number>();
+
+    for (const state of recordStates) {
+      if (!state.sfRecord || state.mappingError) {
+        continue;
+      }
+
+      const rawValue = state.sfRecord[obj.externalIdField];
+      const normalizedValue = rawValue === undefined || rawValue === null ? "" : String(rawValue).trim();
+      if (!normalizedValue) {
+        continue;
+      }
+
+      const firstRow = firstRowByValue.get(normalizedValue);
+      if (firstRow === undefined) {
+        firstRowByValue.set(normalizedValue, state.rowIndex);
+        continue;
+      }
+
+      const rows = duplicates.get(normalizedValue) || [firstRow];
+      rows.push(state.rowIndex);
+      duplicates.set(normalizedValue, rows);
+    }
+
+    if (!duplicates.size) {
+      return;
+    }
+
+    const preview = [...duplicates.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0], "de"))
+      .slice(0, 5)
+      .map(([value, rows]) => `${value} (Zeilen ${rows.join(", ")})`)
+      .join("; ");
+
+    for (const [value, rows] of duplicates.entries()) {
+      const errorMessage = `Das Upsert-Feld ${obj.externalIdField} ist in der Quelldatei nicht eindeutig (${value}; Zeilen ${rows.join(", ")}).`;
+      const duplicateRows = new Set(rows);
+      for (const state of recordStates) {
+        if (duplicateRows.has(state.rowIndex)) {
+          state.mappingError = errorMessage;
+        }
+      }
+    }
+  }
+
+  private async collectAmbiguousSalesforceExternalIds(
+    client: SalesforceClient,
+    obj: MigrationObjectConfig,
+    recordStates: Array<{
+      rowIndex: number;
+      sourceRecord: Record<string, unknown>;
+      sfRecord?: Record<string, unknown>;
+      mappingError?: string;
+    }>
+  ): Promise<Map<string, string[]>> {
+    if (obj.operation !== "upsert" || !obj.externalIdField) {
+      return new Map<string, string[]>();
+    }
+
+    const externalIdValues = Array.from(new Set(recordStates
+      .filter((state) => state.sfRecord && !state.mappingError)
+      .map((state) => this.getMigrationExternalIdValue(state.sfRecord!, obj.externalIdField!))
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean)));
+
+    if (!externalIdValues.length) {
+      return new Map<string, string[]>();
+    }
+
+    const ambiguousValues = new Map<string, string[]>();
+    for (let index = 0; index < externalIdValues.length; index += 200) {
+      const chunk = externalIdValues.slice(index, index + 200);
+      const soql = `SELECT Id, ${obj.externalIdField} FROM ${obj.salesforceObject} WHERE ${obj.externalIdField} IN (${chunk
+        .map((value) => this.toSoqlLiteral(value))
+        .join(", ")})`;
+      const existingRecords = await client.queryGeneric(soql);
+      const idsByValue = new Map<string, string[]>();
+
+      for (const existingRecord of existingRecords) {
+        const value = String(existingRecord[obj.externalIdField] ?? "").trim();
+        const id = String(existingRecord.Id ?? "").trim();
+        if (!value || !id) {
+          continue;
+        }
+
+        const ids = idsByValue.get(value) || [];
+        ids.push(id);
+        idsByValue.set(value, ids);
+      }
+
+      for (const [value, ids] of idsByValue.entries()) {
+        if (ids.length > 1) {
+          ambiguousValues.set(value, ids);
+        }
+      }
+    }
+
+    return ambiguousValues;
+  }
+
+  private async markAmbiguousSalesforceExternalIds(
+    client: SalesforceClient,
+    obj: MigrationObjectConfig,
+    recordStates: Array<{
+      rowIndex: number;
+      sourceRecord: Record<string, unknown>;
+      sfRecord?: Record<string, unknown>;
+      mappingError?: string;
+    }>
+  ): Promise<void> {
+    if (obj.operation !== "upsert" || !obj.externalIdField) {
+      return;
+    }
+
+    const ambiguousValues = await this.collectAmbiguousSalesforceExternalIds(client, obj, recordStates);
+
+    if (!ambiguousValues.size) {
+      return;
+    }
+
+    for (const state of recordStates) {
+      if (!state.sfRecord || state.mappingError) {
+        continue;
+      }
+
+      const externalIdValue = String(this.getMigrationExternalIdValue(state.sfRecord, obj.externalIdField) ?? "").trim();
+      if (!externalIdValue) {
+        continue;
+      }
+
+      const existingIds = ambiguousValues.get(externalIdValue);
+      if (existingIds && existingIds.length > 1) {
+        state.mappingError = `${obj.externalIdField.replace(/__c$/, "")}: more than one record found for external id field: [${existingIds.join(", ")}]`;
+      }
+    }
+  }
+
+  public async getMigrationPreflightWarnings(
+    migrationId: string,
+    instanceId?: string
+  ): Promise<{
+    items: Array<{
+      objectId: string;
+      salesforceObject: string;
+      externalIdField: string;
+      affectedRecordCount: number;
+      conflictCount: number;
+      conflicts: Array<{ value: string; rowIndexes: number[]; existingIds: string[] }>;
+    }>;
+  }> {
+    const migration = this.getMigration(migrationId);
+    if (!migration) {
+      throw new Error(`Migration ${migrationId} not found`);
+    }
+
+    const orderedObjects = [...migration.executionPlan]
+      .sort((a, b) => a.order - b.order)
+      .map((step) => migration.objects.find((o) => o.id === step.objectId))
+      .filter((o): o is MigrationObjectConfig => !!o);
+
+    for (const obj of migration.objects) {
+      if (!orderedObjects.find((entry) => entry.id === obj.id)) {
+        orderedObjects.push(obj);
+      }
+    }
+    const client = await this.createClient(instanceId ?? migration.instanceId);
+    const items: Array<{
+      objectId: string;
+      salesforceObject: string;
+      externalIdField: string;
+      affectedRecordCount: number;
+      conflictCount: number;
+      conflicts: Array<{ value: string; rowIndexes: number[]; existingIds: string[] }>;
+    }> = [];
+
+    for (const obj of orderedObjects) {
+      if (obj.operation !== "upsert" || !obj.externalIdField) {
+        continue;
+      }
+
+      const sourceRows = await this.loadMigrationSourceRows(migration.id, obj);
+      const mappingLines = this.buildMigrationMappingLines(obj);
+      const lookupResolver = await this.createMigrationLookupResolver(client, mappingLines, sourceRows.map((entry) => entry.row));
+      const engine = new MappingDefinitionEngine(lookupResolver);
+
+      const recordStates: Array<{
+        rowIndex: number;
+        sourceRecord: Record<string, unknown>;
+        sfRecord?: Record<string, unknown>;
+        mappingError?: string;
+      }> = [];
+
+      for (let rowIndex = 0; rowIndex < sourceRows.length; rowIndex += 1) {
+        const sourceRow = sourceRows[rowIndex];
+        const row = sourceRow.row;
+        try {
+          if (mappingLines.length > 0) {
+            const mapped = await engine.mapRecord(row, mappingLines);
+            const record: Record<string, unknown> = {};
+            for (const [key, value] of Object.entries(mapped.values)) {
+              record[key] = value !== undefined && value !== "" ? value : null;
+            }
+            recordStates.push({
+              rowIndex: sourceRow.rowIndex,
+              sourceRecord: row,
+              sfRecord: this.normalizeMigrationSalesforceRecord(obj, record)
+            });
+          } else {
+            const record: Record<string, unknown> = {};
+            for (const mapping of obj.fieldMappings) {
+              const rawValue = row[mapping.sourceColumn];
+              record[mapping.targetField] = rawValue !== undefined && rawValue !== "" ? rawValue : null;
+            }
+            recordStates.push({
+              rowIndex: sourceRow.rowIndex,
+              sourceRecord: row,
+              sfRecord: this.normalizeMigrationSalesforceRecord(obj, record)
+            });
+          }
+        } catch (error) {
+          recordStates.push({
+            rowIndex: sourceRow.rowIndex,
+            sourceRecord: row,
+            mappingError: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
+      const ambiguousValues = await this.collectAmbiguousSalesforceExternalIds(client, obj, recordStates);
+      if (!ambiguousValues.size) {
+        continue;
+      }
+
+      const conflicts = [...ambiguousValues.entries()].map(([value, existingIds]) => ({
+        value,
+        existingIds,
+        rowIndexes: recordStates
+          .filter((state) => state.sfRecord && !state.mappingError)
+          .filter((state) => String(this.getMigrationExternalIdValue(state.sfRecord!, obj.externalIdField!) ?? "").trim() === value)
+          .map((state) => state.rowIndex)
+      }));
+
+      items.push({
+        objectId: obj.id,
+        salesforceObject: obj.salesforceObject,
+        externalIdField: obj.externalIdField,
+        affectedRecordCount: conflicts.reduce((sum, conflict) => sum + conflict.rowIndexes.length, 0),
+        conflictCount: conflicts.length,
+        conflicts
+      });
+    }
+
+    return { items };
   }
 
   public async createCustomObjectFromSource(
@@ -3717,6 +5394,18 @@ export class AdminDataService {
 
     // Mark running
     migration.status = "running";
+    migration.lastRunResult = {
+      startedAt,
+      steps: orderedObjects.map((obj) => ({
+        objectId: obj.id,
+        salesforceObject: obj.salesforceObject,
+        status: "pending",
+        recordsProcessed: 0,
+        recordsSucceeded: 0,
+        recordsFailed: 0,
+        failedRecordsId: undefined
+      }))
+    };
     this.saveMigration(migration);
 
     try {
@@ -3731,26 +5420,28 @@ export class AdminDataService {
           recordsFailed: 0,
           failedRecordsId: undefined
         };
+        const progressStep = migration.lastRunResult?.steps.find((step) => step.objectId === obj.id);
+        if (progressStep) {
+          progressStep.status = "running";
+          progressStep.errorMessage = undefined;
+          progressStep.failedRecordsId = undefined;
+          this.saveMigration(migration);
+        }
 
         try {
+          await this.ensureMigrationTargetFieldsExist(client, obj);
+
           const sourceRows = await this.loadMigrationSourceRows(migration.id, obj);
           const rows = sourceRows.map((entry) => entry.row);
 
           stepResult.recordsProcessed = rows.length;
+          if (progressStep) {
+            progressStep.recordsProcessed = rows.length;
+            this.saveMigration(migration);
+          }
 
           const mappingLines = this.buildMigrationMappingLines(obj);
-          const lookupResolver = async (lookupObject: string, lookupField: string, value: unknown): Promise<string | null> => {
-            if (value === undefined || value === null || value === "") {
-              return null;
-            }
-            const soql = `SELECT Id FROM ${lookupObject} WHERE ${lookupField} = ${this.toSoqlLiteral(value)} LIMIT 1`;
-            const result = await client.queryGeneric(soql);
-            if (!result.length) {
-              return null;
-            }
-            const idValue = result[0].Id;
-            return typeof idValue === "string" ? idValue : null;
-          };
+          const lookupResolver = await this.createMigrationLookupResolver(client, mappingLines, sourceRows.map((entry) => entry.row));
           const engine = new MappingDefinitionEngine(lookupResolver);
 
           // Track each record: {index in original rows, mapped SF record or error, source record}
@@ -3772,14 +5463,16 @@ export class AdminDataService {
                 for (const [key, value] of Object.entries(mapped.values)) {
                   record[key] = value !== undefined && value !== "" ? value : null;
                 }
-                recordStates.push({ rowIndex: sourceRow.rowIndex, sourceRecord: row, sfRecord: record });
+                const normalizedRecord = this.normalizeMigrationSalesforceRecord(obj, record);
+                recordStates.push({ rowIndex: sourceRow.rowIndex, sourceRecord: row, sfRecord: normalizedRecord });
               } else {
                 const record: Record<string, unknown> = {};
                 for (const mapping of obj.fieldMappings) {
                   const rawValue = row[mapping.sourceColumn];
                   record[mapping.targetField] = rawValue !== undefined && rawValue !== "" ? rawValue : null;
                 }
-                recordStates.push({ rowIndex: sourceRow.rowIndex, sourceRecord: row, sfRecord: record });
+                const normalizedRecord = this.normalizeMigrationSalesforceRecord(obj, record);
+                recordStates.push({ rowIndex: sourceRow.rowIndex, sourceRecord: row, sfRecord: normalizedRecord });
               }
             } catch (error) {
               const errorMsg = error instanceof Error ? error.message : String(error);
@@ -3790,28 +5483,23 @@ export class AdminDataService {
             }
           }
 
-          const sfRecords = recordStates.filter((s) => s.sfRecord).map((s) => s.sfRecord!);
+          this.ensureUniqueMigrationExternalIds(obj, recordStates);
+          await this.markAmbiguousSalesforceExternalIds(client, obj, recordStates);
+          await this.syncMigrationTargetPicklistValues(client, obj, recordStates);
+
+          const executableRecordStates = recordStates.filter((state) => state.sfRecord && !state.mappingError);
+          const sfRecords = executableRecordStates.map((state) => state.sfRecord!);
 
           const batchSize = 200;
           let succeeded = 0;
           let failed = 0;
           const sfRecordStateIndexes = recordStates
-            .map((state, idx) => (state.sfRecord ? idx : -1))
+            .map((state, idx) => (state.sfRecord && !state.mappingError ? idx : -1))
             .filter((idx) => idx >= 0);
 
           for (let i = 0; i < sfRecords.length; i += batchSize) {
             const batch = sfRecords.slice(i, i + batchSize);
-            let batchResults: Array<any> = [];
-            if (obj.operation === "upsert" && obj.externalIdField) {
-              const results = await (client as any).connection.sobject(obj.salesforceObject).upsert(batch, obj.externalIdField);
-              batchResults = Array.isArray(results) ? results : [results];
-            } else if (obj.operation === "update") {
-              const results = await (client as any).connection.sobject(obj.salesforceObject).update(batch);
-              batchResults = Array.isArray(results) ? results : [results];
-            } else {
-              const results = await (client as any).connection.sobject(obj.salesforceObject).insert(batch);
-              batchResults = Array.isArray(results) ? results : [results];
-            }
+            const batchResults = await this.executeMigrationBatch(client, obj, batch);
 
             // Map batch results back to the exact recordStates slice for this batch.
             const batchStateIndexes = sfRecordStateIndexes.slice(i, i + batch.length);
@@ -3830,6 +5518,11 @@ export class AdminDataService {
                   recordStates[stateIdx].mappingError = sfError;
                 }
               }
+            }
+            if (progressStep) {
+              progressStep.recordsSucceeded = succeeded;
+              progressStep.recordsFailed = recordStates.filter((state) => state.mappingError).length;
+              this.saveMigration(migration);
             }
           }
 
@@ -3870,6 +5563,9 @@ export class AdminDataService {
               'utf-8'
             );
             stepResult.failedRecordsId = failedRecordsId;
+            if (progressStep) {
+              progressStep.failedRecordsId = failedRecordsId;
+            }
           }
           failedRecordsByObjectId[obj.id] = failedRecords;
 
@@ -3895,6 +5591,16 @@ export class AdminDataService {
           obj.stagingStatus = obj.stagingMode === "sqlite" ? "error" : obj.stagingStatus;
         }
 
+        if (progressStep) {
+          progressStep.status = stepResult.status;
+          progressStep.recordsProcessed = stepResult.recordsProcessed;
+          progressStep.recordsSucceeded = stepResult.recordsSucceeded;
+          progressStep.recordsFailed = stepResult.recordsFailed;
+          progressStep.errorMessage = stepResult.errorMessage;
+          progressStep.failedRecordsId = stepResult.failedRecordsId;
+          this.saveMigration(migration);
+        }
+
         stepResults.push(stepResult);
       }
 
@@ -3910,6 +5616,7 @@ export class AdminDataService {
       migration.lastRunResult = {
         startedAt,
         finishedAt,
+        reportPath,
         steps: stepResults.map((s) => ({ ...s }))
       };
       this.saveMigration(migration);
@@ -3987,19 +5694,13 @@ export class AdminDataService {
     }
 
     const client = await this.createClient(instanceId ?? migration.instanceId);
+    await this.ensureMigrationTargetFieldsExist(client, obj);
     const mappingLines = this.buildMigrationMappingLines(obj);
-    const lookupResolver = async (lookupObject: string, lookupField: string, value: unknown): Promise<string | null> => {
-      if (value === undefined || value === null || value === "") {
-        return null;
-      }
-      const soql = `SELECT Id FROM ${lookupObject} WHERE ${lookupField} = ${this.toSoqlLiteral(value)} LIMIT 1`;
-      const result = await client.queryGeneric(soql);
-      if (!result.length) {
-        return null;
-      }
-      const idValue = result[0].Id;
-      return typeof idValue === "string" ? idValue : null;
-    };
+    const lookupResolver = await this.createMigrationLookupResolver(
+      client,
+      mappingLines,
+      previousFailed.map((failed) => editedByRow.get(Number(failed.rowIndex || 0)) || failed.sourceRecord || {})
+    );
     const engine = new MappingDefinitionEngine(lookupResolver);
 
     const recordStates: Array<{
@@ -4019,14 +5720,16 @@ export class AdminDataService {
           for (const [key, value] of Object.entries(mapped.values)) {
             record[key] = value !== undefined && value !== "" ? value : null;
           }
-          recordStates.push({ rowIndex: Math.max(1, rowIndex), sourceRecord, sfRecord: record });
+          const normalizedRecord = this.normalizeMigrationSalesforceRecord(obj, record);
+          recordStates.push({ rowIndex: Math.max(1, rowIndex), sourceRecord, sfRecord: normalizedRecord });
         } else {
           const record: Record<string, unknown> = {};
           for (const mapping of obj.fieldMappings) {
             const rawValue = sourceRecord[mapping.sourceColumn];
             record[mapping.targetField] = rawValue !== undefined && rawValue !== "" ? rawValue : null;
           }
-          recordStates.push({ rowIndex: Math.max(1, rowIndex), sourceRecord, sfRecord: record });
+          const normalizedRecord = this.normalizeMigrationSalesforceRecord(obj, record);
+          recordStates.push({ rowIndex: Math.max(1, rowIndex), sourceRecord, sfRecord: normalizedRecord });
         }
       } catch (error) {
         recordStates.push({
@@ -4048,18 +5751,7 @@ export class AdminDataService {
 
     for (let i = 0; i < sfRecords.length; i += batchSize) {
       const batch = sfRecords.slice(i, i + batchSize);
-      let batchResults: Array<{ success?: boolean; errors?: Array<{ message?: string }>; error?: { message?: string } }> = [];
-
-      if (obj.operation === "upsert" && obj.externalIdField) {
-        const results = await (client as any).connection.sobject(obj.salesforceObject).upsert(batch, obj.externalIdField);
-        batchResults = Array.isArray(results) ? results : [results];
-      } else if (obj.operation === "update") {
-        const results = await (client as any).connection.sobject(obj.salesforceObject).update(batch);
-        batchResults = Array.isArray(results) ? results : [results];
-      } else {
-        const results = await (client as any).connection.sobject(obj.salesforceObject).insert(batch);
-        batchResults = Array.isArray(results) ? results : [results];
-      }
+      const batchResults = await this.executeMigrationBatch(client, obj, batch);
 
       const batchStateIndexes = sfRecordStateIndexes.slice(i, i + batch.length);
       for (let batchIdx = 0; batchIdx < batchResults.length; batchIdx++) {

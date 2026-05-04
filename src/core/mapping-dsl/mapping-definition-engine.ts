@@ -53,6 +53,47 @@ function applyPicklistMappings(value: unknown, mappings?: MappingPicklistEntry[]
   return relaxedMatch ? relaxedMatch.target : value;
 }
 
+function parseSupportedDateValue(value: unknown): Date | undefined {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) {
+    return undefined;
+  }
+
+  const nativeParsed = new Date(normalized);
+  if (!Number.isNaN(nativeParsed.getTime())) {
+    return nativeParsed;
+  }
+
+  const germanDateMatch = normalized.match(
+    /^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/
+  );
+  if (!germanDateMatch) {
+    return undefined;
+  }
+
+  const [, dayText, monthText, yearText, hourText, minuteText, secondText] = germanDateMatch;
+  const day = Number.parseInt(dayText, 10);
+  const month = Number.parseInt(monthText, 10);
+  const year = Number.parseInt(yearText, 10);
+  const hours = Number.parseInt(hourText || "0", 10);
+  const minutes = Number.parseInt(minuteText || "0", 10);
+  const seconds = Number.parseInt(secondText || "0", 10);
+
+  const parsed = new Date(Date.UTC(year, month - 1, day, hours, minutes, seconds));
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day ||
+    parsed.getUTCHours() !== hours ||
+    parsed.getUTCMinutes() !== minutes ||
+    parsed.getUTCSeconds() !== seconds
+  ) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
 function applySimpleTransform(value: unknown, transformType: MappingTransformType): unknown {
   if (isEmptyValue(value)) {
     return value;
@@ -80,18 +121,18 @@ function applySimpleTransform(value: unknown, transformType: MappingTransformTyp
       }
 
       const normalized = String(value).trim().toLowerCase();
-      if (["true", "1", "yes", "y"].includes(normalized)) {
+      if (["true", "1", "yes", "y", "ja", "j"].includes(normalized)) {
         return true;
       }
-      if (["false", "0", "no", "n"].includes(normalized)) {
+      if (["false", "0", "no", "n", "nein"].includes(normalized)) {
         return false;
       }
 
       throw new Error(`Cannot convert value to boolean: ${value}`);
     }
     case "DATETIME_ISO": {
-      const parsedDate = new Date(String(value));
-      if (Number.isNaN(parsedDate.getTime())) {
+      const parsedDate = parseSupportedDateValue(value);
+      if (!parsedDate) {
         throw new Error(`Cannot convert value to ISO datetime: ${value}`);
       }
       return parsedDate.toISOString();
@@ -139,8 +180,8 @@ function castToTargetType(value: unknown, targetType: MappingTargetType): unknow
       throw new Error(`Cannot cast value to boolean: ${value}`);
     }
     case "datetime": {
-      const parsedDate = new Date(String(value));
-      if (Number.isNaN(parsedDate.getTime())) {
+      const parsedDate = parseSupportedDateValue(value);
+      if (!parsedDate) {
         throw new Error(`Cannot cast value to datetime: ${value}`);
       }
       return parsedDate.toISOString();

@@ -7,6 +7,7 @@ export interface MigrationStageObjectMeta {
   filePath?: string;
   sourceFileName: string;
   fileFormat: "csv" | "excel" | "json";
+  fileSheetName?: string;
   fileCharset: string;
   fileDelimiter: string;
   fileTextQualifier: string;
@@ -38,6 +39,7 @@ interface StageObjectMetaRow {
   file_path?: string;
   source_file_name: string;
   file_format: "csv" | "excel" | "json";
+  file_sheet_name?: string;
   file_charset: string;
   file_delimiter: string;
   file_text_qualifier: string;
@@ -79,6 +81,7 @@ export class MigrationStagingSqlite {
         file_path TEXT,
         source_file_name TEXT NOT NULL,
         file_format TEXT NOT NULL,
+        file_sheet_name TEXT,
         file_charset TEXT NOT NULL,
         file_delimiter TEXT NOT NULL,
         file_text_qualifier TEXT NOT NULL,
@@ -88,6 +91,14 @@ export class MigrationStagingSqlite {
         PRIMARY KEY (migration_id, object_id)
       )
     `);
+
+    try {
+      await this.database.run(`ALTER TABLE migration_stage_objects ADD COLUMN file_sheet_name TEXT`);
+    } catch (error) {
+      if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) {
+        throw error;
+      }
+    }
 
     await this.database.run(`
       CREATE TABLE IF NOT EXISTS migration_stage_rows (
@@ -129,13 +140,14 @@ export class MigrationStagingSqlite {
             file_path,
             source_file_name,
             file_format,
+            file_sheet_name,
             file_charset,
             file_delimiter,
             file_text_qualifier,
             record_count,
             columns_json,
             uploaded_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           meta.migrationId,
@@ -143,6 +155,7 @@ export class MigrationStagingSqlite {
           meta.filePath || null,
           meta.sourceFileName,
           meta.fileFormat,
+          meta.fileSheetName || null,
           meta.fileCharset,
           meta.fileDelimiter,
           meta.fileTextQualifier,
@@ -196,6 +209,7 @@ export class MigrationStagingSqlite {
           file_path,
           source_file_name,
           file_format,
+          file_sheet_name,
           file_charset,
           file_delimiter,
           file_text_qualifier,
@@ -218,6 +232,7 @@ export class MigrationStagingSqlite {
       filePath: row.file_path,
       sourceFileName: row.source_file_name,
       fileFormat: row.file_format,
+      fileSheetName: row.file_sheet_name || undefined,
       fileCharset: row.file_charset,
       fileDelimiter: row.file_delimiter,
       fileTextQualifier: row.file_text_qualifier,

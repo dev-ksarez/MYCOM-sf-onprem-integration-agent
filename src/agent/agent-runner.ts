@@ -23,6 +23,8 @@ import { JobContext } from "../types/job-context";
 import { TransferContext } from "../types/transfer-context";
 import { IntegrationSchedule } from "../types/integration-schedule";
 import { SalesforceConfig } from "../infrastructure/config/salesforce-config";
+import { GenericRecord } from "../types/generic-record";
+import { parseQuerySourceDefinition, resolveAfterExportValue } from "../utils/query-source-definition";
 
 export interface AgentRunSummary {
   schedulesFound: number;
@@ -56,6 +58,12 @@ interface LocalScheduleHealthDocument {
   version: number;
   updatedAt: string;
   schedules: Record<string, LocalScheduleHealthItem>;
+}
+
+interface EffectiveTargetDefinition {
+  objectApiName?: string;
+  externalIdField?: string;
+  profileName?: string;
 }
 
 function readLocalScheduleHealth(): Record<string, LocalScheduleHealthItem> {
@@ -208,6 +216,147 @@ function extractTimingDefinition(targetDefinition?: string): string | undefined 
   } catch {
     return undefined;
   }
+}
+
+async function runSalesforceAfterExport(
+  salesforceClient: SalesforceClient,
+  schedule: IntegrationSchedule,
+  runId: string,
+  correlationId: string,
+  successfulSourceRecords: GenericRecord[] | undefined,
+  finishedAt: string
+): Promise<void> {
+  const parsedSourceDefinition = parseQuerySourceDefinition(schedule.sourceDefinition || "");
+  const afterExport = parsedSourceDefinition.afterExport;
+  if (!afterExport || !successfulSourceRecords?.length || !schedule.objectName) {
+    return;
+  }
+
+  const normalizedDeltaField = String(parsedSourceDefinition.delta?.field || "").trim().toLowerCase();
+  const usesMutableSalesforceTimestamp =
+    parsedSourceDefinition.delta?.strategy === "datetime"
+    && (normalizedDeltaField === "lastmodifieddate" || normalizedDeltaField === "systemmodstamp");
+
+  if (usesMutableSalesforceTimestamp) {
+    await salesforceClient.createLog({
+      runId,
+      level: "WARN",
+      step: "AFTER_EXPORT_SKIPPED",
+      message: "After Export wurde uebersprungen, weil Delta auf LastModifiedDate/SystemModstamp sonst denselben Salesforce-Datensatz erneut aendern und Folgeexporte ausloesen wuerde.",
+      correlationId
+    });
+    return;
+  }
+
+  const updatePayloads: Record<string, unknown>[] = [];
+  for (const record of successfulSourceRecords) {
+    const sourceId = typeof record.values.Id === "string" ? record.values.Id.trim() : "";
+    if (!sourceId) {
+      continue;
+    }
+
+    const payload = Object.entries(afterExport.updates).reduce<Record<string, unknown>>((acc, [fieldName, fieldValue]) => {
+      acc[fieldName] = resolveAfterExportValue(fieldValue, finishedAt, runId);
+      return acc;
+    }, { Id: sourceId });
+    updatePayloads.push(payload);
+  }
+
+  const updatedIds = await salesforceClient.updateGenericRecords(schedule.objectName, updatePayloads);
+
+  await salesforceClient.createLog({
+    runId,
+    level: "INFO",
+    step: "AFTER_EXPORT_UPDATED",
+    message: `${updatedIds.length} exportierte Datensaetze in ${schedule.objectName} nachbearbeitet`,
+    correlationId
+  });
+}
+
+function extractEffectiveTargetDefinition(targetDefinition?: string): EffectiveTargetDefinition {
+  const raw = String(targetDefinition || "").trim();
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+      return {};
+    }
+
+    if (typeof parsed.objectApiName === "string" && parsed.objectApiName.trim()) {
+      return {
+        objectApiName: parsed.objectApiName.trim(),
+        externalIdField: typeof parsed.externalIdField === "string" ? parsed.externalIdField.trim() : undefined
+      };
+    }
+
+    const selectedImportProfileName = typeof parsed.selectedImportProfileName === "string"
+      ? parsed.selectedImportProfileName.trim()
+      : "";
+    const profiles = Array.isArray(parsed.importProfiles) ? parsed.importProfiles : [];
+    const selectedProfile = profiles.find((entry) =>
+      entry &&
+      typeof entry === "object" &&
+      typeof (entry as Record<string, unknown>).name === "string" &&
+      String((entry as Record<string, unknown>).name).trim() === selectedImportProfileName
+    ) as Record<string, unknown> | undefined;
+    const fallbackProfile = profiles.find((entry) => entry && typeof entry === "object") as Record<string, unknown> | undefined;
+    const profile = selectedProfile || fallbackProfile;
+    if (!profile) {
+      return {};
+    }
+
+    return {
+      objectApiName: typeof profile.objectApiName === "string" ? profile.objectApiName.trim() : undefined,
+      externalIdField: typeof profile.externalIdField === "string" ? profile.externalIdField.trim() : undefined,
+      profileName: typeof profile.name === "string" ? profile.name.trim() : undefined
+    };
+  } catch {
+    return {};
+  }
+}
+
+function buildScheduleConflictKey(schedule: IntegrationSchedule): string | undefined {
+  const direction = String(schedule.direction || "").trim().toLowerCase();
+  const targetType = String(schedule.targetType || "").trim().toUpperCase();
+  if (targetType !== "SALESFORCE" && targetType !== "SALESFORCE_GLOBAL_PICKLIST") {
+    return undefined;
+  }
+
+  const effectiveTarget = extractEffectiveTargetDefinition(schedule.targetDefinition);
+  const objectApiName = String(effectiveTarget.objectApiName || schedule.objectName || "").trim();
+  const externalIdField = String(effectiveTarget.externalIdField || "").trim();
+  const connectorId = String(schedule.connectorId || "").trim();
+  const sourceType = String(schedule.sourceType || "").trim().toUpperCase();
+  const operation = String(schedule.operation || "").trim().toLowerCase();
+  if (!direction || !objectApiName || !connectorId) {
+    return undefined;
+  }
+
+  return [direction, targetType, objectApiName, externalIdField, connectorId, sourceType, operation].join("|");
+}
+
+function getScheduleConflictPriority(schedule: IntegrationSchedule): number {
+  const normalizedName = String(schedule.name || "").trim().toLowerCase();
+  let score = 0;
+  if (normalizedName.includes("test")) {
+    score -= 200;
+  }
+  if (normalizedName.includes("copy")) {
+    score -= 150;
+  }
+  if (normalizedName.includes("scenario") || normalizedName.includes("szenario")) {
+    score += 25;
+  }
+  if (schedule.inheritTimingFromParent) {
+    score -= 50;
+  }
+  if (schedule.nextRunAt) {
+    score += 5;
+  }
+  return score;
 }
 
 function calculateNextRunAtFromTiming(timingDefinition?: string, now: Date = new Date()): string | undefined {
@@ -501,7 +650,11 @@ async function executeSchedule(
         sourceType: schedule.sourceType || "SALESFORCE_SOQL",
         targetType: schedule.targetType || (isGenericSalesforceToFile ? "FILE_CSV" : "MSSQL"),
         batchSize: context.batchSize,
-        maxRetries: context.maxRetries
+        maxRetries: context.maxRetries,
+        checkpoint: {
+          value: lastCheckpoint,
+          recordId: lastRecordId
+        }
       };
 
       const sourceAdapter = new SalesforceSoqlSourceAdapter(salesforceClient, schedule.sourceDefinition);
@@ -552,7 +705,11 @@ async function executeSchedule(
                 ? "MSSQL"
                 : "SALESFORCE"),
         batchSize: context.batchSize,
-        maxRetries: context.maxRetries
+        maxRetries: context.maxRetries,
+        checkpoint: {
+          value: lastCheckpoint,
+          recordId: lastRecordId
+        }
       };
 
       const sourceAdapter = isFileSource
@@ -633,6 +790,19 @@ async function executeSchedule(
       });
     }
 
+    const finishedAt = new Date().toISOString();
+
+    if (schedule.sourceType === "SALESFORCE_SOQL") {
+      await runSalesforceAfterExport(
+        salesforceClient,
+        schedule,
+        runId,
+        context.correlationId,
+        result.successfulSourceRecords,
+        finishedAt
+      );
+    }
+
     await salesforceClient.createLog({
       runId,
       level: "INFO",
@@ -640,8 +810,6 @@ async function executeSchedule(
       message: `Run finished with status ${result.status}`,
       correlationId: context.correlationId
     });
-
-    const finishedAt = new Date().toISOString();
 
     await salesforceClient.updateRun(runId, {
       status: result.status,
@@ -667,12 +835,21 @@ async function executeSchedule(
     markScheduleRunSuccess(schedule.id);
 
     if (result.lastProcessedRecord) {
+      const parsedSourceDefinition = parseQuerySourceDefinition(schedule.sourceDefinition || "");
+      const deltaStrategy = parsedSourceDefinition.delta?.strategy;
+      const checkpointValue = deltaStrategy === "datetime"
+        ? result.lastProcessedRecord.value
+        : undefined;
+      const checkpointRecordId = deltaStrategy === "datetime"
+        ? result.lastProcessedRecord.recordId
+        : result.lastProcessedRecord.value;
+
       await salesforceClient.upsertCheckpoint({
         checkpointId: checkpoint?.id,
         scheduleId: schedule.id,
         objectName: schedule.objectName,
-        lastCheckpoint: result.lastProcessedRecord.lastModified,
-        lastRecordId: result.lastProcessedRecord.sourceId,
+        lastCheckpoint: checkpointValue,
+        lastRecordId: checkpointRecordId,
         lastRunId: runId
       });
 
@@ -680,7 +857,7 @@ async function executeSchedule(
         runId,
         level: "INFO",
         step: "CHECKPOINT_SAVED",
-        message: `Checkpoint updated to ${result.lastProcessedRecord.lastModified} / ${result.lastProcessedRecord.sourceId}`,
+        message: `Checkpoint updated to ${checkpointValue || checkpointRecordId || "-"}${checkpointRecordId && checkpointRecordId !== checkpointValue ? ` / ${checkpointRecordId}` : ""}`,
         correlationId: context.correlationId
       });
     } else {
@@ -769,6 +946,47 @@ export async function runDueSchedulesOnce(logger: pino.Logger, agentId: string):
 
   logger.info({ schedulesFound: schedules.length }, "Active schedules loaded");
 
+  const duplicateProtectionWinners = new Map<string, IntegrationSchedule>();
+  const duplicateProtectionLosers = new Set<string>();
+  const duplicateGroups = new Map<string, IntegrationSchedule[]>();
+  for (const schedule of schedules) {
+    const conflictKey = buildScheduleConflictKey(schedule);
+    if (!conflictKey) {
+      continue;
+    }
+
+    const bucket = duplicateGroups.get(conflictKey) || [];
+    bucket.push(schedule);
+    duplicateGroups.set(conflictKey, bucket);
+  }
+
+  duplicateGroups.forEach((group, conflictKey) => {
+    if (group.length <= 1) {
+      return;
+    }
+
+    const sorted = group.slice().sort((left, right) => {
+      const priorityDelta = getScheduleConflictPriority(right) - getScheduleConflictPriority(left);
+      if (priorityDelta !== 0) {
+        return priorityDelta;
+      }
+      return String(left.name || left.id).localeCompare(String(right.name || right.id), "de", { sensitivity: "base" });
+    });
+    duplicateProtectionWinners.set(conflictKey, sorted[0]);
+    sorted.slice(1).forEach((schedule) => duplicateProtectionLosers.add(schedule.id));
+
+    logger.warn(
+      {
+        conflictKey,
+        keptScheduleId: sorted[0].id,
+        keptScheduleName: sorted[0].name,
+        skippedScheduleIds: sorted.slice(1).map((item) => item.id),
+        skippedScheduleNames: sorted.slice(1).map((item) => item.name)
+      },
+      "Detected duplicate active schedulers for the same Salesforce target; lower-priority schedules will be skipped"
+    );
+  });
+
   const orderedSchedules = buildHierarchyOrderedSchedules(schedules);
   const dueState = new Map<string, boolean>();
   const executedState = new Map<string, boolean>();
@@ -789,6 +1007,18 @@ export async function runDueSchedulesOnce(logger: pino.Logger, agentId: string):
     dueState.set(schedule.id, inheritedDue);
 
     if (!inheritedDue) {
+      continue;
+    }
+
+    if (duplicateProtectionLosers.has(schedule.id)) {
+      logger.warn(
+        {
+          scheduleId: schedule.id,
+          scheduleName: schedule.name
+        },
+        "Skipping duplicate scheduler because a higher-priority scheduler already owns the same Salesforce target"
+      );
+      executedState.set(schedule.id, false);
       continue;
     }
 

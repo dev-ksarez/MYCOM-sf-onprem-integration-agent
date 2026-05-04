@@ -1,0 +1,264 @@
+.template-store-modal .modal-dialog {
+  max-width: 1180px;
+}
+
+.template-store-modal .modal-body {
+  padding-top: 22px;
+}
+
+.template-app-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 24px;
+}
+
+.template-app-card {
+  appearance: none;
+  -webkit-appearance: none;
+  display: block;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 26px;
+  background: #ffffff;
+  overflow: hidden;
+  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.08);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.template-app-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 18px 46px rgba(15, 23, 42, 0.14);
+}
+
+.template-app-card.is-selected {
+  border-color: #0d6efd;
+  box-shadow: 0 0 0 4px rgba(13, 110, 253, 0.12), 0 22px 50px rgba(15, 23, 42, 0.16);
+}
+
+.template-app-card:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 4px rgba(13, 110, 253, 0.18), 0 22px 50px rgba(15, 23, 42, 0.16);
+}
+
+.template-app-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+}
+
+.template-app-card__top,
+.template-app-card__app,
+.template-app-card__footer,
+.template-app-card__badges,
+.template-app-card__tags {
+  display: flex;
+  gap: 10px;
+}
+
+.template-app-card__top {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.template-app-card__app {
+  min-width: 0;
+  align-items: center;
+  flex: 1 1 auto;
+}
+
+.template-app-card__icon {
+  position: relative;
+  flex: 0 0 68px;
+  width: 68px;
+  height: 68px;
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.template-app-card__glaze {
+  position: absolute;
+  right: -8px;
+  top: -12px;
+  width: 54px;
+  height: 54px;
+  border-radius: 18px;
+  transform: rotate(16deg);
+}
+
+.template-app-card__symbol {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  font-size: 1.1rem;
+  font-weight: 800;
+}
+
+.template-app-card__meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.template-app-card__eyebrow,
+.template-app-card__hero-label {
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.template-app-card__eyebrow {
+  color: #64748b;
+}
+
+.template-app-card__badges,
+.template-app-card__tags {
+  flex-wrap: wrap;
+}
+
+.template-app-card__title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.25;
+  color: #0f172a;
+}
+
+.template-app-card__install {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  min-height: 34px;
+  border-radius: 999px;
+  background: #e8f1ff;
+  color: #0d6efd;
+  font-size: 0.84rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.template-app-card__hero {
+  position: relative;
+  min-height: 220px;
+  border-radius: 22px;
+  overflow: hidden;
+  padding: 20px;
+  display: flex;
+  align-items: flex-end;
+  color: #ffffff;
+}
+
+.template-app-card__hero-art::before,
+.template-app-card__hero-art::after {
+  content: "";
+  position: absolute;
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(4px);
+}
+
+.template-app-card__hero-art::before {
+  width: 56%;
+  height: 62%;
+  right: 8%;
+  top: 14%;
+  transform: rotate(-8deg);
+}
+
+.template-app-card__hero-art::after {
+  width: 28%;
+  height: 28%;
+  right: 4%;
+  top: 10%;
+}
+
+.template-app-card__hero-copy {
+  position: relative;
+  z-index: 1;
+  max-width: 68%;
+}
+
+.template-app-card__hero-label {
+  opacity: 0.86;
+  margin-bottom: 8px;
+}
+
+.template-app-card__hero-name {
+  font-size: 1.55rem;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.template-app-card__description {
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: #475569;
+}
+
+.template-app-card__footer {
+  align-items: center;
+  justify-content: flex-start;
+}
+
+body.theme-midnight .template-app-card {
+  background: #132032 !important;
+  border-color: #31415a !important;
+  box-shadow: 0 16px 38px rgba(3, 10, 20, 0.44) !important;
+}
+
+body.theme-midnight .template-app-card.is-selected {
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.18), 0 18px 46px rgba(3, 10, 20, 0.5) !important;
+}
+
+body.theme-midnight .template-app-card__eyebrow {
+  color: #8fa9c7 !important;
+}
+
+body.theme-midnight .template-app-card__title {
+  color: #eef5ff !important;
+}
+
+body.theme-midnight .template-app-card__description {
+  color: #b8c7da !important;
+}
+
+body.theme-midnight .template-app-card__install {
+  color: #7dd3fc !important;
+  background: rgba(56, 189, 248, 0.14) !important;
+}
+
+@media (max-width: 767px) {
+  .template-store-modal .modal-dialog {
+    max-width: calc(100vw - 20px);
+  }
+
+  .template-app-grid {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+
+  .template-app-card__top {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .template-app-card__hero {
+    min-height: 180px;
+  }
+
+  .template-app-card__hero-copy {
+    max-width: 100%;
+  }
+}

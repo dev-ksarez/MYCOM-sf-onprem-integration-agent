@@ -1,5 +1,6 @@
 import { Connection } from "jsforce";
 import { SalesforceConfig } from "../../infrastructure/config/salesforce-config";
+import { getStaleRunInactivityThresholdMinutesForSchedule } from "../../core/scheduler/stale-run-policy";
 
 export interface SalesforceAccountRecord {
   Id: string;
@@ -58,6 +59,9 @@ export interface SalesforceLogRecord {
   MSD_Run__r?: {
     MSD_Schedule__r?: {
       Name?: string;
+      MSD_Connector__r?: {
+        Name?: string;
+      };
     };
   };
   MSD_Level__c?: string;
@@ -168,8 +172,8 @@ export interface UpsertCheckpointInput {
   checkpointId?: string;
   scheduleId: string;
   objectName: string;
-  lastCheckpoint: string;
-  lastRecordId: string;
+  lastCheckpoint?: string;
+  lastRecordId?: string;
   lastRunId: string;
 }
 
@@ -200,6 +204,7 @@ export interface SalesforceObjectFieldMetadata {
   label: string;
   type: string;
   nillable: boolean;
+  isExternalId: boolean;
 }
 
 export interface SalesforceObjectMetadata {
@@ -317,6 +322,14 @@ function buildSalesforceRecordPayload(values: Record<string, unknown>): Record<s
 export class SalesforceClient {
   private static readonly sessionCache = new Map<string, CachedSalesforceSession>();
   private static readonly loginInFlight = new Map<string, Promise<CachedSalesforceSession>>();
+  private static readonly staleRunTimeoutMs = (() => {
+    const configuredMinutes = Number(process.env.SF_STALE_RUN_TIMEOUT_MINUTES?.trim() || "360");
+    if (!Number.isFinite(configuredMinutes) || configuredMinutes <= 0) {
+      return 0;
+    }
+
+    return configuredMinutes * 60 * 1000;
+  })();
 
   private readonly config: SalesforceConfig;
   private connection?: Connection;
@@ -495,6 +508,68 @@ export class SalesforceClient {
       throw new Error(`Failed to assign PermissionSet '${permissionSetName}': ${errors}`);
     }
     return { assigned: true, alreadyExisted: false };
+  }
+
+  public async ensurePermissionSetFieldAccess(
+    permissionSetName: string,
+    objectApiName: string,
+    fieldApiName: string
+  ): Promise<{ granted: boolean; alreadyExisted: boolean }> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    await this.ensurePermissionSetAssigned(permissionSetName);
+
+    const psResult = await this.connection.query<{ Id: string }>(
+      `SELECT Id FROM PermissionSet WHERE Name = '${permissionSetName}' LIMIT 1`
+    );
+    if (!psResult.records.length) {
+      throw new Error(`PermissionSet '${permissionSetName}' not found in Salesforce.`);
+    }
+
+    const permissionSetId = psResult.records[0].Id;
+    const qualifiedFieldName = `${objectApiName}.${fieldApiName}`;
+    const fieldPermissionResult = await this.connection.query<{
+      Id: string;
+      PermissionsRead?: boolean;
+      PermissionsEdit?: boolean;
+    }>(
+      `SELECT Id, PermissionsRead, PermissionsEdit FROM FieldPermissions WHERE ParentId = '${permissionSetId}' AND SobjectType = '${objectApiName}' AND Field = '${qualifiedFieldName}' LIMIT 1`
+    );
+
+    if (fieldPermissionResult.records.length > 0) {
+      const existing = fieldPermissionResult.records[0];
+      if (existing.PermissionsRead === true && existing.PermissionsEdit === true) {
+        return { granted: true, alreadyExisted: true };
+      }
+
+      const updateResult = await this.connection.sobject("FieldPermissions").update({
+        Id: existing.Id,
+        PermissionsRead: true,
+        PermissionsEdit: true
+      });
+      if (!updateResult.success) {
+        const errors = "errors" in updateResult ? JSON.stringify(updateResult.errors) : "unknown error";
+        throw new Error(`Failed to update field access for ${qualifiedFieldName}: ${errors}`);
+      }
+
+      return { granted: true, alreadyExisted: false };
+    }
+
+    const createResult = await this.connection.sobject("FieldPermissions").create({
+      ParentId: permissionSetId,
+      SobjectType: objectApiName,
+      Field: qualifiedFieldName,
+      PermissionsRead: true,
+      PermissionsEdit: true
+    });
+    if (!createResult.success) {
+      const errors = "errors" in createResult ? JSON.stringify(createResult.errors) : "unknown error";
+      throw new Error(`Failed to create field access for ${qualifiedFieldName}: ${errors}`);
+    }
+
+    return { granted: true, alreadyExisted: false };
   }
 
   public async querySchedules(activeOnly = true): Promise<SalesforceScheduleRecord[]> {
@@ -706,6 +781,18 @@ export class SalesforceClient {
     }
   }
 
+  public async deleteConnectorRecord(connectorId: string): Promise<void> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const result = await this.connection.sobject("MSD_Connector__c").destroy(connectorId);
+    if (!result.success) {
+      const details = "errors" in result ? JSON.stringify(result.errors) : "unknown delete error";
+      throw new Error(`Failed to delete MSD_Connector__c record: ${connectorId} - ${details}`);
+    }
+  }
+
   private toConnectorConfig(record: SalesforceConnectorRecord): ConnectorConfig {
     const rawParameters = record.MSD_Parameters__c?.trim();
 
@@ -870,12 +957,25 @@ export class SalesforceClient {
     }
 
     if (input.checkpointId) {
-      const updateResult = await this.connection.sobject("MSD_Checkpoint__c").update({
+      const updatePayload: {
+        Id: string;
+        MSD_LastCheckpoint__c?: string | null;
+        MSD_LastRecordId__c?: string;
+        MSD_Run__c: string;
+      } = {
         Id: input.checkpointId,
-        MSD_LastCheckpoint__c: input.lastCheckpoint,
-        MSD_LastRecordId__c: input.lastRecordId,
         MSD_Run__c: input.lastRunId
-      });
+      };
+      if (input.lastCheckpoint) {
+        updatePayload.MSD_LastCheckpoint__c = input.lastCheckpoint;
+      } else {
+        updatePayload.MSD_LastCheckpoint__c = null;
+      }
+      if (input.lastRecordId) {
+        updatePayload.MSD_LastRecordId__c = input.lastRecordId;
+      }
+
+      const updateResult = await this.connection.sobject("MSD_Checkpoint__c").update(updatePayload);
 
       if (!updateResult.success) {
         const details = "errors" in updateResult ? JSON.stringify(updateResult.errors) : "unknown update error";
@@ -885,13 +985,25 @@ export class SalesforceClient {
       return input.checkpointId;
     }
 
-    const createResult = await this.connection.sobject("MSD_Checkpoint__c").create({
+    const createPayload: {
+      MSD_Schedule__c: string;
+      MSD_ObjectName__c: string;
+      MSD_LastCheckpoint__c?: string | null;
+      MSD_LastRecordId__c?: string;
+      MSD_Run__c: string;
+    } = {
       MSD_Schedule__c: input.scheduleId,
       MSD_ObjectName__c: input.objectName,
-      MSD_LastCheckpoint__c: input.lastCheckpoint,
-      MSD_LastRecordId__c: input.lastRecordId,
       MSD_Run__c: input.lastRunId
-    });
+    };
+    if (input.lastCheckpoint) {
+      createPayload.MSD_LastCheckpoint__c = input.lastCheckpoint;
+    }
+    if (input.lastRecordId) {
+      createPayload.MSD_LastRecordId__c = input.lastRecordId;
+    }
+
+    const createResult = await this.connection.sobject("MSD_Checkpoint__c").create(createPayload);
 
     if (!createResult.success || !createResult.id) {
       const details = "errors" in createResult ? JSON.stringify(createResult.errors) : "unknown create error";
@@ -931,7 +1043,8 @@ export class SalesforceClient {
     const soql = `
       SELECT
         Id,
-        MSD_Status__c
+        MSD_Status__c,
+        MSD_StartedAt__c
       FROM MSD_Run__c
       WHERE MSD_Schedule__c = '${escapedScheduleId}'
         AND MSD_Status__c = 'Running'
@@ -940,7 +1053,48 @@ export class SalesforceClient {
     `;
 
     const result = await this.connection.query<SalesforceRunRecord>(soql);
-    return result.records.length > 0;
+    if (result.records.length === 0) {
+      return false;
+    }
+
+    const run = result.records[0];
+    const staleRunTimeoutMs = SalesforceClient.staleRunTimeoutMs;
+    const staleRunInactivityTimeoutMs = getStaleRunInactivityThresholdMinutesForSchedule(
+      run.MSD_Schedule__c,
+      run.MSD_Schedule__r?.Name
+    ) * 60 * 1000;
+    const startedAt = run.MSD_StartedAt__c ? new Date(run.MSD_StartedAt__c).getTime() : Number.NaN;
+    const latestLogs = await this.queryLogsByRunId(run.Id, 1);
+    const latestLogCreatedAt = latestLogs[0]?.CreatedDate ? new Date(latestLogs[0].CreatedDate).getTime() : Number.NaN;
+    const activityReferenceAt = !Number.isNaN(latestLogCreatedAt) ? latestLogCreatedAt : startedAt;
+
+    if (
+      staleRunTimeoutMs > 0 &&
+      !Number.isNaN(startedAt) &&
+      Date.now() - startedAt >= staleRunTimeoutMs
+    ) {
+      await this.updateRun(run.Id, {
+        status: "Failed",
+        finishedAt: new Date().toISOString(),
+        errorMessage: `Auto-closed stale run after ${Math.round(staleRunTimeoutMs / 60000)} minutes without completion`
+      });
+      return false;
+    }
+
+    if (
+      staleRunInactivityTimeoutMs > 0 &&
+      !Number.isNaN(activityReferenceAt) &&
+      Date.now() - activityReferenceAt >= staleRunInactivityTimeoutMs
+    ) {
+      await this.updateRun(run.Id, {
+        status: "Failed",
+        finishedAt: new Date().toISOString(),
+        errorMessage: `Auto-closed inactive run after ${Math.round(staleRunInactivityTimeoutMs / 60000)} minutes without activity`
+      });
+      return false;
+    }
+
+    return true;
   }
 
   public async queryRuns(limit = 50): Promise<SalesforceRunRecord[]> {
@@ -971,6 +1125,67 @@ export class SalesforceClient {
 
     const result = await this.connection.query<SalesforceRunRecord>(soql);
     return result.records;
+  }
+
+  public async queryRunningRuns(limit = 50): Promise<SalesforceRunRecord[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedLimit = Math.max(1, Math.min(limit, 200));
+    const soql = `
+      SELECT
+        Id,
+        MSD_Status__c,
+        MSD_Schedule__c,
+        MSD_Schedule__r.Name,
+        MSD_StartedAt__c,
+        MSD_FinishedAt__c,
+        MSD_RecordsRead__c,
+        MSD_RecordsProcessed__c,
+        MSD_RecordsSucceeded__c,
+        MSD_RecordsFailed__c,
+        MSD_ErrorMessage__c,
+        MSD_CorrelationId__c,
+        MSD_AgentId__c
+      FROM MSD_Run__c
+      WHERE MSD_Status__c = 'Running'
+      ORDER BY MSD_StartedAt__c DESC, CreatedDate DESC
+      LIMIT ${normalizedLimit}
+    `;
+
+    const result = await this.connection.query<SalesforceRunRecord>(soql);
+    return result.records;
+  }
+
+  public async queryRunById(runId: string): Promise<SalesforceRunRecord | null> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const escapedRunId = runId.replace(/'/g, "\\'");
+    const soql = `
+      SELECT
+        Id,
+        MSD_Status__c,
+        MSD_Schedule__c,
+        MSD_Schedule__r.Name,
+        MSD_StartedAt__c,
+        MSD_FinishedAt__c,
+        MSD_RecordsRead__c,
+        MSD_RecordsProcessed__c,
+        MSD_RecordsSucceeded__c,
+        MSD_RecordsFailed__c,
+        MSD_ErrorMessage__c,
+        MSD_CorrelationId__c,
+        MSD_AgentId__c
+      FROM MSD_Run__c
+      WHERE Id = '${escapedRunId}'
+      LIMIT 1
+    `;
+
+    const result = await this.connection.query<SalesforceRunRecord>(soql);
+    return result.records[0] || null;
   }
 
   public async queryLogsByRunId(runId: string, limit = 200): Promise<SalesforceLogRecord[]> {
@@ -1011,6 +1226,7 @@ export class SalesforceClient {
         Id,
         MSD_Run__c,
         MSD_Run__r.MSD_Schedule__r.Name,
+        MSD_Run__r.MSD_Schedule__r.MSD_Connector__r.Name,
         MSD_Level__c,
         MSD_Step__c,
         MSD_Message__c,
@@ -1172,6 +1388,44 @@ export class SalesforceClient {
     }
 
     return idValue.trim();
+  }
+
+  public async updateGenericRecords(
+    objectApiName: string,
+    valuesList: Record<string, unknown>[]
+  ): Promise<string[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const apiName = objectApiName.trim();
+    if (!apiName) {
+      throw new Error("objectApiName must not be empty");
+    }
+
+    const payloads = valuesList.map((values) => {
+      const idValue = values["Id"];
+      if (!idValue || typeof idValue !== "string" || !idValue.trim()) {
+        throw new Error(`Update requires 'Id' field in mapped values for object ${apiName}`);
+      }
+      return buildSalesforceRecordPayload(values) as { Id: string } & Record<string, unknown>;
+    });
+
+    if (!payloads.length) {
+      return [];
+    }
+
+    const results = await this.connection.sobject(apiName).update(payloads);
+    const saveResults = Array.isArray(results) ? results : [results];
+
+    saveResults.forEach((result, index) => {
+      if (!result.success) {
+        const details = "errors" in result ? JSON.stringify(result.errors) : "unknown update error";
+        throw new Error(`Failed to update ${apiName} Id=${payloads[index]?.Id || "unknown"} - ${details}`);
+      }
+    });
+
+    return payloads.map((payload) => String(payload.Id).trim());
   }
 
   public async upsertPricebookEntryByCompositeKey(values: Record<string, unknown>): Promise<string> {
@@ -1344,9 +1598,33 @@ export class SalesforceClient {
         name: String(field.name ?? "").trim(),
         label: String(field.label ?? field.name ?? "").trim(),
         type: String(field.type ?? "unknown").trim(),
-        nillable: Boolean(field.nillable)
+        nillable: Boolean(field.nillable),
+        isExternalId: Boolean((field as { externalId?: boolean }).externalId)
       }))
       .filter((field) => field.name);
+  }
+
+  public async waitForObjectFieldVisibility(
+    objectApiName: string,
+    fieldApiName: string,
+    maxAttempts = 20,
+    delayMs = 1000
+  ): Promise<boolean> {
+    const normalizedFieldName = String(fieldApiName || "").trim().toLowerCase();
+    if (!normalizedFieldName) {
+      return false;
+    }
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const fields = await this.describeObjectFields(objectApiName);
+      if (fields.some((field) => field.name.toLowerCase() === normalizedFieldName)) {
+        return true;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    return false;
   }
 
   public async listObjectMetadata(): Promise<SalesforceObjectMetadata[]> {
@@ -1646,6 +1924,128 @@ export class SalesforceClient {
     return { added, updated, total: normalizedEntries.length };
   }
 
+  public async syncCustomFieldPicklistValues(input: {
+    objectApiName: string;
+    fieldApiName: string;
+    values: string[];
+  }): Promise<{ added: number; updated: number; total: number }> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const objectApiName = String(input.objectApiName || "").trim();
+    const fieldApiName = String(input.fieldApiName || "").trim();
+    const normalizedValues = Array.from(new Set((Array.isArray(input.values) ? input.values : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)));
+
+    if (!objectApiName || !fieldApiName) {
+      throw new Error("objectApiName and fieldApiName must not be empty");
+    }
+
+    if (normalizedValues.length === 0) {
+      return { added: 0, updated: 0, total: 0 };
+    }
+
+    const fullName = `${objectApiName}.${fieldApiName}`;
+    const metadataApi = this.connection.metadata as unknown as {
+      read: (type: string, fullName: string) => Promise<unknown>;
+      update: (type: string, metadata: unknown) => Promise<unknown>;
+    };
+
+    const readResult = await metadataApi.read("CustomField", fullName);
+    const metadataEntry = Array.isArray(readResult) ? readResult[0] : readResult;
+    if (!metadataEntry || typeof metadataEntry !== "object") {
+      throw new Error(`CustomField metadata not found: ${fullName}`);
+    }
+
+    const existing = metadataEntry as Record<string, unknown>;
+    if (String(existing.type || "").trim().toLowerCase() !== "picklist") {
+      return { added: 0, updated: 0, total: normalizedValues.length };
+    }
+
+    const valueSet = existing.valueSet && typeof existing.valueSet === "object"
+      ? { ...(existing.valueSet as Record<string, unknown>) }
+      : {};
+    const valueSetDefinition: Record<string, unknown> = valueSet.valueSetDefinition && typeof valueSet.valueSetDefinition === "object"
+      ? { ...(valueSet.valueSetDefinition as Record<string, unknown>) }
+      : { sorted: false };
+    const currentValues = Array.isArray(valueSetDefinition.value)
+      ? [...(valueSetDefinition.value as Array<Record<string, unknown>>)]
+      : [];
+
+    const byApiName = new Map<string, Record<string, unknown>>();
+    for (const entry of currentValues) {
+      if (!entry || typeof entry !== "object") {
+        continue;
+      }
+
+      const apiName = String(entry.fullName ?? "").trim();
+      if (!apiName) {
+        continue;
+      }
+
+      byApiName.set(apiName, { ...entry });
+    }
+
+    let added = 0;
+    let updated = 0;
+    for (const value of normalizedValues) {
+      const existingValue = byApiName.get(value);
+      if (!existingValue) {
+        byApiName.set(value, {
+          fullName: value,
+          default: false,
+          label: value,
+          isActive: true
+        });
+        added += 1;
+        continue;
+      }
+
+      const previousLabel = String(existingValue.label ?? existingValue.fullName ?? "").trim();
+      if (previousLabel !== value || existingValue.isActive === false) {
+        existingValue.label = value;
+        existingValue.isActive = true;
+        updated += 1;
+      }
+    }
+
+    if (added === 0 && updated === 0) {
+      return { added: 0, updated: 0, total: normalizedValues.length };
+    }
+
+    valueSet.valueSetDefinition = {
+      ...valueSetDefinition,
+      value: Array.from(byApiName.values())
+    };
+
+    const payload: Record<string, unknown> = {
+      fullName,
+      label: existing.label,
+      type: existing.type,
+      description: existing.description,
+      required: existing.required,
+      trackFeedHistory: existing.trackFeedHistory,
+      externalId: existing.externalId,
+      valueSet
+    };
+
+    const updateResult = await metadataApi.update("CustomField", payload);
+    const resultArray = Array.isArray(updateResult) ? updateResult : [updateResult];
+    const failed = resultArray.find(
+      (entry) => entry && typeof entry === "object" && "success" in (entry as Record<string, unknown>) && (entry as Record<string, unknown>).success === false
+    ) as Record<string, unknown> | undefined;
+
+    if (failed) {
+      const errors = failed.errors ? JSON.stringify(failed.errors) : "unknown metadata error";
+      throw new Error(`Failed to sync picklist values for ${fullName}: ${errors}`);
+    }
+
+    this.objectPicklistCache.delete(`${objectApiName}.${fieldApiName}`);
+    return { added, updated, total: normalizedValues.length };
+  }
+
   public async createOrUpdateMetadata(
     metadataType: string,
     fullName: string,
@@ -1666,11 +2066,41 @@ export class SalesforceClient {
       fullName
     };
 
+    const customFieldTarget = (() => {
+      if (metadataType !== "CustomField") {
+        return null;
+      }
+
+      const dotIndex = fullName.indexOf(".");
+      if (dotIndex <= 0 || dotIndex >= fullName.length - 1) {
+        return null;
+      }
+
+      return {
+        objectApiName: fullName.slice(0, dotIndex),
+        fieldApiName: fullName.slice(dotIndex + 1)
+      };
+    })();
+
+    const customFieldExists = async (): Promise<boolean> => {
+      if (!customFieldTarget) {
+        return false;
+      }
+
+      return await this.waitForObjectFieldVisibility(customFieldTarget.objectApiName, customFieldTarget.fieldApiName, 1, 0);
+    };
+
     let exists = false;
     if (metadataType === "CustomObject") {
       try {
         const objects = await this.listObjectMetadata();
         exists = objects.some((entry) => String(entry.name || "").toLowerCase() === fullName.toLowerCase());
+      } catch {
+        exists = false;
+      }
+    } else if (customFieldTarget) {
+      try {
+        exists = await customFieldExists();
       } catch {
         exists = false;
       }
@@ -1727,7 +2157,47 @@ export class SalesforceClient {
         }
       }
 
+      if (customFieldTarget) {
+        try {
+          const present = await customFieldExists();
+          if (present) {
+            return {
+              success: true,
+              action: "exists",
+              type: metadataType,
+              fullName
+            };
+          }
+        } catch {
+          // Keep original error if fallback field lookup fails.
+        }
+      }
+
       throw new Error(`Failed to create ${metadataType} ${fullName}: ${errors}`);
+    }
+
+    if (customFieldTarget) {
+      if (await this.waitForObjectFieldVisibility(customFieldTarget.objectApiName, customFieldTarget.fieldApiName)) {
+        return {
+          success: true,
+          action: "created",
+          type: metadataType,
+          fullName
+        };
+      }
+
+      let readbackSummary = "unavailable";
+      try {
+        const readback = await metadataApi.read(metadataType, fullName);
+        readbackSummary = JSON.stringify(readback);
+      } catch (error) {
+        readbackSummary = error instanceof Error ? error.message : String(error);
+      }
+
+      throw new Error(
+        `CustomField ${fullName} was created via metadata API but is not yet visible on the object describe result. `
+        + `createResult=${JSON.stringify(writeResult)} readback=${readbackSummary}`
+      );
     }
 
     return writeResult;

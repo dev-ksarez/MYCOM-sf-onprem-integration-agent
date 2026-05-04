@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MYCOM SF On-Prem Integration Agent</title>
+    <style>
+      :root {
+        --bg: #f4f7fb;
+        --paper: #ffffff;
+        --ink: #15304a;
+        --muted: #567086;
+        --line: #d8e2ec;
+        --brand: #1a77d4;
+        --brand-dark: #0f4f9d;
+        --accent: #19b48c;
+        --accent-soft: #e8fbf5;
+        --panel: #11253a;
+        --shadow: 0 18px 50px rgba(17, 37, 58, 0.14);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        background:
+          radial-gradient(circle at top right, rgba(26, 119, 212, 0.14), transparent 28%),
+          linear-gradient(180deg, #f7fbff 0%, var(--bg) 100%);
+        color: var(--ink);
+      }
+
+      .page {
+        width: 210mm;
+        min-height: 297mm;
+        margin: 0 auto;
+        background: var(--paper);
+        box-shadow: var(--shadow);
+        padding: 14mm 14mm 12mm;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: 1.35fr 0.95fr;
+        gap: 11mm;
+        align-items: start;
+      }
+
+      .brandbar {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 7mm;
+      }
+
+      .brandbar img {
+        width: 138px;
+        height: auto;
+        display: block;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid rgba(25, 180, 140, 0.2);
+        background: var(--accent-soft);
+        color: #11755c;
+        border-radius: 999px;
+        padding: 7px 12px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 4mm 0 3mm;
+        font-size: 28px;
+        line-height: 1.06;
+        letter-spacing: -0.03em;
+      }
+
+      .lead {
+        margin: 0 0 5mm;
+        font-size: 14px;
+        line-height: 1.55;
+        color: var(--muted);
+      }
+
+      .keyword-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin: 0 0 7mm;
+      }
+
+      .keyword {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 10px 12px;
+        font-size: 13px;
+        font-weight: 700;
+        background: #fbfdff;
+      }
+
+      .keyword strong {
+        color: var(--brand-dark);
+      }
+
+      .value-card {
+        background: linear-gradient(160deg, var(--panel) 0%, #183452 100%);
+        color: #f8fbff;
+        border-radius: 24px;
+        padding: 20px;
+      }
+
+      .value-card h2 {
+        margin: 0 0 8px;
+        font-size: 18px;
+      }
+
+      .value-card p {
+        margin: 0 0 14px;
+        font-size: 14px;
+        line-height: 1.55;
+        color: rgba(248, 251, 255, 0.82);
+      }
+
+      .metric-strip {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .metric {
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 16px;
+        padding: 12px;
+        background: rgba(255, 255, 255, 0.05);
+      }
+
+      .metric .number {
+        display: block;
+        font-size: 22px;
+        font-weight: 800;
+        margin-bottom: 4px;
+      }
+
+      .metric .label {
+        font-size: 12px;
+        color: rgba(248, 251, 255, 0.74);
+      }
+
+      .section {
+        margin-top: 8mm;
+      }
+
+      .section h3 {
+        margin: 0 0 4mm;
+        font-size: 18px;
+      }
+
+      .section p {
+        margin: 0 0 5mm;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .benefits {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .benefit {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 14px;
+        background: #fcfdff;
+      }
+
+      .benefit .title {
+        font-weight: 800;
+        margin-bottom: 6px;
+        color: var(--brand-dark);
+      }
+
+      .benefit .copy {
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+
+      .screens {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 12px;
+      }
+
+      .screen-stack {
+        display: grid;
+        grid-template-rows: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .screen-card {
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        overflow: hidden;
+        background: #f7fbff;
+      }
+
+      .screen-card img {
+        width: 100%;
+        display: block;
+      }
+
+      .screen-caption {
+        padding: 10px 12px 12px;
+      }
+
+      .screen-caption strong {
+        display: block;
+        font-size: 13px;
+        margin-bottom: 4px;
+      }
+
+      .screen-caption span {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+
+      .cta {
+        margin-top: 8mm;
+        border-radius: 24px;
+        padding: 14px 16px;
+        background: linear-gradient(130deg, #eaf4ff 0%, #f3fbf8 100%);
+        border: 1px solid #d5e7f7;
+        display: grid;
+        grid-template-columns: 1.3fr 0.7fr;
+        gap: 12px;
+      }
+
+      .cta h4 {
+        margin: 0 0 6px;
+        font-size: 17px;
+      }
+
+      .cta p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .cta-box {
+        background: #ffffff;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 14px;
+      }
+
+      .cta-box .headline {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--brand-dark);
+        font-weight: 800;
+        margin-bottom: 6px;
+      }
+
+      .cta-box .line {
+        font-size: 13px;
+        margin-bottom: 5px;
+      }
+
+      .footer {
+        margin-top: 8mm;
+        padding-top: 4mm;
+        border-top: 1px solid var(--line);
+        font-size: 11px;
+        color: var(--muted);
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      @media print {
+        @page {
+          size: A4 portrait;
+          margin: 0;
+        }
+
+        body {
+          background: #ffffff;
+        }
+
+        .page {
+          box-shadow: none;
+          margin: 0;
+        }
+
+        .screen-card,
+        .benefit,
+        .cta-box,
+        .value-card {
+          break-inside: avoid;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <div>
+          <div class="brandbar">
+            <img src="assets/mycom-logo.svg" alt="MYCOM" />
+            <div>
+              <div class="eyebrow">Salesforce gesteuert. On-Prem ausgefuehrt.</div>
+            </div>
+          </div>
+
+          <h1>Der SF On-Prem Integration Agent fuer Vertrieb, Service und Backoffice</h1>
+          <p class="lead">
+            Datenfluesse aus Salesforce zentral steuern, On-Prem Systeme sicher anbinden und Dateiimporte in Minuten statt Tagen produktiv machen.
+            Der Agent verbindet Scheduler, Monitoring, Dateiverarbeitung und Salesforce-Mappings in einer Oberflaeche.
+          </p>
+
+          <div class="keyword-grid">
+            <div class="keyword"><strong>Salesforce Control Plane</strong><br />Schedules, Runs und Logging zentral verwalten</div>
+            <div class="keyword"><strong>CSV, Excel, JSON</strong><br />Dateiimporte per Auswahl oder Drag & Drop</div>
+            <div class="keyword"><strong>SQLite-Staging</strong><br />Zwischenspeichern, analysieren und sicher weiterverarbeiten</div>
+            <div class="keyword"><strong>MSSQL & REST</strong><br />On-Prem Quellsysteme ohne Medienbruch anbinden</div>
+            <div class="keyword"><strong>Monitoring & Reports</strong><br />Status, Fehler, Protokolle und Runs auf einen Blick</div>
+            <div class="keyword"><strong>Windows Service & Auto-Update</strong><br />Betriebsreif fuer Kundeninstallationen</div>
+          </div>
+        </div>
+
+        <aside class="value-card">
+          <h2>Vertriebsargument in einem Satz</h2>
+          <p>
+            Der Agent reduziert Integrationsaufwand, beschleunigt Datei- und Systemanbindungen und schafft eine nachvollziehbare, Salesforce-nahe Steuerung fuer wiederkehrende Datenprozesse.
+          </p>
+          <div class="metric-strip">
+            <div class="metric">
+              <span class="number">1 UI</span>
+              <span class="label">fuer Scheduler, Migration und Monitoring</span>
+            </div>
+            <div class="metric">
+              <span class="number">3 Dateitypen</span>
+              <span class="label">CSV, Excel und JSON direkt verarbeiten</span>
+            </div>
+            <div class="metric">
+              <span class="number">0 Blindflug</span>
+              <span class="label">mit Reports, Fehlerdetails und Health-Status</span>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="section">
+        <h3>Wo der Agent im Kundengespraech punktet</h3>
+        <p>
+          Ideal fuer Unternehmen mit Salesforce im Frontend und On-Prem Anwendungen im Backend, die Importe, Exporte oder wiederkehrende Abgleiche ohne individuelle Einzelloesungen standardisieren wollen.
+        </p>
+        <div class="benefits">
+          <div class="benefit">
+            <div class="title">Schneller produktiv</div>
+            <div class="copy">Dateien direkt in Migrationsentwuerfe uebernehmen, Felder mappen, fehlende Salesforce-Felder anlegen und den Lauf unmittelbar testen.</div>
+          </div>
+          <div class="benefit">
+            <div class="title">Besser steuerbar</div>
+            <div class="copy">Salesforce dient als Steuerungsebene fuer Profile, Zeitregeln, Ausfuehrungen und Status. Das reduziert Abstimmungsaufwand zwischen Fachbereich und IT.</div>
+          </div>
+          <div class="benefit">
+            <div class="title">Sicherer Betrieb</div>
+            <div class="copy">Overlap-Schutz, Windows-Dienst, Auto-Update, Backup- und Rollback-Mechanismen machen aus einem Skript einen betreibbaren Agenten.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h3>Bildschirmfotos aus der Anwendung</h3>
+        <p>
+          Die Screens zeigen die reale Oberflaeche des Agenten: Management-Dashboard, Migrationsliste und den gefuehrten Assistenten fuer Ausfuehrung und Mapping.
+        </p>
+        <div class="screens">
+          <div class="screen-card">
+            <img src="assets/overview-dashboard.png" alt="Dashboard des Integration Agent" />
+            <div class="screen-caption">
+              <strong>Live-Dashboard fuer Betrieb und Transparenz</strong>
+              <span>Service-Status, Scheduler, Run-Qualitaet, Verlauf, Salesforce-Limits und verknuepfte Datenfluesse in einer Ansicht.</span>
+            </div>
+          </div>
+          <div class="screen-stack">
+            <div class="screen-card">
+              <img src="assets/migration-list.png" alt="Migrationsliste des Integration Agent" />
+              <div class="screen-caption">
+                <strong>Datei- und Migrationssteuerung</strong>
+                <span>Entwuerfe anlegen, Status einsehen und Dateiimporte fuer CSV, TXT, Excel und JSON direkt starten.</span>
+              </div>
+            </div>
+            <div class="screen-card">
+              <img src="assets/migration-wizard.png" alt="Migrationswizard des Integration Agent" />
+              <div class="screen-caption">
+                <strong>Gefuehrter Migrationsassistent</strong>
+                <span>Objekte, Dateien, Mapping, Abhaengigkeiten und Ausfuehrung in einem linearen, vertriebsdemofaehigen Prozess.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="cta">
+        <div>
+          <h4>Typische Schlagworte fuer Vertrieb und Presales</h4>
+          <p>
+            Salesforce-Integration, On-Prem Anbindung, Dateiimport, CSV-Import, Excel-Import, JSON-Import, SQLite-Staging, MSSQL-Anbindung, Scheduler, Monitoring, Logging, Fehleranalyse, Picklist-Synchronisation, Windows Service, Auto-Update, Rollback, Migrationsassistent, Betriebsdashboard.
+          </p>
+        </div>
+        <div class="cta-box">
+          <div class="headline">Einsatzbild</div>
+          <div class="line">Salesforce im Frontoffice</div>
+          <div class="line">On-Prem Datenquellen im Backoffice</div>
+          <div class="line">Agent als steuerbare Integrationsschicht</div>
+          <div class="line">MYCOM als Implementierungspartner</div>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <span>MYCOM SF On-Prem Integration Agent</span>
+        <span>Flyer-Stand: Mai 2026</span>
+      </footer>
+    </main>
+  </body>
+</html>

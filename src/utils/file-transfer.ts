@@ -31,6 +31,83 @@ export interface ParsedUploadPayload {
   headers: string[];
   charset: string;
   delimiter: string;
+  primarySheetName?: string;
+  sheets?: ParsedUploadSheetPayload[];
+}
+
+export interface ParsedUploadSheetPayload {
+  sheetName: string;
+  headers: string[];
+  recordCount: number;
+}
+
+function normalizeTextCharset(charset: string): string {
+  const normalized = String(charset || "").trim().toLowerCase();
+  if (!normalized) {
+    return "utf8";
+  }
+
+  if (normalized === "utf-8") {
+    return "utf8";
+  }
+
+  if (normalized === "cp1252") {
+    return "windows-1252";
+  }
+
+  return normalized;
+}
+
+function looksLikeUtf16Le(content: Buffer): boolean {
+  if (content.length < 4 || content.length % 2 !== 0) {
+    return false;
+  }
+
+  let zeroBytes = 0;
+  let oddPositions = 0;
+  for (let index = 1; index < Math.min(content.length, 128); index += 2) {
+    oddPositions += 1;
+    if (content[index] === 0) {
+      zeroBytes += 1;
+    }
+  }
+
+  return oddPositions > 0 && zeroBytes / oddPositions > 0.4;
+}
+
+export function detectTextCharset(content: Buffer): string {
+  if (content.length >= 2) {
+    if (content[0] === 0xff && content[1] === 0xfe) {
+      return "utf-16le";
+    }
+    if (content[0] === 0xfe && content[1] === 0xff) {
+      return "utf-16le";
+    }
+  }
+
+  if (content.length >= 3 && content[0] === 0xef && content[1] === 0xbb && content[2] === 0xbf) {
+    return "utf8";
+  }
+
+  if (looksLikeUtf16Le(content)) {
+    return "utf-16le";
+  }
+
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(content);
+    return "utf8";
+  } catch {
+    return "windows-1252";
+  }
+}
+
+export function decodeTextBuffer(content: Buffer, charset?: string): string {
+  const normalizedCharset = normalizeTextCharset(charset || detectTextCharset(content));
+  if (normalizedCharset === "windows-1252") {
+    return new TextDecoder("windows-1252").decode(content).replace(/^\uFEFF/, "");
+  }
+
+  return content.toString(normalizedCharset as BufferEncoding).replace(/^\uFEFF/, "");
 }
 
 interface FileConnectorRuntimeConfig {
@@ -163,7 +240,7 @@ function resolveRuntimeConfig(connectorConfig: ConnectorConfig): FileConnectorRu
   };
 }
 
-function splitCsvLine(line: string, delimiter: string): string[] {
+function splitCsvLine(line: string, delimiter: string, textQualifier = '"'): string[] {
   const values: string[] = [];
   let current = "";
   let inQuotes = false;
@@ -172,9 +249,9 @@ function splitCsvLine(line: string, delimiter: string): string[] {
     const char = line[index];
     const nextChar = line[index + 1];
 
-    if (char === '"') {
-      if (inQuotes && nextChar === '"') {
-        current += '"';
+    if (char === textQualifier) {
+      if (inQuotes && nextChar === textQualifier) {
+        current += textQualifier;
         index += 1;
       } else {
         inQuotes = !inQuotes;
@@ -195,13 +272,73 @@ function splitCsvLine(line: string, delimiter: string): string[] {
   return values.map((value) => value.trim());
 }
 
+export function parseDelimitedRows(raw: string, delimiter: string, textQualifier = '"'): string[][] {
+  const normalizedRaw = String(raw || "").replace(/^\uFEFF/, "");
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentValue = "";
+  let inQuotes = false;
+
+  const pushValue = () => {
+    currentRow.push(currentValue.trim());
+    currentValue = "";
+  };
+
+  const pushRow = () => {
+    if (currentRow.length === 1 && currentRow[0] === "") {
+      currentRow = [];
+      return;
+    }
+
+    rows.push(currentRow);
+    currentRow = [];
+  };
+
+  for (let index = 0; index < normalizedRaw.length; index += 1) {
+    const char = normalizedRaw[index];
+    const nextChar = normalizedRaw[index + 1];
+
+    if (char === textQualifier) {
+      if (inQuotes && nextChar === textQualifier) {
+        currentValue += textQualifier;
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (!inQuotes && char === delimiter) {
+      pushValue();
+      continue;
+    }
+
+    if (!inQuotes && (char === '\n' || char === '\r')) {
+      if (char === '\r' && nextChar === '\n') {
+        index += 1;
+      }
+      pushValue();
+      pushRow();
+      continue;
+    }
+
+    currentValue += char;
+  }
+
+  if (inQuotes) {
+    throw new Error("CSV-Datei enthaelt ein nicht abgeschlossenes Textqualifier-Feld");
+  }
+
+  if (currentValue.length > 0 || currentRow.length > 0) {
+    pushValue();
+    pushRow();
+  }
+
+  return rows;
+}
+
 function parseCsvRows(raw: string, delimiter: string): string[][] {
-  return String(raw || "")
-    .replace(/^\uFEFF/, "")
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd())
-    .filter((line) => line.length > 0)
-    .map((line) => splitCsvLine(line, delimiter));
+  return parseDelimitedRows(raw, delimiter, '"');
 }
 
 function normalizeHeader(value: unknown, fallbackIndex: number): string {
@@ -231,7 +368,7 @@ function detectDelimiterFromHeader(headerLine: string): string {
   const candidates = [";", ",", "\t", "|"];
   const scores = candidates.map((candidate) => ({
     delimiter: candidate,
-    score: splitCsvLine(headerLine, candidate).length
+    score: splitCsvLine(headerLine, candidate, '"').length
   }));
   scores.sort((a, b) => b.score - a.score);
   return scores[0]?.delimiter || ";";
@@ -434,7 +571,7 @@ export function analyzeUploadedFile(fileName: string, content: Buffer): ParsedUp
   if (format === "json") {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(content.toString("utf8").replace(/^\uFEFF/, ""));
+      parsed = JSON.parse(decodeTextBuffer(content, "utf8"));
     } catch {
       throw new Error("Hochgeladene JSON-Datei ist ungueltig");
     }
@@ -451,27 +588,53 @@ export function analyzeUploadedFile(fileName: string, content: Buffer): ParsedUp
 
   if (format === "excel") {
     const workbook = XLSX.read(content, { type: "buffer" });
-    const firstSheet = workbook.SheetNames[0];
-    const rows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[firstSheet], { header: 1, raw: false, defval: "" });
-    const headerRow = (rows[0] || []) as unknown[];
-    const headers = headerRow.map((value, index) => normalizeHeader(value, index));
+    const sheets = workbook.SheetNames
+      .map((sheetName) => {
+        const sheet = workbook.Sheets[sheetName];
+        if (!sheet) {
+          return null;
+        }
+
+        const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, defval: "" });
+        const headerRow = (rows[0] || []) as unknown[];
+        const headers = headerRow.map((value, index) => normalizeHeader(value, index));
+        const recordCount = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+          defval: "",
+          raw: false
+        }).length;
+
+        return {
+          sheetName,
+          headers,
+          recordCount
+        } satisfies ParsedUploadSheetPayload;
+      })
+      .filter((sheet): sheet is ParsedUploadSheetPayload => !!sheet);
+    const primarySheet = sheets[0];
+    if (!primarySheet) {
+      throw new Error("Hochgeladene Excel-Datei enthaelt kein lesbares Tabellenblatt");
+    }
+
     return {
       format,
-      headers,
+      headers: primarySheet.headers,
       charset: "utf8",
-      delimiter: ";"
+      delimiter: ";",
+      primarySheetName: primarySheet.sheetName,
+      sheets
     };
   }
 
-  const decoded = content.toString("utf8").replace(/^\uFEFF/, "");
+  const detectedCharset = detectTextCharset(content);
+  const decoded = decodeTextBuffer(content, detectedCharset);
   const firstLine = decoded.split(/\r?\n/).find((line) => line.trim().length > 0) || "";
   const delimiter = detectDelimiterFromHeader(firstLine);
-  const headers = splitCsvLine(firstLine, delimiter).map((value, index) => normalizeHeader(value, index));
+  const headers = splitCsvLine(firstLine, delimiter, '"').map((value, index) => normalizeHeader(value, index));
 
   return {
     format,
     headers,
-    charset: "utf8",
+    charset: detectedCharset,
     delimiter
   };
 }

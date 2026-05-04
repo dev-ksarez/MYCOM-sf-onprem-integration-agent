@@ -18,6 +18,8 @@ const BOOTSTRAP_JS_FILE = path.resolve(process.cwd(), "node_modules/bootstrap/di
 const CHART_JS_FILE = path.resolve(process.cwd(), "node_modules/chart.js/dist/chart.umd.js");
 const APP_STYLE_CSS_FILE = path.resolve(process.cwd(), "src/css/style.css");
 const AGENT_UI_CSS_FILE = path.resolve(process.cwd(), "src/css/agent-ui.css");
+const TEMPLATE_STORE_CSS_FILE = path.resolve(process.cwd(), "src/css/template-store.css");
+const UI_ASSET_VERSION = "20260504-connector-ui-2";
 const SETUP_EXAMPLE_JSON_FILE = path.resolve(
   process.cwd(),
   "artifacts/file-examples/setup-file-import-export.example.json"
@@ -70,8 +72,9 @@ function htmlShell(): string {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SF Integration Agent</title>
     <link href="/assets/bootstrap.min.css" rel="stylesheet" />
-    <link href="/assets/style.css" rel="stylesheet" />
-    <link href="/assets/agent-ui.css" rel="stylesheet" />
+    <link href="/assets/style.css?v=${UI_ASSET_VERSION}" rel="stylesheet" />
+    <link href="/assets/agent-ui.css?v=${UI_ASSET_VERSION}" rel="stylesheet" />
+    <link href="/assets/template-store.css?v=${UI_ASSET_VERSION}" rel="stylesheet" />
   </head>
   <body>
     <div class="agent-shell">
@@ -155,7 +158,7 @@ function htmlShell(): string {
             </div>
           </div>
           <div class="row g-3 mb-3">
-            <div class="col-lg-4">
+            <div class="col-lg-3 col-md-6">
               <div class="card soft-card stats-card h-100">
                 <div class="card-header bg-white fw-semibold">Run-Qualität</div>
                 <div class="card-body">
@@ -176,7 +179,7 @@ function htmlShell(): string {
                 </div>
               </div>
             </div>
-            <div class="col-lg-4">
+            <div class="col-lg-3 col-md-6">
               <div class="card soft-card stats-card h-100">
                 <div class="card-header bg-white fw-semibold">Run-Status</div>
                 <div class="card-body">
@@ -189,7 +192,7 @@ function htmlShell(): string {
                 </div>
               </div>
             </div>
-            <div class="col-lg-4">
+            <div class="col-lg-3 col-md-6">
               <div class="card soft-card stats-card h-100">
                 <div class="card-header bg-white fw-semibold">Scheduler-Statistik</div>
                 <div class="card-body">
@@ -201,12 +204,23 @@ function htmlShell(): string {
                 </div>
               </div>
             </div>
+            <div class="col-lg-3 col-md-6">
+              <div class="card soft-card stats-card h-100">
+                <div class="card-header bg-white fw-semibold">SQLite-Staging</div>
+                <div class="card-body">
+                  <div class="stats-row"><span class="stats-label">SQLite-Objekte</span><span id="kpi-sqlite-objects" class="stats-value">0</span></div>
+                  <div class="stats-row"><span class="stats-label">SQLite offen</span><span id="kpi-sqlite-pending" class="stats-value">0</span></div>
+                  <div class="stats-row"><span class="stats-label">SQLite OK</span><span id="kpi-sqlite-success" class="stats-value text-success">0</span></div>
+                  <div class="stats-row mb-0"><span class="stats-label">SQLite Fehler</span><span id="kpi-sqlite-errors" class="stats-value text-danger">0</span></div>
+                </div>
+              </div>
+            </div>
           </div>
           <div class="row g-3 mb-3">
             <div class="col-lg-6">
               <div class="card soft-card h-100">
                 <div class="card-header bg-white d-flex justify-content-between align-items-center">
-                  <span class="fw-semibold">Log + Fehler Verlauf</span>
+                  <span class="fw-semibold">Fehler je Connector</span>
                   <select id="log-chart-range" class="form-select form-select-sm" style="max-width: 220px;">
                     <option value="last_hour">Letzte Stunde</option>
                     <option value="last_24h" selected>Letzte 24h</option>
@@ -254,11 +268,37 @@ function htmlShell(): string {
                 <div class="card-header bg-white fw-semibold">Salesforce Org + Limits</div>
                 <div class="card-body">
                   <div class="stats-row"><span class="stats-label">Domain</span><span id="sf-domain" class="stats-value">-</span></div>
-                  <div class="stats-row"><span class="stats-label">Umgebung</span><span id="sf-environment" class="stats-value">-</span></div>
-                  <div class="stats-row"><span class="stats-label">API Calls</span><span id="sf-api-usage" class="stats-value">-</span></div>
-                  <div class="stats-row"><span class="stats-label">Datenspeicher</span><span id="sf-data-storage" class="stats-value">-</span></div>
-                  <div class="stats-row"><span class="stats-label">Dateispeicher</span><span id="sf-file-storage" class="stats-value">-</span></div>
-                  <div class="stats-row mb-0"><span class="stats-label">Lizenzen</span><span id="sf-licenses" class="stats-value">-</span></div>
+                  <div class="stats-row mb-3"><span class="stats-label">Umgebung</span><span id="sf-environment" class="stats-value">-</span></div>
+                  <div class="limits-gauge-grid">
+                    <div class="limit-gauge-card">
+                      <div id="sf-api-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#2f69a8;">
+                        <div class="limit-gauge-inner"><span id="sf-api-gauge-value" class="limit-gauge-value">0%</span></div>
+                      </div>
+                      <div class="limit-gauge-label">API Calls</div>
+                      <div id="sf-api-usage" class="limit-gauge-detail">-</div>
+                    </div>
+                    <div class="limit-gauge-card">
+                      <div id="sf-data-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#1f7d57;">
+                        <div class="limit-gauge-inner"><span id="sf-data-gauge-value" class="limit-gauge-value">0%</span></div>
+                      </div>
+                      <div class="limit-gauge-label">Datenspeicher</div>
+                      <div id="sf-data-storage" class="limit-gauge-detail">-</div>
+                    </div>
+                    <div class="limit-gauge-card">
+                      <div id="sf-file-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#7b5ea7;">
+                        <div class="limit-gauge-inner"><span id="sf-file-gauge-value" class="limit-gauge-value">0%</span></div>
+                      </div>
+                      <div class="limit-gauge-label">Dateispeicher</div>
+                      <div id="sf-file-storage" class="limit-gauge-detail">-</div>
+                    </div>
+                    <div class="limit-gauge-card">
+                      <div id="sf-license-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#c26a2d;">
+                        <div class="limit-gauge-inner"><span id="sf-license-gauge-value" class="limit-gauge-value">0%</span></div>
+                      </div>
+                      <div class="limit-gauge-label">Lizenzen</div>
+                      <div id="sf-licenses" class="limit-gauge-detail">-</div>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div class="card soft-card">
@@ -278,7 +318,10 @@ function htmlShell(): string {
           <div class="card soft-card">
             <div class="card-header bg-white d-flex justify-content-between align-items-center">
               <span class="fw-semibold">Scheduler-Verwaltung</span>
-              <button id="new-schedule" class="btn btn-sm btn-primary">Neuer Scheduler</button>
+              <div class="d-flex gap-2">
+                <button id="new-schedule-from-template" class="btn btn-sm btn-outline-primary">Neu von Vorlage</button>
+                <button id="new-schedule" class="btn btn-sm btn-primary">Neuer Scheduler</button>
+              </div>
             </div>
             <div class="card-body p-0">
               <div class="table-responsive">
@@ -309,7 +352,10 @@ function htmlShell(): string {
           <div class="card soft-card">
             <div class="card-header bg-white d-flex justify-content-between align-items-center">
               <span class="fw-semibold">Connector-Verwaltung</span>
-              <button id="new-connector" class="btn btn-sm btn-primary">Neuer Connector</button>
+              <div class="d-flex gap-2">
+                <button id="new-connector-from-template" class="btn btn-sm btn-outline-primary">Neu von Vorlage</button>
+                <button id="new-connector" class="btn btn-sm btn-primary">Neuer Connector</button>
+              </div>
             </div>
             <div class="card-body p-0">
               <div class="table-responsive">
@@ -330,8 +376,23 @@ function htmlShell(): string {
                 <div class="card-header bg-white fw-semibold">Runs</div>
                 <div class="card-body p-0">
                   <table class="table table-sm mb-0">
-                    <thead><tr><th>Schedule</th><th>Status</th><th>Ergebnis</th><th>Logs</th></tr></thead>
+                    <thead><tr><th>Schedule</th><th>Status</th><th>Ergebnis</th><th>Logs</th><th>Aktion</th></tr></thead>
                     <tbody id="runs-body"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="card soft-card mt-3">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                  <span class="fw-semibold">Stale Runs</span>
+                  <div class="d-flex gap-2">
+                    <button id="refresh-stale-runs" class="btn btn-sm btn-outline-secondary">Aktualisieren</button>
+                    <button id="release-all-stale-runs" class="btn btn-sm btn-outline-danger">Alle freigeben</button>
+                  </div>
+                </div>
+                <div class="card-body p-0">
+                  <table class="table table-sm mb-0">
+                    <thead><tr><th>Schedule</th><th>Start</th><th>Alter</th><th>Aktion</th></tr></thead>
+                    <tbody id="stale-runs-body"></tbody>
                   </table>
                 </div>
               </div>
@@ -370,14 +431,26 @@ function htmlShell(): string {
         <section class="tab-pane fade" id="tab-migration" role="tabpanel">
           <div class="card soft-card mb-3">
             <div class="card-header bg-white d-flex justify-content-between align-items-center">
-              <span class="fw-semibold">Daten-Migration</span>
-              <button id="new-migration" class="btn btn-sm btn-primary">+ Neue Migration</button>
+              <div>
+                <div class="migration-card-title">Daten-Migration</div>
+                <div class="migration-card-subtitle">Dateien direkt auf die Tabelle ziehen oder oben auswählen.</div>
+              </div>
+              <div class="d-flex align-items-center gap-2 flex-wrap migration-header-actions">
+                <button id="migration-dropzone-pick" type="button" class="btn btn-sm btn-outline-primary">Datei auswählen</button>
+                <button id="new-migration" class="btn btn-sm btn-primary">+ Neue Migration</button>
+                <input id="migration-dropzone-input" type="file" class="d-none" accept=".csv,.txt,.json,.xlsx,.xls" multiple />
+              </div>
             </div>
             <div class="card-body p-0">
-              <table class="table table-sm mb-0" id="migration-list-table">
-                <thead><tr><th>Name</th><th>Status</th><th>Objekte</th><th>Letzter Lauf</th><th>Aktionen</th></tr></thead>
-                <tbody id="migration-list-body"><tr><td colspan="5" class="text-secondary">Keine Migrationen vorhanden.</td></tr></tbody>
-              </table>
+              <div id="migration-dropzone" class="migration-list-drop-target">
+                <div class="migration-drop-target-hint">Dateien hier auf die Liste ziehen, um direkt einen Entwurf zu starten. Unterstützt CSV, TXT, Excel und JSON.</div>
+                <div class="table-responsive">
+                  <table class="table table-sm mb-0" id="migration-list-table">
+                    <thead><tr><th>Name</th><th>Status</th><th>Objekte</th><th>Letzter Lauf</th><th>Aktionen</th></tr></thead>
+                    <tbody id="migration-list-body"><tr><td colspan="5" class="text-secondary">Keine Migrationen vorhanden.</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           </div>
         </section>
@@ -396,14 +469,14 @@ function htmlShell(): string {
           </div>
           <div class="modal-body">
             <!-- Wizard Steps Indicator -->
-            <div class="connector-wizard-steps mb-4" id="mig-wizard-steps">
-              <button type="button" class="connector-wizard-step is-active" data-mig-step="1"><span class="connector-wizard-step-index">1</span><span>Objekte</span></button>
-              <button type="button" class="connector-wizard-step" data-mig-step="2"><span class="connector-wizard-step-index">2</span><span>Dateien</span></button>
-              <button type="button" class="connector-wizard-step" data-mig-step="3"><span class="connector-wizard-step-index">3</span><span>Mapping</span></button>
-              <button type="button" class="connector-wizard-step" data-mig-step="4"><span class="connector-wizard-step-index">4</span><span>Abhängigkeiten</span></button>
-              <button type="button" class="connector-wizard-step" data-mig-step="5"><span class="connector-wizard-step-index">5</span><span>Reihenfolge</span></button>
-              <button type="button" class="connector-wizard-step" data-mig-step="6"><span class="connector-wizard-step-index">6</span><span>Felder anlegen</span></button>
-              <button type="button" class="connector-wizard-step" data-mig-step="7"><span class="connector-wizard-step-index">7</span><span>Ausführen</span></button>
+            <div class="migration-wizard-steps-line mb-4" id="mig-wizard-steps" style="--wizard-step-count: 7; --wizard-step-count-mobile: 3;">
+              <div class="migration-wizard-step is-active" data-mig-step="1"><span class="migration-wizard-step-index">1</span><span class="migration-wizard-step-label">Objekte</span></div>
+              <div class="migration-wizard-step" data-mig-step="2"><span class="migration-wizard-step-index">2</span><span class="migration-wizard-step-label">Dateien</span></div>
+              <div class="migration-wizard-step" data-mig-step="3"><span class="migration-wizard-step-index">3</span><span class="migration-wizard-step-label">Mapping</span></div>
+              <div class="migration-wizard-step" data-mig-step="4"><span class="migration-wizard-step-index">4</span><span class="migration-wizard-step-label">Abhängigkeiten</span></div>
+              <div class="migration-wizard-step" data-mig-step="5"><span class="migration-wizard-step-index">5</span><span class="migration-wizard-step-label">Reihenfolge</span></div>
+              <div class="migration-wizard-step" data-mig-step="6"><span class="migration-wizard-step-index">6</span><span class="migration-wizard-step-label">Felder anlegen</span></div>
+              <div class="migration-wizard-step" data-mig-step="7"><span class="migration-wizard-step-index">7</span><span class="migration-wizard-step-label">Ausführen</span></div>
             </div>
 
             <!-- Step 1: Name + Objekte -->
@@ -419,6 +492,8 @@ function htmlShell(): string {
                   <input type="text" id="mig-description" class="form-control" placeholder="Optional" />
                 </div>
               </div>
+              <div id="mig-pending-import-hint" class="alert alert-info py-2 small d-none"></div>
+              <div id="mig-import-suggestions" class="mb-3 d-none"></div>
               <div class="d-flex justify-content-between align-items-center mb-2">
                 <label class="form-label mb-0">Salesforce-Objekte</label>
                 <button type="button" class="btn btn-sm btn-outline-primary" id="mig-load-sf-objects">SF-Objekte laden</button>
@@ -447,6 +522,7 @@ function htmlShell(): string {
             <!-- Step 2: Dateien zuordnen -->
             <div class="mig-wizard-panel d-none" data-mig-step-panel="2">
               <h6 class="fw-semibold mb-3">Schritt 2: Quelldateien den Objekten zuordnen</h6>
+              <div id="mig-file-import-hint" class="alert alert-light border py-2 small d-none"></div>
               <div id="mig-file-assignment-list">
                 <div class="text-secondary small">Bitte zuerst Objekte in Schritt 1 auswählen.</div>
               </div>
@@ -521,8 +597,8 @@ function htmlShell(): string {
               <div id="mig-review-summary" class="mb-3"></div>
               <div id="mig-run-progress" class="d-none">
                 <div class="d-flex align-items-center gap-2 mb-2">
-                  <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
-                  <span>Migration läuft...</span>
+                  <div id="mig-run-status-spinner" class="spinner-border spinner-border-sm text-primary" role="status"></div>
+                   <span id="mig-run-status-title">Migration läuft...</span>
                 </div>
                 <div id="mig-run-steps"></div>
               </div>
@@ -566,37 +642,25 @@ function htmlShell(): string {
       <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title">Scheduler konfigurieren</h5>
+            <h5 class="modal-title">Scheduler-Assistent</h5>
             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
           </div>
           <div id="sch-modal-error" class="alert alert-danger d-none mx-3 mt-2 mb-0 py-2" role="alert" style="font-size:0.875rem"></div>
           <div class="modal-body">
             <input id="sch-id" type="hidden" />
-            
-            <!-- Tab Navigation -->
-            <ul class="nav nav-tabs mb-3" id="schedule-tabs" role="tablist">
-              <li class="nav-item" role="presentation">
-                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#sch-tab-general" type="button" role="tab">Allgemein</button>
-              </li>
-              <li class="nav-item" role="presentation">
-                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#sch-tab-source" type="button" role="tab">Datenquelle</button>
-              </li>
-              <li class="nav-item" role="presentation">
-                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#sch-tab-target" type="button" role="tab">Datenziel</button>
-              </li>
-              <li class="nav-item" role="presentation">
-                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#sch-tab-timing" type="button" role="tab">Zeitsteuerung</button>
-              </li>
-              <li class="nav-item" role="presentation">
-                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#sch-tab-mapping" type="button" role="tab">Mapping</button>
-              </li>
-            </ul>
+            <div class="migration-wizard-steps-line connector-wizard-steps mb-3" id="sch-wizard-steps" style="--wizard-step-count: 5; --wizard-step-count-mobile: 3;">
+              <button type="button" class="migration-wizard-step connector-wizard-step is-active" data-sch-step="1"><span class="migration-wizard-step-index connector-wizard-step-index">1</span><span class="migration-wizard-step-label connector-wizard-step-label">Allgemein</span></button>
+              <button type="button" class="migration-wizard-step connector-wizard-step" data-sch-step="2"><span class="migration-wizard-step-index connector-wizard-step-index">2</span><span class="migration-wizard-step-label connector-wizard-step-label">Quelle</span></button>
+              <button type="button" class="migration-wizard-step connector-wizard-step" data-sch-step="3"><span class="migration-wizard-step-index connector-wizard-step-index">3</span><span class="migration-wizard-step-label connector-wizard-step-label">Ziel</span></button>
+              <button type="button" class="migration-wizard-step connector-wizard-step" data-sch-step="4"><span class="migration-wizard-step-index connector-wizard-step-index">4</span><span class="migration-wizard-step-label connector-wizard-step-label">Timing</span></button>
+              <button type="button" class="migration-wizard-step connector-wizard-step" data-sch-step="5"><span class="migration-wizard-step-index connector-wizard-step-index">5</span><span class="migration-wizard-step-label connector-wizard-step-label">Mapping</span></button>
+            </div>
+            <div id="sch-wizard-hint" class="connector-wizard-hint mb-3">Assistent aktiv: Der Scheduler wird Schritt für Schritt konfiguriert und erst am Ende gespeichert.</div>
 
-            <!-- Tab Content -->
             <div class="tab-content" id="schedule-tab-content">
               
               <!-- Tab 1: Allgemein -->
-              <div class="tab-pane fade show active" id="sch-tab-general" role="tabpanel">
+              <div class="tab-pane fade show active" id="sch-tab-general" data-sch-step-panel="1" role="tabpanel">
                 <div class="row g-2">
                   <div class="col-md-6"><label class="form-label">Name</label><input id="sch-name" class="form-control" /></div>
                   <div class="col-md-6"><label class="form-label">Connector</label><select id="sch-connector" class="form-select"></select></div>
@@ -610,11 +674,28 @@ function htmlShell(): string {
               </div>
               
               <!-- Tab 2: Datenquelle -->
-              <div class="tab-pane fade" id="sch-tab-source" role="tabpanel">
+              <div class="tab-pane fade" id="sch-tab-source" data-sch-step-panel="2" role="tabpanel">
                 <div class="row g-2">
                   <div class="col-md-6"><label class="form-label">Source System</label><select id="sch-source-system" class="form-select"><option value="">- Wählen -</option></select></div>
                   <div class="col-md-6"><label class="form-label">Source Type</label><select id="sch-source-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE_SOQL">SALESFORCE_SOQL</option><option value="MSSQL_SQL">MSSQL_SQL</option><option value="REST_API">REST_API</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
-                  <div class="col-md-12"><label class="form-label">Source Definition (JSON)</label><textarea id="sch-source-definition" class="form-control" rows="4" placeholder='{"fields":[...]}'></textarea></div>
+                  <div class="col-md-12"><label class="form-label">Source Definition / Abfrage</label><textarea id="sch-source-definition" class="form-control" rows="4" placeholder='SELECT Id, Name FROM Account'></textarea></div>
+                  <div id="sch-source-delta-wrap" class="col-md-12 d-none">
+                    <div class="border rounded p-2 bg-light">
+                      <div class="row g-2 align-items-end">
+                        <div class="col-md-4"><label class="form-label">Delta Modus</label><select id="sch-source-delta-strategy" class="form-select"><option value="">Komplettlauf</option><option value="datetime">Datum / LastModified</option><option value="timestamp">Timestamp / RowVersion</option><option value="id">ID</option></select></div>
+                        <div class="col-md-8"><label class="form-label">Delta Feld</label><input id="sch-source-delta-field" class="form-control" placeholder="z. B. LastModifiedDate / rowversion / Id" /></div>
+                        <div class="col-md-12"><div id="sch-source-delta-help" class="small text-secondary">Der letzte Delta-Wert wird nach jedem Lauf automatisch gespeichert.</div></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="sch-source-after-export-wrap" class="col-md-12 d-none">
+                    <div class="border rounded p-2 bg-light">
+                      <div class="row g-2 align-items-end">
+                        <div class="col-md-12"><label class="form-label">After Export Updates</label><input id="sch-source-after-export" class="form-control" placeholder="z. B. PostStatus__c=exported,PostDate__c=exportdate" /></div>
+                        <div class="col-md-12"><div id="sch-source-after-export-help" class="small text-secondary">Nur für Salesforce-Quellen. Erfolgreich exportierte Datensätze werden danach aktualisiert. Token: exportdate, runid.</div></div>
+                      </div>
+                    </div>
+                  </div>
                   <div class="col-md-12 d-flex gap-2 align-items-center">
                     <button id="sch-test-source" type="button" class="btn btn-outline-primary btn-sm">Quelle testen</button>
                     <div id="sch-source-test-status" class="small text-secondary">Es werden bis zu 10 Datensätze angezeigt.</div>
@@ -638,7 +719,7 @@ function htmlShell(): string {
               </div>
               
               <!-- Tab 3: Datenziel -->
-              <div class="tab-pane fade" id="sch-tab-target" role="tabpanel">
+              <div class="tab-pane fade" id="sch-tab-target" data-sch-step-panel="3" role="tabpanel">
                 <div class="row g-2">
                   <div class="col-md-4"><label class="form-label">Target System</label><select id="sch-target-system" class="form-select"><option value="">- Wählen -</option></select></div>
                   <div class="col-md-4"><label class="form-label">Objekt</label><select id="sch-object" class="form-select"><option value="">- Wählen -</option></select></div>
@@ -669,7 +750,7 @@ function htmlShell(): string {
               </div>
               
               <!-- Tab 4: Zeitsteuerung -->
-              <div class="tab-pane fade" id="sch-tab-timing" role="tabpanel">
+              <div class="tab-pane fade" id="sch-tab-timing" data-sch-step-panel="4" role="tabpanel">
                 <div class="card schedule-helper-card border-0">
                   <div class="card-body">
                     <div class="fw-semibold mb-1">Zeitsteuerung (Assistent)</div>
@@ -698,7 +779,7 @@ function htmlShell(): string {
               </div>
               
               <!-- Tab 5: Mapping -->
-              <div class="tab-pane fade" id="sch-tab-mapping" role="tabpanel">
+              <div class="tab-pane fade" id="sch-tab-mapping" data-sch-step-panel="5" role="tabpanel">
                 <div class="row g-2">
                   <div class="col-md-12">
                     <div class="mb-3">
@@ -833,26 +914,34 @@ function htmlShell(): string {
             </div>
           </div>
           <div class="modal-footer">
-            <button id="duplicate-schedule" type="button" class="btn btn-outline-secondary">Duplizieren</button>
-            <button type="button" class="btn btn-light" data-bs-dismiss="modal">Schließen</button>
-            <button id="save-schedule" type="button" class="btn btn-primary">Speichern</button>
+            <div class="connector-wizard-footer-group connector-wizard-footer-start">
+              <button id="sch-wizard-back" type="button" class="btn btn-outline-secondary">Zurück</button>
+              <button id="sch-wizard-next" type="button" class="btn btn-outline-primary">Weiter</button>
+            </div>
+            <div class="connector-wizard-footer-group connector-wizard-footer-end">
+              <button id="duplicate-schedule" type="button" class="btn btn-outline-secondary">Duplizieren</button>
+              <button id="save-schedule-template" type="button" class="btn btn-outline-primary">Als Vorlage speichern</button>
+              <button type="button" class="btn btn-light" data-bs-dismiss="modal">Schließen</button>
+              <button id="save-schedule" type="button" class="btn btn-primary d-none">Speichern</button>
+            </div>
           </div>
         </div>
       </div>
     </div>
 
     <div class="modal fade" id="connector-modal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog modal-lg modal-dialog-scrollable">
-        <div class="modal-content">
-          <div class="modal-header"><h5 class="modal-title">Connector-Assistent</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-          <div class="modal-body">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable connector-wizard-dialog">
+        <div class="modal-content connector-wizard-modal">
+          <div class="modal-header connector-wizard-header"><h5 class="modal-title">Connector-Assistent</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+          <div class="modal-body connector-wizard-body">
             <input id="con-id" type="hidden" />
             <div id="con-modal-error" class="alert alert-danger d-none mb-3 py-2" role="alert"></div>
-            <div class="connector-wizard-steps mb-3" id="con-wizard-steps">
-              <button type="button" class="connector-wizard-step is-active" data-step="1"><span class="connector-wizard-step-index">1</span><span>Typ</span></button>
-              <button type="button" class="connector-wizard-step" data-step="2"><span class="connector-wizard-step-index">2</span><span>Basis</span></button>
-              <button type="button" class="connector-wizard-step" data-step="3"><span class="connector-wizard-step-index">3</span><span>Parameter</span></button>
-              <button type="button" class="connector-wizard-step" data-step="4"><span class="connector-wizard-step-index">4</span><span>Prüfen</span></button>
+            <div class="connector-wizard-stage">
+            <div class="migration-wizard-steps-line connector-wizard-steps mb-3" id="con-wizard-steps" style="--wizard-step-count: 4; --wizard-step-count-mobile: 2;">
+              <button type="button" class="migration-wizard-step connector-wizard-step is-active" data-step="1"><span class="migration-wizard-step-index connector-wizard-step-index">1</span><span class="migration-wizard-step-label connector-wizard-step-label">Typ</span></button>
+              <button type="button" class="migration-wizard-step connector-wizard-step" data-step="2"><span class="migration-wizard-step-index connector-wizard-step-index">2</span><span class="migration-wizard-step-label connector-wizard-step-label">Basis</span></button>
+              <button type="button" class="migration-wizard-step connector-wizard-step" data-step="3"><span class="migration-wizard-step-index connector-wizard-step-index">3</span><span class="migration-wizard-step-label connector-wizard-step-label">Parameter</span></button>
+              <button type="button" class="migration-wizard-step connector-wizard-step" data-step="4"><span class="migration-wizard-step-index connector-wizard-step-index">4</span><span class="migration-wizard-step-label connector-wizard-step-label">Prüfen</span></button>
             </div>
 
             <div class="connector-wizard-panel" data-step-panel="1">
@@ -963,13 +1052,43 @@ function htmlShell(): string {
                 <pre id="con-review-json" class="connector-review-json mb-0">{}</pre>
               </div>
             </div>
+            </div>
+          </div>
+          <div class="modal-footer connector-wizard-footer">
+            <div class="connector-wizard-footer-group connector-wizard-footer-start">
+              <button id="con-wizard-back" type="button" class="btn btn-outline-secondary">Zurück</button>
+              <button id="con-wizard-next" type="button" class="btn btn-outline-primary">Weiter</button>
+            </div>
+            <div class="connector-wizard-footer-group connector-wizard-footer-end">
+              <button id="save-connector-template" type="button" class="btn btn-outline-primary">Als Vorlage speichern</button>
+              <button id="test-connector" type="button" class="btn btn-outline-secondary">Speichern und validieren</button>
+              <button type="button" class="btn btn-light" data-bs-dismiss="modal">Schließen</button>
+              <button id="save-connector" type="button" class="btn btn-primary">Speichern</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade template-store-modal" id="template-picker-modal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 id="template-picker-title" class="modal-title">Vorlage waehlen</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div id="template-picker-error" class="alert alert-danger d-none mb-3 py-2" role="alert"></div>
+            <div class="mb-3">
+              <input id="template-picker-search" type="search" class="form-control" placeholder="Vorlagen suchen..." />
+            </div>
+            <div id="template-picker-tags" class="d-flex flex-wrap gap-2 mb-3"></div>
+            <div id="template-picker-summary" class="small text-secondary mb-3">Keine Vorlagen geladen.</div>
+            <div id="template-picker-list" class="list-group"></div>
           </div>
           <div class="modal-footer">
-            <button id="con-wizard-back" type="button" class="btn btn-outline-secondary">Zurück</button>
-            <button id="con-wizard-next" type="button" class="btn btn-outline-primary">Weiter</button>
-            <button id="test-connector" type="button" class="btn btn-outline-secondary">Speichern und validieren</button>
             <button type="button" class="btn btn-light" data-bs-dismiss="modal">Schließen</button>
-            <button id="save-connector" type="button" class="btn btn-primary">Speichern</button>
+            <button id="template-picker-apply" type="button" class="btn btn-primary" disabled>Vorlage übernehmen</button>
           </div>
         </div>
       </div>
@@ -990,6 +1109,7 @@ function htmlShell(): string {
                   <tr>
                     <th>Zeit</th>
                     <th>Level</th>
+                    <th>Connector</th>
                     <th>Schedule</th>
                     <th>Step</th>
                     <th>Message</th>
@@ -1007,14 +1127,17 @@ function htmlShell(): string {
     <script src="/assets/bootstrap.bundle.min.js"></script>
     <script>
       const LOG_CHART_RANGE_STORAGE_KEY = 'sf-agent.logChartRange';
+      const MAX_LOG_CONNECTOR_SERIES = 5;
       const UI_THEME_STORAGE_KEY = 'sf-agent.uiTheme';
       const OVERVIEW_STATS_RANGE_STORAGE_KEY = 'sf-agent.overviewStatsRange';
       const state = {
         instanceId: '',
         schedules: [],
         connectors: [],
+        migrations: [],
         cpuLoadHistory: [],
         connectorWizardStep: 1,
+        scheduleWizardStep: 1,
         previousOverviewSnapshot: null,
         overviewStatsRange: 'month',
         graphData: { nodes: [], edges: [] },
@@ -1022,6 +1145,7 @@ function htmlShell(): string {
         schedulerConnectorFilterId: '',
         schedulerDirectionTab: 'all',
         runs: [],
+        staleRuns: [],
         mappingFields: [],
         targetFields: [],
         mappingRules: [],
@@ -1037,24 +1161,1062 @@ function htmlShell(): string {
           directions: []
         }
       };
+      const templatePickerState = {
+        kind: 'connector',
+        items: [],
+        filteredItems: [],
+        selectedTemplateId: '',
+        selectedTag: '',
+        resolver: null
+      };
 
       // Migration wizard state - global to avoid hoisting issues
       let migState = {
         id: null,
         step: 1,
         totalSteps: 7,
+        status: 'draft',
+        activeRunVisible: false,
         name: '',
         description: '',
         objects: [],
         dependencies: [],
         executionPlan: [],
         sfObjects: [],
-        lastRunResult: null
+        lastRunResult: null,
+        progressPollTimer: null,
+        preflightWarnings: null,
+        preflightWarningsLoading: false,
+        pendingImports: [],
+        pendingImportInProgress: false,
+        pendingImportSuggestions: [],
+        pendingImportAnalysis: null
       };
+
+      function getMigImportDisplayName(fileName) {
+        return String(fileName || '')
+          .replace(/\.[^.]+$/, '')
+          .replace(/[._-]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
+
+      function isMigPendingImportSelected(item) {
+        return !!item && item.includeInMigration !== false;
+      }
+
+      function getMigSelectedPendingImports(imports) {
+        return (Array.isArray(imports) ? imports : []).filter((item) => isMigPendingImportSelected(item));
+      }
+
+      function getMigPendingImportLabel(item) {
+        const fileLabel = String(item && (item.fileName || (item.file && item.file.name) || item.sourceFileName) || 'Datei').trim() || 'Datei';
+        const sheetName = String(item && (item.sheetName || (item.analysis && item.analysis.sheetName)) || '').trim();
+        return sheetName ? (fileLabel + ' / ' + sheetName) : fileLabel;
+      }
+
+      function isSupportedMigrationImportFile(file) {
+        const fileName = String(file && file.name ? file.name : '').toLowerCase();
+        return ['.csv', '.txt', '.json', '.xlsx', '.xls'].some((extension) => fileName.endsWith(extension));
+      }
+
+      function getMigObjectDisplayName(obj) {
+        const baseName = String((obj && (obj.salesforceObjectLabel || obj.salesforceObject)) || 'Objekt');
+        const sameObjects = (migState.objects || []).filter((item) => item && item.salesforceObject === obj.salesforceObject);
+        if (sameObjects.length <= 1) {
+          return baseName;
+        }
+
+        const index = sameObjects.findIndex((item) => item.id === obj.id);
+        return index >= 0 ? (baseName + ' #' + (index + 1)) : baseName;
+      }
+
+      function countMigUnassignedObjectsByApiName(objectApiName) {
+        return (migState.objects || []).filter((obj) =>
+          obj && obj.salesforceObject === objectApiName && !String(obj.filePath || '').trim()
+        ).length;
+      }
+
+      function resolveMigTargetFieldApiName(fieldName, availableFields) {
+        const rawName = String(fieldName || '').trim();
+        if (!rawName) {
+          return '';
+        }
+
+        const fieldNames = (Array.isArray(availableFields) ? availableFields : [])
+          .map((entry) => typeof entry === 'string' ? entry : String(entry && entry.name ? entry.name : ''))
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+        const namesByLower = new Map(fieldNames.map((entry) => [entry.toLowerCase(), entry]));
+        const exactMatch = namesByLower.get(rawName.toLowerCase());
+        if (exactMatch) {
+          return exactMatch;
+        }
+
+        if (!rawName.toLowerCase().endsWith('__c')) {
+          const customFieldMatch = namesByLower.get((rawName + '__c').toLowerCase());
+          if (customFieldMatch) {
+            return customFieldMatch;
+          }
+        }
+
+        return rawName;
+      }
+
+      function autoPopulateMigFieldMappings(obj, sfFields) {
+        if (!obj || !Array.isArray(obj.fileColumns) || !obj.fileColumns.length) {
+          return 0;
+        }
+
+        const targetByKey = new Map();
+        (Array.isArray(sfFields) ? sfFields : []).forEach((field) => {
+          const apiName = String(field?.name || '').trim();
+          const label = String(field?.label || '').trim();
+          if (apiName) {
+            targetByKey.set(normalizeFieldKey(apiName), { name: apiName, label: label || apiName, type: String(field?.type || '') });
+          }
+          if (label) {
+            targetByKey.set(normalizeFieldKey(label), { name: apiName || label, label: label || apiName || label, type: String(field?.type || '') });
+          }
+        });
+
+        if (!obj.fieldMappings) {
+          obj.fieldMappings = [];
+        }
+
+        let added = 0;
+        obj.fileColumns.forEach((sourceColumn) => {
+          const sourceName = String(sourceColumn || '').trim();
+          const sourceKey = normalizeFieldKey(sourceName);
+          if (!sourceName || !sourceKey) {
+            return;
+          }
+
+          const existing = obj.fieldMappings.find((mapping) => String(mapping?.sourceColumn || '').trim() === sourceName);
+          if (existing && String(existing.targetField || '').trim()) {
+            return;
+          }
+
+          const matchedTarget = targetByKey.get(sourceKey);
+          if (!matchedTarget || !String(matchedTarget.name || '').trim()) {
+            return;
+          }
+
+          const nextEntry = {
+            ...(existing || {}),
+            sourceColumn: sourceName,
+            targetField: matchedTarget.name,
+            targetFieldLabel: matchedTarget.label,
+            targetFieldType: matchedTarget.type,
+            transformFunction: String(existing?.transformFunction || 'NONE'),
+            transformExpression: String(existing?.transformExpression || ''),
+            lookupEnabled: false,
+            lookupObject: '',
+            lookupField: '',
+            picklistMappings: Array.isArray(existing?.picklistMappings) ? existing.picklistMappings : []
+          };
+
+          if (existing) {
+            Object.assign(existing, nextEntry);
+          } else {
+            obj.fieldMappings.push(nextEntry);
+          }
+          added += 1;
+        });
+
+        return added;
+      }
+
+      function autoSelectMigExternalIdField(obj, sfFields) {
+        if (!obj || obj.operation !== 'upsert') {
+          return false;
+        }
+
+        const mappedExternalIdFields = (Array.isArray(obj.fieldMappings) ? obj.fieldMappings : [])
+          .map((mapping) => String(mapping?.targetField || '').trim())
+          .filter(Boolean)
+          .map((targetField) => resolveMigTargetFieldApiName(targetField, sfFields))
+          .filter(Boolean)
+          .filter((targetField, index, entries) => entries.indexOf(targetField) === index)
+          .filter((targetField) => (Array.isArray(sfFields) ? sfFields : []).some((field) =>
+            String(field?.name || '').trim().toLowerCase() === targetField.toLowerCase() && field?.isExternalId === true
+          ));
+
+        if (mappedExternalIdFields.length === 1) {
+          const nextExternalIdField = mappedExternalIdFields[0];
+          if (String(obj.externalIdField || '').trim() !== nextExternalIdField) {
+            obj.externalIdField = nextExternalIdField;
+            return true;
+          }
+          return false;
+        }
+
+        if (mappedExternalIdFields.length === 0 && String(obj.externalIdField || '').trim()) {
+          obj.externalIdField = '';
+          return true;
+        }
+
+        return false;
+      }
+
+      function sanitizeMigFieldMappings(fieldMappings) {
+        return (Array.isArray(fieldMappings) ? fieldMappings : []).map((mapping) => {
+          const normalizedMapping = mapping ? JSON.parse(JSON.stringify(mapping)) : {};
+          delete normalizedMapping._isMissing;
+          return normalizedMapping;
+        });
+      }
+
+      function sanitizeMigObjects(objects) {
+        return (Array.isArray(objects) ? objects : []).map((obj) => {
+          const normalizedObject = obj ? JSON.parse(JSON.stringify(obj)) : {};
+          delete normalizedObject.failedPreviewRecords;
+          delete normalizedObject.failedPreviewLoadedFor;
+          normalizedObject.fieldMappings = sanitizeMigFieldMappings(normalizedObject.fieldMappings);
+          return normalizedObject;
+        });
+      }
+
+      async function loadMigExternalIdOptions(obj) {
+        if (!obj || !obj.salesforceObject) {
+          return [];
+        }
+
+        if (Array.isArray(obj._externalIdFields) && obj._externalIdFields.length) {
+          return obj._externalIdFields;
+        }
+
+        try {
+          const res = await fetch('/api/salesforce/object-fields?object=' + encodeURIComponent(obj.salesforceObject) + '&instanceId=' + encodeURIComponent(state.instanceId || ''));
+          if (!res.ok) {
+            obj._externalIdFields = [];
+            return [];
+          }
+          const fields = await res.json();
+          obj._externalIdFields = (Array.isArray(fields) ? fields : []).filter((field) => field && field.isExternalId === true);
+          return obj._externalIdFields;
+        } catch {
+          obj._externalIdFields = [];
+          return [];
+        }
+      }
+
+      function collectMigMissingFieldMappings() {
+        const missing = [];
+        for (const obj of migState.objects) {
+          const existingFieldNames = Array.from(new Set([
+            ...(obj._existingFieldNames || [])
+          ].map((name) => String(name).trim()).filter(Boolean)));
+          const existingFieldNamesSet = new Set(existingFieldNames.map((name) => name.toLowerCase()));
+          for (const mapping of (obj.fieldMappings || [])) {
+            const resolvedTargetField = resolveMigTargetFieldApiName(mapping.targetField, existingFieldNames);
+            if (resolvedTargetField && resolvedTargetField !== mapping.targetField) {
+              mapping.targetField = resolvedTargetField;
+            }
+            const isMissing = !!resolvedTargetField && !existingFieldNamesSet.has(resolvedTargetField.toLowerCase());
+            mapping._isMissing = isMissing;
+            if (isMissing) {
+              missing.push({ obj, mapping });
+            }
+          }
+        }
+        return missing;
+      }
+
+      async function collectMigMissingFieldMappingsLive() {
+        const missing = [];
+        for (const obj of migState.objects) {
+          const fields = await requestJson('/api/salesforce/object-fields?object=' + encodeURIComponent(obj.salesforceObject));
+          const existingFieldNames = Array.from(new Set((Array.isArray(fields) ? fields : [])
+            .map((field) => String(field && field.name ? field.name : '').trim())
+            .filter(Boolean)
+            .map((name) => name.toLowerCase())));
+          const existingFieldNamesSet = new Set(existingFieldNames);
+          obj._existingFieldNames = existingFieldNames.slice();
+
+          for (const mapping of (obj.fieldMappings || [])) {
+            const resolvedTargetField = resolveMigTargetFieldApiName(mapping.targetField, existingFieldNames);
+            if (resolvedTargetField && resolvedTargetField !== mapping.targetField) {
+              mapping.targetField = resolvedTargetField;
+            }
+            const isMissing = !!resolvedTargetField && !existingFieldNamesSet.has(resolvedTargetField.toLowerCase());
+            mapping._isMissing = isMissing;
+            if (isMissing) {
+              missing.push({ obj, mapping });
+            }
+          }
+        }
+        return missing;
+      }
+
+      function inferMigFieldCreationType(mapping) {
+        const explicitPicklistValues = Array.isArray(mapping?.picklistValues) ? mapping.picklistValues.filter(Boolean) : [];
+        if (explicitPicklistValues.length) {
+          return 'Picklist';
+        }
+
+        const normalizedType = String(mapping?.targetFieldType || '').trim().toLowerCase();
+        if (normalizedType === 'url') return 'Url';
+        if (normalizedType === 'date') return 'Date';
+        if (normalizedType === 'datetime') return 'DateTime';
+        if (normalizedType === 'boolean') return 'Checkbox';
+        if (normalizedType === 'email') return 'Email';
+        if (normalizedType === 'phone') return 'Phone';
+        if (normalizedType === 'currency') return 'Currency';
+        if (normalizedType === 'percent') return 'Percent';
+        if (normalizedType === 'double' || normalizedType === 'int' || normalizedType === 'integer' || normalizedType === 'number') return 'Number';
+
+        const targetFieldName = String(mapping?.targetField || '').trim().toLowerCase();
+        if (targetFieldName.includes('currency')) return 'Currency';
+        if (targetFieldName.includes('percent')) return 'Percent';
+        if (targetFieldName.includes('email')) return 'Email';
+        if (targetFieldName.includes('phone') || targetFieldName.includes('mobile')) return 'Phone';
+        if (targetFieldName.includes('date')) return 'Date';
+        if (targetFieldName.includes('url') || targetFieldName.includes('website')) return 'Url';
+
+        return 'Text';
+      }
+
+      async function createMigMissingField(obj, mapping, fieldType, picklistValues) {
+        const result = await requestJson('/api/salesforce/create-field', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            objectApiName: obj.salesforceObject,
+            fieldApiName: mapping.targetField,
+            fieldType,
+            picklistValues,
+            instanceId: state.instanceId
+          })
+        });
+
+        const fullFieldName = String(result && result.fullName ? result.fullName : '').split('.').pop()
+          || (String(mapping.targetField).endsWith('__c') ? String(mapping.targetField) : String(mapping.targetField) + '__c');
+
+        obj.confirmedSalesforceFields = Array.from(new Set([...(obj.confirmedSalesforceFields || []), fullFieldName]));
+        obj._existingFieldNames = Array.from(new Set([...(obj._existingFieldNames || []), String(fullFieldName).toLowerCase()]));
+        mapping.targetField = fullFieldName;
+        mapping.targetFieldLabel = fullFieldName;
+        mapping._isMissing = false;
+
+        return { fullFieldName, result };
+      }
+
+      async function autoCreateMigMissingFields() {
+        const missing = await collectMigMissingFieldMappingsLive();
+        if (!missing.length) {
+          return [];
+        }
+
+        const createdFields = [];
+        for (const item of missing) {
+          const fieldType = inferMigFieldCreationType(item.mapping);
+          const picklistValues = fieldType === 'Picklist'
+            ? (Array.isArray(item.mapping.picklistValues) ? item.mapping.picklistValues.map((value) => String(value || '').trim()).filter(Boolean) : [])
+            : [];
+
+          if (fieldType === 'Picklist' && !picklistValues.length) {
+            throw new Error('Feld ' + item.mapping.targetField + ' kann nicht automatisch als Picklist angelegt werden, weil keine Werte hinterlegt sind.');
+          }
+
+          const created = await createMigMissingField(item.obj, item.mapping, fieldType, picklistValues);
+          createdFields.push({
+            objectApiName: item.obj.salesforceObject,
+            fieldName: created.fullFieldName,
+            action: created.result && created.result.action ? created.result.action : 'created'
+          });
+        }
+
+        return createdFields;
+      }
+
+      function resetMigTransientUi() {
+        stopMigRunProgressPolling();
+        const progressEl = document.getElementById('mig-run-progress');
+        const resultEl = document.getElementById('mig-run-result');
+        const stepsEl = document.getElementById('mig-run-steps');
+        const createFieldsResultEl = document.getElementById('mig-create-fields-result');
+        const progressTitleEl = document.getElementById('mig-run-status-title');
+        const spinnerEl = document.getElementById('mig-run-status-spinner');
+
+        if (progressEl) {
+          progressEl.classList.add('d-none');
+        }
+        if (spinnerEl) {
+          spinnerEl.classList.remove('d-none');
+        }
+        if (progressTitleEl) {
+          progressTitleEl.textContent = 'Migration läuft...';
+        }
+        if (resultEl) {
+          resultEl.classList.add('d-none');
+          resultEl.innerHTML = '';
+        }
+        if (stepsEl) {
+          stepsEl.innerHTML = '';
+        }
+        if (createFieldsResultEl) {
+          createFieldsResultEl.innerHTML = '';
+        }
+      }
+
+      function stopMigRunProgressPolling() {
+        if (migState.progressPollTimer) {
+          clearTimeout(migState.progressPollTimer);
+          migState.progressPollTimer = null;
+        }
+      }
+
+      function getMigOrderedObjects() {
+        const ordered = [...(migState.executionPlan || [])]
+          .sort((a, b) => a.order - b.order)
+          .map((step) => (migState.objects || []).find((obj) => obj.id === step.objectId))
+          .filter(Boolean);
+
+        (migState.objects || []).forEach((obj) => {
+          if (!ordered.find((entry) => entry.id === obj.id)) {
+            ordered.push(obj);
+          }
+        });
+
+        return ordered;
+      }
+
+      function getMigProgressSteps() {
+        const progressSteps = Array.isArray(migState.lastRunResult?.steps) ? migState.lastRunResult.steps : [];
+        if (progressSteps.length) {
+          return progressSteps;
+        }
+
+        return getMigOrderedObjects().map((obj) => ({
+          objectId: obj.id,
+          salesforceObject: obj.salesforceObject,
+          status: 'pending',
+          recordsProcessed: 0,
+          recordsSucceeded: 0,
+          recordsFailed: 0
+        }));
+      }
+
+      function renderMigRunResult() {
+        const resultEl = document.getElementById('mig-run-result');
+        if (!resultEl) return;
+
+        const result = migState.lastRunResult;
+        const steps = Array.isArray(result && result.steps) ? result.steps : [];
+        if (!result || !steps.length || migState.status === 'running') {
+          resultEl.classList.add('d-none');
+          resultEl.innerHTML = '';
+          return;
+        }
+
+        const allOk = steps.every((step) => step.status !== 'error');
+        resultEl.classList.remove('d-none');
+        resultEl.innerHTML = '<div class="alert ' + (allOk ? 'alert-success' : 'alert-warning') + '">' +
+          (allOk ? '✓ Migration erfolgreich abgeschlossen.' : '⚠ Migration mit Fehlern abgeschlossen.') +
+          '</div>' +
+          (result.reportPath ? '<div class="alert alert-info py-2 small">Protokoll erzeugt: <a href="' + esc(getMigrationReportUrl(migState.id, true)) + '">Datei öffnen</a><div class="text-secondary mt-1"><code>' + esc(result.reportPath) + '</code></div></div>' : '') +
+          '<table class="table table-sm"><thead><tr><th>Objekt</th><th>Verarbeitet</th><th>OK</th><th>Fehler</th><th>Status</th></tr></thead><tbody>' +
+          steps.map((step) =>
+            '<tr><td>' + esc(step.salesforceObject) + '</td><td>' + (step.recordsProcessed || 0) +
+            '</td><td>' + (step.recordsSucceeded || 0) + '</td><td>' + (step.recordsFailed || 0) +
+            '</td><td><span class="badge bg-' + (step.status === 'done' ? 'success' : 'danger') + '">' + esc(step.status) + '</span>' +
+            (step.errorMessage ? '<div class="text-danger small">' + esc(step.errorMessage) + '</div>' : '') +
+            '</td></tr>'
+          ).join('') + '</tbody></table>';
+
+        const failedSteps = steps.filter((step) => step.failedRecordsId);
+        if (failedSteps.length) {
+          resultEl.innerHTML += failedSteps.map((step) => {
+            const detailsId = 'mig-errors-' + step.failedRecordsId;
+            return '<div class="card mt-3">' +
+              '<div class="card-header d-flex gap-2 align-items-center">' +
+              '<strong class="me-auto">Fehlerhafte Datensätze: ' + esc(step.salesforceObject) + '</strong>' +
+              '<button class="btn btn-sm btn-outline-danger" data-load-failed-records="' + esc(migState.id) + '" data-object-id="' + esc(step.objectId) + '" data-failed-records-id="' + esc(step.failedRecordsId) + '" data-details-id="' + esc(detailsId) + '">Details laden</button>' +
+              '</div>' +
+              '<div id="' + esc(detailsId) + '" class="card-body" style="display:none;"></div>' +
+            '</div>';
+          }).join('');
+
+          const bindLoadFailedDetails = (btn) => {
+            btn.addEventListener('click', async () => {
+              const migId = btn.getAttribute('data-load-failed-records');
+              const objectId = btn.getAttribute('data-object-id');
+              const failedRecordsId = btn.getAttribute('data-failed-records-id');
+              const detailsId = btn.getAttribute('data-details-id');
+              const detailsDiv = document.getElementById(detailsId);
+              if (!detailsDiv) return;
+
+              btn.disabled = true;
+              btn.textContent = 'Lade…';
+              detailsDiv.style.display = '';
+
+              try {
+                const failedRes = await fetch('/api/migrations/' + encodeURIComponent(migId) + '/failed-records/' + encodeURIComponent(failedRecordsId));
+                if (!failedRes.ok) throw new Error('Fehler beim Laden der Fehlerdetails');
+                const failedData = await failedRes.json();
+                const records = Array.isArray(failedData.records) ? failedData.records : [];
+                const migrationObject = (migState.objects || []).find((item) => item && item.id === objectId);
+                const allowStageSave = !!migrationObject && (migrationObject.stagingMode === 'sqlite' || migrationObject.processingMode === 'sqlite');
+
+                if (!records.length) {
+                  detailsDiv.innerHTML = '<div class="alert alert-info">Keine fehlgeschlagenen Datensätze gefunden.</div>';
+                  btn.textContent = 'Details laden';
+                  return;
+                }
+
+                detailsDiv.innerHTML =
+                  '<div class="d-flex align-items-center gap-2 mb-2 flex-wrap">' +
+                    '<button class="btn btn-sm btn-primary" data-retry-failed-records data-mode="all" data-mig-id="' + esc(migId) + '" data-object-id="' + esc(objectId) + '" data-failed-records-id="' + esc(failedRecordsId) + '" data-details-id="' + esc(detailsId) + '">Korrigierte Datensätze neu importieren</button>' +
+                    '<button class="btn btn-sm btn-outline-primary" data-retry-failed-records data-mode="partial" data-mig-id="' + esc(migId) + '" data-object-id="' + esc(objectId) + '" data-failed-records-id="' + esc(failedRecordsId) + '" data-details-id="' + esc(detailsId) + '">Nur erfolgreiche Korrekturen übernehmen</button>' +
+                    (allowStageSave
+                      ? '<button class="btn btn-sm btn-outline-secondary" data-save-failed-corrections data-mig-id="' + esc(migId) + '" data-object-id="' + esc(objectId) + '" data-failed-records-id="' + esc(failedRecordsId) + '">Korrekturen ins Staging übernehmen</button>'
+                      : '') +
+                    '<button class="btn btn-sm btn-outline-secondary" data-export-failed-csv>Restfehler als CSV exportieren</button>' +
+                    '<span class="small text-secondary" data-retry-status></span>' +
+                  '</div>' +
+                  '<p class="small text-secondary mb-2">Feldwerte direkt korrigieren und anschließend neu importieren.</p>' +
+                  '<div class="table-responsive"><table class="table table-sm table-striped"><thead><tr><th>Zeile</th><th>Fehlertyp</th><th>Fehler</th><th>Korrigierbare Feldwerte</th></tr></thead><tbody>' +
+                  records.map((rec, idx) => {
+                    const sourceObj = rec.sourceRecord || {};
+                    const sourceEntries = Object.entries(sourceObj);
+                    const previewPairs = sourceEntries.slice(0, 3)
+                      .map(([key, value]) => '<span class="badge text-bg-light border me-1 mb-1">' + esc(String(key)) + ': ' + esc(String(value ?? '')) + '</span>')
+                      .join('');
+                    return '<tr data-failed-row="' + idx + '" data-row-index="' + esc(String(rec.rowIndex || 0)) + '" data-error="' + esc(String(rec.error || '')) + '" data-error-type="' + esc(String(rec.errorType || 'mapping')) + '">' +
+                      '<td><strong>' + esc(String(rec.rowIndex)) + '</strong></td>' +
+                      '<td><span class="badge bg-' + (rec.errorType === 'salesforce' ? 'warning' : 'danger') + '">' + esc(String(rec.errorType || 'mapping')) + '</span></td>' +
+                      '<td class="text-danger small">' + esc(String(rec.error || '')) + '</td>' +
+                      '<td>' +
+                        '<div class="small text-secondary mb-1">' + sourceEntries.length + ' Felder</div>' +
+                        '<div class="mb-1">' + previewPairs + (sourceEntries.length > 3 ? '<span class="small text-secondary">…</span>' : '') + '</div>' +
+                        '<details class="border rounded p-2 bg-body-tertiary">' +
+                          '<summary class="small" style="cursor:pointer">Felder bearbeiten</summary>' +
+                          '<div class="vstack gap-1 mt-2" style="max-height: 260px; overflow:auto;">' +
+                            sourceEntries.map(([key, value]) =>
+                              '<div class="input-group input-group-sm">' +
+                                '<span class="input-group-text" style="min-width: 180px">' + esc(String(key)) + '</span>' +
+                                '<input class="form-control" data-retry-field data-field-name="' + esc(String(key)) + '" value="' + esc(String(value ?? '')) + '" />' +
+                              '</div>'
+                            ).join('') +
+                          '</div>' +
+                        '</details>' +
+                      '</td>' +
+                    '</tr>';
+                  }).join('') +
+                  '</tbody></table></div>';
+
+                const retryButtons = Array.from(detailsDiv.querySelectorAll('[data-retry-failed-records]'));
+                const saveCorrectionsBtn = detailsDiv.querySelector('[data-save-failed-corrections]');
+                const exportCsvBtn = detailsDiv.querySelector('[data-export-failed-csv]');
+                const retryStatus = detailsDiv.querySelector('[data-retry-status]');
+
+                const collectEditedRows = () => {
+                  const rows = Array.from(detailsDiv.querySelectorAll('[data-failed-row]'));
+                  return rows.map((row) => {
+                    const rowIndex = Number(row.getAttribute('data-row-index') || '0');
+                    const sourceRecord = {};
+                    row.querySelectorAll('[data-retry-field]').forEach((input) => {
+                      const key = input.getAttribute('data-field-name') || '';
+                      sourceRecord[key] = input.value;
+                    });
+                    return {
+                      rowIndex,
+                      error: row.getAttribute('data-error') || '',
+                      errorType: row.getAttribute('data-error-type') || 'mapping',
+                      sourceRecord
+                    };
+                  });
+                };
+
+                const csvEscape = (value) => {
+                  const delimiter = ';';
+                  const str = String(value ?? '');
+                  if (str.includes('"') || str.includes('\\n') || str.includes('\\r') || str.includes(delimiter)) {
+                    return '"' + str.replace(/"/g, '""') + '"';
+                  }
+                  return str;
+                };
+
+                if (exportCsvBtn) {
+                  exportCsvBtn.addEventListener('click', () => {
+                    const editedRows = collectEditedRows();
+                    if (!editedRows.length) {
+                      alert('Keine Restfehler zum Exportieren vorhanden.');
+                      return;
+                    }
+                    const sourceKeys = Array.from(new Set(editedRows.flatMap((row) => Object.keys(row.sourceRecord || {}))));
+                    const header = ['rowIndex', 'errorType', 'error', ...sourceKeys];
+                    const delimiter = ';';
+                    const lines = [header.map(csvEscape).join(delimiter)];
+                    editedRows.forEach((row) => {
+                      const values = [row.rowIndex, row.errorType, row.error, ...sourceKeys.map((key) => row.sourceRecord[key] ?? '')];
+                      lines.push(values.map(csvEscape).join(delimiter));
+                    });
+                    const bom = '\\uFEFF';
+                    const blob = new Blob([bom + lines.join('\\r\\n')], { type: 'text/csv;charset=utf-8;' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'restfehler-' + objectId + '-' + failedRecordsId + '.csv';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                  });
+                }
+
+                const runRetry = async (mode) => {
+                  const payloadRecords = collectEditedRows().map((row) => ({ rowIndex: row.rowIndex, sourceRecord: row.sourceRecord }));
+                  retryButtons.forEach((button) => { button.disabled = true; });
+                  if (saveCorrectionsBtn) saveCorrectionsBtn.disabled = true;
+                  if (retryStatus) {
+                    retryStatus.textContent = mode === 'partial'
+                      ? 'Neuimport läuft (nur erfolgreiche Korrekturen werden übernommen)...'
+                      : 'Neuimport läuft...';
+                  }
+                  try {
+                    const retryRes = await fetch(
+                      '/api/migrations/' + encodeURIComponent(migId) + '/failed-records/' + encodeURIComponent(objectId) + '/' + encodeURIComponent(failedRecordsId) + '/retry',
+                      {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ records: payloadRecords, mode })
+                      }
+                    );
+                    const retryResult = await retryRes.json();
+                    if (!retryRes.ok) throw new Error(retryResult.error || 'Retry fehlgeschlagen');
+
+                    if (retryStatus) {
+                      retryStatus.textContent = 'Neuimport abgeschlossen: ' + retryResult.recordsSucceeded + ' OK, ' + retryResult.recordsFailed + ' Fehler.';
+                    }
+
+                    if (retryResult.failedRecordsId) {
+                      btn.setAttribute('data-failed-records-id', retryResult.failedRecordsId);
+                      retryButtons.forEach((button) => {
+                        button.setAttribute('data-failed-records-id', retryResult.failedRecordsId);
+                      });
+                      btn.click();
+                    }
+                  } catch (err) {
+                    if (retryStatus) retryStatus.textContent = 'Fehler: ' + (err instanceof Error ? err.message : String(err));
+                  } finally {
+                    retryButtons.forEach((button) => { button.disabled = false; });
+                    if (saveCorrectionsBtn) saveCorrectionsBtn.disabled = false;
+                  }
+                };
+
+                if (saveCorrectionsBtn) {
+                  saveCorrectionsBtn.addEventListener('click', async () => {
+                    const payloadRecords = collectEditedRows().map((row) => ({ rowIndex: row.rowIndex, sourceRecord: row.sourceRecord }));
+                    retryButtons.forEach((button) => { button.disabled = true; });
+                    saveCorrectionsBtn.disabled = true;
+                    if (retryStatus) {
+                      retryStatus.textContent = 'Korrekturen werden ins SQLite-Staging übernommen...';
+                    }
+
+                    try {
+                      const saveRes = await fetch(
+                        '/api/migrations/' + encodeURIComponent(migId) + '/failed-records/' + encodeURIComponent(objectId) + '/' + encodeURIComponent(failedRecordsId) + '/retry',
+                        {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ records: payloadRecords, mode: 'stage' })
+                        }
+                      );
+                      const saveResult = await saveRes.json();
+                      if (!saveRes.ok) throw new Error(saveResult.error || 'Speichern ins Staging fehlgeschlagen');
+
+                      if (retryStatus) {
+                        retryStatus.textContent = (saveResult.updatedRows || 0) + ' Zeilen im Staging aktualisiert.';
+                      }
+
+                      if (migrationObject) {
+                        migrationObject.statusSummary = saveResult.statusSummary || migrationObject.statusSummary || {};
+                        await loadMigObjectPreview(migrationObject, migrationObject.previewOffset || 0, migrationObject.previewLimit || 10);
+                        renderMigMappingPanel();
+                      }
+                    } catch (err) {
+                      if (retryStatus) retryStatus.textContent = 'Fehler: ' + (err instanceof Error ? err.message : String(err));
+                    } finally {
+                      retryButtons.forEach((button) => { button.disabled = false; });
+                      saveCorrectionsBtn.disabled = false;
+                    }
+                  });
+                }
+
+                retryButtons.forEach((button) => {
+                  button.addEventListener('click', () => {
+                    const mode = button.getAttribute('data-mode') || 'all';
+                    runRetry(mode);
+                  });
+                });
+
+                btn.textContent = 'Details aktualisieren';
+              } catch (err) {
+                detailsDiv.innerHTML = '<div class="alert alert-danger">Fehler: ' + esc(err instanceof Error ? err.message : String(err)) + '</div>';
+                btn.textContent = 'Details laden';
+              } finally {
+                btn.disabled = false;
+              }
+            });
+          };
+
+          resultEl.querySelectorAll('[data-load-failed-records]').forEach((btn) => bindLoadFailedDetails(btn));
+        }
+      }
+
+      function renderMigRunProgress() {
+        const progressEl = document.getElementById('mig-run-progress');
+        const stepsEl = document.getElementById('mig-run-steps');
+        const progressTitleEl = document.getElementById('mig-run-status-title');
+        const spinnerEl = document.getElementById('mig-run-status-spinner');
+        if (!progressEl || !stepsEl) return;
+
+        const steps = getMigProgressSteps();
+        const totalSteps = Math.max(1, steps.length || 1);
+        const totalProcessed = steps.reduce((sum, step) => sum + Math.max(0, Number(step.recordsProcessed || 0) || 0), 0);
+        const totalSucceeded = steps.reduce((sum, step) => sum + Math.max(0, Number(step.recordsSucceeded || 0) || 0), 0);
+        const totalFailed = steps.reduce((sum, step) => sum + Math.max(0, Number(step.recordsFailed || 0) || 0), 0);
+        const completedUnits = steps.reduce((sum, step) => {
+          if (step.status === 'done' || step.status === 'error') {
+            return sum + 1;
+          }
+          if (step.status === 'running') {
+            const totalRecords = Math.max(0, Number(step.recordsProcessed || 0) || 0);
+            const completedRecords = Math.max(0, Number(step.recordsSucceeded || 0) + Number(step.recordsFailed || 0));
+            return sum + (totalRecords > 0 ? Math.min(1, completedRecords / totalRecords) : 0);
+          }
+          return sum;
+        }, 0);
+        const percent = Math.max(0, Math.min(100, Math.round((completedUnits / totalSteps) * 100)));
+        const badgeClassByStatus = { pending: 'secondary', running: 'warning', done: 'success', error: 'danger' };
+        const completedSteps = steps.filter((step) => step.status === 'done' || step.status === 'error').length;
+        const summaryText = steps.length
+          ? steps.map((step) => {
+              const totalRecords = Math.max(0, Number(step.recordsProcessed || 0) || 0);
+              const completedRecords = Math.max(0, Number(step.recordsSucceeded || 0) + Number(step.recordsFailed || 0));
+              return String(step.salesforceObject || 'Objekt') + ': ' + String(step.status || 'pending') + (totalRecords ? (' ' + completedRecords + '/' + totalRecords) : '');
+            }).join(' • ')
+          : 'Migration läuft...';
+
+        progressEl.classList.remove('d-none');
+        if (spinnerEl) {
+          spinnerEl.classList.toggle('d-none', migState.status !== 'running');
+        }
+        if (progressTitleEl) {
+          progressTitleEl.textContent = migState.status === 'running' ? 'Migration läuft...' : 'Ausführungsergebnis';
+        }
+        stepsEl.innerHTML =
+          '<div class="mb-3">' +
+            '<div class="progress" role="progressbar" aria-valuenow="' + percent + '" aria-valuemin="0" aria-valuemax="100">' +
+              '<div class="progress-bar progress-bar-striped' + (migState.status === 'running' ? ' progress-bar-animated' : '') + '" style="width:' + percent + '%">' + percent + '%</div>' +
+            '</div>' +
+            '<div class="d-flex flex-wrap gap-2 mt-2 small">' +
+              '<span class="badge text-bg-light border">' + completedSteps + '/' + steps.length + ' Objekte</span>' +
+              '<span class="badge text-bg-light border">' + totalSucceeded + ' OK</span>' +
+              '<span class="badge text-bg-light border">' + totalFailed + ' Fehler</span>' +
+              (totalProcessed ? ('<span class="badge text-bg-light border">' + totalProcessed + ' Datensätze</span>') : '') +
+            '</div>' +
+            '<div class="small text-secondary mt-2">' + esc(summaryText) + '</div>' +
+          '</div>' +
+          '<div class="vstack gap-2">' +
+            steps.map((step) => {
+              const totalRecords = Math.max(0, Number(step.recordsProcessed || 0) || 0);
+              const completedRecords = Math.max(0, Number(step.recordsSucceeded || 0) + Number(step.recordsFailed || 0));
+              const itemPercent = totalRecords > 0
+                ? Math.max(0, Math.min(100, Math.round((completedRecords / totalRecords) * 100)))
+                : (step.status === 'done' || step.status === 'error' ? 100 : 0);
+              return '<div class="border rounded px-2 py-2">' +
+                '<div class="d-flex flex-wrap align-items-center gap-2">' +
+                  '<strong class="me-auto">' + esc(String(step.salesforceObject || 'Objekt')) + '</strong>' +
+                  '<span class="badge bg-' + esc(badgeClassByStatus[step.status] || 'secondary') + '">' + esc(String(step.status || 'pending')) + '</span>' +
+                  '<span class="small text-secondary">' + completedRecords + (totalRecords ? ('/' + totalRecords) : '') + '</span>' +
+                  '<span class="small text-success">OK ' + Math.max(0, Number(step.recordsSucceeded || 0)) + '</span>' +
+                  '<span class="small text-danger">Fehler ' + Math.max(0, Number(step.recordsFailed || 0)) + '</span>' +
+                '</div>' +
+                '<div class="progress mt-2" style="height:6px" role="progressbar" aria-valuenow="' + itemPercent + '" aria-valuemin="0" aria-valuemax="100">' +
+                  '<div class="progress-bar bg-' + esc(step.status === 'error' ? 'danger' : (step.status === 'done' ? 'success' : 'warning')) + '" style="width:' + itemPercent + '%"></div>' +
+                '</div>' +
+                (step.errorMessage ? '<div class="small text-danger mt-1">' + esc(String(step.errorMessage || '')) + '</div>' : '') +
+              '</div>';
+            }).join('') +
+          '</div>';
+      }
+
+      async function pollMigRunProgress() {
+        if (!migState.id) return;
+        stopMigRunProgressPolling();
+        const refresh = async () => {
+          try {
+            const res = await fetch('/api/migrations/' + encodeURIComponent(migState.id));
+            if (res.ok) {
+              const migration = await res.json();
+              migState.status = String(migration?.status || migState.status || 'draft');
+              migState.lastRunResult = migration?.lastRunResult || migState.lastRunResult;
+              if (migState.step === migState.totalSteps) {
+                renderMigRunProgress();
+                renderMigRunResult();
+              }
+            }
+          } catch { /* ignore polling errors */ }
+
+          if (migState.status === 'running') {
+            migState.progressPollTimer = setTimeout(refresh, 1000);
+          } else {
+            stopMigRunProgressPolling();
+          }
+        };
+        await refresh();
+      }
+
+      function getMigPendingRecommendationCounts(imports) {
+        return getMigSelectedPendingImports(imports).reduce((acc, item) => {
+          const key = String(item && item.recommendedObjectApiName ? item.recommendedObjectApiName : '').trim();
+          if (!key) {
+            return acc;
+          }
+
+          acc[key] = (acc[key] || 0) + 1;
+          return acc;
+        }, {});
+      }
+
+      function createMigObject(name, label, options) {
+        const allowDuplicate = !!(options && options.allowDuplicate);
+        if (!allowDuplicate) {
+          const existing = (migState.objects || []).find((obj) => obj && obj.salesforceObject === name);
+          if (existing) {
+            return existing;
+          }
+        }
+
+        const migrationObject = {
+          id: migUuidV4(),
+          salesforceObject: name,
+          salesforceObjectLabel: label || name,
+          processingMode: 'sqlite',
+          filePath: '',
+          fileSheetName: '',
+          availableSheetNames: [],
+          fileColumns: [],
+          fieldMappings: [],
+          operation: 'insert'
+        };
+        migState.objects.push(migrationObject);
+        return migrationObject;
+      }
+
+      function ensureMigObjectsForPendingImports(imports) {
+        const groupedImports = (Array.isArray(imports) ? imports : []).reduce((acc, item) => {
+          const objectApiName = String(item && item.recommendedObjectApiName ? item.recommendedObjectApiName : '').trim();
+          if (!objectApiName) {
+            return acc;
+          }
+
+          if (!acc[objectApiName]) {
+            acc[objectApiName] = {
+              label: item.recommendedObjectLabel || objectApiName,
+              items: []
+            };
+          }
+          acc[objectApiName].items.push(item);
+          return acc;
+        }, {});
+
+        let createdCount = 0;
+        Object.keys(groupedImports).forEach((objectApiName) => {
+          const group = groupedImports[objectApiName];
+          const availableCount = countMigUnassignedObjectsByApiName(objectApiName);
+          const missingCount = Math.max(0, group.items.length - availableCount);
+          for (let index = 0; index < missingCount; index += 1) {
+            createMigObject(objectApiName, group.label, { allowDuplicate: true });
+            createdCount += 1;
+          }
+        });
+
+        return createdCount;
+      }
+
+      function getPendingMigrationImportText() {
+        const pendingImports = Array.isArray(migState.pendingImports) ? migState.pendingImports : [];
+        const selectedImports = getMigSelectedPendingImports(pendingImports);
+        if (!selectedImports.length) {
+          return '';
+        }
+
+        const labels = selectedImports.map((item) => getMigPendingImportLabel(item)).join(', ');
+        if (selectedImports.length === 1) {
+          return 'Import-Datei vorgemerkt: ' + labels + '. Wähle genau ein Salesforce-Objekt aus, dann wird die Datei automatisch übernommen.';
+        }
+
+        return selectedImports.length + ' Importquellen vorgemerkt: ' + labels + '. Bitte nacheinander je Objekt zuordnen.';
+      }
+
+      function renderMigPendingImportHint() {
+        const stepOneHint = document.getElementById('mig-pending-import-hint');
+        const stepTwoHint = document.getElementById('mig-file-import-hint');
+        const pendingText = getPendingMigrationImportText();
+
+        if (stepOneHint) {
+          stepOneHint.textContent = pendingText;
+          stepOneHint.classList.toggle('d-none', !pendingText);
+        }
+
+        if (stepTwoHint) {
+          stepTwoHint.textContent = pendingText;
+          stepTwoHint.classList.toggle('d-none', !pendingText);
+        }
+      }
+
+      function renderMigImportSuggestions() {
+        const container = document.getElementById('mig-import-suggestions');
+        if (!container) {
+          return;
+        }
+
+        const pendingImports = Array.isArray(migState.pendingImports) ? migState.pendingImports : [];
+        const selectedImports = getMigSelectedPendingImports(pendingImports);
+        const recommendationCounts = getMigPendingRecommendationCounts(pendingImports);
+        const recommendedImports = selectedImports.filter((item) => String(item && item.recommendedObjectApiName ? item.recommendedObjectApiName : '').trim());
+        const needsAdditionalObjects = Object.keys(recommendationCounts).some((objectApiName) => recommendationCounts[objectApiName] > countMigUnassignedObjectsByApiName(objectApiName));
+        if (!pendingImports.length) {
+          container.classList.add('d-none');
+          container.innerHTML = '';
+          return;
+        }
+        container.classList.remove('d-none');
+        container.innerHTML = '<div class="small fw-semibold mb-2">Objektvorschläge aus den Importdateien</div>' +
+          (pendingImports.length !== selectedImports.length
+            ? '<div class="small text-secondary mb-2">' + esc(String(selectedImports.length)) + ' von ' + esc(String(pendingImports.length)) + ' Importquellen sind aktuell ausgewählt.</div>'
+            : '') +
+          (recommendedImports.length
+            ? '<div class="d-flex flex-wrap gap-2 mb-2">' +
+                '<button type="button" class="btn btn-sm btn-primary" data-mig-create-all-suggested>Empfohlene Objekte gesammelt anlegen</button>' +
+                (needsAdditionalObjects
+                  ? '<span class="small text-secondary align-self-center">Mehrere Dateien zeigen teils auf dasselbe Zielobjekt. Die Sammelanlage legt dafür getrennte Import-Slots an.</span>'
+                  : '<span class="small text-secondary align-self-center">Passende Zielobjekte können direkt gesammelt angelegt und zugeordnet werden.</span>') +
+              '</div>'
+            : '') +
+          pendingImports.map((item) => {
+            const analysis = item && item.analysis && typeof item.analysis === 'object' ? item.analysis : null;
+            const suggestions = Array.isArray(item && item.suggestions) ? item.suggestions : [];
+            const recommendedName = String(item && item.recommendedObjectApiName ? item.recommendedObjectApiName : '').trim();
+            const isSelected = isMigPendingImportSelected(item);
+            const duplicateRecommendationCount = recommendedName ? (recommendationCounts[recommendedName] || 0) : 0;
+            const summaryBits = [];
+            if (analysis && analysis.format) summaryBits.push('Format: ' + String(analysis.format).toUpperCase());
+            if (analysis && analysis.sheetName) summaryBits.push('Mappe: ' + analysis.sheetName);
+            if (analysis && typeof analysis.recordCount === 'number') summaryBits.push('Datensaetze: ' + analysis.recordCount);
+            if (analysis && Array.isArray(analysis.headers) && analysis.headers.length) {
+              summaryBits.push('Felder: ' + analysis.headers.slice(0, 6).join(', ') + (analysis.headers.length > 6 ? ' …' : ''));
+            }
+
+            return '<div class="alert ' + (isSelected ? 'alert-light' : 'alert-secondary') + ' border py-2 mb-2">' +
+              '<div class="d-flex justify-content-between align-items-start gap-3 mb-1">' +
+                '<div class="small fw-semibold">' + esc(getMigPendingImportLabel(item)) + '</div>' +
+                '<div class="form-check form-switch m-0">' +
+                  '<input class="form-check-input" type="checkbox" role="switch" data-mig-import-toggle="' + esc(item.id || item.fileName || '') + '"' + (isSelected ? ' checked' : '') + '>' +
+                '</div>' +
+              '</div>' +
+              (summaryBits.length ? '<div class="small text-secondary mb-2">' + esc(summaryBits.join(' | ')) + '</div>' : '') +
+              (!isSelected
+                ? '<div class="small text-secondary">Diese Mappe wird aktuell nicht in den Migrationsentwurf übernommen.</div>'
+                : recommendedName
+                ? '<div class="d-flex flex-wrap align-items-center gap-2 mb-2">' +
+                    '<span class="badge text-bg-primary">Empfohlen: ' + esc((item.recommendedObjectLabel || recommendedName) + ' (' + recommendedName + ')') + '</span>' +
+                    '<button type="button" class="btn btn-sm btn-outline-primary" data-mig-create-import="' + esc(item.id || item.fileName || '') + '">Objekt anlegen</button>' +
+                    (duplicateRecommendationCount > 1
+                      ? '<span class="small text-secondary">Diese Empfehlung tritt in ' + esc(String(duplicateRecommendationCount)) + ' Importquellen auf.</span>'
+                      : '') +
+                  '</div>'
+                : '') +
+              (isSelected && suggestions.length
+                ? '<div class="d-flex flex-wrap gap-2">' +
+                    suggestions.map((suggestion) =>
+                      '<button type="button" class="btn btn-sm btn-outline-primary" data-mig-suggestion-import="' + esc(item.id || item.fileName || '') + '" data-mig-suggestion="' + esc(suggestion.objectApiName) + '" data-mig-suggestion-label="' + esc(suggestion.label || suggestion.objectApiName) + '">' +
+                      esc((suggestion.label || suggestion.objectApiName) + ' (' + suggestion.objectApiName + ')') +
+                      '</button>'
+                    ).join('') +
+                  '</div>' +
+                  '<div class="small text-secondary mt-2">' +
+                    suggestions.map((suggestion) => esc((suggestion.label || suggestion.objectApiName) + ': ' + (suggestion.reason || 'Heuristik'))).join(' | ') +
+                  '</div>'
+                : (isSelected ? '<div class="small text-secondary">Keine eindeutige Objektempfehlung gefunden.</div>' : '')) +
+            '</div>';
+          }).join('');
+
+        container.querySelectorAll('[data-mig-import-toggle]').forEach((input) => {
+          input.addEventListener('change', () => {
+            const importId = input.getAttribute('data-mig-import-toggle');
+            const pendingImport = (migState.pendingImports || []).find((item) => String(item.id || item.fileName || '') === String(importId || ''));
+            if (!pendingImport) {
+              return;
+            }
+
+            pendingImport.includeInMigration = !!input.checked;
+            renderMigPendingImportHint();
+            renderMigImportSuggestions();
+          });
+        });
+
+        container.querySelectorAll('[data-mig-create-all-suggested]').forEach((button) => {
+          button.addEventListener('click', () => {
+            const createdCount = ensureMigObjectsForPendingImports(recommendedImports);
+            renderMigSelectedObjects();
+            if (createdCount > 0) {
+              showToast(createdCount + ' Zielobjekte für vorgemerkte Importdateien angelegt.');
+            }
+            consumePendingMigrationImportIfPossible().catch((error) => {
+              alert('Fehler: ' + (error instanceof Error ? error.message : String(error)));
+            });
+          });
+        });
+
+        container.querySelectorAll('[data-mig-create-import]').forEach((button) => {
+          button.addEventListener('click', () => {
+            const importId = button.getAttribute('data-mig-create-import');
+            const pendingImport = (migState.pendingImports || []).find((item) => String(item.id || item.fileName || '') === String(importId || ''));
+            if (!pendingImport || !pendingImport.recommendedObjectApiName) {
+              return;
+            }
+
+            ensureMigObjectsForPendingImports([pendingImport]);
+            renderMigSelectedObjects();
+            consumePendingMigrationImportIfPossible().catch((error) => {
+              alert('Fehler: ' + (error instanceof Error ? error.message : String(error)));
+            });
+          });
+        });
+
+        container.querySelectorAll('[data-mig-suggestion]').forEach((button) => {
+          button.addEventListener('click', () => {
+            const name = button.getAttribute('data-mig-suggestion');
+            const label = button.getAttribute('data-mig-suggestion-label') || name;
+            const importId = button.getAttribute('data-mig-suggestion-import');
+            if (!name) {
+              return;
+            }
+
+            const pendingImport = (migState.pendingImports || []).find((item) => String(item.id || item.fileName || '') === String(importId || ''));
+            if (pendingImport) {
+              pendingImport.recommendedObjectApiName = name;
+              pendingImport.recommendedObjectLabel = label;
+              ensureMigObjectsForPendingImports([pendingImport]);
+            }
+
+            renderMigSelectedObjects();
+            consumePendingMigrationImportIfPossible().catch((error) => {
+              alert('Fehler: ' + (error instanceof Error ? error.message : String(error)));
+            });
+          });
+        });
+      }
 
       function renderMigFileSummary(obj) {
         const details = [];
         if (obj.fileFormat) details.push('Format: ' + obj.fileFormat.toUpperCase());
+        if (obj.fileSheetName) details.push('Mappe: ' + obj.fileSheetName);
         if (typeof obj.fileRecordCount === 'number') details.push('Datensaetze: ' + obj.fileRecordCount);
         if (obj.fileCharset) details.push('Charset: ' + obj.fileCharset);
         if (obj.fileDelimiter) details.push('Trennzeichen: ' + (obj.fileDelimiter === '\t' ? 'TAB' : obj.fileDelimiter));
@@ -1112,6 +2274,8 @@ function htmlShell(): string {
       function applyMigAnalysisData(obj, data) {
         obj.filePath = data.filePath || obj.filePath || '';
         obj.fileFormat = data.format || obj.fileFormat || 'csv';
+        obj.fileSheetName = typeof data.sheetName === 'string' ? data.sheetName : (obj.fileSheetName || '');
+        obj.availableSheetNames = Array.isArray(data.availableSheetNames) ? data.availableSheetNames.slice() : (obj.availableSheetNames || []);
         obj.fileCharset = data.charset || obj.fileCharset || 'utf8';
         obj.fileDelimiter = data.delimiter || obj.fileDelimiter || ';';
         obj.fileTextQualifier = data.textQualifier || obj.fileTextQualifier || '"';
@@ -1129,6 +2293,93 @@ function htmlShell(): string {
         obj.previewFilter = typeof data.previewFilter === 'string' ? data.previewFilter : (obj.previewFilter || '');
         obj.previewStatusFilter = typeof data.previewStatusFilter === 'string' ? data.previewStatusFilter : (obj.previewStatusFilter || '');
         obj.statusSummary = data.statusSummary || obj.statusSummary || {};
+      }
+
+      async function uploadMigrationObjectFile(obj, file) {
+        if (!obj || !file) {
+          return null;
+        }
+
+        const contentBase64 = await fileToBase64(file);
+        const res = await fetch('/api/migrations/upload-file', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            migrationId: migState.id,
+            objectId: obj.id,
+            fileName: file.name,
+            contentBase64,
+            sheetName: obj.fileSheetName,
+            charset: obj.fileCharset,
+            delimiter: obj.fileDelimiter,
+            textQualifier: obj.fileTextQualifier
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Datei konnte nicht hochgeladen werden');
+        }
+
+        applyMigAnalysisData(obj, data);
+        return data;
+      }
+
+      async function consumePendingMigrationImportIfPossible() {
+        const pendingImports = Array.isArray(migState.pendingImports) ? migState.pendingImports : [];
+        const selectedPendingImports = getMigSelectedPendingImports(pendingImports);
+        if (!selectedPendingImports.length || migState.pendingImportInProgress) {
+          renderMigPendingImportHint();
+          return false;
+        }
+        migState.pendingImportInProgress = true;
+
+        try {
+          await migSave();
+
+          let hasProgress = false;
+          const remainingImports = [];
+
+          for (const pendingImport of pendingImports) {
+            if (!isMigPendingImportSelected(pendingImport)) {
+              remainingImports.push(pendingImport);
+              continue;
+            }
+
+            const unassignedObjects = (migState.objects || []).filter((obj) => obj && !String(obj.filePath || '').trim());
+            let targetObject = null;
+
+            if (pendingImport.recommendedObjectApiName) {
+              targetObject = unassignedObjects.find((obj) => obj.salesforceObject === pendingImport.recommendedObjectApiName) || null;
+            }
+
+            if (!targetObject && selectedPendingImports.length === 1 && unassignedObjects.length === 1) {
+              targetObject = unassignedObjects[0];
+            }
+
+            if (!targetObject) {
+              remainingImports.push(pendingImport);
+              continue;
+            }
+
+            targetObject.fileSheetName = pendingImport.sheetName || targetObject.fileSheetName || '';
+            await uploadMigrationObjectFile(targetObject, pendingImport.file);
+            hasProgress = true;
+            showToast('Importquelle ' + getMigPendingImportLabel(pendingImport) + ' wurde dem Objekt ' + targetObject.salesforceObject + ' zugeordnet.');
+          }
+
+          if (hasProgress) {
+            migState.pendingImports = remainingImports;
+            await migSave();
+            renderMigSelectedObjects();
+            renderMigFileAssignments();
+            renderMigMappingObjectSelect();
+          }
+
+          return hasProgress;
+        } finally {
+          migState.pendingImportInProgress = false;
+          renderMigPendingImportHint();
+        }
       }
 
       async function loadMigObjectPreview(obj, offset, limit) {
@@ -1351,6 +2602,7 @@ function htmlShell(): string {
 
       const scheduleModal = createModalController('schedule-modal');
       const connectorModal = createModalController('connector-modal');
+      const templatePickerModal = createModalController('template-picker-modal');
       const instanceModal = createModalController('instance-modal');
       const logsModal = createModalController('logs-modal');
 
@@ -1359,6 +2611,67 @@ function htmlShell(): string {
           .replaceAll('&', '&amp;')
           .replaceAll('<', '&lt;')
           .replaceAll('>', '&gt;');
+      }
+
+      function getTemplateAccent(item) {
+        const tags = Array.isArray(item?.tags) ? item.tags.map((tag) => String(tag || '').toLowerCase()) : [];
+        if (tags.includes('ezb')) {
+          return { start: '#0f4c81', end: '#6db1ff', glaze: 'rgba(255,255,255,0.22)' };
+        }
+        if (tags.includes('brevo')) {
+          return { start: '#0f766e', end: '#2dd4bf', glaze: 'rgba(255,255,255,0.18)' };
+        }
+        if (tags.includes('newsletter')) {
+          return { start: '#b45309', end: '#f59e0b', glaze: 'rgba(255,255,255,0.16)' };
+        }
+        if (item?.kind === 'bundle') {
+          return { start: '#4c1d95', end: '#7c3aed', glaze: 'rgba(255,255,255,0.18)' };
+        }
+        if (item?.kind === 'schedule') {
+          return { start: '#155e75', end: '#06b6d4', glaze: 'rgba(255,255,255,0.18)' };
+        }
+        return { start: '#9a3412', end: '#f97316', glaze: 'rgba(255,255,255,0.16)' };
+      }
+
+      function getTemplateSymbol(item) {
+        const tags = Array.isArray(item?.tags) ? item.tags.map((tag) => String(tag || '').toUpperCase()) : [];
+        if (tags.includes('EZB')) {
+          return 'EZB';
+        }
+        if (tags.includes('BREVO')) {
+          return 'BR';
+        }
+        if (tags.includes('NEWSLETTER')) {
+          return 'NL';
+        }
+        if (item?.kind === 'bundle') {
+          return 'SET';
+        }
+        const source = String(item?.name || '').trim();
+        const initials = source
+          .split(/\s+/)
+          .map((part) => part.replace(/[^A-Za-z0-9]/g, '').slice(0, 1).toUpperCase())
+          .filter(Boolean)
+          .slice(0, 3)
+          .join('');
+        return initials || (item?.kind === 'schedule' ? 'JOB' : 'API');
+      }
+
+      function getTemplateHeroLabel(item) {
+        if (item?.kind === 'bundle') {
+          return 'Komplettset';
+        }
+        return item?.kind === 'schedule' ? 'Scheduler' : 'Connector';
+      }
+
+      function getTemplatePreviewTitle(item) {
+        if (item?.kind === 'bundle') {
+          return 'Sofort einsatzbereit';
+        }
+        if (item?.kind === 'schedule') {
+          return 'Ablauf inklusive Timing';
+        }
+        return 'Verbindung vorkonfiguriert';
       }
 
       function isoToLocalDateTimeInput(value) {
@@ -1561,6 +2874,10 @@ function htmlShell(): string {
         return data;
       }
 
+      function getMigrationReportUrl(migrationId, asDownload) {
+        return withInstance('/api/migrations/' + encodeURIComponent(migrationId) + '/report' + (asDownload ? '?download=1' : ''));
+      }
+
       function isFileConnectorType(connectorType) {
         const normalized = String(connectorType || '').toLowerCase();
         return normalized.includes('file') || normalized.includes('csv') || normalized.includes('excel') || normalized.includes('xlsx') || normalized.includes('json');
@@ -1756,6 +3073,197 @@ function htmlShell(): string {
         return String(value || '').trim();
       }
 
+      function setTemplatePickerError(message) {
+        const element = document.getElementById('template-picker-error');
+        if (!element) {
+          return;
+        }
+        if (!message) {
+          element.textContent = '';
+          element.classList.add('d-none');
+          return;
+        }
+        element.textContent = String(message);
+        element.classList.remove('d-none');
+      }
+
+      function resolveTemplatePicker(selection) {
+        if (typeof templatePickerState.resolver === 'function') {
+          const resolver = templatePickerState.resolver;
+          templatePickerState.resolver = null;
+          resolver(selection || null);
+        }
+      }
+
+      function applySelectedTemplate() {
+        const selected = templatePickerState.items.find((item) => item.id === templatePickerState.selectedTemplateId) || null;
+        resolveTemplatePicker(selected);
+        templatePickerModal.hide();
+      }
+
+      function renderTemplatePicker() {
+        const list = document.getElementById('template-picker-list');
+        const tagsWrap = document.getElementById('template-picker-tags');
+        const summary = document.getElementById('template-picker-summary');
+        const applyButton = document.getElementById('template-picker-apply');
+        const searchInput = document.getElementById('template-picker-search');
+        if (!list || !tagsWrap || !summary || !applyButton || !searchInput) {
+          return;
+        }
+
+        const searchValue = String(searchInput.value || '').trim().toLowerCase();
+        const availableTags = Array.from(new Set(templatePickerState.items.flatMap((item) => Array.isArray(item.tags) ? item.tags : []).map((tag) => String(tag || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'de', { sensitivity: 'base' }));
+        if (templatePickerState.selectedTag && !availableTags.includes(templatePickerState.selectedTag)) {
+          templatePickerState.selectedTag = '';
+        }
+        tagsWrap.innerHTML = ['<button type="button" class="btn btn-sm ' + (templatePickerState.selectedTag ? 'btn-outline-secondary' : 'btn-secondary') + '" data-template-tag="">Alle</button>']
+          .concat(availableTags.map((tag) => '<button type="button" class="btn btn-sm ' + (templatePickerState.selectedTag === tag ? 'btn-secondary' : 'btn-outline-secondary') + '" data-template-tag="' + esc(tag) + '">' + esc(tag) + '</button>'))
+          .join('');
+        tagsWrap.querySelectorAll('[data-template-tag]').forEach((button) => {
+          button.addEventListener('click', () => {
+            templatePickerState.selectedTag = button.getAttribute('data-template-tag') || '';
+            renderTemplatePicker();
+          });
+        });
+
+        const filteredItems = templatePickerState.items.filter((item) => {
+          if (templatePickerState.selectedTag && !(Array.isArray(item.tags) && item.tags.includes(templatePickerState.selectedTag))) {
+            return false;
+          }
+          if (!searchValue) {
+            return true;
+          }
+          const haystack = [item.name, item.description, ...(Array.isArray(item.tags) ? item.tags : [])]
+            .map((value) => String(value || '').toLowerCase())
+            .join(' ');
+          return haystack.includes(searchValue);
+        });
+        templatePickerState.filteredItems = filteredItems;
+
+        if (!filteredItems.some((item) => item.id === templatePickerState.selectedTemplateId)) {
+          templatePickerState.selectedTemplateId = filteredItems[0]?.id || '';
+        }
+
+        summary.textContent = filteredItems.length
+          ? String(filteredItems.length) + ' Vorlagen verfügbar'
+          : 'Keine passende Vorlage gefunden.';
+        applyButton.disabled = !templatePickerState.selectedTemplateId;
+
+        list.innerHTML = filteredItems.length
+          ? '<div class="template-app-grid">' + filteredItems.map((item) => {
+              const isSelected = item.id === templatePickerState.selectedTemplateId;
+              const scopeLabel = item.scope === 'system' ? 'System' : 'Eigene Vorlage';
+              const kindLabel = item.kind === 'bundle' ? 'Komplettset' : (item.kind === 'connector' ? 'Connector' : 'Scheduler');
+              const accent = getTemplateAccent(item);
+              const symbol = getTemplateSymbol(item);
+              const heroLabel = getTemplateHeroLabel(item);
+              const tags = Array.isArray(item.tags) && item.tags.length
+                ? '<div class="template-app-card__tags">' + item.tags.slice(0, 5).map((tag) => '<span class="badge text-bg-light border">' + esc(tag) + '</span>').join('') + '</div>'
+                : '';
+              const previewTitle = getTemplatePreviewTitle(item);
+              return '<button type="button" class="template-app-card' + (isSelected ? ' is-selected' : '') + '" data-template-id="' + esc(item.id) + '">' +
+                '<div class="template-app-card__body">' +
+                  '<div class="template-app-card__top">' +
+                    '<div class="template-app-card__app">' +
+                      '<div class="template-app-card__icon" style="background:linear-gradient(135deg,' + accent.start + ',' + accent.end + ');">' +
+                        '<div class="template-app-card__glaze" style="background:' + accent.glaze + ';"></div>' +
+                        '<span class="template-app-card__symbol">' + esc(symbol) + '</span>' +
+                      '</div>' +
+                      '<div class="template-app-card__meta">' +
+                        '<div class="template-app-card__eyebrow">' + esc(heroLabel) + '</div>' +
+                        '<div class="template-app-card__title">' + esc(item.name) + '</div>' +
+                        '<div class="template-app-card__badges">' +
+                          '<span class="badge ' + (isSelected ? 'text-bg-primary' : 'text-bg-secondary-subtle border text-secondary-emphasis') + '">' + esc(scopeLabel) + '</span>' +
+                          '<span class="badge ' + (isSelected ? 'text-bg-info' : 'text-bg-info-subtle border text-info-emphasis') + '">' + esc(kindLabel) + '</span>' +
+                        '</div>' +
+                      '</div>' +
+                    '</div>' +
+                    '<span class="template-app-card__install">' + (isSelected ? 'Ausgewählt' : 'Öffnen') + '</span>' +
+                  '</div>' +
+                  '<div class="template-app-card__hero" style="background:linear-gradient(135deg,' + accent.start + ',' + accent.end + ');">' +
+                    '<div class="template-app-card__hero-art"></div>' +
+                    '<div class="template-app-card__hero-copy">' +
+                      '<div class="template-app-card__hero-label">' + esc(previewTitle) + '</div>' +
+                      '<div class="template-app-card__hero-name">' + esc(symbol) + ' · ' + esc(heroLabel) + '</div>' +
+                    '</div>' +
+                  '</div>' +
+                  '<div class="template-app-card__description">' + esc(item.description || 'Keine Beschreibung') + '</div>' +
+                  '<div class="template-app-card__footer">' +
+                    tags +
+                  '</div>' +
+                '</div>' +
+              '</button>';
+            }).join('') + '</div>'
+          : '<div class="text-secondary small border rounded p-3">Keine Vorlagen gefunden.</div>';
+
+        list.querySelectorAll('[data-template-id]').forEach((button) => {
+          button.addEventListener('click', () => {
+            templatePickerState.selectedTemplateId = button.getAttribute('data-template-id') || '';
+            renderTemplatePicker();
+          });
+          button.addEventListener('dblclick', () => {
+            applySelectedTemplate();
+          });
+        });
+      }
+
+      async function pickTemplate(kind) {
+        setTemplatePickerError('');
+        document.getElementById('template-picker-title').textContent = (kind === 'connector' ? 'Connector' : 'Scheduler') + '-Vorlage wählen';
+        document.getElementById('template-picker-search').value = '';
+        templatePickerState.kind = kind;
+        templatePickerState.items = [];
+        templatePickerState.filteredItems = [];
+        templatePickerState.selectedTemplateId = '';
+        templatePickerState.selectedTag = '';
+
+        const result = await requestJson('/api/templates?kind=' + encodeURIComponent(kind), null);
+        templatePickerState.items = Array.isArray(result.items) ? result.items : [];
+        if (!templatePickerState.items.length) {
+          window.alert((kind === 'connector' ? 'Connector' : 'Scheduler') + '-Vorlagen sind noch nicht vorhanden.');
+          return null;
+        }
+
+        templatePickerState.selectedTemplateId = templatePickerState.items[0]?.id || '';
+        renderTemplatePicker();
+        templatePickerModal.show();
+
+        return await new Promise((resolve) => {
+          templatePickerState.resolver = resolve;
+        });
+      }
+
+      async function createFromTemplate(kind) {
+        const template = await pickTemplate(kind);
+        if (!template) {
+          return;
+        }
+
+        if (template.kind === 'bundle') {
+          const result = await requestJson('/api/templates/' + encodeURIComponent(template.id) + '/apply', {
+            method: 'POST'
+          });
+          await refresh();
+          if (kind === 'schedule' && result.schedule?.id) {
+            await openScheduleModal(result.schedule.id);
+            return;
+          }
+          if (result.connector?.id) {
+            openConnectorModal(result.connector.id);
+            return;
+          }
+          window.alert('Komplettvorlage angelegt.');
+          return;
+        }
+
+        if (kind === 'schedule') {
+          await openScheduleModal('', template.schedule || {});
+          return;
+        }
+
+        openConnectorModal('', template.connector || {});
+      }
+
       function formatDate(dateString, format) {
         if (!dateString) return '-';
         try {
@@ -1775,9 +3283,13 @@ function htmlShell(): string {
         return connector ? connector.name : connectorId;
       }
 
+      function normalizeRunStatus(status) {
+        return String(status || '').trim().toLowerCase();
+      }
+
       function getStatusBadge(status) {
         if (!status) return '<span class="badge bg-secondary">Unbekannt</span>';
-        const lowerStatus = String(status).toLowerCase();
+        const lowerStatus = normalizeRunStatus(status);
         if (lowerStatus === 'success' || lowerStatus === 'succeeded') {
           return '<span class="badge bg-success">✓ Erfolg</span>';
         }
@@ -1827,7 +3339,7 @@ function htmlShell(): string {
         const text = String(value || '').trim();
         if (!text) return [];
 
-        const words = text.split(/\s+/).filter(Boolean);
+        const words = text.split(/\\s+/).filter(Boolean);
         const lines = [];
         let currentLine = '';
 
@@ -1859,6 +3371,55 @@ function htmlShell(): string {
           const visibleLines = lines.slice(0, maxLines);
           const lastIndex = visibleLines.length - 1;
           visibleLines[lastIndex] = visibleLines[lastIndex].slice(0, Math.max(0, maxChars - 1)).trimEnd() + '…';
+          return visibleLines;
+        }
+
+        return lines;
+      }
+
+      function splitGraphTextByLine(value, lineCharLimits) {
+        const text = String(value || '').trim();
+        const limits = Array.isArray(lineCharLimits) ? lineCharLimits.map((item) => Math.max(1, Number(item) || 1)) : [];
+        if (!text || !limits.length) return splitGraphText(text, 18, 2);
+
+        const words = text.split(/\\s+/).filter(Boolean);
+        const lines = [];
+        let currentLine = '';
+        let lineIndex = 0;
+
+        words.forEach((word) => {
+          const currentLimit = limits[Math.min(lineIndex, limits.length - 1)];
+          const candidate = currentLine ? currentLine + ' ' + word : word;
+          if (candidate.length <= currentLimit) {
+            currentLine = candidate;
+            return;
+          }
+
+          if (currentLine) {
+            lines.push(currentLine);
+            lineIndex += 1;
+          }
+
+          const nextLimit = limits[Math.min(lineIndex, limits.length - 1)];
+          if (word.length <= nextLimit) {
+            currentLine = word;
+            return;
+          }
+
+          lines.push(word.slice(0, Math.max(1, nextLimit - 1)).trimEnd() + '…');
+          currentLine = '';
+          lineIndex += 1;
+        });
+
+        if (currentLine) {
+          lines.push(currentLine);
+        }
+
+        if (lines.length > limits.length) {
+          const visibleLines = lines.slice(0, limits.length);
+          const lastIndex = visibleLines.length - 1;
+          const lastLimit = limits[lastIndex] || limits[limits.length - 1] || 18;
+          visibleLines[lastIndex] = visibleLines[lastIndex].slice(0, Math.max(1, lastLimit - 1)).trimEnd() + '…';
           return visibleLines;
         }
 
@@ -1909,6 +3470,36 @@ function htmlShell(): string {
         return used + '/' + max + (unit ? ' ' + unit : '') + ' (' + percentage + '%, frei ' + remaining + ')';
       }
 
+      function resolveUsagePercentage(value) {
+        if (!value || !Number.isFinite(value.max) || value.max <= 0) {
+          return 0;
+        }
+        const max = Number(value.max);
+        const used = Number(value.used || 0);
+        return Math.max(0, Math.min(100, Math.round((used / max) * 100)));
+      }
+
+      function renderLimitGauge(gaugeId, valueId, usage) {
+        const gauge = document.getElementById(gaugeId);
+        const valueEl = document.getElementById(valueId);
+        if (!gauge || !valueEl) {
+          return;
+        }
+
+        if (!usage || !Number.isFinite(usage.max) || usage.max <= 0) {
+          gauge.style.setProperty('--gauge-value', '0');
+          gauge.classList.remove('is-warning', 'is-danger');
+          valueEl.textContent = '-';
+          return;
+        }
+
+        const percentage = resolveUsagePercentage(usage);
+        gauge.style.setProperty('--gauge-value', String(percentage));
+        gauge.classList.toggle('is-warning', percentage >= 70 && percentage < 90);
+        gauge.classList.toggle('is-danger', percentage >= 90);
+        valueEl.textContent = percentage + '%';
+      }
+
       function renderSalesforceOverview(overview) {
         state.salesforceOverview = overview || null;
 
@@ -1925,6 +3516,10 @@ function htmlShell(): string {
         setText('sf-data-storage', formatUsageBlock(overview?.dataStorageMb, 'MB'));
         setText('sf-file-storage', formatUsageBlock(overview?.fileStorageMb, 'MB'));
         setText('sf-licenses', formatUsageBlock(overview?.licenses));
+        renderLimitGauge('sf-api-gauge', 'sf-api-gauge-value', overview?.apiUsage);
+        renderLimitGauge('sf-data-gauge', 'sf-data-gauge-value', overview?.dataStorageMb);
+        renderLimitGauge('sf-file-gauge', 'sf-file-gauge-value', overview?.fileStorageMb);
+        renderLimitGauge('sf-license-gauge', 'sf-license-gauge-value', overview?.licenses);
       }
 
       function ensureSalesforceTargetDefinition() {
@@ -2812,12 +4407,36 @@ function htmlShell(): string {
       function updateSourceQueryAssist() {
         const sourceType = document.getElementById('sch-source-type').value;
         const sourceDefinition = document.getElementById('sch-source-definition').value;
+        const deltaWrap = document.getElementById('sch-source-delta-wrap');
+        const deltaHelp = document.getElementById('sch-source-delta-help');
+        const deltaStrategy = document.getElementById('sch-source-delta-strategy').value;
+        const deltaField = document.getElementById('sch-source-delta-field').value;
+        const afterExportValue = String(document.getElementById('sch-source-after-export').value || '').trim();
+        const afterExportWrap = document.getElementById('sch-source-after-export-wrap');
         const highlightWrap = document.getElementById('sch-source-sql-highlight-wrap');
         const highlight = document.getElementById('sch-source-sql-highlight');
         const status = document.getElementById('sch-source-test-status');
         const isSql = sourceType === 'MSSQL_SQL';
         const isFile = sourceType === 'FILE_CSV' || sourceType === 'FILE_EXCEL' || sourceType === 'FILE_JSON';
         const isRest = sourceType === 'REST_API';
+        const supportsDelta = isSql || sourceType === 'SALESFORCE_SOQL';
+        const supportsAfterExport = sourceType === 'SALESFORCE_SOQL';
+
+        deltaWrap.classList.toggle('d-none', !supportsDelta);
+        afterExportWrap.classList.toggle('d-none', !supportsAfterExport);
+        if (supportsDelta) {
+          const normalizedDeltaField = String(deltaField || '').trim().toLowerCase();
+          const usesMutableSalesforceTimestamp = sourceType === 'SALESFORCE_SOQL'
+            && deltaStrategy === 'datetime'
+            && (normalizedDeltaField === 'lastmodifieddate' || normalizedDeltaField === 'systemmodstamp')
+            && !!afterExportValue;
+
+          deltaHelp.textContent = usesMutableSalesforceTimestamp
+            ? 'Warnung: After Export plus LastModifiedDate/SystemModstamp fuehrt auf demselben Salesforce-Objekt leicht zu Wiederholungsschleifen. Fuer produktive Exporte besser ID oder ein separates fachliches Delta-Feld verwenden.'
+            : deltaStrategy && deltaField.trim()
+              ? 'Delta aktiv: ' + deltaStrategy + ' auf Feld ' + deltaField.trim() + '. Der letzte Wert wird nach jedem Lauf gespeichert.'
+              : 'Optional: Delta-Lauf ueber ein Feld aktivieren. Unterstuetzt Datum, Timestamp und ID.';
+        }
 
         highlightWrap.classList.toggle('d-none', !isSql);
         if (isSql) {
@@ -2836,6 +4455,82 @@ function htmlShell(): string {
           highlight.textContent = '';
           status.textContent = 'Es werden bis zu 10 Datensätze angezeigt.';
         }
+      }
+
+      function parseScheduleSourceDefinition(sourceType, rawDefinition) {
+        const trimmed = String(rawDefinition || '').trim();
+        if ((sourceType !== 'MSSQL_SQL' && sourceType !== 'SALESFORCE_SOQL') || !trimmed) {
+          return { queryText: trimmed, deltaStrategy: '', deltaField: '', afterExportText: '' };
+        }
+
+        try {
+          const parsed = JSON.parse(trimmed);
+          const queryText = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? String(parsed.queryText || parsed.soql || parsed.query || '').trim()
+            : '';
+          if (queryText) {
+            const afterExportEntries = parsed.afterExport && typeof parsed.afterExport === 'object' && !Array.isArray(parsed.afterExport)
+              ? Object.entries(parsed.afterExport).map(([key, value]) => String(key || '').trim() && String(value || '').trim() ? String(key).trim() + '=' + String(value).trim() : '').filter(Boolean)
+              : [];
+            return {
+              queryText,
+              deltaStrategy: String(parsed.delta && parsed.delta.strategy || '').trim(),
+              deltaField: String(parsed.delta && parsed.delta.field || '').trim(),
+              afterExportText: afterExportEntries.join(',')
+            };
+          }
+        } catch {
+          // Backward compatible: plain query text.
+        }
+
+        return { queryText: trimmed, deltaStrategy: '', deltaField: '', afterExportText: '' };
+      }
+
+      function parseAfterExportAssignments(rawValue) {
+        return String(rawValue || '').split(',').map((entry) => entry.trim()).filter(Boolean).reduce((acc, entry) => {
+          const separatorIndex = entry.indexOf('=');
+          if (separatorIndex <= 0) {
+            return acc;
+          }
+          const fieldName = entry.slice(0, separatorIndex).trim();
+          const fieldValue = entry.slice(separatorIndex + 1).trim();
+          if (fieldName && fieldValue) {
+            acc[fieldName] = fieldValue;
+          }
+          return acc;
+        }, {});
+      }
+
+      function buildScheduleSourceDefinitionValue() {
+        const sourceType = document.getElementById('sch-source-type').value;
+        const queryText = String(document.getElementById('sch-source-definition').value || '').trim();
+        if (sourceType !== 'MSSQL_SQL' && sourceType !== 'SALESFORCE_SOQL') {
+          return queryText || undefined;
+        }
+
+        const deltaStrategy = String(document.getElementById('sch-source-delta-strategy').value || '').trim().toLowerCase();
+        const deltaField = String(document.getElementById('sch-source-delta-field').value || '').trim();
+        const afterExportUpdates = sourceType === 'SALESFORCE_SOQL'
+          ? parseAfterExportAssignments(document.getElementById('sch-source-after-export').value)
+          : {};
+        if ((!deltaStrategy || !deltaField) && !Object.keys(afterExportUpdates).length) {
+          return queryText || undefined;
+        }
+
+        const definition = {
+          queryText
+        };
+        if (deltaStrategy && deltaField) {
+          definition.delta = {
+            strategy: deltaStrategy,
+            field: deltaField
+          };
+        }
+        if (Object.keys(afterExportUpdates).length) {
+          definition.afterExport = afterExportUpdates;
+        }
+
+        return JSON.stringify(definition, null, 2);
       }
 
       async function safeRequest(path, fallback) {
@@ -2858,37 +4553,73 @@ function htmlShell(): string {
         }
 
         const labels = (summary?.buckets || []).map((item) => item.label);
-        const totals = (summary?.buckets || []).map((item) => item.total || 0);
-        const errors = (summary?.buckets || []).map((item) => item.errors || 0);
+        const connectorTotals = (Array.isArray(summary?.connectors) ? summary.connectors : [])
+          .map((connectorName) => ({
+            connectorName,
+            total: (summary?.buckets || []).reduce((sum, item) => sum + Number(item?.connectorErrors?.[connectorName] || 0), 0)
+          }))
+          .filter((item) => item.total > 0)
+          .sort((left, right) => right.total - left.total);
+        const primaryConnectors = connectorTotals.slice(0, MAX_LOG_CONNECTOR_SERIES).map((item) => item.connectorName);
+        const remainingConnectors = connectorTotals.slice(MAX_LOG_CONNECTOR_SERIES).map((item) => item.connectorName);
+        const palette = [
+          'rgba(208, 73, 73, 1)',
+          'rgba(43, 122, 184, 1)',
+          'rgba(31, 125, 87, 1)',
+          'rgba(194, 106, 45, 1)',
+          'rgba(123, 94, 167, 1)',
+          'rgba(39, 145, 132, 1)',
+          'rgba(153, 72, 122, 1)',
+          'rgba(93, 110, 126, 1)'
+        ];
+        const datasets = primaryConnectors.map((connectorName, index) => ({
+          label: connectorName,
+          connectorName,
+          data: (summary?.buckets || []).map((item) => Number(item?.connectorErrors?.[connectorName] || 0)),
+          backgroundColor: palette[index % palette.length].replace(', 1)', ', 0.14)'),
+          borderColor: palette[index % palette.length],
+          borderWidth: 2,
+          tension: 0.35,
+          fill: false,
+          pointRadius: 2,
+          pointHoverRadius: 4
+        })).filter((dataset) => dataset.data.some((value) => value > 0));
+
+        if (remainingConnectors.length) {
+          datasets.push({
+            label: 'Sonstige',
+            connectorName: '',
+            data: (summary?.buckets || []).map((item) => remainingConnectors.reduce((sum, connectorName) => sum + Number(item?.connectorErrors?.[connectorName] || 0), 0)),
+            backgroundColor: 'rgba(93, 110, 126, 0.12)',
+            borderColor: 'rgba(93, 110, 126, 0.92)',
+            borderWidth: 2,
+            tension: 0.35,
+            fill: false,
+            pointRadius: 2,
+            pointHoverRadius: 4
+          });
+        }
+
+        if (!datasets.length) {
+          datasets.push({
+            label: 'Keine Fehler',
+            connectorName: '',
+            data: labels.map(() => 0),
+            backgroundColor: 'rgba(93, 110, 126, 0.12)',
+            borderColor: 'rgba(93, 110, 126, 0.85)',
+            borderWidth: 2,
+            tension: 0.35,
+            fill: false,
+            pointRadius: 2,
+            pointHoverRadius: 4
+          });
+        }
 
         logsChart = new window.Chart(canvas, {
           type: 'line',
           data: {
             labels,
-            datasets: [
-              {
-                label: 'Logs',
-                data: totals,
-                backgroundColor: 'rgba(62, 137, 189, 0.16)',
-                borderColor: 'rgba(62, 137, 189, 1)',
-                borderWidth: 2,
-                tension: 0.35,
-                fill: false,
-                pointRadius: 2,
-                pointHoverRadius: 4
-              },
-              {
-                label: 'Fehler',
-                data: errors,
-                backgroundColor: 'rgba(208, 73, 73, 0.16)',
-                borderColor: 'rgba(208, 73, 73, 1)',
-                borderWidth: 2,
-                tension: 0.35,
-                fill: false,
-                pointRadius: 2,
-                pointHoverRadius: 4
-              }
-            ]
+            datasets
           },
           options: {
             responsive: true,
@@ -2899,8 +4630,12 @@ function htmlShell(): string {
               }
             },
             scales: {
+              x: {
+                stacked: false
+              },
               y: {
                 beginAtZero: true,
+                stacked: false,
                 ticks: {
                   precision: 0
                 }
@@ -2917,8 +4652,8 @@ function htmlShell(): string {
                 return;
               }
 
-              const logType = point.datasetIndex === 1 ? 'error' : 'all';
-              await openLogsByBucket(bucket, logType);
+              const connectorName = logsChart?.data?.datasets?.[point.datasetIndex]?.connectorName || '';
+              await openLogsByBucket(bucket, 'error', connectorName);
             }
           }
         });
@@ -2996,6 +4731,15 @@ function htmlShell(): string {
         });
       }
 
+      function isEmptyLogSummary(summary) {
+        const buckets = Array.isArray(summary?.buckets) ? summary.buckets : [];
+        const connectors = Array.isArray(summary?.connectors) ? summary.connectors : [];
+        if (connectors.length > 0) {
+          return false;
+        }
+        return !buckets.some((bucket) => Number(bucket?.errors || 0) > 0);
+      }
+
       async function loadLogSummary() {
         const range = document.getElementById('log-chart-range').value || 'last_24h';
         try {
@@ -3003,7 +4747,18 @@ function htmlShell(): string {
         } catch {
           // Ignore storage errors in restricted browser contexts.
         }
-        const summary = await safeRequest('/api/logs/summary?range=' + encodeURIComponent(range), { range, buckets: [] });
+        let summary = await safeRequest('/api/logs/summary?range=' + encodeURIComponent(range), { range, buckets: [], connectors: [] });
+        if (isEmptyLogSummary(summary)) {
+          const retryDelaysMs = [750, 1500, 2500];
+          for (const delayMs of retryDelaysMs) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            const retried = await safeRequest('/api/logs/summary?range=' + encodeURIComponent(range), summary);
+            if (!isEmptyLogSummary(retried)) {
+              summary = retried;
+              break;
+            }
+          }
+        }
         state.logSummary = summary;
         renderLogChart(summary);
       }
@@ -3209,6 +4964,114 @@ function htmlShell(): string {
         renderConnectorWizardStep();
       }
 
+      function getScheduleWizardTotalSteps() {
+        return 5;
+      }
+
+      function renderScheduleWizardStep() {
+        const currentStep = Math.max(1, Math.min(getScheduleWizardTotalSteps(), Number(state.scheduleWizardStep) || 1));
+        state.scheduleWizardStep = currentStep;
+
+        document.querySelectorAll('[data-sch-step-panel]').forEach((panel) => {
+          const step = Number(panel.getAttribute('data-sch-step-panel') || '0');
+          const isActive = step === currentStep;
+          panel.classList.toggle('show', isActive);
+          panel.classList.toggle('active', isActive);
+          panel.classList.toggle('d-none', !isActive);
+        });
+
+        document.querySelectorAll('#sch-wizard-steps [data-sch-step]').forEach((button) => {
+          const step = Number(button.getAttribute('data-sch-step') || '0');
+          button.classList.toggle('is-active', step === currentStep);
+          button.classList.toggle('is-complete', step < currentStep);
+        });
+
+        const backButton = document.getElementById('sch-wizard-back');
+        const nextButton = document.getElementById('sch-wizard-next');
+        const saveButton = document.getElementById('save-schedule');
+        const hint = document.getElementById('sch-wizard-hint');
+        if (backButton) {
+          backButton.disabled = currentStep === 1;
+        }
+        if (nextButton) {
+          nextButton.classList.toggle('d-none', currentStep >= getScheduleWizardTotalSteps());
+        }
+        if (saveButton) {
+          saveButton.classList.toggle('d-none', currentStep !== getScheduleWizardTotalSteps());
+        }
+        if (hint) {
+          const labels = {
+            1: 'Basisdaten und Einordnung des Schedulers.',
+            2: 'Quelle auswählen, Delta konfigurieren und Vorschau testen.',
+            3: 'Zielsystem, Objekt und technische Zieldefinition festlegen.',
+            4: 'Zeitsteuerung festlegen oder vom Parent übernehmen.',
+            5: 'Mapping prüfen und den Scheduler speichern.'
+          };
+          hint.textContent = 'Assistent aktiv: ' + (labels[currentStep] || 'Scheduler Schritt für Schritt konfigurieren.');
+        }
+      }
+
+      function validateScheduleWizardStep(step) {
+        clearModalError();
+
+        if (step === 1) {
+          if (!String(document.getElementById('sch-name')?.value || '').trim()) {
+            throw new Error('Bitte einen Namen für den Scheduler eingeben.');
+          }
+          if (!String(document.getElementById('sch-connector')?.value || '').trim()) {
+            throw new Error('Bitte einen Connector auswählen.');
+          }
+          return;
+        }
+
+        if (step === 2) {
+          if (!String(document.getElementById('sch-source-type')?.value || '').trim()) {
+            throw new Error('Bitte einen Source Type wählen.');
+          }
+          if (!String(document.getElementById('sch-source-definition')?.value || '').trim()) {
+            throw new Error('Bitte eine Source Definition oder Abfrage angeben.');
+          }
+          return;
+        }
+
+        if (step === 3) {
+          if (!String(document.getElementById('sch-target-type')?.value || '').trim()) {
+            throw new Error('Bitte einen Target Type wählen.');
+          }
+          if (!String(document.getElementById('sch-object')?.value || '').trim()) {
+            throw new Error('Bitte ein Zielobjekt wählen.');
+          }
+          if (!String(document.getElementById('sch-operation')?.value || '').trim()) {
+            throw new Error('Bitte eine Operation wählen.');
+          }
+          return;
+        }
+
+        if (step === 4 && !document.getElementById('sch-inherit-parent-timing')?.checked) {
+          const hasWeekday = Array.from(document.querySelectorAll('#sch-weekdays input')).some((input) => input.checked);
+          if (!hasWeekday) {
+            throw new Error('Bitte mindestens einen Wochentag für die Zeitsteuerung auswählen.');
+          }
+          if (!String(document.getElementById('sch-timing-time')?.value || '').trim()) {
+            throw new Error('Bitte eine Uhrzeit für die Zeitsteuerung wählen.');
+          }
+        }
+      }
+
+      function goToScheduleWizardStep(nextStep) {
+        state.scheduleWizardStep = Math.max(1, Math.min(getScheduleWizardTotalSteps(), nextStep));
+        renderScheduleWizardStep();
+      }
+
+      function advanceScheduleWizardStep() {
+        try {
+          validateScheduleWizardStep(state.scheduleWizardStep);
+          goToScheduleWizardStep(state.scheduleWizardStep + 1);
+        } catch (error) {
+          showModalError(error?.message || 'Schritt konnte nicht abgeschlossen werden.');
+        }
+      }
+
       function advanceConnectorWizardStep() {
         try {
           validateConnectorWizardStep(state.connectorWizardStep);
@@ -3218,22 +5081,24 @@ function htmlShell(): string {
         }
       }
 
-      async function openLogsByBucket(bucket, type) {
+      async function openLogsByBucket(bucket, type, connectorName) {
         const path = '/api/logs?start=' + encodeURIComponent(bucket.start) +
           '&end=' + encodeURIComponent(bucket.end) +
           '&type=' + encodeURIComponent(type) +
+          '&connector=' + encodeURIComponent(connectorName || '') +
           '&limit=300';
 
         const result = await safeRequest(path, { items: [] });
         const rows = result.items || [];
         document.getElementById('logs-modal-title').textContent =
           'Logliste ' + (type === 'error' ? '(Fehler)' : '(Alle)') +
+          (connectorName ? ' | ' + connectorName : '') +
           ' | ' + new Date(bucket.start).toLocaleString('de-DE') +
           ' - ' + new Date(bucket.end).toLocaleString('de-DE');
 
         const body = document.getElementById('logs-modal-body');
         if (!rows.length) {
-          body.innerHTML = '<tr><td colspan="5" class="text-secondary p-3">Keine Logs in diesem Zeitraum.</td></tr>';
+          body.innerHTML = '<tr><td colspan="6" class="text-secondary p-3">Keine Logs in diesem Zeitraum.</td></tr>';
           logsModal.show();
           return;
         }
@@ -3242,7 +5107,8 @@ function htmlShell(): string {
           '<tr>' +
             '<td>' + esc(entry.createdAt ? new Date(entry.createdAt).toLocaleString('de-DE') : '-') + '</td>' +
             '<td>' + esc(entry.level || '-') + '</td>' +
-            '<td>' + esc(entry.scheduleName || '-') + '</td>' +
+            '<td>' + esc(entry.connectorName || '-') + '</td>' +
+            '<td>' + esc(entry.connectorName || entry.scheduleName || '-') + '</td>' +
             '<td>' + esc(entry.step || '-') + '</td>' +
             '<td>' + esc(entry.message || '-') + '</td>' +
           '</tr>'
@@ -3378,6 +5244,7 @@ function htmlShell(): string {
           return !Number.isNaN(startedAt.getTime()) && startedAt >= rangeStart;
         });
         const schedules = Array.isArray(state.schedules) ? state.schedules : [];
+        const migrations = Array.isArray(state.migrations) ? state.migrations : [];
         const normalizeStatus = (value) => String(value || '').trim().toLowerCase();
 
         const successCount = scopedRuns.filter((run) => normalizeStatus(run.status) === 'success').length;
@@ -3401,6 +5268,29 @@ function htmlShell(): string {
           .filter((run) => run && run.startedAt)
           .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())[0];
 
+        const sqliteObjects = migrations
+          .flatMap((migration) => Array.isArray(migration?.objects) ? migration.objects : [])
+          .filter((obj) => String(obj?.processingMode || obj?.stagingMode || '').trim().toLowerCase() === 'sqlite');
+        const sqliteStatusTotals = sqliteObjects.reduce((totals, obj) => {
+          const summary = obj && obj.statusSummary && typeof obj.statusSummary === 'object' ? obj.statusSummary : null;
+          if (summary) {
+            Object.entries(summary).forEach(([key, value]) => {
+              const normalizedKey = String(key || '').trim().toLowerCase();
+              totals[normalizedKey] = Number(totals[normalizedKey] || 0) + (Number(value || 0) || 0);
+            });
+            return totals;
+          }
+
+          const fallbackStatus = String(obj?.stagingStatus || '').trim().toLowerCase();
+          if (fallbackStatus) {
+            totals[fallbackStatus] = Number(totals[fallbackStatus] || 0) + 1;
+          }
+          return totals;
+        }, {});
+        const sqlitePendingCount = Number(sqliteStatusTotals.pending || 0) + Number(sqliteStatusTotals.ready || 0);
+        const sqliteSuccessCount = Number(sqliteStatusTotals.success || 0) + Number(sqliteStatusTotals.done || 0);
+        const sqliteErrorCount = Number(sqliteStatusTotals.mapping_error || 0) + Number(sqliteStatusTotals.salesforce_error || 0) + Number(sqliteStatusTotals.error || 0);
+
         const successRateLabel = document.getElementById('kpi-success-rate');
         const errorRateLabel = document.getElementById('kpi-error-rate');
         const successRateBar = document.getElementById('kpi-success-rate-bar');
@@ -3414,6 +5304,10 @@ function htmlShell(): string {
         const averageRunDuration = document.getElementById('kpi-average-run-duration');
         const autoDisabledCounter = document.getElementById('kpi-auto-disabled-count');
         const lastRunAt = document.getElementById('kpi-last-run-at');
+        const sqliteObjectsCounter = document.getElementById('kpi-sqlite-objects');
+        const sqlitePendingCounter = document.getElementById('kpi-sqlite-pending');
+        const sqliteSuccessCounter = document.getElementById('kpi-sqlite-success');
+        const sqliteErrorsCounter = document.getElementById('kpi-sqlite-errors');
 
         const updateKpiTrend = (elementId, delta, positiveWhenUp, neutralText) => {
           const element = document.getElementById(elementId);
@@ -3487,6 +5381,18 @@ function htmlShell(): string {
         }
         if (lastRunAt) {
           lastRunAt.textContent = latestRun ? formatDate(latestRun.startedAt, 'short') : '-';
+        }
+        if (sqliteObjectsCounter) {
+          sqliteObjectsCounter.textContent = String(sqliteObjects.length);
+        }
+        if (sqlitePendingCounter) {
+          sqlitePendingCounter.textContent = String(sqlitePendingCount);
+        }
+        if (sqliteSuccessCounter) {
+          sqliteSuccessCounter.textContent = String(sqliteSuccessCount);
+        }
+        if (sqliteErrorsCounter) {
+          sqliteErrorsCounter.textContent = String(sqliteErrorCount);
         }
 
         renderRecordsTrendChart(scopedRuns);
@@ -3811,7 +5717,8 @@ function htmlShell(): string {
           '<td>' + esc((item.parameterKeys || []).join(', ') || '-') + '</td>' +
           '<td>' +
             '<button class="btn btn-sm btn-outline-primary me-1" data-edit-connector="' + esc(item.id) + '">Edit</button>' +
-            '<button class="btn btn-sm btn-outline-secondary" data-test-connector="' + esc(item.id) + '">Test</button>' +
+            '<button class="btn btn-sm btn-outline-secondary me-1" data-test-connector="' + esc(item.id) + '">Test</button>' +
+            '<button class="btn btn-sm btn-outline-danger" data-delete-connector="' + esc(item.id) + '">Del</button>' +
           '</td>' +
           '</tr>'
         ).join('');
@@ -3827,6 +5734,27 @@ function htmlShell(): string {
           });
         });
 
+        body.querySelectorAll('button[data-delete-connector]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            const connectorId = button.getAttribute('data-delete-connector');
+            if (!connectorId) {
+              return;
+            }
+
+            const connector = (state.connectors || []).find((item) => item.id === connectorId);
+            const linkedSchedules = (state.schedules || []).filter((item) => item.connectorId === connectorId);
+            const confirmed = window.confirm(
+              'Connector "' + (connector?.name || connectorId) + '" löschen? Zugeordnete Scheduler werden ebenfalls entfernt (' + linkedSchedules.length + ').'
+            );
+            if (!confirmed) {
+              return;
+            }
+
+            await requestJson('/api/connectors/' + encodeURIComponent(connectorId), { method: 'DELETE' });
+            await refresh();
+          });
+        });
+
         // Re-initialize table filters
         setTimeout(() => initializeTableFilters(), 100);
       }
@@ -3835,18 +5763,25 @@ function htmlShell(): string {
         const body = document.getElementById('runs-body');
         const select = document.getElementById('log-run-select');
         if (!state.runs.length) {
-          body.innerHTML = '<tr><td colspan="4" class="text-secondary">Keine Runs gefunden.</td></tr>';
+          body.innerHTML = '<tr><td colspan="5" class="text-secondary">Keine Runs gefunden.</td></tr>';
           select.innerHTML = '<option value="">Keine Runs</option>';
           return;
         }
 
         body.innerHTML = state.runs.map((item) =>
-          '<tr>' +
-          '<td class="text-truncate" title="' + esc(item.scheduleName || item.scheduleId || '-') + '">' + esc(item.scheduleName || item.scheduleId || '-') + '</td>' +
-          '<td>' + getStatusBadge(item.status) + '</td>' +
-          '<td>' + esc((item.recordsSucceeded ?? 0) + ' ok / ' + (item.recordsFailed ?? 0) + ' fail') + '</td>' +
-          '<td><button class="btn btn-sm btn-outline-primary" data-log-run="' + esc(item.id) + '">Logs</button></td>' +
-          '</tr>'
+          (function() {
+            const canCancel = String(item.status || '') === 'Running';
+            const actionMarkup = canCancel
+              ? '<button class="btn btn-sm btn-outline-danger" data-cancel-run="' + esc(item.id) + '">Abbrechen</button>'
+              : '<span class="text-secondary small">-</span>';
+            return '<tr>' +
+              '<td class="text-truncate" title="' + esc(item.scheduleName || item.scheduleId || '-') + '">' + esc(item.scheduleName || item.scheduleId || '-') + '</td>' +
+              '<td>' + getStatusBadge(item.status) + '</td>' +
+              '<td>' + esc((item.recordsSucceeded ?? 0) + ' ok / ' + (item.recordsFailed ?? 0) + ' fail') + '</td>' +
+              '<td><button class="btn btn-sm btn-outline-primary" data-log-run="' + esc(item.id) + '">Logs</button></td>' +
+              '<td>' + actionMarkup + '</td>' +
+              '</tr>';
+          })()
         ).join('');
 
         select.innerHTML = state.runs.map((item) => '<option value="' + esc(item.id) + '">' + esc(item.scheduleName || item.id) + '</option>').join('');
@@ -3855,6 +5790,80 @@ function htmlShell(): string {
           button.addEventListener('click', async () => {
             select.value = button.getAttribute('data-log-run');
             await loadLogs();
+          });
+        });
+
+        body.querySelectorAll('button[data-cancel-run]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            const runId = button.getAttribute('data-cancel-run');
+            if (!runId) {
+              return;
+            }
+            const run = (state.runs || []).find((item) => item.id === runId);
+            const label = run?.scheduleName || runId;
+            if (!confirm('Laufenden Run für ' + label + ' wirklich abbrechen?')) {
+              return;
+            }
+            try {
+              await requestJson('/api/runs/' + encodeURIComponent(runId) + '/cancel', {
+                method: 'POST'
+              });
+              await refresh({ refreshChart: false });
+            } catch (error) {
+              showError(error.message || 'Run konnte nicht abgebrochen werden');
+            }
+          });
+        });
+      }
+
+      function formatRunAgeMinutes(ageMinutes) {
+        const totalMinutes = Math.max(0, Number(ageMinutes) || 0);
+        if (totalMinutes >= 60 * 24) {
+          const days = Math.floor(totalMinutes / (60 * 24));
+          const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+          return days + 'd ' + hours + 'h';
+        }
+        if (totalMinutes >= 60) {
+          const hours = Math.floor(totalMinutes / 60);
+          const minutes = totalMinutes % 60;
+          return hours + 'h ' + minutes + 'm';
+        }
+        return totalMinutes + ' min';
+      }
+
+      function renderStaleRuns() {
+        const body = document.getElementById('stale-runs-body');
+        if (!body) {
+          return;
+        }
+
+        const staleRuns = Array.isArray(state.staleRuns) ? state.staleRuns : [];
+        if (!staleRuns.length) {
+          body.innerHTML = '<tr><td colspan="4" class="text-secondary">Keine stale Runs gefunden.</td></tr>';
+          return;
+        }
+
+        body.innerHTML = staleRuns.map((item) =>
+          '<tr>' +
+          '<td class="text-truncate" title="' + esc(item.scheduleName || item.scheduleId || item.id) + '">' + esc(item.scheduleName || item.scheduleId || item.id) + '</td>' +
+          '<td>' + esc(formatDate(item.startedAt, 'short')) + '</td>' +
+          '<td><span class="badge text-bg-warning">' + esc(formatRunAgeMinutes(item.ageMinutes)) + '</span></td>' +
+          '<td><button class="btn btn-sm btn-outline-danger" data-release-stale-run="' + esc(item.id) + '">Freigeben</button></td>' +
+          '</tr>'
+        ).join('');
+
+        body.querySelectorAll('button[data-release-stale-run]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            try {
+              await requestJson('/api/runs/release-stale', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ runIds: [button.getAttribute('data-release-stale-run')] })
+              });
+              await refresh({ refreshChart: false });
+            } catch (error) {
+              showError(error.message || 'Stale Run konnte nicht freigegeben werden');
+            }
           });
         });
       }
@@ -4123,6 +6132,63 @@ function htmlShell(): string {
           const visibleScheduleCount = nodes.filter((node) => node.kind === 'scheduler').length;
           visibleScheduleCountElement.textContent = String(visibleScheduleCount) + ' Scheduler sichtbar';
         }
+        const latestRunByScheduleId = new Map();
+        (state.runs || []).forEach((run) => {
+          const scheduleId = String(run.scheduleId || '').trim();
+          if (!scheduleId) {
+            return;
+          }
+
+          const previous = latestRunByScheduleId.get(scheduleId);
+          const previousTime = previous
+            ? new Date(previous.startedAt || previous.finishedAt || 0).getTime()
+            : -Infinity;
+          const currentTime = new Date(run.startedAt || run.finishedAt || 0).getTime();
+          if (!previous || currentTime >= previousTime) {
+            latestRunByScheduleId.set(scheduleId, run);
+          }
+        });
+        const scheduleById = new Map((state.schedules || []).map((schedule) => [String(schedule.id || ''), schedule]));
+        const getLatestFailedRun = (scheduleId) => {
+          return (state.runs || [])
+            .filter((run) => String(run.scheduleId || '') === String(scheduleId || '') && normalizeRunStatus(run.status) === 'failed')
+            .sort((a, b) => {
+              const timeA = new Date(a.finishedAt || a.startedAt || 0).getTime();
+              const timeB = new Date(b.finishedAt || b.startedAt || 0).getTime();
+              return timeB - timeA;
+            })[0] || null;
+        };
+        const getLatestRunningRun = (scheduleId) => {
+          return (state.runs || [])
+            .filter((run) => String(run.scheduleId || '') === String(scheduleId || '') && normalizeRunStatus(run.status) === 'running')
+            .sort((a, b) => {
+              const timeA = new Date(a.startedAt || a.finishedAt || 0).getTime();
+              const timeB = new Date(b.startedAt || b.finishedAt || 0).getTime();
+              return timeB - timeA;
+            })[0] || null;
+        };
+        const getScheduleGraphStatus = (scheduleId) => {
+          const schedule = scheduleById.get(String(scheduleId || ''));
+          const latestRun = latestRunByScheduleId.get(String(scheduleId || ''));
+          const latestRunStatus = normalizeRunStatus(latestRun?.status);
+          if (latestRunStatus === 'running' || latestRunStatus === 'in-progress') {
+            return { key: 'running', label: 'Läuft' };
+          }
+          if (latestRunStatus === 'failed' || latestRunStatus === 'error') {
+            return { key: 'failed', label: 'Fehler' };
+          }
+          const scheduleStatus = String(schedule?.status || '').trim().toLowerCase();
+          if (!schedule?.active || scheduleStatus === 'inactive') {
+            return { key: 'inactive', label: 'Inaktiv' };
+          }
+          if (scheduleStatus === 'due') {
+            return { key: 'due', label: 'Fällig' };
+          }
+          if (latestRunStatus === 'success' || latestRunStatus === 'succeeded') {
+            return { key: 'success', label: 'OK' };
+          }
+          return { key: 'scheduled', label: 'Geplant' };
+        };
         const nodeMap = new Map(nodes.map((node) => [node.id, node]));
         const nodeWidth = 260;
         const nodeHeight = 82;
@@ -4209,17 +6275,31 @@ function htmlShell(): string {
             ' L ' + curveStartX + ' ' + startY +
             ' C ' + (curveStartX + controlOffset) + ' ' + startY + ', ' + (curveEndX - controlOffset) + ' ' + endY + ', ' + curveEndX + ' ' + endY +
             ' L ' + endX + ' ' + endY;
+          const fromStatus = from.kind === 'scheduler' ? getScheduleGraphStatus(from.refId).key : '';
+          const toStatus = to.kind === 'scheduler' ? getScheduleGraphStatus(to.refId).key : '';
+          const edgeClasses = ['graph-edge'];
+          if (fromStatus === 'running' || toStatus === 'running') {
+            edgeClasses.push('graph-edge-running');
+          }
+          if (fromStatus === 'failed' || toStatus === 'failed') {
+            edgeClasses.push('graph-edge-failed');
+          }
 
-          return '<path class="graph-edge" style="stroke:' + edgeColor + ';stroke-width:2.5;fill:none;opacity:0.9;stroke-linecap:round;stroke-linejoin:round" marker-end="url(#' + markerId + ')" d="' + pathData + '" />';
+          return '<path class="' + edgeClasses.join(' ') + '" style="stroke:' + edgeColor + ';stroke-width:2.5;fill:none;opacity:0.9;stroke-linecap:round;stroke-linejoin:round" marker-end="url(#' + markerId + ')" d="' + pathData + '" />';
         }).join('');
 
         const nodeMarkup = nodes.map((node) => {
           const isInbound = String(node.direction || '').toLowerCase() === 'inbound';
           const schedulerUsesFile = String(node.sourceType || '').toUpperCase().startsWith('FILE_') || String(node.targetType || '').toUpperCase().startsWith('FILE_');
+          const schedulerStatus = node.kind === 'scheduler'
+            ? getScheduleGraphStatus(node.refId)
+            : null;
           const directionClass = node.kind === 'scheduler'
-            ? ((isInbound ? 'graph-inbound' : 'graph-outbound') + ' ' + (schedulerUsesFile ? 'graph-scheduler-file' : 'graph-scheduler-db'))
+            ? ((isInbound ? 'graph-inbound' : 'graph-outbound') + ' ' + (schedulerUsesFile ? 'graph-scheduler-file' : 'graph-scheduler-db') + ' graph-node-status-' + schedulerStatus.key)
             : 'graph-connector ' + getConnectorGraphClass(node.connectorType, node.label);
-          const titleLines = splitGraphText(node.label, 24, 2);
+          const titleLines = node.kind === 'scheduler'
+            ? splitGraphTextByLine(node.label, [16, 18])
+            : splitGraphText(node.label, 24, 2);
           const subtitleLines = splitGraphText(node.subtitle, 28, 2);
           const icon = node.kind === 'scheduler'
             ? getObjectIcon(node.objectName)
@@ -4228,9 +6308,35 @@ function htmlShell(): string {
             ? (isInbound ? 'Inbound' : 'Outbound')
             : String(node.connectorType || 'Connector').toUpperCase();
           const metaLines = splitGraphText(metaLabel, 22, 1);
-          const titleMarkup = renderGraphText('graph-title', 58, 28, titleLines, 14);
-          const subtitleMarkup = renderGraphText('graph-subtitle', 58, 48, subtitleLines, 13);
-          const metaMarkup = renderGraphText('graph-meta', 58, 68, metaLines, 12);
+          const failedRun = node.kind === 'scheduler' && schedulerStatus?.key === 'failed'
+            ? getLatestFailedRun(node.refId)
+            : null;
+          const runningRun = node.kind === 'scheduler' && schedulerStatus?.key === 'running'
+            ? getLatestRunningRun(node.refId)
+            : null;
+          const failedRunErrorMessage = failedRun?.errorMessage
+            ? String(failedRun.errorMessage).trim()
+            : '';
+          const titleY = 28;
+          const subtitleY = titleLines.length > 1 ? 60 : 48;
+          const metaY = titleLines.length > 1 ? 74 : 68;
+          const titleMarkup = renderGraphText('graph-title', 58, titleY, titleLines, 14);
+          const subtitleMarkup = renderGraphText('graph-subtitle', 58, subtitleY, subtitleLines, 13);
+          const metaMarkup = renderGraphText('graph-meta', 58, metaY, metaLines, 12);
+          const pillRun = schedulerStatus?.key === 'running' ? runningRun : failedRun;
+          const pillAction = schedulerStatus?.key === 'running' ? 'cancel' : (failedRun?.id ? 'logs' : '');
+          const statusPillMarkup = node.kind === 'scheduler'
+            ? '<g class="graph-status-pill graph-status-pill-' + esc(schedulerStatus.key) + (pillRun?.id ? ' graph-status-pill-clickable' : '') + '" transform="translate(156,8)"' +
+                (pillRun?.id ? ' data-run-id="' + esc(pillRun.id) + '"' : '') +
+                (pillAction ? ' data-pill-action="' + esc(pillAction) + '"' : '') +
+                (failedRunErrorMessage ? ' data-error-message="' + esc(failedRunErrorMessage) + '"' : '') +
+                (pillRun?.id ? ' data-schedule-name="' + esc(node.label || node.refId || '') + '"' : '') +
+                '>' +
+                '<rect class="graph-status-pill-bg" width="92" height="22" rx="11" />' +
+                '<circle class="graph-status-pill-dot" cx="11" cy="10" r="4" />' +
+                '<text class="graph-status-pill-label" x="20" y="13">' + esc(schedulerStatus.label) + '</text>' +
+              '</g>'
+            : '';
 
           // Inline styles to guarantee fill even when external CSS is not applied to inline SVG
           let cardBgStyle, accentStyle, badgeStyle, iconStyle, metaStyle;
@@ -4272,6 +6378,7 @@ function htmlShell(): string {
               '<rect class="graph-accent" style="' + accentStyle + '" width="10" height="' + nodeHeight + '" rx="8" />' +
               '<circle class="graph-icon-badge" style="' + badgeStyle + '" cx="30" cy="41" r="18" />' +
               '<text class="graph-icon" style="' + iconStyle + '" x="30" y="47">' + esc(icon) + '</text>' +
+              statusPillMarkup +
               titleMarkup.replace('<text ', '<text style="fill:#2f4050;font-weight:700;font-size:12px" ') +
               subtitleMarkup.replace('<text ', '<text style="fill:#66717d;font-size:11px" ') +
               metaMarkup.replace('<text ', '<text style="' + metaStyle + ';font-size:10px;font-weight:700;letter-spacing:0.6px" ') +
@@ -4280,6 +6387,42 @@ function htmlShell(): string {
         }).join('');
 
         svg.innerHTML = defs + edgeMarkup + nodeMarkup;
+        svg.querySelectorAll('g.graph-status-pill[data-run-id]').forEach((pillEl) => {
+          pillEl.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            const runId = String(pillEl.getAttribute('data-run-id') || '').trim();
+            const action = String(pillEl.getAttribute('data-pill-action') || '').trim();
+            const errorMessage = String(pillEl.getAttribute('data-error-message') || '').trim();
+            const scheduleName = String(pillEl.getAttribute('data-schedule-name') || '').trim();
+            if (!runId) {
+              return;
+            }
+            if (action === 'cancel') {
+              if (!window.confirm('Laufenden Run für ' + (scheduleName || 'diesen Scheduler') + ' wirklich abbrechen?')) {
+                return;
+              }
+              try {
+                await requestJson('/api/runs/' + encodeURIComponent(runId) + '/cancel', {
+                  method: 'POST'
+                });
+                await refresh({ refreshChart: false });
+              } catch (error) {
+                showError(error.message || 'Run konnte nicht abgebrochen werden');
+              }
+              return;
+            }
+            if (errorMessage) {
+              window.alert('Letzter Fehler für ' + (scheduleName || 'diesen Scheduler') + ':\\n\\n' + errorMessage);
+              return;
+            }
+
+            const logs = await requestJson('/api/runs/' + encodeURIComponent(runId) + '/logs', {});
+            const logList = (logs.items || []).map((log) => {
+              return '[' + (log.level || 'INFO') + '] ' + (log.step || '') + ': ' + (log.message || '');
+            }).join('\\n');
+            window.alert('Fehlerdetails für ' + (scheduleName || 'diesen Scheduler') + ':\\n\\n' + (logList || 'Keine Fehlerdetails vorhanden.'));
+          });
+        });
         svg.querySelectorAll('g.graph-node').forEach((nodeEl) => {
           nodeEl.addEventListener('click', () => {
             const kind = nodeEl.getAttribute('data-kind');
@@ -4323,8 +6466,68 @@ function htmlShell(): string {
         });
       }
 
-      async function openScheduleModal(scheduleId) {
-        const entry = state.schedules.find((item) => item.id === scheduleId);
+      function collectScheduleFormPayload() {
+        const selectedWeekdays = Array.from(document.querySelectorAll('#sch-weekdays input:checked'))
+          .map((input) => Number(input.value))
+          .filter((value) => !Number.isNaN(value));
+        const timingDefinition = {
+          days: selectedWeekdays,
+          intervalMinutes: Number(document.getElementById('sch-timing-interval').value || 2),
+          startTime: document.getElementById('sch-timing-time').value || '09:00'
+        };
+
+        return {
+          id: document.getElementById('sch-id').value || undefined,
+          name: document.getElementById('sch-name').value || undefined,
+          active: document.getElementById('sch-active').checked,
+          sourceSystem: normalizeSystemValue(document.getElementById('sch-source-system').value),
+          targetSystem: normalizeSystemValue(document.getElementById('sch-target-system').value),
+          objectName: document.getElementById('sch-object').value,
+          operation: normalizeOperationValue(document.getElementById('sch-operation').value),
+          connectorId: document.getElementById('sch-connector').value || undefined,
+          parentScheduleId: document.getElementById('sch-parent-schedule').value || undefined,
+          inheritTimingFromParent: document.getElementById('sch-inherit-parent-timing').checked,
+          sourceType: document.getElementById('sch-source-type').value || undefined,
+          targetType: document.getElementById('sch-target-type').value || undefined,
+          direction: document.getElementById('sch-direction').value || undefined,
+          batchSize: Number(document.getElementById('sch-batch-size').value || 100),
+          nextRunAt: localDateTimeInputToIso(document.getElementById('sch-next-run').value),
+          lastRunAt: localDateTimeInputToIso(document.getElementById('sch-last-run').value),
+          sourceDefinition: buildScheduleSourceDefinitionValue(),
+          targetDefinition: document.getElementById('sch-target-definition').value || undefined,
+          mappingDefinition: document.getElementById('sch-mapping').value || undefined,
+          timingDefinition: JSON.stringify(timingDefinition)
+        };
+      }
+
+      async function saveCurrentAsTemplate(kind) {
+        const payload = kind === 'schedule'
+          ? { kind, schedule: collectScheduleFormPayload() }
+          : { kind, connector: collectConnectorFormPayload() };
+        const defaultName = kind === 'schedule'
+          ? String(payload.schedule?.name || document.getElementById('sch-object').value || 'Neue Scheduler Vorlage').trim()
+          : String(payload.connector?.name || document.getElementById('con-name').value || 'Neue Connector Vorlage').trim();
+        const name = window.prompt('Vorlagenname', defaultName || 'Neue Vorlage');
+        if (name === null) {
+          return;
+        }
+        const description = window.prompt('Kurzbeschreibung (optional)', '');
+        const result = await requestJson('/api/templates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...payload,
+            name,
+            description: description === null ? undefined : description
+          })
+        });
+        window.alert('Vorlage gespeichert: ' + (result.name || name));
+      }
+
+      async function openScheduleModal(scheduleId, templateDraft) {
+        const entry = scheduleId
+          ? state.schedules.find((item) => item.id === scheduleId)
+          : (templateDraft || null);
         if (!state.scheduleOptions || !Array.isArray(state.scheduleOptions.objectNames) || !state.scheduleOptions.objectNames.length) {
           await loadScheduleOptions();
         }
@@ -4344,7 +6547,11 @@ function htmlShell(): string {
         document.getElementById('sch-next-run').value = isoToLocalDateTimeInput(entry?.nextRunAt);
         document.getElementById('sch-last-run').value = isoToLocalDateTimeInput(entry?.lastRunAt);
         document.getElementById('sch-active').checked = entry ? !!entry.active : true;
-        document.getElementById('sch-source-definition').value = entry?.sourceDefinition || '';
+        const parsedSourceDefinition = parseScheduleSourceDefinition(entry?.sourceType || '', entry?.sourceDefinition || '');
+        document.getElementById('sch-source-definition').value = parsedSourceDefinition.queryText || '';
+        document.getElementById('sch-source-delta-strategy').value = parsedSourceDefinition.deltaStrategy || '';
+        document.getElementById('sch-source-delta-field').value = parsedSourceDefinition.deltaField || '';
+        document.getElementById('sch-source-after-export').value = parsedSourceDefinition.afterExportText || '';
         document.getElementById('sch-target-definition').value = entry?.targetDefinition || '';
         document.getElementById('sch-mapping').value = entry?.mappingDefinition || '';
         state.customObjectFieldOverrides = {};
@@ -4391,6 +6598,8 @@ function htmlShell(): string {
         await loadTargetObjects(entry?.objectName || '');
         toggleCreateObjectFromSourceUi();
         loadTargetFields();
+        state.scheduleWizardStep = 1;
+        renderScheduleWizardStep();
         // Load mapping fields from backend metadata API
         // Use setTimeout to ensure all DOM values (source-type, connector) are applied before fetching
         setTimeout(() => loadMappingFields(), 0);
@@ -4776,8 +6985,10 @@ function htmlShell(): string {
         return merged;
       }
 
-      function openConnectorModal(connectorId) {
-        const entry = state.connectors.find((item) => item.id === connectorId);
+      function openConnectorModal(connectorId, templateDraft) {
+        const entry = connectorId
+          ? state.connectors.find((item) => item.id === connectorId)
+          : (templateDraft || null);
         clearConnectorModalError();
         document.getElementById('con-id').value = entry?.id || '';
         document.getElementById('con-name').value = entry?.name || '';
@@ -4809,45 +7020,19 @@ function htmlShell(): string {
         saveButton.disabled = true;
 
         try {
+          for (let step = 1; step < getScheduleWizardTotalSteps(); step += 1) {
+            validateScheduleWizardStep(step);
+          }
           ensureSalesforceTargetDefinition();
 
-          const selectedWeekdays = Array.from(document.querySelectorAll('#sch-weekdays input:checked'))
-            .map((input) => Number(input.value))
-            .filter((value) => !Number.isNaN(value));
-          
-          const timingDefinition = {
-            days: selectedWeekdays,
-            intervalMinutes: Number(document.getElementById('sch-timing-interval').value || 2),
-            startTime: document.getElementById('sch-timing-time').value || '09:00'
-          };
+          const payload = collectScheduleFormPayload();
+          const scheduleId = payload.id;
 
-          const scheduleId = document.getElementById('sch-id').value || undefined;
-          
-          const payload = {
-            id: scheduleId,
-            active: document.getElementById('sch-active').checked,
-            sourceSystem: normalizeSystemValue(document.getElementById('sch-source-system').value),
-            targetSystem: normalizeSystemValue(document.getElementById('sch-target-system').value),
-            objectName: document.getElementById('sch-object').value,
-            operation: normalizeOperationValue(document.getElementById('sch-operation').value),
-            connectorId: document.getElementById('sch-connector').value || undefined,
-            parentScheduleId: document.getElementById('sch-parent-schedule').value || undefined,
-            inheritTimingFromParent: document.getElementById('sch-inherit-parent-timing').checked,
-            sourceType: document.getElementById('sch-source-type').value || undefined,
-            targetType: document.getElementById('sch-target-type').value || undefined,
-            direction: document.getElementById('sch-direction').value || undefined,
-            batchSize: Number(document.getElementById('sch-batch-size').value || 100),
-            nextRunAt: localDateTimeInputToIso(document.getElementById('sch-next-run').value),
-            lastRunAt: localDateTimeInputToIso(document.getElementById('sch-last-run').value),
-            sourceDefinition: document.getElementById('sch-source-definition').value || undefined,
-            targetDefinition: document.getElementById('sch-target-definition').value || undefined,
-            mappingDefinition: document.getElementById('sch-mapping').value || undefined,
-            timingDefinition: JSON.stringify(timingDefinition)
-          };
-          
           // Only include name for new schedules (Name is an auto-number field and cannot be updated)
           if (!scheduleId) {
             payload.name = document.getElementById('sch-name').value;
+          } else {
+            delete payload.name;
           }
 
           await requestJson('/api/schedules', {
@@ -4870,7 +7055,7 @@ function htmlShell(): string {
         clearModalError();
         const testButton = document.getElementById('sch-test-source');
         const sourceType = document.getElementById('sch-source-type').value;
-        const sourceDefinition = document.getElementById('sch-source-definition').value;
+        const sourceDefinition = buildScheduleSourceDefinitionValue() || '';
         const connectorId = document.getElementById('sch-connector').value || undefined;
         const status = document.getElementById('sch-source-test-status');
 
@@ -4900,10 +7085,9 @@ function htmlShell(): string {
         }
       }
 
-      async function persistConnector(options = {}) {
-        const validateAfterSave = options.validateAfterSave === true;
+      function collectConnectorFormPayload() {
         const preview = collectConnectorParametersPreview();
-        const payload = {
+        return {
           id: document.getElementById('con-id').value || undefined,
           name: document.getElementById('con-name').value,
           active: document.getElementById('con-active').checked,
@@ -4916,6 +7100,11 @@ function htmlShell(): string {
           description: document.getElementById('con-description').value || undefined,
           parameters: preview.parameters
         };
+      }
+
+      async function persistConnector(options = {}) {
+        const validateAfterSave = options.validateAfterSave === true;
+        const payload = collectConnectorFormPayload();
 
         const saved = await requestJson('/api/connectors', {
           method: 'POST',
@@ -5049,6 +7238,8 @@ function htmlShell(): string {
         const schedules = await safeRequest('/api/schedules', { items: [] });
         const connectors = await safeRequest('/api/connectors', { items: [] });
         const runs = await safeRequest('/api/runs', { items: [] });
+        const staleRuns = await safeRequest('/api/runs/stale', { items: [] });
+        const migrations = await safeRequest('/api/migrations', { items: [] });
         const graph = await safeRequest('/api/graph', { nodes: [], edges: [] });
         const salesforceOverview = await safeRequest('/api/salesforce/overview', {});
         await loadScheduleOptions();
@@ -5056,6 +7247,8 @@ function htmlShell(): string {
         state.schedules = schedules.items || [];
         state.connectors = connectors.items || [];
         state.runs = runs.items || [];
+        state.staleRuns = staleRuns.items || [];
+        state.migrations = migrations.items || [];
         state.graphData = graph;
         renderSalesforceOverview(salesforceOverview);
 
@@ -5063,6 +7256,7 @@ function htmlShell(): string {
         renderSchedules();
         renderConnectors();
         renderRuns();
+        renderStaleRuns();
         renderOverviewConnectorFilter();
         redrawOverviewGraph();
         if (shouldRefreshChart) {
@@ -5148,11 +7342,55 @@ function htmlShell(): string {
         });
       }
       document.getElementById('log-chart-range').addEventListener('change', loadLogSummary);
+      document.getElementById('template-picker-search').addEventListener('input', renderTemplatePicker);
+      document.getElementById('template-picker-apply').addEventListener('click', applySelectedTemplate);
+      document.getElementById('template-picker-modal')?.addEventListener('hidden.bs.modal', () => {
+        resolveTemplatePicker(null);
+      });
       document.getElementById('sch-load-source-fields').addEventListener('click', loadMappingFields);
         document.getElementById('sch-automapping').addEventListener('click', autoMapByName);
       document.getElementById('new-schedule').addEventListener('click', () => openScheduleModal(''));
+      document.getElementById('new-schedule-from-template').addEventListener('click', async () => {
+        try {
+          await createFromTemplate('schedule');
+        } catch (error) {
+          showError(error.message || 'Scheduler-Vorlage konnte nicht geladen werden');
+        }
+      });
       document.getElementById('new-connector').addEventListener('click', () => openConnectorModal(''));
+      document.getElementById('new-connector-from-template').addEventListener('click', async () => {
+        try {
+          await createFromTemplate('connector');
+        } catch (error) {
+          showError(error.message || 'Connector-Vorlage konnte nicht geladen werden');
+        }
+      });
+      document.getElementById('sch-wizard-back').addEventListener('click', () => {
+        goToScheduleWizardStep(state.scheduleWizardStep - 1);
+      });
+      document.getElementById('sch-wizard-next').addEventListener('click', advanceScheduleWizardStep);
+      document.querySelectorAll('#sch-wizard-steps [data-sch-step]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const nextStep = Number(button.getAttribute('data-sch-step') || '1');
+          if (nextStep > state.scheduleWizardStep) {
+            try {
+              validateScheduleWizardStep(state.scheduleWizardStep);
+            } catch (error) {
+              showModalError(error?.message || 'Schritt konnte nicht abgeschlossen werden.');
+              return;
+            }
+          }
+          goToScheduleWizardStep(nextStep);
+        });
+      });
       document.getElementById('save-schedule').addEventListener('click', saveSchedule);
+      document.getElementById('save-schedule-template').addEventListener('click', async () => {
+        try {
+          await saveCurrentAsTemplate('schedule');
+        } catch (error) {
+          showError(error.message || 'Scheduler-Vorlage konnte nicht gespeichert werden');
+        }
+      });
       document.getElementById('sch-test-source').addEventListener('click', testScheduleSource);
       document.getElementById('sch-source-type').addEventListener('change', () => {
         updateSourceQueryAssist();
@@ -5169,6 +7407,9 @@ function htmlShell(): string {
         }
       });
       document.getElementById('sch-source-definition').addEventListener('input', updateSourceQueryAssist);
+      document.getElementById('sch-source-delta-strategy').addEventListener('change', updateSourceQueryAssist);
+      document.getElementById('sch-source-delta-field').addEventListener('input', updateSourceQueryAssist);
+      document.getElementById('sch-source-after-export').addEventListener('input', updateSourceQueryAssist);
       document.getElementById('sch-timing-apply').addEventListener('click', applyTimingHelper);
       document.getElementById('sch-timing-reset').addEventListener('click', () => {
         document.querySelectorAll('#sch-weekdays input').forEach((input) => {
@@ -5185,10 +7426,36 @@ function htmlShell(): string {
       document.getElementById('con-wizard-back').addEventListener('click', () => goToConnectorWizardStep(state.connectorWizardStep - 1));
       document.getElementById('con-wizard-next').addEventListener('click', advanceConnectorWizardStep);
       document.getElementById('save-connector').addEventListener('click', saveConnector);
+      document.getElementById('save-connector-template').addEventListener('click', async () => {
+        try {
+          await saveCurrentAsTemplate('connector');
+        } catch (error) {
+          showError(error.message || 'Connector-Vorlage konnte nicht gespeichert werden');
+        }
+      });
       document.getElementById('con-type').addEventListener('input', updateConnectorConfigUi);
       document.getElementById('con-wizard-type').addEventListener('change', () => applyConnectorWizardSelection(false));
       document.getElementById('con-rest-auth-type').addEventListener('change', updateRestAuthUi);
       document.getElementById('load-logs').addEventListener('click', loadLogs);
+      document.getElementById('refresh-stale-runs')?.addEventListener('click', async () => {
+        await refresh({ refreshChart: false });
+      });
+      document.getElementById('release-all-stale-runs')?.addEventListener('click', async () => {
+        try {
+          const result = await requestJson('/api/runs/release-stale', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+          });
+          if (Number(result.releasedCount || 0) <= 0) {
+            showError('Keine stale Runs zum Freigeben gefunden');
+            return;
+          }
+          await refresh({ refreshChart: false });
+        } catch (error) {
+          showError(error.message || 'Stale Runs konnten nicht freigegeben werden');
+        }
+      });
       document.getElementById('preview-sql').addEventListener('click', previewSql);
       document.getElementById('preview-mapping').addEventListener('click', previewMapping);
       document.getElementById('sch-map-detail-apply').addEventListener('click', applySelectedMappingDetailChanges);
@@ -5233,7 +7500,7 @@ function htmlShell(): string {
       // ===== MAPPING FIELD LOADING & PREVIEW =====
       async function loadMappingFields() {
         const sourceType = document.getElementById('sch-source-type').value;
-        const sourceDefinition = document.getElementById('sch-source-definition').value;
+        const sourceDefinition = buildScheduleSourceDefinitionValue() || '';
         const objectName = document.getElementById('sch-object').value;
         const connectorId = document.getElementById('sch-connector').value || undefined;
         const sourceFieldsBody = document.getElementById('sch-mapping-source-fields');
@@ -5509,13 +7776,14 @@ function htmlShell(): string {
       function renderMigSelectedObjects() {
         const container = document.getElementById('mig-selected-objects');
         if (!container) return;
+        renderMigImportSuggestions();
         if (!migState.objects.length) {
           container.innerHTML = '<span class="text-secondary small">Noch keine Objekte ausgewählt.</span>';
           return;
         }
         container.innerHTML = migState.objects.map((obj) =>
           '<span class="badge bg-primary d-flex align-items-center gap-1" style="font-size:0.85em">' +
-          esc(obj.salesforceObject) +
+          esc(getMigObjectDisplayName(obj)) +
           '<button type="button" class="btn-close btn-close-white" style="font-size:0.6em" data-remove-obj="' + esc(obj.id) + '" aria-label="Entfernen"></button></span>'
         ).join('');
         container.querySelectorAll('[data-remove-obj]').forEach((btn) => {
@@ -5529,22 +7797,46 @@ function htmlShell(): string {
         });
       }
 
-      function renderMigFileAssignments() {
+      async function renderMigFileAssignments() {
         const container = document.getElementById('mig-file-assignment-list');
         if (!container) return;
+        renderMigPendingImportHint();
         if (!migState.objects.length) {
           container.innerHTML = '<div class="text-secondary small">Bitte zuerst Objekte in Schritt 1 auswählen.</div>';
           return;
         }
+
+        await Promise.all(migState.objects.map((obj) => loadMigExternalIdOptions(obj)));
+
         container.innerHTML = migState.objects.map((obj) => {
           const safeId = esc(obj.id);
+          const availableSheetNames = Array.isArray(obj.availableSheetNames) ? obj.availableSheetNames : [];
+          const externalIdOptions = (Array.isArray(obj._externalIdFields) ? obj._externalIdFields : [])
+            .map((field) => {
+              const name = String(field?.name || '').trim();
+              const label = String(field?.label || '').trim();
+              const optionLabel = label && label !== name ? label + ' (' + name + ')' : name;
+              return '<option value="' + esc(name) + '"' + (String(obj.externalIdField || '').trim() === name ? ' selected' : '') + '>' + esc(optionLabel) + '</option>';
+            })
+            .join('');
+          const sheetOptions = availableSheetNames.length
+            ? ('<option value="">Primäre Mappe</option>' +
+                availableSheetNames.map((sheetName) =>
+                  '<option value="' + esc(sheetName) + '"' + (String(obj.fileSheetName || '') === sheetName ? ' selected' : '') + '>' + esc(sheetName) + '</option>'
+                ).join(''))
+            : '<option value="">Nicht erforderlich</option>';
           return '<div class="card soft-card mb-2"><div class="card-body"><div class="d-flex justify-content-between align-items-center mb-2">' +
-            '<strong>' + esc(obj.salesforceObject) + '</strong>' +
+            '<strong>' + esc(getMigObjectDisplayName(obj)) + '</strong>' +
             '<select class="form-select form-select-sm w-auto" style="min-width:120px" data-op-select="' + safeId + '">' +
             '<option value="insert"' + (obj.operation === 'insert' ? ' selected' : '') + '>Insert</option>' +
             '<option value="upsert"' + (obj.operation === 'upsert' ? ' selected' : '') + '>Upsert</option>' +
             '<option value="update"' + (obj.operation === 'update' ? ' selected' : '') + '>Update</option>' +
             '</select></div>' +
+            '<div class="mb-2"><label class="form-label small mb-1">Upsert-Feld (External ID)</label>' +
+            '<select class="form-select form-select-sm" data-external-id-select="' + safeId + '"' + (obj.operation === 'upsert' ? '' : ' disabled') + '>' +
+            '<option value="">- Bitte wählen -</option>' + externalIdOptions +
+            '</select>' +
+            '<div class="small text-secondary mt-1">Wird nur für Upsert verwendet.</div></div>' +
             '<div class="input-group mb-1">' +
             '<input type="text" class="form-control form-control-sm" placeholder="Noch keine Datei ausgewählt" value="' + esc(obj.filePath || '') + '" data-file-path="' + safeId + '" readonly />' +
             '<input type="file" class="d-none" data-file-dialog="' + safeId + '" accept=".csv,.txt,.json,.xlsx,.xls" />' +
@@ -5554,6 +7846,7 @@ function htmlShell(): string {
             '<div class="row g-2 mb-2">' +
             '<div class="col-md-4"><label class="form-label small mb-1">Charset</label><select class="form-select form-select-sm" data-file-charset="' + safeId + '">' +
             '<option value="utf8"' + ((obj.fileCharset || 'utf8') === 'utf8' ? ' selected' : '') + '>UTF-8</option>' +
+            '<option value="windows-1252"' + ((obj.fileCharset || '') === 'windows-1252' ? ' selected' : '') + '>Windows-1252 (ANSI)</option>' +
             '<option value="latin1"' + (obj.fileCharset === 'latin1' ? ' selected' : '') + '>Latin-1</option>' +
             '<option value="utf-16le"' + (obj.fileCharset === 'utf-16le' ? ' selected' : '') + '>UTF-16 LE</option>' +
             '<option value="ascii"' + (obj.fileCharset === 'ascii' ? ' selected' : '') + '>ASCII</option>' +
@@ -5570,6 +7863,7 @@ function htmlShell(): string {
             '<option value="&#39;"' + (obj.fileTextQualifier === "'" ? ' selected' : '') + '>Einfache Anführungszeichen (&#39;)</option>' +
             '<option value=""' + (obj.fileTextQualifier === '' ? ' selected' : '') + '>Keiner</option>' +
             '</select></div>' +
+            '<div class="col-md-4"><label class="form-label small mb-1">Excel-Mappe</label><select class="form-select form-select-sm" data-file-sheet="' + safeId + '"' + (availableSheetNames.length ? '' : ' disabled') + '>' + sheetOptions + '</select></div>' +
             '<div class="col-md-4"><label class="form-label small mb-1">Verarbeitungsmodus</label><select class="form-select form-select-sm" data-processing-mode="' + safeId + '">' +
             '<option value="sqlite"' + (((obj.processingMode || obj.stagingMode || 'sqlite') === 'sqlite') ? ' selected' : '') + '>SQLite-Staging</option>' +
             '<option value="file"' + (obj.processingMode === 'file' ? ' selected' : '') + '>Datei direkt</option>' +
@@ -5580,41 +7874,47 @@ function htmlShell(): string {
             '</div></div></div>';
         }).join('');
 
-        const fileToBase64 = async (file) => {
-          const buffer = await file.arrayBuffer();
-          const bytes = new Uint8Array(buffer);
-          const chunkSize = 0x8000;
-          let binary = '';
-          for (let i = 0; i < bytes.length; i += chunkSize) {
-            binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-          }
-          return btoa(binary);
-        };
-
         migState.objects.forEach((obj) => {
           const fileInput = container.querySelector('[data-file-path="' + obj.id + '"]');
           const fileDialog = container.querySelector('[data-file-dialog="' + obj.id + '"]');
           const pickBtn = container.querySelector('[data-pick-file="' + obj.id + '"]');
           const opSelect = container.querySelector('[data-op-select="' + obj.id + '"]');
+          const externalIdSelect = container.querySelector('[data-external-id-select="' + obj.id + '"]');
           if (opSelect) {
             opSelect.addEventListener('change', () => {
               obj.operation = opSelect.value;
+              if (externalIdSelect) {
+                externalIdSelect.disabled = obj.operation !== 'upsert';
+              }
+              if (obj.operation !== 'upsert') {
+                obj.externalIdField = '';
+                if (externalIdSelect) {
+                  externalIdSelect.value = '';
+                }
+              }
+            });
+          }
+          if (externalIdSelect) {
+            externalIdSelect.addEventListener('change', () => {
+              obj.externalIdField = externalIdSelect.value || '';
             });
           }
           const analyzeBtn = container.querySelector('[data-analyze-file="' + obj.id + '"]');
           const charsetInput = container.querySelector('[data-file-charset="' + obj.id + '"]');
           const delimiterInput = container.querySelector('[data-file-delimiter="' + obj.id + '"]');
           const textQualifierInput = container.querySelector('[data-file-text-qualifier="' + obj.id + '"]');
+          const sheetInput = container.querySelector('[data-file-sheet="' + obj.id + '"]');
           const processingModeInput = container.querySelector('[data-processing-mode="' + obj.id + '"]');
 
           const syncCsvOptions = () => {
             obj.fileCharset = charsetInput ? charsetInput.value.trim() || 'utf8' : (obj.fileCharset || 'utf8');
             obj.fileDelimiter = delimiterInput ? delimiterInput.value || ';' : (obj.fileDelimiter || ';');
             obj.fileTextQualifier = textQualifierInput ? textQualifierInput.value || '"' : (obj.fileTextQualifier || '"');
+            obj.fileSheetName = sheetInput ? sheetInput.value || '' : (obj.fileSheetName || '');
             obj.processingMode = processingModeInput ? processingModeInput.value || 'sqlite' : (obj.processingMode || 'sqlite');
           };
 
-          [charsetInput, delimiterInput, textQualifierInput, processingModeInput].forEach((input) => {
+          [charsetInput, delimiterInput, textQualifierInput, sheetInput, processingModeInput].forEach((input) => {
             if (!input) return;
             input.addEventListener('change', syncCsvOptions);
           });
@@ -5635,24 +7935,7 @@ function htmlShell(): string {
               try {
                 syncCsvOptions();
                 await migSave();
-                const contentBase64 = await fileToBase64(file);
-                const res = await fetch('/api/migrations/upload-file', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    migrationId: migState.id,
-                    objectId: obj.id,
-                    fileName: file.name,
-                    contentBase64,
-                    charset: obj.fileCharset,
-                    delimiter: obj.fileDelimiter,
-                    textQualifier: obj.fileTextQualifier
-                  })
-                });
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.error || 'Datei konnte nicht hochgeladen werden');
-
-                applyMigAnalysisData(obj, data);
+                await uploadMigrationObjectFile(obj, file);
 
                 if (fileInput) fileInput.value = obj.filePath || '';
                 const colDiv = document.getElementById('mig-file-cols-' + obj.id);
@@ -5697,13 +7980,21 @@ function htmlShell(): string {
             });
           }
         });
+
+        if (getMigSelectedPendingImports(migState.pendingImports).length && !migState.pendingImportInProgress) {
+          queueMicrotask(() => {
+            consumePendingMigrationImportIfPossible().catch((error) => {
+              alert('Fehler: ' + (error instanceof Error ? error.message : String(error)));
+            });
+          });
+        }
       }
 
       function renderMigMappingObjectSelect() {
         const sel = document.getElementById('mig-mapping-object-select');
         if (!sel) return;
         sel.innerHTML = migState.objects.map((obj) =>
-          '<option value="' + esc(obj.id) + '">' + esc(obj.salesforceObject) + '</option>'
+          '<option value="' + esc(obj.id) + '">' + esc(getMigObjectDisplayName(obj)) + '</option>'
         ).join('');
         renderMigMappingPanel();
       }
@@ -5747,12 +8038,27 @@ function htmlShell(): string {
           if (objectsRes.ok) sfObjects = await objectsRes.json();
         } catch { /* ignore */ }
 
-        const existingFieldNames = new Set((sfFields || []).map((f) => String(f.name || '').toLowerCase()));
+        const existingFieldNames = new Set([
+          ...(sfFields || []).map((f) => String(f.name || '').toLowerCase())
+        ]);
         obj._existingFieldNames = Array.from(existingFieldNames);
+
+        const autoMappedCount = autoPopulateMigFieldMappings(obj, sfFields);
+        const externalIdChanged = autoSelectMigExternalIdField(obj, sfFields);
+        if (autoMappedCount > 0 || externalIdChanged) {
+          await migSave();
+        }
 
         // Mark mapping entries that point to fields not yet existing in Salesforce.
         (obj.fieldMappings || []).forEach((mapping) => {
-          mapping._isMissing = !!mapping.targetField && !existingFieldNames.has(String(mapping.targetField).toLowerCase());
+          const resolvedTargetField = resolveMigTargetFieldApiName(mapping.targetField, sfFields);
+          const sfField = (sfFields || []).find((field) => String(field.name || '').toLowerCase() === resolvedTargetField.toLowerCase());
+          if (resolvedTargetField && resolvedTargetField !== mapping.targetField) {
+            mapping.targetField = resolvedTargetField;
+            mapping.targetFieldLabel = sfField?.label || resolvedTargetField;
+            mapping.targetFieldType = sfField?.type || mapping.targetFieldType;
+          }
+          mapping._isMissing = !!resolvedTargetField && !existingFieldNames.has(resolvedTargetField.toLowerCase());
         });
 
         const objectFieldListId = 'mig-sf-fields-' + objectId;
@@ -5778,8 +8084,8 @@ function htmlShell(): string {
           '<thead><tr><th>Datei-Spalte</th><th>→ Salesforce-Feld</th><th>Typ</th><th>Umwandlung</th><th>Lookup</th><th>Picklist-Mapping</th></tr></thead><tbody>' +
           obj.fileColumns.map((col) => {
             const existing = (obj.fieldMappings || []).find((m) => m.sourceColumn === col);
-            const currentTarget = existing ? existing.targetField : '';
-            const targetType = (sfFields || []).find((f) => f.name === currentTarget)?.type || (existing?._isMissing ? 'neu' : '');
+            const currentTarget = existing ? resolveMigTargetFieldApiName(existing.targetField, sfFields) : '';
+            const targetType = (sfFields || []).find((f) => String(f.name || '').toLowerCase() === currentTarget.toLowerCase())?.type || (existing?._isMissing ? 'neu' : '');
             const transformFunction = String(existing?.transformFunction || 'NONE');
             const transformExpression = String(existing?.transformExpression || '');
             const isStatic = transformFunction === 'STATIC';
@@ -5806,11 +8112,13 @@ function htmlShell(): string {
               '</td>' +
               '<td>' +
                 '<div class="form-check mb-1"><input class="form-check-input" type="checkbox" data-map-lookup-enabled="' + esc(col) + '"' + (lookupEnabled ? ' checked' : '') + '><label class="form-check-label small">aktiv</label></div>' +
+                '<div class="small text-secondary mb-1">Nur External-ID-Felder sind auswählbar.</div>' +
                 '<select class="form-select form-select-sm mb-1" data-map-lookup-object="' + esc(col) + '">' + lookupObjOptions + '</select>' +
                 '<select class="form-select form-select-sm" data-map-lookup-field="' + esc(col) + '">' +
                   '<option value="">- Feld wählen -</option>' +
                   (lookupField ? '<option value="' + esc(lookupField) + '" selected>' + esc(lookupField) + '</option>' : '') +
                 '</select>' +
+                '<div class="small text-warning mt-1 d-none" data-map-lookup-status="' + esc(col) + '"></div>' +
               '</td>' +
               '<td><input class="form-control form-control-sm" placeholder="A=B; C=D" value="' + esc(picklistText) + '" data-map-picklist="' + esc(col) + '" /></td>' +
               '</tr>';
@@ -5838,8 +8146,8 @@ function htmlShell(): string {
           const lookupFieldEl = panel.querySelector('[data-map-lookup-field="' + col + '"]');
           const picklistEl = panel.querySelector('[data-map-picklist="' + col + '"]');
 
-          const selectedFieldName = String(fieldInput?.value || '').trim();
-          if (!selectedFieldName) {
+          const rawSelectedFieldName = String(fieldInput?.value || '').trim();
+          if (!rawSelectedFieldName) {
             if (idx >= 0) target.fieldMappings.splice(idx, 1);
             const typeBadge = panel.querySelector('[data-map-type="' + col + '"]');
             if (typeBadge) typeBadge.textContent = '';
@@ -5847,7 +8155,15 @@ function htmlShell(): string {
             return;
           }
 
-          const sfField = (sfFields || []).find((f) => f.name === selectedFieldName);
+          const selectedFieldName = resolveMigTargetFieldApiName(rawSelectedFieldName, sfFields);
+          const sfField = (sfFields || []).find((f) => String(f.name || '').toLowerCase() === selectedFieldName.toLowerCase());
+          if (fieldInput && fieldInput.value !== selectedFieldName) {
+            fieldInput.value = selectedFieldName;
+          }
+          const lookupAllowedForTarget = String(sfField?.type || '').toLowerCase() === 'reference' || String(sfField?.type || '').toLowerCase() === 'id';
+          if (!lookupAllowedForTarget && lookupEnabledEl?.checked) {
+            lookupEnabledEl.checked = false;
+          }
           const current = idx >= 0 ? target.fieldMappings[idx] : { sourceColumn: col };
           const nextEntry = {
             ...current,
@@ -5857,7 +8173,7 @@ function htmlShell(): string {
             targetFieldType: sfField?.type,
             transformFunction: String(transformSel?.value || 'NONE'),
             transformExpression: String(transformExprEl?.value || '').trim(),
-            lookupEnabled: Boolean(lookupEnabledEl?.checked),
+            lookupEnabled: lookupAllowedForTarget && Boolean(lookupEnabledEl?.checked),
             lookupObject: String(lookupObjectEl?.value || '').trim(),
             lookupField: String(lookupFieldEl?.value || '').trim(),
             picklistMappings: parsePicklistText(picklistEl?.value),
@@ -5875,6 +8191,18 @@ function htmlShell(): string {
           renderMigMissingFields();
         };
 
+        const setLookupValidationState = (col, message) => {
+          const fieldSel = panel.querySelector('[data-map-lookup-field="' + col + '"]');
+          const statusEl = panel.querySelector('[data-map-lookup-status="' + col + '"]');
+          if (fieldSel) {
+            fieldSel.classList.toggle('is-invalid', Boolean(message));
+          }
+          if (statusEl) {
+            statusEl.textContent = message || '';
+            statusEl.classList.toggle('d-none', !message);
+          }
+        };
+
         // Helper: load lookup fields for a column's lookup-field <select>
         const loadLookupFields = async (col, selectedObject) => {
           const fieldSel = panel.querySelector('[data-map-lookup-field="' + col + '"]');
@@ -5882,15 +8210,23 @@ function htmlShell(): string {
           if (!selectedObject) {
             const cur = fieldSel.value;
             fieldSel.innerHTML = '<option value="">- Feld wählen -</option>' + (cur ? '<option value="' + esc(cur) + '" selected>' + esc(cur) + '</option>' : '');
+            setLookupValidationState(col, '');
             return;
           }
           try {
             const res = await fetch('/api/salesforce/object-fields?object=' + encodeURIComponent(selectedObject) + '&instanceId=' + encodeURIComponent(state.instanceId || ''));
             if (!res.ok) return;
             const fields = await res.json();
+            const externalIdFields = (fields || []).filter((f) => f && f.isExternalId === true);
             const curVal = fieldSel.value;
             fieldSel.innerHTML = '<option value="">- Feld wählen -</option>' +
-              (fields || []).map((f) => '<option value="' + esc(f.name) + '"' + (f.name === curVal ? ' selected' : '') + '>' + esc(f.label && f.label !== f.name ? f.label + ' (' + f.name + ')' : f.name) + '</option>').join('');
+              externalIdFields.map((f) => '<option value="' + esc(f.name) + '"' + (f.name === curVal ? ' selected' : '') + '>' + esc(f.label && f.label !== f.name ? f.label + ' (' + f.name + ')' : f.name) + '</option>').join('');
+            if (curVal && !externalIdFields.some((f) => f.name === curVal)) {
+              fieldSel.value = '';
+              setLookupValidationState(col, 'Gespeichertes Lookup-Feld ist keine External ID mehr und wurde geleert.');
+              return;
+            }
+            setLookupValidationState(col, '');
           } catch { /* ignore */ }
         };
 
@@ -5935,7 +8271,10 @@ function htmlShell(): string {
           // Lookup field select
           const lookupFieldSel = panel.querySelector('[data-map-lookup-field="' + col + '"]');
           if (lookupFieldSel) {
-            lookupFieldSel.addEventListener('change', () => updateMappingEntry(col));
+            lookupFieldSel.addEventListener('change', () => {
+              setLookupValidationState(col, '');
+              updateMappingEntry(col);
+            });
           }
 
           // Picklist text input
@@ -6007,59 +8346,126 @@ function htmlShell(): string {
       function renderMigMissingFields() {
         const container = document.getElementById('mig-missing-fields-list');
         if (!container) return;
-        const missing = [];
-        for (const obj of migState.objects) {
-          const existingFieldNames = new Set((obj._existingFieldNames || []).map((name) => String(name).toLowerCase()));
-          for (const mapping of (obj.fieldMappings || [])) {
-            const isMissing = !!mapping.targetField && !existingFieldNames.has(String(mapping.targetField).toLowerCase());
-            mapping._isMissing = isMissing;
-            if (isMissing) {
-              missing.push({ obj, mapping });
-            }
-          }
-        }
+        const missing = collectMigMissingFieldMappings();
         if (!missing.length) {
           container.innerHTML = '<div class="alert alert-success">Alle gemappten Felder existieren in Salesforce – keine Aktion erforderlich.</div>';
           return;
         }
+        const buildPicklistText = (values) => (Array.isArray(values) ? values : []).map((value) => String(value || '').trim()).filter(Boolean).join('\\n');
+        const countPicklistValues = (value) => String(value || '').split(/\\r?\\n/).map((entry) => entry.trim()).filter(Boolean).length;
         container.innerHTML = '<table class="table table-sm"><thead><tr><th>Objekt</th><th>SF-Feld</th><th>Typ</th><th>Aktion</th></tr></thead><tbody>' +
           missing.map((item) =>
             '<tr><td>' + esc(item.obj.salesforceObject) + '</td>' +
             '<td><code>' + esc(item.mapping.targetField) + '</code></td>' +
-            '<td><select class="form-select form-select-sm" data-field-type="' + esc(item.mapping.targetField) + '-' + esc(item.obj.id) + '">' +
-            ['Text', 'Number', 'Date', 'DateTime', 'Checkbox', 'Currency', 'Percent', 'Email', 'Phone', 'Url'].map((t) => '<option>' + t + '</option>').join('') +
-            '</select></td>' +
-            '<td><button class="btn btn-sm btn-outline-primary" data-create-field-obj="' + esc(item.obj.id) + '" data-create-field-name="' + esc(item.mapping.targetField) + '">Anlegen</button></td></tr>'
+            '<td>' +
+              '<select class="form-select form-select-sm" data-field-type="' + esc(item.mapping.targetField) + '-' + esc(item.obj.id) + '">' +
+              ['Text', 'Number', 'Date', 'DateTime', 'Checkbox', 'Currency', 'Percent', 'Email', 'Phone', 'Url', 'Picklist'].map((t) => '<option>' + t + '</option>').join('') +
+              '</select>' +
+              '<div class="mt-2 d-none" data-picklist-config="' + esc(item.mapping.targetField) + '-' + esc(item.obj.id) + '">' +
+                '<div class="d-flex gap-2 align-items-center mb-2">' +
+                  '<button class="btn btn-sm btn-outline-secondary" type="button" data-picklist-autofill="' + esc(item.mapping.targetField) + '-' + esc(item.obj.id) + '">AutoFill</button>' +
+                  '<span class="small text-secondary">Liest alle Varianten aus der Quellspalte.</span>' +
+                  '<span class="badge text-bg-light" data-picklist-count="' + esc(item.mapping.targetField) + '-' + esc(item.obj.id) + '">' + countPicklistValues(buildPicklistText(item.mapping.picklistValues)) + ' Werte</span>' +
+                '</div>' +
+                '<textarea class="form-control form-control-sm" rows="5" placeholder="Ein Wert pro Zeile" data-picklist-values="' + esc(item.mapping.targetField) + '-' + esc(item.obj.id) + '">' + esc(buildPicklistText(item.mapping.picklistValues)) + '</textarea>' +
+                '<div class="small text-secondary mt-1">Jede Zeile wird als Picklist-Wert angelegt.</div>' +
+              '</div>' +
+            '</td>' +
+            '<td><button class="btn btn-sm btn-outline-primary" data-create-field-obj="' + esc(item.obj.id) + '" data-create-field-name="' + esc(item.mapping.targetField) + '" data-create-source-column="' + esc(item.mapping.sourceColumn || '') + '">Anlegen</button></td></tr>'
           ).join('') + '</tbody></table>';
 
+        const updatePicklistValueState = (typeKey) => {
+          const textarea = container.querySelector('[data-picklist-values="' + typeKey + '"]');
+          const countEl = container.querySelector('[data-picklist-count="' + typeKey + '"]');
+          const values = String(textarea?.value || '').split(/\\r?\\n/).map((value) => value.trim()).filter(Boolean);
+          const createBtn = container.querySelector('[data-create-field-obj][data-field-type-key="' + typeKey + '"]');
+          const fieldName = createBtn ? createBtn.getAttribute('data-create-field-name') : '';
+          const objectId = createBtn ? createBtn.getAttribute('data-create-field-obj') : '';
+          const obj = (migState.objects || []).find((entry) => entry.id === objectId);
+          const mapping = obj ? (obj.fieldMappings || []).find((entry) => entry.targetField === fieldName) : null;
+          if (mapping) {
+            mapping.picklistValues = values;
+          }
+          if (countEl) {
+            countEl.textContent = values.length + ' Werte';
+          }
+        };
+
+        const togglePicklistConfig = (typeKey) => {
+          const typeSelect = container.querySelector('[data-field-type="' + typeKey + '"]');
+          const configPanel = container.querySelector('[data-picklist-config="' + typeKey + '"]');
+          if (!typeSelect || !configPanel) return;
+          configPanel.classList.toggle('d-none', typeSelect.value !== 'Picklist');
+        };
+
+        container.querySelectorAll('[data-field-type]').forEach((select) => {
+          const typeKey = select.getAttribute('data-field-type');
+          togglePicklistConfig(typeKey);
+          select.addEventListener('change', () => togglePicklistConfig(typeKey));
+        });
+
+        container.querySelectorAll('[data-picklist-autofill]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const typeKey = btn.getAttribute('data-picklist-autofill');
+            const createBtn = container.querySelector('[data-create-field-obj][data-create-field-name][data-field-type-key="' + typeKey + '"]');
+            const objectId = createBtn ? createBtn.getAttribute('data-create-field-obj') : null;
+            const sourceColumn = createBtn ? createBtn.getAttribute('data-create-source-column') : null;
+            const textarea = container.querySelector('[data-picklist-values="' + typeKey + '"]');
+            if (!objectId || !sourceColumn || !textarea) return;
+            btn.disabled = true;
+            const originalText = btn.textContent;
+            btn.textContent = '…';
+            try {
+              const res = await fetch('/api/migrations/' + encodeURIComponent(migState.id) + '/objects/' + encodeURIComponent(objectId) + '/distinct-values?column=' + encodeURIComponent(sourceColumn));
+              const result = await res.json();
+              if (!res.ok) throw new Error(result.error || 'Fehler');
+              const values = Array.isArray(result.values) ? result.values : [];
+              textarea.value = values.join('\\n');
+              updatePicklistValueState(typeKey);
+            } catch (err) {
+              alert('Fehler: ' + (err instanceof Error ? err.message : String(err)));
+            } finally {
+              btn.disabled = false;
+              btn.textContent = originalText || 'AutoFill';
+            }
+          });
+        });
+
+        container.querySelectorAll('[data-picklist-values]').forEach((textarea) => {
+          const typeKey = textarea.getAttribute('data-picklist-values');
+          updatePicklistValueState(typeKey);
+          textarea.addEventListener('input', () => updatePicklistValueState(typeKey));
+        });
+
         container.querySelectorAll('[data-create-field-obj]').forEach((btn) => {
+          const typeKey = btn.getAttribute('data-create-field-name') + '-' + btn.getAttribute('data-create-field-obj');
+          btn.setAttribute('data-field-type-key', typeKey);
           btn.addEventListener('click', async () => {
             const objId = btn.getAttribute('data-create-field-obj');
             const fieldName = btn.getAttribute('data-create-field-name');
             const typeKey = fieldName + '-' + objId;
             const typeSelect = container.querySelector('[data-field-type="' + typeKey + '"]');
-            const fieldType = typeSelect ? typeSelect.value : 'Text';
+            const fieldType = typeSelect ? typeSelect.value : inferMigFieldCreationType({ targetField: fieldName });
+            const picklistValuesEl = container.querySelector('[data-picklist-values="' + typeKey + '"]');
             const obj = migState.objects.find((o) => o.id === objId);
             if (!obj) return;
+            const mapping = (obj.fieldMappings || []).find((m) => m.targetField === fieldName);
+            if (!mapping) return;
+            const picklistValues = fieldType === 'Picklist'
+              ? String(picklistValuesEl?.value || '').split(/\\r?\\n/).map((value) => value.trim()).filter(Boolean)
+              : [];
+            if (fieldType === 'Picklist' && !picklistValues.length) {
+              alert('Bitte zuerst Picklist-Werte eintragen oder per AutoFill laden.');
+              return;
+            }
             btn.disabled = true; btn.textContent = '…';
             try {
-              const res = await fetch('/api/salesforce/create-field', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ objectApiName: obj.salesforceObject, fieldApiName: fieldName, fieldType, instanceId: state.instanceId })
-              });
-              const result = await res.json();
-              if (!res.ok) throw new Error(result.error || 'Fehler');
-
-              obj._existingFieldNames = Array.from(new Set([...(obj._existingFieldNames || []), String(fieldName).toLowerCase()]));
-              const mapped = (obj.fieldMappings || []).find((m) => m.targetField === fieldName);
-              if (mapped) {
-                mapped._isMissing = false;
-              }
+              mapping.picklistValues = picklistValues;
+              const created = await createMigMissingField(obj, mapping, fieldType, picklistValues);
 
               btn.className = 'btn btn-sm btn-success'; btn.textContent = '✓ Angelegt';
               const resultDiv = document.getElementById('mig-create-fields-result');
-              if (resultDiv) resultDiv.innerHTML += '<div class="alert alert-success py-1 small mt-1">' + esc(obj.salesforceObject + '.' + fieldName) + ' erfolgreich angelegt.</div>';
+              if (resultDiv) resultDiv.innerHTML += '<div class="alert alert-success py-1 small mt-1">' + esc(obj.salesforceObject + '.' + created.fullFieldName) + (created.result && created.result.action === 'exists' ? ' existiert bereits.' : ' erfolgreich angelegt.') + '</div>';
               renderMigMissingFields();
             } catch (err) {
               btn.className = 'btn btn-sm btn-danger'; btn.textContent = 'Fehler';
@@ -6137,6 +8543,7 @@ function htmlShell(): string {
       function renderMigReview() {
         const el = document.getElementById('mig-review-summary');
         if (!el) return;
+        resetMigTransientUi();
         const ordered = [...migState.executionPlan].sort((a, b) => a.order - b.order);
         el.innerHTML = '<div class="card soft-card"><div class="card-body"><h6>' + esc(migState.name) + '</h6>' +
           '<p class="text-secondary small">' + esc(migState.description || '') + '</p>' +
@@ -6144,10 +8551,13 @@ function htmlShell(): string {
           ordered.map((step) => {
             const obj = migState.objects.find((o) => o.id === step.objectId);
             if (!obj) return '';
+            const fileSummary = renderMigFileSummary(obj);
             return '<li>' + esc(obj.salesforceObject) + ' — ' + esc(obj.operation) +
               ' — Modus: ' + esc(obj.processingMode === 'file' ? 'Datei direkt' : 'SQLite-Staging') +
               ' — Datei: <code>' + esc(obj.filePath || '(keine)') + '</code>' +
-              ' — Felder gemappt: ' + (obj.fieldMappings || []).length + '</li>';
+              ' — Felder gemappt: ' + (obj.fieldMappings || []).length +
+              (fileSummary ? '<div class="small text-secondary mt-1">' + esc(fileSummary) + '</div>' : '') +
+              '</li>';
           }).join('') +
           '</ol>' +
           (migState.dependencies.length ? '<strong>Abhängigkeiten:</strong><ul>' +
@@ -6156,7 +8566,85 @@ function htmlShell(): string {
               const to = migState.objects.find((o) => o.id === dep.toObjectId);
               return '<li>' + esc(from?.salesforceObject || '') + ' → ' + esc(to?.salesforceObject || '') + '</li>';
             }).join('') + '</ul>' : '') +
+          '<div id="mig-preflight-summary" class="mt-3"></div>' +
           '</div></div>';
+        renderMigPreflightWarnings();
+        loadMigPreflightWarnings();
+        if (migState.status === 'running' || migState.activeRunVisible) {
+          renderMigRunProgress();
+          renderMigRunResult();
+        }
+        if (migState.status === 'running') {
+          pollMigRunProgress();
+        }
+      }
+
+      function renderMigPreflightWarnings() {
+        const el = document.getElementById('mig-preflight-summary');
+        if (!el) return;
+
+        if (migState.preflightWarningsLoading) {
+          el.innerHTML = '<div class="alert alert-light border small mb-0">Pruefe Salesforce-Dubletten fuer Upserts…</div>';
+          return;
+        }
+
+        const items = Array.isArray(migState.preflightWarnings?.items) ? migState.preflightWarnings.items : [];
+        if (!items.length) {
+          el.innerHTML = '<div class="alert alert-success small mb-0">Vorab-Check: Keine mehrdeutigen External-ID-Treffer in Salesforce gefunden.</div>';
+          return;
+        }
+
+        el.innerHTML = '<div class="alert alert-warning small mb-0">' +
+          '<strong>Vorab-Check:</strong> Es wurden ' + items.reduce((sum, item) => sum + Number(item.affectedRecordCount || 0), 0) +
+          ' Datensaetze mit mehrdeutiger External ID in Salesforce gefunden.' +
+          items.map((item) => {
+            const preview = (item.conflicts || []).slice(0, 10).map((conflict) =>
+              '<li><code>' + esc(conflict.value) + '</code> — Zeilen ' + esc((conflict.rowIndexes || []).join(', ')) +
+              ' — Salesforce IDs: ' + esc((conflict.existingIds || []).join(', ')) + '</li>'
+            ).join('');
+            const remaining = Math.max(0, Number(item.conflictCount || 0) - 10);
+            return '<div class="mt-2"><strong>' + esc(item.salesforceObject) + '</strong> via <code>' + esc(item.externalIdField) + '</code>: ' +
+              Number(item.conflictCount || 0) + ' Konflikte / ' + Number(item.affectedRecordCount || 0) + ' betroffene Zeilen' +
+              '<ul class="mt-1 mb-0">' + preview + (remaining ? '<li>… und ' + remaining + ' weitere</li>' : '') + '</ul></div>';
+          }).join('') +
+          '</div>';
+      }
+
+      async function loadMigPreflightWarnings(force) {
+        if (!migState.id) {
+          migState.preflightWarnings = { items: [] };
+          renderMigPreflightWarnings();
+          return migState.preflightWarnings;
+        }
+        if (!force && migState.preflightWarnings) {
+          renderMigPreflightWarnings();
+          return migState.preflightWarnings;
+        }
+        if (migState.preflightWarningsLoading) {
+          return migState.preflightWarnings;
+        }
+
+        migState.preflightWarningsLoading = true;
+        renderMigPreflightWarnings();
+        try {
+          const res = await fetch('/api/migrations/' + encodeURIComponent(migState.id) + '/preflight');
+          const result = await res.json();
+          if (!res.ok) throw new Error(result.error || 'Fehler');
+          migState.preflightWarnings = result;
+          return result;
+        } catch (err) {
+          migState.preflightWarnings = { items: [], error: err instanceof Error ? err.message : String(err) };
+          const el = document.getElementById('mig-preflight-summary');
+          if (el) {
+            el.innerHTML = '<div class="alert alert-secondary small mb-0">Vorab-Check konnte nicht geladen werden: ' + esc(migState.preflightWarnings.error) + '</div>';
+          }
+          return migState.preflightWarnings;
+        } finally {
+          migState.preflightWarningsLoading = false;
+          if (!migState.preflightWarnings?.error) {
+            renderMigPreflightWarnings();
+          }
+        }
       }
 
       function renderMigDepSelects() {
@@ -6175,13 +8663,15 @@ function htmlShell(): string {
         if (nameEl) migState.name = nameEl.value.trim() || migState.name;
         if (descEl) migState.description = descEl.value.trim();
 
+        migState.objects = sanitizeMigObjects(migState.objects);
+
         const payload = {
           id: migState.id,
           name: migState.name,
           description: migState.description,
           instanceId: state.instanceId || undefined,
           status: 'draft',
-          objects: migState.objects,
+          objects: sanitizeMigObjects(migState.objects),
           dependencies: migState.dependencies,
           executionPlan: migState.executionPlan
         };
@@ -6190,31 +8680,207 @@ function htmlShell(): string {
         const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         const saved = await res.json();
         if (!migState.id) migState.id = saved.id;
+        migState.status = String(saved.status || migState.status || 'draft');
         return saved;
       }
 
-      function openMigWizard(migration) {
+      function openMigWizard(migration, options) {
         migState.id = migration ? migration.id : null;
         migState.step = 1;
-        migState.name = migration ? migration.name : '';
-        migState.description = migration ? (migration.description || '') : '';
-        migState.objects = migration ? JSON.parse(JSON.stringify(migration.objects || [])) : [];
+        migState.status = migration ? String(migration.status || 'draft') : 'draft';
+        migState.activeRunVisible = migState.status === 'running';
+        migState.name = migration ? migration.name : (options && options.name ? options.name : '');
+        migState.description = migration ? (migration.description || '') : (options && options.description ? options.description : '');
+        migState.objects = migration ? sanitizeMigObjects(migration.objects || []) : [];
         migState.dependencies = migration ? JSON.parse(JSON.stringify(migration.dependencies || [])) : [];
         migState.executionPlan = migration ? JSON.parse(JSON.stringify(migration.executionPlan || [])) : [];
         migState.sfObjects = [];
         migState.lastRunResult = migration ? JSON.parse(JSON.stringify(migration.lastRunResult || null)) : null;
+        migState.preflightWarnings = null;
+        migState.preflightWarningsLoading = false;
+        migState.pendingImports = options && Array.isArray(options.pendingImports)
+          ? options.pendingImports.slice()
+          : [];
+        migState.pendingImportInProgress = false;
+        migState.pendingImportSuggestions = options && Array.isArray(options.pendingImportSuggestions)
+          ? options.pendingImportSuggestions.slice()
+          : [];
+        migState.pendingImportAnalysis = options && options.pendingImportAnalysis
+          ? options.pendingImportAnalysis
+          : null;
 
         const nameEl = document.getElementById('mig-name');
         const descEl = document.getElementById('mig-description');
         if (nameEl) nameEl.value = migState.name;
         if (descEl) descEl.value = migState.description;
 
+        resetMigTransientUi();
+
         renderMigWizardSteps();
         renderMigSelectedObjects();
+        renderMigPendingImportHint();
+        renderMigImportSuggestions();
 
         const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('migration-modal'));
         document.getElementById('migration-modal-title').textContent = migration ? 'Migration bearbeiten: ' + migration.name : 'Neue Migration';
         modal.show();
+      }
+
+      async function startMigrationImportFromFiles(files) {
+        const importFiles = Array.isArray(files) ? files.filter(Boolean) : [];
+        if (!importFiles.length) {
+          return;
+        }
+
+        const unsupportedFile = importFiles.find((file) => !isSupportedMigrationImportFile(file));
+        if (unsupportedFile) {
+          throw new Error('Unterstuetzte Dateitypen sind CSV, TXT, JSON und Excel.');
+        }
+
+        const importEntries = (await Promise.all(importFiles.map(async (file) => {
+          const analysis = await requestJson('/api/migrations/analyze-import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileName: file.name,
+              contentBase64: await fileToBase64(file)
+            })
+          });
+          const sheetAnalyses = Array.isArray(analysis && analysis.sheets) && analysis.sheets.length
+            ? analysis.sheets
+            : [analysis];
+
+          return sheetAnalyses.map((sheetAnalysis) => {
+            const suggestions = Array.isArray(sheetAnalysis && sheetAnalysis.suggestions) ? sheetAnalysis.suggestions : [];
+            const topSuggestion = suggestions[0] || null;
+            const hasStrongSuggestion = !!topSuggestion && Number(topSuggestion.score || 0) >= 70;
+            return {
+              id: migUuidV4(),
+              file,
+              fileName: file.name,
+              sourceFileName: file.name,
+              sheetName: sheetAnalysis && sheetAnalysis.sheetName ? sheetAnalysis.sheetName : '',
+              includeInMigration: true,
+              analysis: {
+                format: analysis && analysis.format ? analysis.format : '',
+                charset: analysis && analysis.charset ? analysis.charset : 'utf8',
+                delimiter: analysis && analysis.delimiter ? analysis.delimiter : ';',
+                headers: Array.isArray(sheetAnalysis && sheetAnalysis.headers) ? sheetAnalysis.headers.slice() : [],
+                recordCount: sheetAnalysis && typeof sheetAnalysis.recordCount === 'number' ? sheetAnalysis.recordCount : 0,
+                sheetName: sheetAnalysis && sheetAnalysis.sheetName ? sheetAnalysis.sheetName : ''
+              },
+              suggestions,
+              recommendedObjectApiName: hasStrongSuggestion ? topSuggestion.objectApiName : '',
+              recommendedObjectLabel: hasStrongSuggestion ? (topSuggestion.label || topSuggestion.objectApiName) : ''
+            };
+          });
+        }))).flat();
+
+        const recommendationCounts = importEntries.reduce((acc, entry) => {
+          const key = String(entry.recommendedObjectApiName || '');
+          if (!key) {
+            return acc;
+          }
+          acc[key] = (acc[key] || 0) + 1;
+          return acc;
+        }, {});
+
+        const initialObjects = importEntries
+          .filter((entry) => entry.recommendedObjectApiName && recommendationCounts[entry.recommendedObjectApiName] === 1)
+          .map((entry) => ({
+            id: migUuidV4(),
+            salesforceObject: entry.recommendedObjectApiName,
+            salesforceObjectLabel: entry.recommendedObjectLabel || entry.recommendedObjectApiName,
+            processingMode: 'sqlite',
+            filePath: '',
+            fileSheetName: entry.sheetName || '',
+            availableSheetNames: entry.sheetName ? [entry.sheetName] : [],
+            fileColumns: [],
+            fieldMappings: [],
+            operation: 'insert'
+          }));
+
+        const primaryFile = importEntries[0];
+        const baseName = importEntries.length === 1
+          ? (getMigImportDisplayName(primaryFile.fileName) || 'Dateiimport')
+          : (importEntries.length + ' Dateien');
+        openMigWizard(null, {
+          name: 'Import ' + baseName,
+          description: importEntries.length === 1
+            ? ('Erstellt aus Importquelle ' + getMigPendingImportLabel(primaryFile))
+            : ('Erstellt aus ' + importEntries.length + ' Importquellen'),
+          pendingImports: importEntries,
+          pendingImportSuggestions: importEntries.length === 1 ? importEntries[0].suggestions : [],
+          pendingImportAnalysis: importEntries.length === 1 ? importEntries[0].analysis : null
+        });
+        if (initialObjects.length) {
+          migState.objects = initialObjects;
+          renderMigSelectedObjects();
+        }
+        await migSave();
+        showToast(importEntries.length === 1
+          ? 'Migrationsentwurf angelegt. Wähle jetzt Objekt und Mappen-Zuordnung aus.'
+          : 'Migrationsentwurf für ' + importEntries.length + ' Importquellen angelegt.');
+      }
+
+      function setupMigrationDropzone() {
+        const dropzone = document.getElementById('migration-dropzone');
+        const input = document.getElementById('migration-dropzone-input');
+        const pickButton = document.getElementById('migration-dropzone-pick');
+        if (!dropzone || !input || dropzone.dataset.bound === '1') {
+          return;
+        }
+
+        dropzone.dataset.bound = '1';
+
+        const handleFiles = async (files) => {
+          try {
+            await startMigrationImportFromFiles(files);
+          } catch (error) {
+            alert('Fehler: ' + (error instanceof Error ? error.message : String(error)));
+          }
+        };
+
+        pickButton?.addEventListener('click', () => {
+          input.value = '';
+          input.click();
+        });
+
+        input.addEventListener('change', async () => {
+          const files = input.files ? Array.from(input.files) : [];
+          if (!files.length) {
+            return;
+          }
+
+          await handleFiles(files);
+          input.value = '';
+        });
+
+        ['dragenter', 'dragover'].forEach((eventName) => {
+          dropzone.addEventListener(eventName, (event) => {
+            event.preventDefault();
+            dropzone.classList.add('is-active');
+          });
+        });
+
+        ['dragleave', 'dragend'].forEach((eventName) => {
+          dropzone.addEventListener(eventName, () => {
+            dropzone.classList.remove('is-active');
+          });
+        });
+
+        dropzone.addEventListener('drop', async (event) => {
+          event.preventDefault();
+          dropzone.classList.remove('is-active');
+          const files = event.dataTransfer && event.dataTransfer.files
+            ? Array.from(event.dataTransfer.files).filter((file) => isSupportedMigrationImportFile(file))
+            : [];
+          if (!files.length) {
+            return;
+          }
+
+          await handleFiles(files);
+        });
       }
 
       async function renderMigrationList() {
@@ -6237,7 +8903,10 @@ function htmlShell(): string {
             '<td>' + esc(mig.name) + '</td>' +
             '<td>' + statusBadge(mig.status) + '</td>' +
             '<td>' + (mig.objects ? mig.objects.length : 0) + ' Objekte</td>' +
-            '<td>' + (mig.lastRunAt ? formatDate(mig.lastRunAt, 'short') : '-') + '</td>' +
+            '<td>' +
+            (mig.lastRunAt ? formatDate(mig.lastRunAt, 'short') : '-') +
+            (mig.lastRunAt ? '<div><a href="' + esc(getMigrationReportUrl(mig.id, true)) + '">Protokolldatei</a></div>' : '') +
+            '</td>' +
             '<td>' +
             '<div class="btn-group btn-group-sm">' +
             '<button class="btn btn-outline-primary" data-mig-edit="' + esc(mig.id) + '">Bearbeiten</button>' +
@@ -6281,13 +8950,22 @@ function htmlShell(): string {
       }
 
       // Wire up tab activation to load migration list
-      document.querySelector('[data-bs-target="#tab-migration"]')?.addEventListener('click', () => {
+      const migrationTabButton = document.querySelector('[data-bs-target="#tab-migration"]');
+      migrationTabButton?.addEventListener('click', () => {
         renderMigrationList();
       });
+      migrationTabButton?.addEventListener('shown.bs.tab', () => {
+        renderMigrationList();
+      });
+      if (migrationTabButton?.classList.contains('active')) {
+        renderMigrationList();
+      }
 
       document.getElementById('new-migration')?.addEventListener('click', () => {
         openMigWizard(null);
       });
+
+      setupMigrationDropzone();
 
       document.getElementById('mig-wizard-prev')?.addEventListener('click', () => {
         if (migState.step <= 1) return;
@@ -6308,21 +8986,63 @@ function htmlShell(): string {
           const resultEl = document.getElementById('mig-run-result');
           const nextBtn = document.getElementById('mig-wizard-next');
           const prevBtn = document.getElementById('mig-wizard-prev');
+          const createFieldsResultEl = document.getElementById('mig-create-fields-result');
           nextBtn.disabled = true; prevBtn.disabled = true;
           progressEl.classList.remove('d-none');
           resultEl.classList.add('d-none');
           try {
+            const autoCreatedFields = await autoCreateMigMissingFields();
+            if (createFieldsResultEl) {
+              createFieldsResultEl.innerHTML = autoCreatedFields.length
+                ? autoCreatedFields.map((item) => '<div class="alert alert-success py-1 small mt-1">' + esc(item.objectApiName + '.' + item.fieldName) + (item.action === 'exists' ? ' existiert bereits.' : ' automatisch angelegt.') + '</div>').join('')
+                : '';
+            }
             await migSave();
+            await loadMigPreflightWarnings(true);
+            migState.status = 'running';
+            migState.activeRunVisible = true;
+            const orderedObjects = getMigOrderedObjects();
+            migState.lastRunResult = {
+              startedAt: new Date().toISOString(),
+              steps: orderedObjects.map((obj, index) => ({
+                objectId: obj.id,
+                salesforceObject: obj.salesforceObject,
+                status: index === 0 ? 'running' : 'pending',
+                recordsProcessed: index === 0 ? Math.max(0, Number(obj.fileRecordCount || 0) || 0) : 0,
+                recordsSucceeded: 0,
+                recordsFailed: 0
+              }))
+            };
+            renderMigRunProgress();
+            pollMigRunProgress();
             const res = await fetch('/api/migrations/' + encodeURIComponent(migState.id) + '/run', { method: 'POST' });
             const result = await res.json();
+            if (!res.ok) {
+              throw new Error(result.error || 'Migration konnte nicht gestartet werden');
+            }
+            if (result && result.accepted) {
+              migState.status = 'running';
+              migState.activeRunVisible = true;
+              if (result.lastRunResult) {
+                migState.lastRunResult = result.lastRunResult;
+              }
+              renderMigRunProgress();
+              pollMigRunProgress();
+              resultEl.classList.remove('d-none');
+              resultEl.innerHTML = '<div class="alert alert-info">Migration wurde gestartet. Fortschritt wird automatisch aktualisiert.</div>';
+              return;
+            }
             migState.lastRunResult = result;
-            progressEl.classList.add('d-none');
+            migState.status = result.steps.every((s) => s.status !== 'error') ? 'done' : 'error';
+            migState.activeRunVisible = true;
+            stopMigRunProgressPolling();
+            renderMigRunProgress();
             resultEl.classList.remove('d-none');
             const allOk = result.steps.every((s) => s.status !== 'error');
             resultEl.innerHTML = '<div class="alert ' + (allOk ? 'alert-success' : 'alert-warning') + '">' +
               (allOk ? '✓ Migration erfolgreich abgeschlossen.' : '⚠ Migration mit Fehlern abgeschlossen.') +
               '</div>' +
-              (result.reportPath ? '<div class="alert alert-info py-2 small">Protokoll erzeugt: <code>' + esc(result.reportPath) + '</code></div>' : '') +
+              (result.reportPath ? '<div class="alert alert-info py-2 small">Protokoll erzeugt: <a href="' + esc(getMigrationReportUrl(migState.id, true)) + '">Datei öffnen</a><div class="text-secondary mt-1"><code>' + esc(result.reportPath) + '</code></div></div>' : '') +
               '<table class="table table-sm"><thead><tr><th>Objekt</th><th>Verarbeitet</th><th>OK</th><th>Fehler</th><th>Status</th></tr></thead><tbody>' +
               (result.steps || []).map((s) =>
                 '<tr><td>' + esc(s.salesforceObject) + '</td><td>' + (s.recordsProcessed || 0) +
@@ -6573,7 +9293,8 @@ function htmlShell(): string {
             renderMigrationList();
             return;
           } catch (err) {
-            progressEl.classList.add('d-none');
+            migState.status = 'error';
+            stopMigRunProgressPolling();
             resultEl.classList.remove('d-none');
             resultEl.innerHTML = '<div class="alert alert-danger">Fehler: ' + esc(err instanceof Error ? err.message : String(err)) + '</div>';
           } finally {
@@ -6644,8 +9365,11 @@ function htmlShell(): string {
             const name = btn.getAttribute('data-sf-obj');
             const label = btn.getAttribute('data-sf-label');
             if (migState.objects.some((o) => o.salesforceObject === name)) return;
-            migState.objects.push({ id: migUuidV4(), salesforceObject: name, salesforceObjectLabel: label, processingMode: 'sqlite', filePath: '', fileColumns: [], fieldMappings: [], operation: 'insert' });
+            migState.objects.push({ id: migUuidV4(), salesforceObject: name, salesforceObjectLabel: label, processingMode: 'sqlite', filePath: '', fileSheetName: '', availableSheetNames: [], fileColumns: [], fieldMappings: [], operation: 'insert' });
             renderMigSelectedObjects();
+            consumePendingMigrationImportIfPossible().catch((error) => {
+              alert('Fehler: ' + (error instanceof Error ? error.message : String(error)));
+            });
             btn.className = 'btn btn-sm btn-success disabled me-1 mb-1';
           });
         });
@@ -6656,8 +9380,11 @@ function htmlShell(): string {
         const name = input ? input.value.trim() : '';
         if (!name) return;
         if (migState.objects.some((o) => o.salesforceObject === name)) { alert('Objekt bereits hinzugefügt.'); return; }
-        migState.objects.push({ id: migUuidV4(), salesforceObject: name, salesforceObjectLabel: name, processingMode: 'sqlite', filePath: '', fileColumns: [], fieldMappings: [], operation: 'insert' });
+        migState.objects.push({ id: migUuidV4(), salesforceObject: name, salesforceObjectLabel: name, processingMode: 'sqlite', filePath: '', fileSheetName: '', availableSheetNames: [], fileColumns: [], fieldMappings: [], operation: 'insert' });
         renderMigSelectedObjects();
+        consumePendingMigrationImportIfPossible().catch((error) => {
+          alert('Fehler: ' + (error instanceof Error ? error.message : String(error)));
+        });
         if (input) input.value = '';
       });
 
@@ -6735,13 +9462,16 @@ export function createAppServer(
         const file = await fs.readFile(filePath);
         res.writeHead(200, {
           "Content-Type": contentType,
-          "Cache-Control": "public, max-age=31536000"
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          Pragma: "no-cache",
+          Expires: "0"
         });
         res.end(file);
       };
 
       const instanceId = requestUrl.searchParams.get("instanceId") || undefined;
       const connectorTestMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/test$/) : null;
+      const connectorDeleteMatch = req.method === "DELETE" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)$/) : null;
       const scheduleRunMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/run$/) : null;
       const scheduleDryRunMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/dry-run$/) : null;
       const scheduleDuplicateMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/duplicate$/) : null;
@@ -6783,6 +9513,11 @@ export function createAppServer(
 
       if (req.method === "GET" && requestUrl.pathname === "/assets/agent-ui.css") {
         await sendFile(AGENT_UI_CSS_FILE, "text/css; charset=utf-8");
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/assets/template-store.css") {
+        await sendFile(TEMPLATE_STORE_CSS_FILE, "text/css; charset=utf-8");
         return;
       }
 
@@ -6885,6 +9620,42 @@ export function createAppServer(
         return;
       }
 
+      if (req.method === "POST" && requestUrl.pathname === "/api/migrations/analyze-import") {
+        const body = (await readJsonBody(req)) as {
+          fileName?: string;
+          contentBase64?: string;
+        };
+        const result = await adminDataService.analyzeMigrationImportFile(
+          String(body.fileName || "").trim(),
+          String(body.contentBase64 || "").trim(),
+          instanceId
+        );
+        sendJson(200, result);
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/templates") {
+        const kindParam = requestUrl.searchParams.get("kind");
+        const kind = kindParam === "connector" || kindParam === "schedule" ? kindParam : undefined;
+        const templates = await adminDataService.listTemplates(kind);
+        sendJson(200, { items: templates, total: templates.length });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/templates") {
+        const body = await readJsonBody(req);
+        const result = await adminDataService.saveTemplate(body as any);
+        sendJson(200, result);
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname.match(/^\/api\/templates\/([^/]+)\/apply$/)) {
+        const templateId = decodeURIComponent(requestUrl.pathname.replace(/^\/api\/templates\/([^/]+)\/apply$/, "$1"));
+        const result = await adminDataService.applyTemplate(templateId, instanceId);
+        sendJson(200, result);
+        return;
+      }
+
       if (req.method === "GET" && requestUrl.pathname === "/api/schedules") {
         const schedules = await adminDataService.listSchedules(instanceId);
         sendJson(200, { items: schedules, total: schedules.length });
@@ -6950,6 +9721,13 @@ export function createAppServer(
         return;
       }
 
+      if (connectorDeleteMatch) {
+        const connectorId = decodeURIComponent(connectorDeleteMatch[1]);
+        const result = await adminDataService.deleteConnector(connectorId, instanceId);
+        sendJson(200, result);
+        return;
+      }
+
       if (connectorTestMatch) {
         const connectorId = decodeURIComponent(connectorTestMatch[1]);
         const result = await adminDataService.testConnector(connectorId, instanceId);
@@ -6960,6 +9738,26 @@ export function createAppServer(
       if (req.method === "GET" && requestUrl.pathname === "/api/runs") {
         const runs = await adminDataService.listRuns(50, instanceId);
         sendJson(200, { items: runs, total: runs.length });
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/runs/stale") {
+        const runs = await adminDataService.listStaleRuns(50, instanceId);
+        sendJson(200, { items: runs, total: runs.length });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/runs/release-stale") {
+        const body = (await readJsonBody(req)) as { runIds?: string[] };
+        const result = await adminDataService.releaseStaleRuns(body.runIds, instanceId);
+        sendJson(200, result);
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/cancel$/)) {
+        const runId = decodeURIComponent(requestUrl.pathname.replace(/^\/api\/runs\/([^/]+)\/cancel$/, "$1"));
+        const result = await adminDataService.cancelRun(runId, instanceId);
+        sendJson(200, result);
         return;
       }
 
@@ -6980,6 +9778,7 @@ export function createAppServer(
         const start = requestUrl.searchParams.get("start");
         const end = requestUrl.searchParams.get("end");
         const typeParam = requestUrl.searchParams.get("type") || "all";
+        const connector = requestUrl.searchParams.get("connector") || undefined;
         const type = typeParam === "error" ? "error" : "all";
         const limit = Number(requestUrl.searchParams.get("limit") || 300);
 
@@ -6988,7 +9787,7 @@ export function createAppServer(
           return;
         }
 
-        const logs = await adminDataService.listLogsByRange(start, end, type, limit, instanceId);
+        const logs = await adminDataService.listLogsByRange(start, end, type, limit, connector, instanceId);
         sendJson(200, { items: logs, total: logs.length });
         return;
       }
@@ -7022,16 +9821,50 @@ export function createAppServer(
         return;
       }
 
+      const migrationDistinctValuesMatch = requestUrl.pathname.match(/^\/api\/migrations\/([^/]+)\/objects\/([^/]+)\/distinct-values$/);
+      if (migrationDistinctValuesMatch && req.method === "GET") {
+        const migrationId = decodeURIComponent(migrationDistinctValuesMatch[1]);
+        const objectId = decodeURIComponent(migrationDistinctValuesMatch[2]);
+        const columnName = String(requestUrl.searchParams.get("column") || "").trim();
+        if (!columnName) {
+          sendJson(400, { error: "column parameter required" });
+          return;
+        }
+        const values = await adminDataService.getMigrationSourceDistinctValues(migrationId, objectId, columnName);
+        sendJson(200, { values });
+        return;
+      }
+
+      const migrationPreflightMatch = requestUrl.pathname.match(/^\/api\/migrations\/([^/]+)\/preflight$/);
+      if (migrationPreflightMatch && req.method === "GET") {
+        const migrationId = decodeURIComponent(migrationPreflightMatch[1]);
+        const result = await adminDataService.getMigrationPreflightWarnings(migrationId, instanceId);
+        sendJson(200, result);
+        return;
+      }
+
       if (req.method === "POST" && requestUrl.pathname === "/api/salesforce/create-field") {
-        const body = (await readJsonBody(req)) as { objectApiName?: string; fieldApiName?: string; fieldType?: string };
+        const body = (await readJsonBody(req)) as {
+          objectApiName?: string;
+          fieldApiName?: string;
+          fieldType?: string;
+          picklistValues?: string[];
+          externalId?: boolean;
+          unique?: boolean;
+        };
         if (!body.objectApiName || !body.fieldApiName) {
           sendJson(400, { error: "objectApiName and fieldApiName required" });
+          return;
+        }
+        if (body.fieldType === 'Picklist' && (!Array.isArray(body.picklistValues) || !body.picklistValues.length)) {
+          sendJson(400, { error: "picklistValues required for Picklist fields" });
           return;
         }
         const result = await adminDataService.createSalesforceCustomField(
           body.objectApiName,
           body.fieldApiName,
           body.fieldType || "Text",
+          { picklistValues: body.picklistValues, externalId: body.externalId, unique: body.unique },
           instanceId
         );
         sendJson(200, result);
@@ -7126,6 +9959,7 @@ export function createAppServer(
 
       const migrationIdMatch = requestUrl.pathname.match(/^\/api\/migrations\/([^/]+)$/);
       const migrationRunMatch = requestUrl.pathname.match(/^\/api\/migrations\/([^/]+)\/run$/);
+      const migrationReportMatch = requestUrl.pathname.match(/^\/api\/migrations\/([^/]+)\/report$/);
       const migrationAnalyzeMatch = requestUrl.pathname.match(/^\/api\/migrations\/([^/]+)\/analyze-file\/([^/]+)$/);
         const failedRecordsMatch = requestUrl.pathname.match(/^\/api\/migrations\/([^/]+)\/failed-records\/([^/]+)$/);
         const retryFailedRecordsMatch = requestUrl.pathname.match(/^\/api\/migrations\/([^/]+)\/failed-records\/([^/]+)\/([^/]+)\/retry$/);
@@ -7136,6 +9970,7 @@ export function createAppServer(
           objectId?: string;
           fileName?: string;
           contentBase64?: string;
+          sheetName?: string;
           charset?: string;
           delimiter?: string;
           textQualifier?: string;
@@ -7153,6 +9988,7 @@ export function createAppServer(
 
         const fileBuffer = Buffer.from(contentBase64, "base64");
         const analysis = await adminDataService.stageMigrationSourceFile(migrationId, objectId, fileName, fileBuffer, {
+          sheetName: String(body.sheetName || '').trim() || undefined,
           charset: String(body.charset || '').trim() || undefined,
           delimiter: body.delimiter,
           textQualifier: body.textQualifier
@@ -7164,6 +10000,8 @@ export function createAppServer(
           charset: analysis.charset,
           delimiter: analysis.delimiter,
           textQualifier: analysis.textQualifier,
+          sheetName: analysis.sheetName,
+          availableSheetNames: analysis.availableSheetNames,
           recordCount: analysis.recordCount,
           fields: analysis.fields,
           rows: analysis.rows,
@@ -7177,8 +10015,91 @@ export function createAppServer(
 
       if (migrationRunMatch && req.method === "POST") {
         const migId = decodeURIComponent(migrationRunMatch[1]);
-        const result = await adminDataService.runMigration(migId, instanceId || undefined);
-        sendJson(200, result);
+        const migration = adminDataService.getMigration(migId);
+        if (!migration) {
+          sendJson(404, { error: "Migration not found" });
+          return;
+        }
+
+        if (String(migration.status || "") === "running") {
+          sendJson(202, {
+            accepted: true,
+            migrationId: migId,
+            status: "running",
+            lastRunResult: migration.lastRunResult || null
+          });
+          return;
+        }
+
+        void adminDataService.runMigration(migId, instanceId || undefined).catch((err) => {
+          console.error("Migration run failed", {
+            migrationId: migId,
+            error: err instanceof Error ? err.message : String(err)
+          });
+        });
+
+        sendJson(202, {
+          accepted: true,
+          migrationId: migId,
+          status: "running",
+          lastRunResult: migration.lastRunResult || null
+        });
+        return;
+      }
+
+      if (migrationReportMatch && req.method === "GET") {
+        const migId = decodeURIComponent(migrationReportMatch[1]);
+        const migration = adminDataService.getMigration(migId);
+        if (!migration) {
+          sendJson(404, { error: "Migration not found" });
+          return;
+        }
+
+        const explicitReportPath = String(migration.lastRunResult?.reportPath || "").trim();
+        let reportFilePath = explicitReportPath
+          ? path.resolve(process.cwd(), explicitReportPath)
+          : "";
+
+        const fileExists = async (candidatePath: string) => {
+          if (!candidatePath) {
+            return false;
+          }
+
+          try {
+            await fs.access(candidatePath);
+            return true;
+          } catch {
+            return false;
+          }
+        };
+
+        if (!(await fileExists(reportFilePath))) {
+          const reportDir = path.join(process.cwd(), "artifacts", "migrations", migId, "reports");
+          if (!(await fileExists(reportDir))) {
+            sendJson(404, { error: "Report not found" });
+            return;
+          }
+
+          const candidates = (await fs.readdir(reportDir))
+            .filter((fileName: string) => fileName.endsWith('.md'))
+            .sort((a: string, b: string) => b.localeCompare(a, 'de'));
+
+          if (!candidates.length) {
+            sendJson(404, { error: "Report not found" });
+            return;
+          }
+
+          reportFilePath = path.join(reportDir, candidates[0]);
+        }
+
+        const reportContent = await fs.readFile(reportFilePath, 'utf8');
+        const reportFileName = path.basename(reportFilePath);
+        const asDownload = requestUrl.searchParams.get('download') === '1';
+        res.writeHead(200, {
+          'Content-Type': 'text/markdown; charset=utf-8',
+          'Content-Disposition': (asDownload ? 'attachment' : 'inline') + '; filename="' + reportFileName.replace(/"/g, '') + '"'
+        });
+        res.end(reportContent);
         return;
       }
 

@@ -45,6 +45,90 @@ function resolvePasswordOrToken(config: ConnectorConfig): string {
   return String(process.env[config.secretKey] || "").trim();
 }
 
+function resolveParameterValue(config: ConnectorConfig, key: string, envKey?: string): string {
+  const inlineValue = typeof config.parameters?.[key] === "string"
+    ? String(config.parameters[key]).trim()
+    : "";
+  if (inlineValue) {
+    return inlineValue;
+  }
+
+  if (envKey && typeof config.parameters?.[envKey] === "string") {
+    const envName = String(config.parameters[envKey]).trim();
+    if (envName) {
+      return String(process.env[envName] || "").trim();
+    }
+  }
+
+  return "";
+}
+
+async function fetchOAuth2Token(config: ConnectorConfig): Promise<string> {
+  const tokenUrl = resolveParameterValue(config, "tokenUrl");
+  if (!tokenUrl) {
+    throw new Error(`REST Connector ${config.name} benoetigt eine Token URL fuer OAuth2`);
+  }
+
+  const grantType = String(config.parameters?.grantType || "client_credentials").trim().toLowerCase() || "client_credentials";
+  if (grantType !== "client_credentials") {
+    throw new Error(`REST Connector ${config.name} unterstuetzt aktuell nur OAuth2 client_credentials`);
+  }
+
+  const clientId = resolveParameterValue(config, "clientId", "clientIdEnv");
+  const clientSecret = resolveParameterValue(config, "clientSecret", "clientSecretEnv");
+  if (!clientId || !clientSecret) {
+    throw new Error(`REST Connector ${config.name} benoetigt clientId und clientSecret fuer OAuth2 client_credentials`);
+  }
+
+  const scope = resolveParameterValue(config, "scope");
+  const audience = resolveParameterValue(config, "audience");
+  const body = new URLSearchParams();
+  body.set("grant_type", "client_credentials");
+  body.set("client_id", clientId);
+  body.set("client_secret", clientSecret);
+  if (scope) {
+    body.set("scope", scope);
+  }
+  if (audience) {
+    body.set("audience", audience);
+  }
+
+  const response = await fetch(tokenUrl, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: body.toString()
+  });
+
+  if (!response.ok) {
+    const rawText = await response.text();
+    throw new Error(`OAuth2 Token Request fehlgeschlagen (${response.status} ${response.statusText}): ${rawText.slice(0, 300)}`);
+  }
+
+  const rawText = await response.text();
+  let payload: unknown;
+  try {
+    payload = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    throw new Error("OAuth2 Token Antwort ist kein gueltiges JSON");
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("OAuth2 Token Antwort enthaelt kein gueltiges Objekt");
+  }
+
+  const token = typeof (payload as Record<string, unknown>).access_token === "string"
+    ? String((payload as Record<string, unknown>).access_token).trim()
+    : "";
+  if (!token) {
+    throw new Error("OAuth2 Token Antwort enthaelt kein access_token");
+  }
+
+  return token;
+}
+
 function toAbsoluteUrl(baseUrl: string, endpoint: string): string {
   const trimmedEndpoint = String(endpoint || "").trim();
   if (!trimmedEndpoint) {
@@ -206,9 +290,15 @@ function normalizeEcbExrSeriesRows(payload: unknown, limit?: number): Record<str
   return rows;
 }
 
-function applyAuthHeaders(config: ConnectorConfig, headers: Record<string, string>): void {
+async function applyAuthHeaders(config: ConnectorConfig, headers: Record<string, string>): Promise<void> {
   const authType = String(config.parameters?.authType || "none").trim().toLowerCase();
   const fallbackSecret = resolvePasswordOrToken(config);
+
+  if (authType === "oauth2") {
+    const token = await fetchOAuth2Token(config);
+    headers.Authorization = `Bearer ${token}`;
+    return;
+  }
 
   if (authType === "bearer") {
     const token = String(config.parameters?.token || fallbackSecret || "").trim();
@@ -230,11 +320,15 @@ function applyAuthHeaders(config: ConnectorConfig, headers: Record<string, strin
     return;
   }
 
-  if (authType === "apikey") {
-    const apiKeyHeader = String(config.parameters?.apiKeyHeader || "X-API-Key").trim() || "X-API-Key";
-    const apiKey = String(config.parameters?.apiKey || fallbackSecret || "").trim();
+  if (authType === "apikey" || authType === "api_key") {
+    const apiKeyHeader = String(config.parameters?.apiKeyHeader || config.parameters?.apiKeyName || "X-API-Key").trim() || "X-API-Key";
+    const apiKey = String(config.parameters?.apiKey || config.parameters?.apiKeyValue || fallbackSecret || "").trim();
     if (!apiKey) {
       throw new Error(`REST Connector ${config.name} benoetigt API-Key (parameters.apiKey oder Secret Key)`);
+    }
+    const apiKeyLocation = String(config.parameters?.apiKeyLocation || "header").trim().toLowerCase();
+    if (apiKeyLocation !== "header") {
+      throw new Error(`REST Connector ${config.name} unterstuetzt API-Key aktuell nur im Header`);
     }
     headers[apiKeyHeader] = apiKey;
   }
@@ -276,7 +370,7 @@ export async function fetchRestRows(
     }
   });
 
-  applyAuthHeaders(connectorConfig, headers);
+  await applyAuthHeaders(connectorConfig, headers);
 
   const hasBody = method !== "GET" && method !== "HEAD" && definition.body !== undefined;
   if (hasBody && !headers["Content-Type"]) {

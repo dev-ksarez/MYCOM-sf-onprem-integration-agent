@@ -1,5 +1,9 @@
 
 import { ConnectorConfig, SalesforceClient } from "../../clients/salesforce/salesforce-client";
+import {
+  isImportProfileSchedulerRuleDue,
+  type SchedulerDay
+} from "../../core/scheduler/import-profile-scheduler";
 import { MssqlDatabase } from "../../infrastructure/db/mssql";
 import { ConnectorResult } from "../../types/connector-result";
 import { GenericRecord } from "../../types/generic-record";
@@ -8,7 +12,6 @@ import { TransferContext } from "../../types/transfer-context";
 
 type PicklistSource = "global" | "object";
 type TargetMode = "object" | "picklist";
-type SchedulerDay = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 
 interface ImportProfileScheduleRule {
   days: SchedulerDay[];
@@ -510,7 +513,7 @@ export class SalesforceTargetAdapter implements TargetAdapter {
     }
 
     if (this.activeProfile.scheduler?.mode === "rules") {
-      return this.isRuleBasedSchedulerDue(new Date(now));
+      return isImportProfileSchedulerRuleDue(this.activeProfile.scheduler.rules, new Date(now));
     }
 
     if (!this.activeProfile.nextRunAt) {

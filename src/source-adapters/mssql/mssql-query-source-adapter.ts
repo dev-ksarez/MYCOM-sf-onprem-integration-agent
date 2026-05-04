@@ -5,6 +5,13 @@ import { MssqlDatabase } from "../../infrastructure/db/mssql";
 import { GenericRecord } from "../../types/generic-record";
 import { SourceAdapter } from "../../types/source-adapter";
 import { TransferContext } from "../../types/transfer-context";
+import {
+  DeltaConfig,
+  getRecordIdentifier,
+  getRecordValueByField,
+  normalizeCheckpointValue,
+  parseQuerySourceDefinition
+} from "../../utils/query-source-definition";
 
 function getRequiredString(parameters: Record<string, unknown>, key: string): string {
   const value = parameters[key];
@@ -83,7 +90,23 @@ function resolvePassword(config: ConnectorConfig): string {
 
 export class MssqlQuerySourceAdapter implements SourceAdapter {
   private readonly database: MssqlDatabase;
-  private readonly sqlQuery: string;
+  private readonly definition: ReturnType<typeof parseQuerySourceDefinition>;
+
+  private formatSqlLiteral(value: string): string {
+    if (/^0x[0-9a-f]+$/i.test(value) || /^-?\d+(\.\d+)?$/.test(value)) {
+      return value;
+    }
+    return `'${value.replace(/'/g, "''")}'`;
+  }
+
+  private appendDeltaFilter(queryText: string, delta: DeltaConfig, checkpointValue: string): string {
+    const baseQuery = queryText.replace(/;\s*$/, "").trim();
+    const orderMatch = baseQuery.match(/\s+ORDER\s+BY\s+[\s\S]*$/i);
+    const withoutOrder = orderMatch ? baseQuery.slice(0, orderMatch.index).trimEnd() : baseQuery;
+    const connector = /\bWHERE\b/i.test(withoutOrder) ? " AND " : " WHERE ";
+    const condition = `${delta.field} > ${this.formatSqlLiteral(checkpointValue)}`;
+    return `${withoutOrder}${connector}${condition} ORDER BY ${delta.field} ASC`;
+  }
 
   public constructor(config: ConnectorConfig, sqlQuery: string) {
     const server = getRequiredString(config.parameters, "server");
@@ -103,18 +126,37 @@ export class MssqlQuerySourceAdapter implements SourceAdapter {
       requestTimeout: config.timeoutMs
     });
 
-    this.sqlQuery = sqlQuery.trim();
+    this.definition = parseQuerySourceDefinition(sqlQuery);
   }
 
-  public async readRecords(_context: TransferContext): Promise<GenericRecord[]> {
-    if (!this.sqlQuery) {
+  public async readRecords(context: TransferContext): Promise<GenericRecord[]> {
+    if (!this.definition.queryText) {
       throw new Error("MSSQL source query must not be empty");
     }
 
-    const result = await this.database.query<Record<string, unknown>>(this.sqlQuery);
+    const delta = this.definition.delta;
+    const checkpointCursor = delta?.strategy === "datetime"
+      ? context.checkpoint?.value
+      : context.checkpoint?.recordId || context.checkpoint?.value;
+    const queryText = delta && checkpointCursor
+      ? this.appendDeltaFilter(this.definition.queryText, delta, checkpointCursor)
+      : this.definition.queryText;
+    const result = await this.database.query<Record<string, unknown>>(queryText);
 
     return result.recordset.map((row) => ({
-      values: { ...row }
+      values: { ...row },
+      checkpoint: delta
+        ? (() => {
+            const checkpointValue = normalizeCheckpointValue(getRecordValueByField(row, delta.field));
+            if (!checkpointValue) {
+              return undefined;
+            }
+            return {
+              value: checkpointValue,
+              recordId: getRecordIdentifier(row) || (delta.strategy === "id" ? checkpointValue : undefined)
+            };
+          })()
+        : undefined
     }));
   }
 }

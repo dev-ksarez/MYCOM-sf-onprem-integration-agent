@@ -52,6 +52,15 @@ export class DataTransferJob {
       "Starting data transfer job"
     );
 
+    this.logger.info(
+      {
+        runId: context.runId,
+        scheduleId: context.scheduleId,
+        phase: "source-read"
+      },
+      "Starting source read phase"
+    );
+
     const sourceRecords = await this.sourceAdapter.readRecords(context);
 
     this.logger.info(
@@ -60,6 +69,16 @@ export class DataTransferJob {
         recordsRead: sourceRecords.length
       },
       "Source records loaded"
+    );
+
+    this.logger.info(
+      {
+        runId: context.runId,
+        scheduleId: context.scheduleId,
+        phase: "mapping",
+        recordsRead: sourceRecords.length
+      },
+      "Starting record mapping phase"
     );
 
     const parsedDefinition = this.mappingDefinitionParser.parse(mappingDefinition);
@@ -71,11 +90,22 @@ export class DataTransferJob {
       })
     );
 
+    this.logger.info(
+      {
+        runId: context.runId,
+        scheduleId: context.scheduleId,
+        phase: "target-write",
+        mappedRecords: mappedRecords.length
+      },
+      "Starting target write phase"
+    );
+
     const results: ConnectorResult[] = await this.targetAdapter.writeRecords(mappedRecords, context);
 
     const successCount = results.filter((result) => result.success).length;
     const errorCount = results.length - successCount;
     const status = resolveStatus(successCount, errorCount);
+    const successfulSourceRecords = sourceRecords.filter((_record, index) => results[index]?.success);
 
     this.logger.info(
       {
@@ -88,6 +118,10 @@ export class DataTransferJob {
       "Data transfer job finished"
     );
 
+    const lastCheckpointRecord = [...successfulSourceRecords]
+      .reverse()
+      .find((record) => record.checkpoint && record.checkpoint.value);
+
     return {
       recordsRead: sourceRecords.length,
       recordsProcessed: results.length,
@@ -95,7 +129,8 @@ export class DataTransferJob {
       recordsFailed: errorCount,
       status,
       connectorResults: results,
-      lastProcessedRecord: undefined
+      lastProcessedRecord: lastCheckpointRecord?.checkpoint,
+      successfulSourceRecords
     };
   }
 }
