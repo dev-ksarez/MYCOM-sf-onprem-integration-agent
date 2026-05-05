@@ -1,0 +1,23 @@
+[Unit]
+Description=SF On-Prem Integration Agent
+After=network.target
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Group=__SERVICE_GROUP__
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=__ENV_FILE__
+ExecStart=/usr/bin/env node dist/main.js
+Restart=always
+RestartSec=10
+StandardOutput=append:__LOG_DIR__/agent.log
+StandardError=append:__LOG_DIR__/agent-error.log
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=__APP_DIR__/artifacts __LOG_DIR__ /var/lib/sf-integration-agent
+
+[Install]
+WantedBy=multi-user.target

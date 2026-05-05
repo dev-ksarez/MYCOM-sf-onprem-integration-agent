@@ -10,6 +10,8 @@
     "dev": "ts-node src/main.ts",
     "spec:new": "node scripts/specs/new-spec.js",
     "spec:validate": "node scripts/specs/validate-specs.js",
+    "linux:install": "bash scripts/linux/install-linux-agent.sh",
+    "linux:setup-sftp": "bash scripts/linux/setup-sftp-user.sh",
     "win:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-windows-agent.ps1",
     "win:install-package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-customer-package.ps1",
     "win:install-service": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-agent-service.ps1",

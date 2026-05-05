@@ -27,6 +27,7 @@ Zusatzlich sind die Header-Aktionen in der Web UI auf kleinen Geraeten zu breit.
 
 - Die Header-Aktionen der Web UI sind auf kleinen Viewports in einem Hamburger-Menue gebuendelt und bleiben auf Desktop direkt sichtbar.
 - Der Agent kann auf einer oeffentlichen Linux-VM ueber einen dokumentierten und reproduzierbaren Zielpfad betrieben werden, inklusive systemd-Service, Reverse-Proxy und TLS.
+- Datei-Connectoren koennen auf Linux optional ueber einen abgesicherten SFTP-Drop genutzt werden, ohne dass der Agent direkt per Shell- oder Dateifreigabe exponiert wird.
 - Die Admin-Weboberflaeche ist ueber Login und tokenbasierte Sitzung abgesichert; administrative API-Aufrufe sind ohne gueltige Authentifizierung nicht mehr zugaenglich.
 - Der Erstinstallationsprozess wird als webbasierter Installationsassistent bereitgestellt, der Konfiguration, Secrets, Health-Checks und Haertungsschritte gefuehrt abfragt.
 - Der Setup- und Update-Prozess erzwingt sichere Defaults, minimiert Inline-Secrets und dokumentiert den sicheren Betrieb auf Windows und Linux.
@@ -45,6 +46,7 @@ Zusatzlich sind die Header-Aktionen in der Web UI auf kleinen Geraeten zu breit.
 
 - [ ] Die Header-Aktionen sind auf Mobile hinter einem Hamburger-Menue erreichbar und auf Desktop unveraendert direkt bedienbar.
 - [ ] Es existiert ein definierter Linux-Betriebspfad mit systemd-Service, Reverse-Proxy, TLS-Terminierung und eingeschraenkten Laufzeitrechten.
+- [ ] Der Linux-Betriebspfad beschreibt auch einen abgesicherten SFTP-Zugang fuer Datei-Connectoren inklusive Verzeichnislayout und Rechtekonzept.
 - [ ] Die Web-UI und die Admin-API verlangen Authentifizierung; unautorisierte Requests auf Admin-Funktionen liefern einen klaren Fehlerfall.
 - [ ] Der Installationsassistent kann initiale Konfiguration, Secret-Pruefung, HTTPS-/Proxy-Hinweise und Health-Checks webgestuetzt abarbeiten.
 - [ ] Setup und Update vermeiden neue Inline-Secrets, dokumentieren sichere Speicherorte und fuehren Preflight- sowie Hardening-Pruefungen aus.
@@ -59,6 +61,7 @@ Betroffene Bereiche im Repo:
 - [src/css/agent-ui.css](src/css/agent-ui.css)
 - [scripts/windows](scripts/windows)
 - neu: Linux-Betriebsskripte und/oder systemd-Templates unter [scripts](scripts)
+- neu: Linux-Betriebsskripte, sFTP-Setup und systemd-/nginx-Templates unter [scripts](scripts)
 - Installations- und Betriebsdoku in [README.md](README.md) und neuen Linux-/Security-Dokumenten
 
 Technische Leitplanken:
@@ -69,12 +72,14 @@ Technische Leitplanken:
 - Secrets duerfen nicht mehr als empfohlener Standard inline in Connector-Konfigurationen gespeichert werden; Secret-Referenzen und geschuetzte Speicherorte werden bevorzugt.
 - Sicherheitspruefung umfasst mindestens: Dependency-Scan, Review der Admin-Endpunkte, Secret-Handling, Update-Pfad, Logging, Input-Validierung und Betriebsrechte.
 - Linux-Unterstuetzung wird mit einem minimalen, gehaerteten Betriebsprofil gestartet: dedizierter User, systemd, Firewall-/Proxy-Hinweise, kein Root-Dauerbetrieb.
+- Datei-Connectoren auf Linux erhalten einen optionalen SFTP-Drop-Pfad mit eingeschraenktem Benutzer, `internal-sftp`, ohne Shell und mit getrennten Schreibverzeichnissen fuer Inbound/Outbound/Archive.
 
 ## Aufgaben
 
 - [ ] Mobile Header-Aktionen als Hamburger-Menue umsetzen und verifizieren.
 - [ ] Sicherheitsreview des aktuellen Projekts mit priorisierten Findings dokumentieren.
 - [ ] Zielarchitektur fuer Linux-Betrieb auf oeffentlicher VM spezifizieren.
+- [ ] Linux-Betriebspfad um abgesicherten SFTP-Drop fuer Datei-Connectoren ergaenzen.
 - [ ] Authentifizierungs- und Token-Modell fuer Admin-UI und Admin-API festlegen.
 - [ ] Webbasierten Installationsassistenten in Lieferpakete zerlegen.
 - [ ] Setup-Hardening fuer Windows- und Linux-Pfade mit Preflight-Checks und sicheren Defaults definieren.

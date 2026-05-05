@@ -92,6 +92,24 @@ Kurzablauf:
 4. Dienst installieren
 5. Auto-Updater registrieren
 
+## Linux-Deployment und gehaerteter Betrieb
+
+Das Linux-Runbook steht in [LINUX_DEPLOYMENT.md](LINUX_DEPLOYMENT.md).
+
+Kurzablauf:
+
+1. App unter einem dedizierten Service-User nach `/opt/sf-integration-agent` bereitstellen
+2. Environment-Datei unter `/etc/sf-integration-agent/agent.env` pflegen
+3. systemd-Service und nginx-Reverse-Proxy aus [scripts/linux](scripts/linux) aktivieren
+4. TLS am Reverse Proxy terminieren und nur HTTPS oeffentlich exponieren
+5. Optional: abgesicherten SFTP-Drop-User fuer Datei-Connectoren mit `npm run linux:setup-sftp -- --sftp-user <name>` einrichten
+
+Hinweis fuer Datei-Connectoren:
+
+- Die Datei-Connectoren arbeiten lokal mit `basePath`, `importPath`, `exportPath` und `archivePath`.
+- Das Linux-Setup legt dafuer standardmaessig einen SFTP-Drop unter `/var/lib/sf-integration-agent/sftp/<user>/drop` an und verlinkt ihn nach `artifacts/files`.
+- Damit koennen externe Systeme Dateien per SFTP ablegen, waehrend der Agent unveraendert ueber seine vorhandenen Datei-Pfade arbeitet.
+
 ## Paket fuer Kundeninstallation erstellen
 
 ```bash
