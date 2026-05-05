@@ -76,6 +76,7 @@ Neue serverseitige und UI-nahe Logik sollte bevorzugt in diesen Modulen oder wei
 - `npm run dev` - Start aus TypeScript-Quellen
 - `npm run spec:new -- "Titel"` - Neue Spec fuer nicht-triviale Aenderungen anlegen
 - `npm run spec:validate` - Spec-Struktur in `docs/specs/` pruefen
+- `npm run docker:test:ubuntu` - Ubuntu-basierter Docker-Verifikationstest fuer Build + Specs
 - `npm run win:install-service` - Windows-Dienst installieren
 - `npm run win:uninstall-service` - Windows-Dienst deinstallieren
 - `npm run win:update-now` - Manuelles Update ausfuehren
@@ -113,6 +114,18 @@ Wichtige Security-Variablen fuer die Web UI:
 
 - `ADMIN_UI_USERNAME` und `ADMIN_UI_PASSWORD` aktivieren den Login-Schutz fuer Root und Admin-API.
 - Im Produktionsmodus bleibt die Web UI ohne diese beiden Variablen gesperrt.
+- Mutierende Requests der Web UI werden zusaetzlich durch CSRF-Token und Origin-Pruefung abgesichert.
+
+Erster webbasierter Installer-Einstieg:
+
+- In der Web UI steht ein neuer Tab Installation zur Verfuegung.
+- Dort werden Linux-Zielpfade, sichere Default-Variablen, SFTP-Setup und empfohlene Betriebsbefehle zusammengefasst.
+
+Ubuntu-Docker-Verifikation:
+
+```bash
+npm run docker:test:ubuntu
+```
 
 Hinweis fuer Datei-Connectoren:
 

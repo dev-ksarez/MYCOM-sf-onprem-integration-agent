@@ -28,6 +28,7 @@ const AGENT_UI_CSS_FILE = path.resolve(process.cwd(), "src/css/agent-ui.css");
 const TEMPLATE_STORE_CSS_FILE = path.resolve(process.cwd(), "src/css/template-store.css");
 const UI_ASSET_VERSION = "20260505-linux-security-ui-1";
 const ADMIN_SESSION_COOKIE_NAME = "sf_agent_session";
+const ADMIN_CSRF_COOKIE_NAME = "sf_agent_csrf";
 const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const adminSessions = new Map<string, number>();
 const SETUP_EXAMPLE_JSON_FILE = path.resolve(
@@ -84,6 +85,60 @@ function getAdminAuthConfig(): { username: string; password: string; enabled: bo
   };
 }
 
+function getInstallerSummary() {
+  const adminAuth = getAdminAuthConfig();
+  const envTemplate = [
+    "NODE_ENV=production",
+    "WEB_UI_ENABLED=1",
+    "WEB_UI_HOST=127.0.0.1",
+    "WEB_UI_PORT=9010",
+    "LOG_LEVEL=info",
+    "ADMIN_UI_USERNAME=admin",
+    "ADMIN_UI_PASSWORD=<starkes-passwort>",
+    "SCHEDULER_INTERVAL_MS=60000"
+  ].join("\n");
+
+  return {
+    mode: adminAuth.enabled ? "secured" : "needs-admin-auth",
+    authConfigured: adminAuth.enabled,
+    csrfProtectionEnabled: true,
+    originProtectionEnabled: true,
+    nodeEnv: String(process.env.NODE_ENV || "development"),
+    linuxPaths: {
+      appDir: "/opt/sf-integration-agent",
+      envFile: "/etc/sf-integration-agent/agent.env",
+      logDir: "/var/log/sf-integration-agent",
+      dataDir: "/var/lib/sf-integration-agent",
+      sftpDropRoot: "/var/lib/sf-integration-agent/sftp/<user>/drop"
+    },
+    fileConnectorDefaults: {
+      basePath: "artifacts/files",
+      importPath: "inbound",
+      exportPath: "outbound",
+      archivePath: "archive"
+    },
+    commands: [
+      "sudo bash scripts/linux/install-linux-agent.sh --app-dir /opt/sf-integration-agent --service-user sfagent --service-group sfagent --port 9010 --public-host agent.example.com",
+      "sudo bash scripts/linux/setup-sftp-user.sh --app-dir /opt/sf-integration-agent --service-user sfagent --sftp-user sfagentdrop",
+      "sudo systemctl enable --now sf-integration-agent.service",
+      "sudo nginx -t && sudo systemctl reload nginx"
+    ],
+    checks: [
+      { label: "Admin-Login", status: adminAuth.enabled ? "ready" : "missing", detail: adminAuth.enabled ? "ADMIN_UI_USERNAME und ADMIN_UI_PASSWORD gesetzt" : "Admin-Credentials fehlen noch" },
+      { label: "CSRF/Origin Schutz", status: "ready", detail: "Mutierende Requests verlangen X-CSRF-Token und prüfen die Request-Origin." },
+      { label: "Linux Service", status: "ready", detail: "systemd- und nginx-Artefakte liegen im Repo." },
+      { label: "Datei-Connector SFTP", status: "ready", detail: "SFTP-Drop für inbound/outbound/archive ist vorgesehen." },
+      { label: "Webbasierter Installer", status: "in-progress", detail: "Geführte Installer-Ansicht ist verfügbar; Persistenz- und Schreibpfade folgen im nächsten Paket." }
+    ],
+    envTemplate,
+    dockerTest: {
+      image: "sf-agent-ubuntu-test",
+      dockerfile: "Dockerfile.ubuntu-test",
+      verifyCommand: "docker build -f Dockerfile.ubuntu-test -t sf-agent-ubuntu-test . && docker run --rm sf-agent-ubuntu-test"
+    }
+  };
+}
+
 function escapeHtml(value: string): string {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -111,6 +166,12 @@ function parseCookies(headerValue: string | undefined): Record<string, string> {
     }, {});
 }
 
+function appendSetCookie(existing: string | string[] | undefined, cookie: string): string[] {
+  const values = Array.isArray(existing) ? existing.slice() : existing ? [existing] : [];
+  values.push(cookie);
+  return values;
+}
+
 function pruneExpiredAdminSessions(now = Date.now()): void {
   for (const [token, expiresAt] of adminSessions.entries()) {
     if (expiresAt <= now) {
@@ -126,6 +187,10 @@ function createAdminSession(): string {
   return token;
 }
 
+function createCsrfToken(): string {
+  return crypto.randomBytes(24).toString("hex");
+}
+
 function isSecureRequest(req: http.IncomingMessage): boolean {
   const forwardedProto = req.headers["x-forwarded-proto"];
   const value = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
@@ -137,9 +202,19 @@ function buildSessionCookie(req: http.IncomingMessage, token: string): string {
   return `${ADMIN_SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(ADMIN_SESSION_TTL_MS / 1000)}${securePart}`;
 }
 
+function buildCsrfCookie(req: http.IncomingMessage, token: string): string {
+  const securePart = isSecureRequest(req) ? "; Secure" : "";
+  return `${ADMIN_CSRF_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; SameSite=Strict; Max-Age=${Math.floor(ADMIN_SESSION_TTL_MS / 1000)}${securePart}`;
+}
+
 function buildExpiredSessionCookie(req: http.IncomingMessage): string {
   const securePart = isSecureRequest(req) ? "; Secure" : "";
   return `${ADMIN_SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${securePart}`;
+}
+
+function getOrCreateCsrfToken(req: http.IncomingMessage): string {
+  const token = parseCookies(req.headers.cookie)[ADMIN_CSRF_COOKIE_NAME];
+  return token || createCsrfToken();
 }
 
 function constantTimeEquals(left: string, right: string): boolean {
@@ -150,6 +225,40 @@ function constantTimeEquals(left: string, right: string): boolean {
   }
 
   return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function isMutatingMethod(method: string | undefined): boolean {
+  const normalized = String(method || "GET").toUpperCase();
+  return normalized === "POST" || normalized === "PUT" || normalized === "PATCH" || normalized === "DELETE";
+}
+
+function hasAllowedRequestOrigin(req: http.IncomingMessage): boolean {
+  const originHeader = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
+  const refererHeader = Array.isArray(req.headers.referer) ? req.headers.referer[0] : req.headers.referer;
+  const source = String(originHeader || refererHeader || "").trim();
+  if (!source) {
+    return true;
+  }
+
+  try {
+    const parsed = new URL(source);
+    const forwardedHost = Array.isArray(req.headers["x-forwarded-host"]) ? req.headers["x-forwarded-host"][0] : req.headers["x-forwarded-host"];
+    const host = String(forwardedHost || req.headers.host || "").split(",")[0].trim().toLowerCase();
+    return Boolean(host) && parsed.host.toLowerCase() === host;
+  } catch {
+    return false;
+  }
+}
+
+function hasValidCsrfToken(req: http.IncomingMessage): boolean {
+  const cookieToken = parseCookies(req.headers.cookie)[ADMIN_CSRF_COOKIE_NAME];
+  const headerValue = Array.isArray(req.headers["x-csrf-token"]) ? req.headers["x-csrf-token"][0] : req.headers["x-csrf-token"];
+  const headerToken = String(headerValue || "").trim();
+  if (!cookieToken || !headerToken) {
+    return false;
+  }
+
+  return constantTimeEquals(cookieToken, headerToken);
 }
 
 function hasValidAdminSession(req: http.IncomingMessage): boolean {
@@ -176,13 +285,14 @@ function clearAdminSession(req: http.IncomingMessage): void {
   }
 }
 
-function renderLoginShell(errorMessage = ""): string {
+function renderLoginShell(errorMessage = "", csrfToken = ""): string {
   const safeErrorMessage = escapeHtml(errorMessage);
   return `<!doctype html>
 <html lang="de">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="sf-agent-csrf-token" content="${escapeHtml(csrfToken)}" />
     <title>SF Integration Agent Login</title>
     <link href="/assets/bootstrap.min.css" rel="stylesheet" />
     <link href="/assets/style.css?v=${UI_ASSET_VERSION}" rel="stylesheet" />
@@ -224,9 +334,10 @@ function renderLoginShell(errorMessage = ""): string {
         const errorBox = document.getElementById('login-error');
         errorBox.classList.add('d-none');
         try {
+          const csrfToken = String(document.querySelector('meta[name="sf-agent-csrf-token"]')?.getAttribute('content') || '');
           const response = await fetch('/auth/login', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
             body: JSON.stringify({ username, password })
           });
           const payload = await response.json().catch(() => ({ error: 'Anmeldung fehlgeschlagen' }));
@@ -275,6 +386,7 @@ function htmlShell(): string {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="sf-agent-csrf-token" content="__CSRF_TOKEN__" />
     <title>SF Integration Agent</title>
     <link href="/assets/bootstrap.min.css" rel="stylesheet" />
     <link href="/assets/style.css?v=${UI_ASSET_VERSION}" rel="stylesheet" />
@@ -308,6 +420,7 @@ function htmlShell(): string {
         </div>
         <ul class="nav flex-column" id="main-tabs" role="tablist">
           <li class="nav-item" role="presentation"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button"><span class="agent-tab-icon">▦</span>Übersicht</button></li>
+          <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-installer" type="button"><span class="agent-tab-icon">⚙</span>Installation</button></li>
           <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-schedulers" type="button"><span class="agent-tab-icon">◷</span>Scheduler</button></li>
           <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-connectors" type="button"><span class="agent-tab-icon">◫</span>Connectoren</button></li>
           <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-monitor" type="button"><span class="agent-tab-icon">◉</span>Monitoring</button></li>
@@ -540,6 +653,40 @@ function htmlShell(): string {
                     <thead><tr><th>Schedule</th><th>Status</th><th>Dauer</th><th>Start</th></tr></thead>
                     <tbody id="overview-runs-body"></tbody>
                   </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-pane fade" id="tab-installer" role="tabpanel">
+          <div class="row g-3">
+            <div class="col-lg-4">
+              <div class="card soft-card h-100">
+                <div class="card-header bg-white fw-semibold">Installationsstatus</div>
+                <div class="card-body">
+                  <div id="installer-status-summary" class="small text-secondary mb-3">Installer-Status wird geladen...</div>
+                  <div id="installer-checks" class="d-grid gap-2"></div>
+                </div>
+              </div>
+            </div>
+            <div class="col-lg-8">
+              <div class="card soft-card mb-3">
+                <div class="card-header bg-white fw-semibold">Linux Zielpfade</div>
+                <div class="card-body">
+                  <div id="installer-paths" class="row g-2"></div>
+                </div>
+              </div>
+              <div class="card soft-card mb-3">
+                <div class="card-header bg-white fw-semibold">Empfohlene Befehle</div>
+                <div class="card-body">
+                  <ol id="installer-commands" class="mb-0 small"></ol>
+                </div>
+              </div>
+              <div class="card soft-card">
+                <div class="card-header bg-white fw-semibold">Environment Vorlage</div>
+                <div class="card-body">
+                  <pre id="installer-env-template" class="bg-dark text-light p-3 rounded small mb-0">Vorlage wird geladen...</pre>
                 </div>
               </div>
             </div>
@@ -1390,6 +1537,7 @@ function htmlShell(): string {
       const MAX_RECORD_CONNECTOR_SERIES = 6;
       const UI_THEME_STORAGE_KEY = 'sf-agent.uiTheme';
       const OVERVIEW_STATS_RANGE_STORAGE_KEY = 'sf-agent.overviewStatsRange';
+      const nativeFetch = window.fetch.bind(window);
       const state = {
         instanceId: '',
         schedules: [],
@@ -1416,6 +1564,7 @@ function htmlShell(): string {
         selectedMappingRuleId: '',
         logSummary: null,
         salesforceOverview: null,
+        installerSummary: null,
         customObjectFieldOverrides: {},
         scheduleOptions: {
           objectNames: [],
@@ -1456,6 +1605,31 @@ function htmlShell(): string {
         pendingImportInProgress: false,
         pendingImportSuggestions: [],
         pendingImportAnalysis: null
+      };
+
+      function getCsrfToken() {
+        return String(document.querySelector('meta[name="sf-agent-csrf-token"]')?.getAttribute('content') || '').trim();
+      }
+
+      window.fetch = (input, options = {}) => {
+        const request = input instanceof Request ? input : null;
+        const method = String(options.method || (request ? request.method : 'GET')).toUpperCase();
+        if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+          return nativeFetch(input, options);
+        }
+
+        const headers = new Headers(request ? request.headers : undefined);
+        const optionHeaders = new Headers(options.headers || {});
+        optionHeaders.forEach((value, key) => headers.set(key, value));
+        const csrfToken = getCsrfToken();
+        if (csrfToken && !headers.has('X-CSRF-Token')) {
+          headers.set('X-CSRF-Token', csrfToken);
+        }
+
+        return nativeFetch(input, {
+          ...options,
+          headers
+        });
       };
 
       function getMigImportDisplayName(fileName) {
@@ -2559,6 +2733,53 @@ function htmlShell(): string {
           .slice(0, 3)
           .join('');
         return initials || (item?.kind === 'schedule' ? 'JOB' : 'API');
+      }
+
+      function renderInstallerSummary() {
+        const summary = state.installerSummary;
+        const statusSummary = document.getElementById('installer-status-summary');
+        const checksContainer = document.getElementById('installer-checks');
+        const pathsContainer = document.getElementById('installer-paths');
+        const commandsList = document.getElementById('installer-commands');
+        const envTemplate = document.getElementById('installer-env-template');
+        if (!statusSummary || !checksContainer || !pathsContainer || !commandsList || !envTemplate) {
+          return;
+        }
+
+        if (!summary) {
+          statusSummary.textContent = 'Installer-Daten konnten nicht geladen werden.';
+          checksContainer.innerHTML = '';
+          pathsContainer.innerHTML = '';
+          commandsList.innerHTML = '';
+          envTemplate.textContent = 'Keine Daten';
+          return;
+        }
+
+        statusSummary.textContent = summary.authConfigured
+          ? 'Admin-Login, CSRF- und Origin-Schutz sind aktiv. Der Installer zeigt jetzt den Linux-Zielpfad und die sicheren Defaults.'
+          : 'Admin-Zugang ist noch nicht vollständig konfiguriert. Vor dem öffentlichen Betrieb zuerst Credentials setzen.';
+
+        checksContainer.innerHTML = (Array.isArray(summary.checks) ? summary.checks : []).map((item) => {
+          const badgeClass = item.status === 'ready' ? 'text-bg-success' : item.status === 'in-progress' ? 'text-bg-warning' : 'text-bg-danger';
+          return '<div class="border rounded p-2 bg-light">' +
+            '<div class="d-flex justify-content-between align-items-start gap-2">' +
+            '<div><div class="fw-semibold">' + esc(item.label) + '</div><div class="small text-secondary">' + esc(item.detail) + '</div></div>' +
+            '<span class="badge ' + badgeClass + '">' + esc(item.status) + '</span>' +
+            '</div></div>';
+        }).join('');
+
+        pathsContainer.innerHTML = Object.entries(summary.linuxPaths || {}).map(([key, value]) => (
+          '<div class="col-md-6"><div class="border rounded p-2 h-100 bg-light">' +
+          '<div class="small text-secondary">' + esc(key) + '</div>' +
+          '<div class="fw-semibold small">' + esc(String(value || '-')) + '</div>' +
+          '</div></div>'
+        )).join('');
+
+        commandsList.innerHTML = (Array.isArray(summary.commands) ? summary.commands : []).map((command) => (
+          '<li class="mb-2"><code>' + esc(command) + '</code></li>'
+        )).join('');
+
+        envTemplate.textContent = String(summary.envTemplate || '');
       }
 
       function getTemplateHeroLabel(item) {
@@ -7478,6 +7699,7 @@ function htmlShell(): string {
         clearError();
 
         const healthData = await safeRequest('/api/system/health', {});
+        const installerSummary = await safeRequest('/api/installer/summary', null);
         const schedules = await safeRequest('/api/schedules', { items: [] });
         const connectors = await safeRequest('/api/connectors', { items: [] });
         const runs = await safeRequest('/api/runs', { items: [] });
@@ -7493,9 +7715,11 @@ function htmlShell(): string {
         state.staleRuns = staleRuns.items || [];
         state.migrations = migrations.items || [];
         state.graphData = graph;
+        state.installerSummary = installerSummary;
         renderSalesforceOverview(salesforceOverview);
 
         renderOverview(healthData);
+        renderInstallerSummary();
         renderSchedules();
         renderConnectors();
         renderRuns();
@@ -9331,17 +9555,22 @@ export function createAppServer(
       const adminAuth = getAdminAuthConfig();
       const adminAuthRequired = adminAuth.enabled;
       const adminAuthMisconfigured = process.env.NODE_ENV === "production" && !adminAuthRequired;
+      const csrfToken = getOrCreateCsrfToken(req);
       const requestUrl = new URL(req.url || "/", "http://localhost");
       const sendJson = (statusCode: number, payload: unknown): void => {
         res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
         res.end(JSON.stringify(payload));
       };
-      const sendHtml = (statusCode: number, html: string, headers: Record<string, string> = {}): void => {
+      const sendHtml = (statusCode: number, html: string, headers: http.OutgoingHttpHeaders = {}): void => {
+        const mergedHeaders = {
+          ...headers,
+          "Set-Cookie": appendSetCookie(headers["Set-Cookie"] as string | string[] | undefined, buildCsrfCookie(req, csrfToken))
+        };
         res.writeHead(statusCode, {
           "Content-Type": "text/html; charset=utf-8",
-          ...headers
+          ...mergedHeaders
         });
-        res.end(html);
+        res.end(html.replace("__CSRF_TOKEN__", escapeHtml(csrfToken)));
       };
       const sendFile = async (filePath: string, contentType: string): Promise<void> => {
         const file = await fs.readFile(filePath);
@@ -9359,6 +9588,17 @@ export function createAppServer(
         requestUrl.pathname === "/api/system/health" ||
         requestUrl.pathname === "/auth/login" ||
         requestUrl.pathname === "/auth/logout";
+      const requiresMutationProtection = isMutatingMethod(req.method) && (requestUrl.pathname.startsWith("/api/") || requestUrl.pathname.startsWith("/auth/"));
+
+      if (requiresMutationProtection && !hasAllowedRequestOrigin(req)) {
+        sendJson(403, { error: "Origin nicht erlaubt" });
+        return;
+      }
+
+      if (requiresMutationProtection && !hasValidCsrfToken(req)) {
+        sendJson(403, { error: "CSRF-Token fehlt oder ist ungültig" });
+        return;
+      }
 
       if (adminAuthMisconfigured && !isAssetRequest && !isPublicRequest) {
         if (requestUrl.pathname === "/") {
@@ -9432,6 +9672,11 @@ export function createAppServer(
           ...getHealthSnapshot(),
           cpuLoadPercent: getCpuLoadPercent()
         });
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/installer/summary") {
+        sendJson(200, getInstallerSummary());
         return;
       }
 
