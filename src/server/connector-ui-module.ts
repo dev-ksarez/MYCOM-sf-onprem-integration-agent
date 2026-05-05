@@ -60,6 +60,20 @@ export function renderConnectorUiModule(): string {
           ];
         }
 
+        function buildConnectorVisual(item) {
+          const typeLabel = String(item.connectorType || 'Connector').trim();
+          const visualClass = getConnectorGraphClass(item.connectorType, item.name || item.connectorType || '');
+          const icon = getConnectorIcon(item.connectorType, item.name || item.connectorType || '');
+          return '<div class="connector-type-visual ' + esc(visualClass) + '">' +
+            '<div class="connector-type-visual-bg"></div>' +
+            '<div class="connector-type-visual-icon" aria-hidden="true">' + esc(icon) + '</div>' +
+            '<div class="connector-type-visual-meta">' +
+              '<div class="connector-type-visual-label">' + esc(typeLabel) + '</div>' +
+              '<div class="connector-type-visual-caption">Typprofil</div>' +
+            '</div>' +
+          '</div>';
+        }
+
         function buildConnectorTestMarkup(item) {
           const result = state.connectorTestResults ? state.connectorTestResults[item.id] : null;
           if (!result) {
@@ -81,9 +95,12 @@ export function renderConnectorUiModule(): string {
             '<div class="card h-100 border-0 shadow-sm bg-body-tertiary">' +
               '<div class="card-body d-flex flex-column gap-3">' +
                 '<div class="d-flex justify-content-between align-items-start gap-3">' +
-                  '<div>' +
+                  '<div class="d-flex align-items-start gap-3 flex-grow-1">' +
+                    buildConnectorVisual(item) +
+                    '<div>' +
                     '<div class="d-flex flex-wrap gap-2 align-items-center mb-1"><strong>' + esc(item.name) + '</strong><span class="badge bg-secondary-subtle text-secondary border">' + esc(item.connectorType) + '</span>' + (item.active ? '<span class="badge bg-success-subtle text-success border">aktiv</span>' : '<span class="badge bg-secondary-subtle text-secondary border">inaktiv</span>') + '</div>' +
                     '<div class="small text-secondary">' + esc(item.direction || '-') + ' • ' + esc(item.targetSystem || 'kein Zielsystem') + '</div>' +
+                    '</div>' +
                   '</div>' +
                   '<div class="d-flex flex-wrap gap-1 justify-content-end">' +
                     '<button class="btn btn-sm btn-outline-primary" data-edit-connector="' + esc(item.id) + '">Öffnen</button>' +

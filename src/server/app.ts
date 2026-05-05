@@ -717,7 +717,7 @@ function htmlShell(): string {
         </div>
         <ul class="nav flex-column" id="main-tabs" role="tablist">
           <li class="nav-item" role="presentation"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button"><span class="agent-tab-icon">▦</span>Übersicht</button></li>
-          <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-installer" type="button"><span class="agent-tab-icon">⚙</span>Installation</button></li>
+          <li class="nav-item d-none" role="presentation"><button id="tab-installer-trigger" class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-installer" type="button"><span class="agent-tab-icon">⚙</span>Installation</button></li>
           <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-schedulers" type="button"><span class="agent-tab-icon">◷</span>Scheduler</button></li>
           <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-connectors" type="button"><span class="agent-tab-icon">◫</span>Connectoren</button></li>
           <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-monitor" type="button"><span class="agent-tab-icon">◉</span>Monitoring</button></li>
@@ -740,40 +740,72 @@ function htmlShell(): string {
             </button>
             <div class="agent-topbar-brand">SF Integration Agent</div>
           </div>
-          <div class="agent-navbar-actions offcanvas-lg offcanvas-end ms-lg-auto" tabindex="-1" id="agent-header-menu" aria-labelledby="agent-header-menu-title">
+          <div class="agent-navbar-actions offcanvas offcanvas-end" tabindex="-1" id="agent-header-menu" aria-labelledby="agent-header-menu-title">
             <div class="offcanvas-header agent-offcanvas-header">
-              <div id="agent-header-menu-title" class="fw-semibold">Header-Aktionen</div>
+              <div class="agent-offcanvas-title-wrap">
+                <div id="agent-header-menu-title" class="fw-semibold">Menü</div>
+                <div id="agent-header-menu-subtitle" class="agent-offcanvas-subtitle">Navigation und Arbeitsbereich</div>
+              </div>
               <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Schließen"></button>
             </div>
             <div class="offcanvas-body agent-navbar-actions-body">
-            <div class="agent-instance-picker d-flex gap-2 align-items-center">
-              <label class="small text-secondary">Instanz</label>
-              <select id="instance-select" class="form-select form-select-sm"></select>
-            </div>
-            <div class="agent-theme-picker d-flex gap-2 align-items-center">
-              <label class="small text-secondary">Theme</label>
-              <select id="theme-select" class="form-select form-select-sm">
-                <option value="corporate">Corporate Light</option>
-                <option value="industrial">Industrial Blue</option>
-                <option value="midnight">Midnight Dark</option>
-              </select>
-            </div>
-            <div class="agent-update-controls d-flex gap-2 align-items-center flex-wrap">
-              <label class="small text-secondary mb-0">Updates</label>
-              <div id="overview-update-status" class="small text-secondary">Update-Status wird geladen...</div>
-              <button id="overview-check-update" type="button" class="btn btn-sm btn-outline-secondary">Update prüfen</button>
-              <button id="overview-run-update" type="button" class="btn btn-sm btn-outline-primary">Update starten</button>
-            </div>
-            <div class="btn-group btn-group-sm" role="group" aria-label="Setup Aktionen">
-              <button id="export-setup" class="btn btn-outline-secondary agent-btn-subtle" title="Setup exportieren"><span class="agent-btn-icon" aria-hidden="true">⭳</span><span>Export</span></button>
-              <button id="import-setup" class="btn btn-outline-secondary agent-btn-subtle" title="Setup importieren"><span class="agent-btn-icon" aria-hidden="true">⭱</span><span>Import</span></button>
-            </div>
-            <input id="setup-import-input" type="file" accept="application/json" class="d-none" />
-            <div class="btn-group btn-group-sm" role="group" aria-label="Instanz Aktionen">
-              <button id="add-instance" class="btn btn-outline-secondary agent-btn-subtle" title="Instanz hinzufügen"><span class="agent-btn-icon" aria-hidden="true">＋</span><span>Instanz</span></button>
-              <button id="refresh-all" class="btn btn-outline-secondary agent-btn-subtle" title="Aktualisieren"><span class="agent-btn-icon" aria-hidden="true">↻</span><span>Refresh</span></button>
-            </div>
-            <button id="logout-admin" class="btn btn-outline-danger btn-sm agent-btn-subtle" title="Abmelden"><span class="agent-btn-icon" aria-hidden="true">⇥</span><span>Logout</span></button>
+              <section class="agent-menu-panel agent-menu-panel-primary">
+                <div class="agent-menu-section-label">Navigation</div>
+                <div class="agent-menu-nav-grid" role="navigation" aria-label="Hauptnavigation">
+                  <button type="button" class="agent-menu-tab" data-menu-tab="#tab-overview" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">▦</span><span>Übersicht</span></button>
+                  <button type="button" class="agent-menu-tab" data-menu-tab="#tab-installer" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">⚙</span><span>Installation</span></button>
+                  <button type="button" class="agent-menu-tab" data-menu-tab="#tab-schedulers" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">◷</span><span>Scheduler</span></button>
+                  <button type="button" class="agent-menu-tab" data-menu-tab="#tab-connectors" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">◫</span><span>Connectoren</span></button>
+                  <button type="button" class="agent-menu-tab" data-menu-tab="#tab-monitor" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">◉</span><span>Monitoring</span></button>
+                  <button type="button" class="agent-menu-tab" data-menu-tab="#tab-migration" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">⊞</span><span>Migration</span></button>
+                </div>
+              </section>
+
+              <section class="agent-menu-panel">
+                <div class="agent-menu-section-label">Arbeitsbereich</div>
+                <div class="agent-menu-control-grid">
+                  <div class="agent-menu-control-card">
+                    <label class="small text-secondary" for="instance-select">Instanz</label>
+                    <select id="instance-select" class="form-select form-select-sm"></select>
+                  </div>
+                  <div class="agent-menu-control-card">
+                    <label class="small text-secondary" for="theme-select">Theme</label>
+                    <select id="theme-select" class="form-select form-select-sm">
+                      <option value="corporate">Corporate Light</option>
+                      <option value="industrial">Industrial Blue</option>
+                      <option value="midnight">Midnight Dark</option>
+                    </select>
+                  </div>
+                </div>
+              </section>
+
+              <section class="agent-menu-panel">
+                <div id="agent-menu-actions-label" class="agent-menu-section-label">Aktionen</div>
+                <div id="agent-menu-auth-hint" class="agent-menu-inline-note d-none"></div>
+                <div class="agent-menu-status-card">
+                  <div class="agent-menu-status-head">
+                    <span class="small text-secondary">Updates</span>
+                    <div id="overview-update-status" class="small text-secondary">Update-Status wird geladen...</div>
+                  </div>
+                  <div class="agent-menu-action-grid">
+                    <button id="overview-check-update" type="button" class="btn btn-sm btn-outline-secondary">Update prüfen</button>
+                    <button id="overview-run-update" type="button" class="btn btn-sm btn-outline-primary">Update starten</button>
+                  </div>
+                </div>
+                <div class="agent-menu-action-grid agent-menu-action-grid-compact">
+                  <button id="export-setup" class="btn btn-outline-secondary agent-btn-subtle" title="Setup exportieren"><span class="agent-btn-icon" aria-hidden="true">⭳</span><span>Export</span></button>
+                  <button id="import-setup" class="btn btn-outline-secondary agent-btn-subtle" title="Setup importieren"><span class="agent-btn-icon" aria-hidden="true">⭱</span><span>Import</span></button>
+                </div>
+                <input id="setup-import-input" type="file" accept="application/json" class="d-none" />
+                <div class="agent-menu-action-grid agent-menu-action-grid-compact">
+                  <button id="add-instance" class="btn btn-outline-secondary agent-btn-subtle" title="Instanz hinzufügen"><span class="agent-btn-icon" aria-hidden="true">＋</span><span>Instanz</span></button>
+                  <button id="refresh-all" class="btn btn-outline-secondary agent-btn-subtle" title="Aktualisieren"><span class="agent-btn-icon" aria-hidden="true">↻</span><span>Refresh</span></button>
+                </div>
+              </section>
+
+              <section id="agent-menu-auth-panel" class="agent-menu-panel agent-menu-panel-footer">
+                <button id="logout-admin" class="btn btn-outline-danger btn-sm agent-btn-subtle w-100" title="Abmelden"><span class="agent-btn-icon" aria-hidden="true">⇥</span><span>Logout</span></button>
+              </section>
             </div>
           </div>
         </nav>
@@ -1026,14 +1058,19 @@ function htmlShell(): string {
             <div class="card-body p-0">
               <div class="table-responsive">
                 <div class="px-2 pt-2">
-                  <ul class="nav nav-pills nav-fill" id="schedulers-direction-tabs">
-                    <li class="nav-item"><button class="nav-link active" type="button" data-direction-tab="all">Alle</button></li>
-                    <li class="nav-item"><button class="nav-link" type="button" data-direction-tab="inbound">Inbound</button></li>
-                    <li class="nav-item"><button class="nav-link" type="button" data-direction-tab="outbound">Outbound</button></li>
-                  </ul>
+                  <div class="scheduler-filter-badges" id="schedulers-direction-tabs" role="tablist" aria-label="Richtungsfilter">
+                    <button class="scheduler-filter-badge is-active" type="button" data-direction-tab="all">Alle</button>
+                    <button class="scheduler-filter-badge" type="button" data-direction-tab="inbound">Inbound</button>
+                    <button class="scheduler-filter-badge" type="button" data-direction-tab="outbound">Outbound</button>
+                  </div>
                 </div>
                 <div class="d-flex flex-column flex-lg-row gap-2 p-2">
                   <input type="search" class="form-control form-control-sm" placeholder="Suche Scheduler..." id="schedulers-filter" />
+                  <select id="schedulers-active-filter" class="form-select form-select-sm" style="max-width: 220px;">
+                    <option value="all">Alle Stati</option>
+                    <option value="active">Nur aktive</option>
+                    <option value="inactive">Nur inaktive</option>
+                  </select>
                   <select id="schedulers-connector-filter" class="form-select form-select-sm" style="max-width: 260px;">
                     <option value="">Alle Connectoren</option>
                   </select>
@@ -1873,6 +1910,7 @@ function htmlShell(): string {
         graphData: { nodes: [], edges: [] },
         overviewConnectorFilterId: '',
         schedulerConnectorFilterId: '',
+        schedulerActiveFilter: 'all',
         schedulerDirectionTab: 'all',
         runs: [],
         staleRuns: [],
@@ -3097,6 +3135,8 @@ function htmlShell(): string {
           ? 'Das gewählte Setup-Szenario ist vorbereitet. Admin-Login, CSRF- und Origin-Schutz sind aktiv.'
           : 'Das gewählte Setup-Szenario ist vorbereitet, aber Admin-Zugang ist noch nicht vollständig konfiguriert.';
 
+        renderHeaderMenuState();
+
         checksContainer.innerHTML = (Array.isArray(selectedScenario.checks) ? selectedScenario.checks : []).map((item) => {
           const badgeClass = item.status === 'ready' ? 'text-bg-success' : item.status === 'in-progress' ? 'text-bg-warning' : 'text-bg-danger';
           return '<div class="border rounded p-2 bg-light">' +
@@ -3118,6 +3158,40 @@ function htmlShell(): string {
         )).join('');
 
         envTemplate.textContent = String(selectedScenario.envTemplate || '');
+      }
+
+      function renderHeaderMenuState() {
+        const summary = state.installerSummary;
+        const authConfigured = !!summary?.authConfigured;
+        const subtitle = document.getElementById('agent-header-menu-subtitle');
+        const authHint = document.getElementById('agent-menu-auth-hint');
+        const authPanel = document.getElementById('agent-menu-auth-panel');
+        const logoutButton = document.getElementById('logout-admin');
+
+        if (subtitle) {
+          subtitle.textContent = authConfigured
+            ? 'Navigation, Arbeitsbereich und Login-Session'
+            : 'Navigation und Arbeitsbereich';
+        }
+
+        if (authHint) {
+          if (authConfigured) {
+            authHint.textContent = 'Admin-Login ist aktiv. Die aktuelle Session kann hier beendet werden.';
+            authHint.classList.remove('d-none');
+          } else {
+            authHint.textContent = 'Für diese Instanz ist aktuell kein UI-Login aktiv.';
+            authHint.classList.remove('d-none');
+          }
+        }
+
+        if (authPanel) {
+          authPanel.classList.toggle('d-none', !authConfigured);
+        }
+
+        if (logoutButton) {
+          logoutButton.disabled = !authConfigured;
+          logoutButton.setAttribute('aria-hidden', authConfigured ? 'false' : 'true');
+        }
       }
 
       function applyInstallerScenarioDefaults() {
@@ -3857,8 +3931,9 @@ function htmlShell(): string {
       function getConnectorIcon(connectorType, connectorName) {
         const value = String(connectorType || connectorName || '').toLowerCase();
         if (value.includes('salesforce')) return '☁';
+        if (value.includes('rest')) return '🌐';
         if (value.includes('mssql') || value.includes('sql')) return '🗄';
-        if (value.includes('csv') || value.includes('excel')) return '📄';
+        if (value.includes('file') || value.includes('csv') || value.includes('excel') || value.includes('json')) return '📄';
         if (value.includes('mock') || value.includes('test')) return '🧪';
         if (value.includes('sage')) return '📚';
         return '⚙';
@@ -3867,8 +3942,9 @@ function htmlShell(): string {
       function getConnectorGraphClass(connectorType, connectorName) {
         const value = String(connectorType || connectorName || '').toLowerCase();
         if (value.includes('salesforce')) return 'graph-connector-salesforce';
+        if (value.includes('rest')) return 'graph-connector-rest';
         if (value.includes('mssql') || value.includes('sql')) return 'graph-connector-mssql';
-        if (value.includes('csv') || value.includes('excel')) return 'graph-connector-file';
+        if (value.includes('file') || value.includes('csv') || value.includes('excel') || value.includes('json')) return 'graph-connector-file';
         if (value.includes('mock') || value.includes('test')) return 'graph-connector-mock';
         if (value.includes('sage')) return 'graph-connector-erp';
         return 'graph-connector-generic';
@@ -6362,26 +6438,47 @@ function htmlShell(): string {
           return;
         }
 
-        const connectorIds = Array.from(new Set(
+        const desiredConnectorFilterId = String(select.value || state.schedulerConnectorFilterId || '').trim();
+        if (desiredConnectorFilterId) {
+          state.schedulerConnectorFilterId = desiredConnectorFilterId;
+        }
+
+        const connectorIds = new Set(
           (state.schedules || [])
             .map((schedule) => String(schedule.connectorId || '').trim())
             .filter(Boolean)
-        ));
+        );
 
-        const options = connectorIds
-          .map((connectorId) => ({
-            connectorId,
-            name: getConnectorNameById(connectorId),
-            count: (state.schedules || []).filter((schedule) => String(schedule.connectorId || '').trim() === connectorId).length
-          }))
+        const options = (state.connectors || [])
+          .filter((connector) => connectorIds.has(String(connector.id || '').trim()))
+          .map((connector) => {
+            const connectorId = String(connector.id || '').trim();
+            return {
+              connectorId,
+              name: String(connector.name || connectorId || '-'),
+              count: (state.schedules || []).filter((schedule) => String(schedule.connectorId || '').trim() === connectorId).length
+            };
+          })
           .sort((a, b) => a.name.localeCompare(b.name, 'de', { sensitivity: 'base' }));
+
+        if (!options.length && connectorIds.size) {
+          Array.from(connectorIds)
+            .map((connectorId) => ({
+              connectorId,
+              name: getConnectorNameById(connectorId),
+              count: (state.schedules || []).filter((schedule) => String(schedule.connectorId || '').trim() === connectorId).length
+            }))
+            .sort((a, b) => a.name.localeCompare(b.name, 'de', { sensitivity: 'base' }))
+            .forEach((option) => options.push(option));
+        }
 
         select.innerHTML = '<option value="">Alle Connectoren</option>' + options.map((option) =>
           '<option value="' + esc(option.connectorId) + '">' + esc(option.name) + ' (' + option.count + ')</option>'
         ).join('');
 
-        if (state.schedulerConnectorFilterId && options.some((option) => option.connectorId === state.schedulerConnectorFilterId)) {
-          select.value = state.schedulerConnectorFilterId;
+        if (desiredConnectorFilterId && options.some((option) => option.connectorId === desiredConnectorFilterId)) {
+          state.schedulerConnectorFilterId = desiredConnectorFilterId;
+          select.value = desiredConnectorFilterId;
         } else {
           state.schedulerConnectorFilterId = '';
           select.value = '';
@@ -6410,6 +6507,12 @@ function htmlShell(): string {
             return false;
           }
           if (state.schedulerDirectionTab === 'outbound' && direction !== 'outbound') {
+            return false;
+          }
+          if (state.schedulerActiveFilter === 'active' && !item.active) {
+            return false;
+          }
+          if (state.schedulerActiveFilter === 'inactive' && item.active) {
             return false;
           }
           if (!state.schedulerConnectorFilterId) {
@@ -6497,7 +6600,7 @@ function htmlShell(): string {
               ? '<button class="btn btn-sm btn-outline-danger mt-2" title="Letzter Fehler: ' + esc(lastFailedRun.errorMessage || 'Unbekannter Fehler') + '" data-show-run-logs="' + esc(lastFailedRun.id) + '">Fehlerdetails</button>'
               : '<span class="small text-secondary d-block mt-2">keine offenen Fehler</span>';
             
-            return '<tr>' +
+            return '<tr data-schedule-active="' + (item.active ? 'active' : 'inactive') + '">' +
               '<td><div style="padding-left:' + indent + 'px"><strong class="text-truncate d-block" title="' + esc(item.name) + '">' + esc(item.name) + hierarchyBadge + '</strong><div class="small text-secondary text-truncate" title="' + esc(item.objectName) + ' / ' + esc(item.operation) + '">' + objectIcon + ' ' + esc(item.objectName) + ' / ' + esc(item.operation) + '</div><div class="small text-secondary text-truncate mt-1" title="' + esc(parentName) + '">Parent: ' + esc(parentName) + (item.inheritTimingFromParent ? ' <span class="badge bg-primary-subtle text-primary border">inherits</span>' : '') + '</div></div></td>' +
               '<td><div class="form-check form-switch mb-1"><input class="form-check-input" type="checkbox" role="switch" data-toggle-schedule-active="' + esc(item.id) + '"' + (item.active ? ' checked' : '') + '></div>' + activeHint + '</td>' +
               '<td>' + getStatusBadge(item.status) + errorMarkup + '</td>' +
@@ -6595,10 +6698,7 @@ function htmlShell(): string {
           });
         });
 
-        const schedulersFilter = document.getElementById('schedulers-filter');
-        if (schedulersFilter && String(schedulersFilter.value || '').trim()) {
-          schedulersFilter.dispatchEvent(new Event('input'));
-        }
+        applySchedulerTableClientFilters();
 
         setTimeout(() => initializeTableFilters(), 100);
       }
@@ -6811,20 +6911,52 @@ function htmlShell(): string {
         const edges = Array.isArray(graph?.edges) ? graph.edges : [];
         const selectedConnectorId = String(state.overviewConnectorFilterId || '').trim();
 
+        const activeSchedules = (state.schedules || []).filter((schedule) => Boolean(schedule?.active));
+        const activeScheduleIds = new Set(
+          activeSchedules
+            .map((schedule) => String(schedule.id || '').trim())
+            .filter(Boolean)
+        );
+        const activeConnectorIds = new Set(
+          activeSchedules
+            .map((schedule) => String(schedule.connectorId || '').trim())
+            .filter(Boolean)
+        );
+        const connectorActiveById = new Map(
+          (state.connectors || []).map((connector) => [String(connector.id || '').trim(), Boolean(connector.active)])
+        );
+
+        const baseNodes = nodes.filter((node) => {
+          if (node.kind === 'scheduler') {
+            return activeScheduleIds.has(String(node.refId || '').trim());
+          }
+          if (node.kind === 'connector') {
+            const connectorId = String(node.refId || '').trim();
+            return activeConnectorIds.has(connectorId) && connectorActiveById.get(connectorId) !== false;
+          }
+          return true;
+        });
+        const baseNodeIds = new Set(baseNodes.map((node) => String(node.id || '')));
+        const baseEdges = edges.filter(
+          (edge) =>
+            baseNodeIds.has(String(edge.from || '')) &&
+            baseNodeIds.has(String(edge.to || ''))
+        );
+
         if (!selectedConnectorId) {
-          return { nodes, edges };
+          return { nodes: baseNodes, edges: baseEdges };
         }
 
-        const selectedConnectorNode = nodes.find(
+        const selectedConnectorNode = baseNodes.find(
           (node) => node.kind === 'connector' && String(node.refId || '').trim() === selectedConnectorId
         );
 
         if (!selectedConnectorNode) {
-          return { nodes, edges };
+          return { nodes: baseNodes, edges: baseEdges };
         }
 
         const outgoingEdgesByNode = new Map();
-        edges.forEach((edge) => {
+        baseEdges.forEach((edge) => {
           const fromId = String(edge.from || '');
           if (!outgoingEdgesByNode.has(fromId)) {
             outgoingEdgesByNode.set(fromId, []);
@@ -6849,8 +6981,8 @@ function htmlShell(): string {
         }
 
         return {
-          nodes: nodes.filter((node) => keepNodeIds.has(String(node.id || ''))),
-          edges: edges.filter(
+          nodes: baseNodes.filter((node) => keepNodeIds.has(String(node.id || ''))),
+          edges: baseEdges.filter(
             (edge) =>
               keepNodeIds.has(String(edge.from || '')) &&
               keepNodeIds.has(String(edge.to || ''))
@@ -8147,6 +8279,32 @@ function htmlShell(): string {
         }
       }
 
+      function activateMainTab(tabTarget) {
+        const trigger = document.querySelector('#main-tabs [data-bs-target="' + tabTarget + '"]');
+        if (!trigger) {
+          return;
+        }
+
+        try {
+          if (window.bootstrap?.Tab) {
+            window.bootstrap.Tab.getOrCreateInstance(trigger).show();
+            return;
+          }
+        } catch {
+          // fall back to a native click if Bootstrap Tab is not available
+        }
+
+        trigger.click();
+        syncHeaderMenuTabState(tabTarget);
+      }
+
+      function syncHeaderMenuTabState(activeTabTarget) {
+        const currentTabTarget = activeTabTarget || document.querySelector('#main-tabs .nav-link.active')?.getAttribute('data-bs-target') || '';
+        document.querySelectorAll('[data-menu-tab]').forEach((button) => {
+          button.classList.toggle('is-active', button.getAttribute('data-menu-tab') === currentTabTarget);
+        });
+      }
+
       function bindEventListenerOnce(elementId, eventName, handler) {
         const element = document.getElementById(elementId);
         if (!element) {
@@ -8187,6 +8345,35 @@ function htmlShell(): string {
       })();
 
       bindEventListenerOnce('new-schedule', 'click', () => openScheduleModal(''));
+      document.querySelectorAll('[data-menu-tab]').forEach((button) => {
+        if (button.dataset.boundMenuTab === '1') {
+          return;
+        }
+
+        button.dataset.boundMenuTab = '1';
+        button.addEventListener('click', () => {
+          const tabTarget = String(button.getAttribute('data-menu-tab') || '').trim();
+          if (tabTarget) {
+            activateMainTab(tabTarget);
+          }
+        });
+      });
+      document.querySelectorAll('#main-tabs .nav-link').forEach((button) => {
+        if (button.dataset.boundMenuSync === '1') {
+          return;
+        }
+
+        button.dataset.boundMenuSync = '1';
+        button.addEventListener('click', () => {
+          const tabTarget = String(button.getAttribute('data-bs-target') || '').trim();
+          window.setTimeout(() => syncHeaderMenuTabState(tabTarget), 0);
+        });
+      });
+      const headerMenu = document.getElementById('agent-header-menu');
+      if (headerMenu && headerMenu.dataset.boundOffcanvasShown !== '1') {
+        headerMenu.dataset.boundOffcanvasShown = '1';
+        headerMenu.addEventListener('shown.bs.offcanvas', () => syncHeaderMenuTabState());
+      }
       bindEventListenerOnce('new-schedule-from-template', 'click', async () => {
         try {
           await createFromTemplate('schedule');
@@ -8598,6 +8785,22 @@ function htmlShell(): string {
         ).join('');
       }
 
+      function applySchedulerTableClientFilters() {
+        const schedulersFilter = document.getElementById('schedulers-filter');
+        const query = String(schedulersFilter?.value || '').trim().toLowerCase();
+        const activeFilter = String(state.schedulerActiveFilter || 'all').trim().toLowerCase();
+        const rows = document.querySelectorAll('#schedules-body tr');
+
+        rows.forEach((row) => {
+          const text = String(row.textContent || '').toLowerCase();
+          const toggle = row.querySelector('input[data-toggle-schedule-active]');
+          const rowActiveState = toggle && toggle.checked ? 'active' : 'inactive';
+          const matchesQuery = !query || text.includes(query);
+          const matchesActive = activeFilter === 'all' || rowActiveState === activeFilter;
+          row.style.display = matchesQuery && matchesActive ? '' : 'none';
+        });
+      }
+
       // ===== NATIVE TABLE FILTERING & SEARCH =====
       const TABLE_STORAGE_KEY = 'sf-agent.table-filters';
 
@@ -8608,12 +8811,7 @@ function htmlShell(): string {
           schedulersFilter.dataset.bound = '1';
           schedulersFilter.addEventListener('input', (e) => {
             const query = e.target.value.toLowerCase();
-            const rows = document.querySelectorAll('#schedules-body tr');
-            rows.forEach(row => {
-              const text = row.textContent.toLowerCase();
-              const isMatch = text.includes(query);
-              row.style.display = isMatch ? '' : 'none';
-            });
+            applySchedulerTableClientFilters();
 
             // Store filter value
             try {
@@ -8627,7 +8825,6 @@ function htmlShell(): string {
             const stored = localStorage.getItem(TABLE_STORAGE_KEY + '.schedulers');
             if (stored) {
               schedulersFilter.value = stored;
-              schedulersFilter.dispatchEvent(new Event('input'));
             }
           } catch (e) {
             // Ignore storage errors
@@ -8644,11 +8841,43 @@ function htmlShell(): string {
           tabButton.addEventListener('click', () => {
             const direction = String(tabButton.getAttribute('data-direction-tab') || 'all').trim().toLowerCase();
             state.schedulerDirectionTab = ['all', 'inbound', 'outbound'].includes(direction) ? direction : 'all';
-            directionTabs.forEach((button) => button.classList.remove('active'));
-            tabButton.classList.add('active');
+            directionTabs.forEach((button) => {
+              button.classList.remove('is-active');
+              button.setAttribute('aria-pressed', 'false');
+            });
+            tabButton.classList.add('is-active');
+            tabButton.setAttribute('aria-pressed', 'true');
             renderSchedules();
           });
         });
+
+        const schedulersActiveFilter = document.getElementById('schedulers-active-filter');
+        if (schedulersActiveFilter && schedulersActiveFilter.dataset.bound !== '1') {
+          schedulersActiveFilter.dataset.bound = '1';
+          schedulersActiveFilter.addEventListener('change', (e) => {
+            const value = String(e.target.value || 'all').trim().toLowerCase();
+            state.schedulerActiveFilter = ['all', 'active', 'inactive'].includes(value) ? value : 'all';
+            try {
+              localStorage.setItem(TABLE_STORAGE_KEY + '.schedulers.active', state.schedulerActiveFilter);
+            } catch (error) {
+              // Ignore storage errors
+            }
+            renderSchedules();
+            applySchedulerTableClientFilters();
+          });
+
+          try {
+            const storedActiveFilter = localStorage.getItem(TABLE_STORAGE_KEY + '.schedulers.active');
+            if (storedActiveFilter) {
+              state.schedulerActiveFilter = ['all', 'active', 'inactive'].includes(storedActiveFilter) ? storedActiveFilter : 'all';
+            }
+          } catch (error) {
+            // Ignore storage errors
+          }
+
+          schedulersActiveFilter.value = state.schedulerActiveFilter || 'all';
+          applySchedulerTableClientFilters();
+        }
 
         const schedulersConnectorFilter = document.getElementById('schedulers-connector-filter');
         if (schedulersConnectorFilter && schedulersConnectorFilter.dataset.bound !== '1') {
@@ -8671,6 +8900,18 @@ function htmlShell(): string {
           } catch (error) {
             // Ignore storage errors
           }
+
+          renderSchedulerConnectorFilterOptions();
+        }
+
+        function applyConnectorsPanelFilter(query) {
+          const normalizedQuery = String(query || '').toLowerCase();
+          const panels = document.querySelectorAll('#connectors-panels [data-connector-panel]');
+          panels.forEach((panel) => {
+            const text = String(panel.textContent || '').toLowerCase();
+            const isMatch = text.includes(normalizedQuery);
+            panel.style.display = isMatch ? '' : 'none';
+          });
         }
 
         // Connectors table filter
@@ -8678,15 +8919,10 @@ function htmlShell(): string {
         if (connectorsFilter && connectorsFilter.dataset.bound !== '1') {
           connectorsFilter.dataset.bound = '1';
           connectorsFilter.addEventListener('input', (e) => {
-            const query = e.target.value.toLowerCase();
-            const panels = document.querySelectorAll('#connectors-panels [data-connector-panel]');
-            panels.forEach(panel => {
-              const text = panel.textContent.toLowerCase();
-              const isMatch = text.includes(query);
-              panel.style.display = isMatch ? '' : 'none';
-            });
+            const query = String(e.target.value || '');
+            applyConnectorsPanelFilter(query);
             try {
-              localStorage.setItem(TABLE_STORAGE_KEY + '.connectors', query);
+              localStorage.setItem(TABLE_STORAGE_KEY + '.connectors', query.toLowerCase());
             } catch (e) {
               // Ignore storage errors
             }
@@ -8695,11 +8931,13 @@ function htmlShell(): string {
             const stored = localStorage.getItem(TABLE_STORAGE_KEY + '.connectors');
             if (stored) {
               connectorsFilter.value = stored;
-              connectorsFilter.dispatchEvent(new Event('input'));
             }
           } catch (e) {
             // Ignore storage errors
           }
+        }
+        if (connectorsFilter) {
+          applyConnectorsPanelFilter(connectorsFilter.value || '');
         }
 
         // Logs table filter

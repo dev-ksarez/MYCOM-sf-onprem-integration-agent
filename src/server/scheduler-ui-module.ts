@@ -2,10 +2,48 @@ export function renderSchedulerUiModule(): string {
   return `
       function renderSchedules() {
         const body = document.getElementById('schedules-body');
-        const scheduleById = new Map((state.schedules || []).map((item) => [item.id, item]));
+        const autoDisabledWarning = document.getElementById('schedulers-auto-disabled-warning');
+        renderSchedulerConnectorFilterOptions();
+
+        const autoDisabledCount = (state.schedules || []).filter((item) => item.autoDisabledDueToErrors && item.active === false).length;
+        if (autoDisabledWarning) {
+          if (autoDisabledCount > 0) {
+            autoDisabledWarning.textContent = autoDisabledCount + ' Scheduler wurden wegen fortlaufender Fehler automatisch deaktiviert.';
+            autoDisabledWarning.classList.remove('d-none');
+          } else {
+            autoDisabledWarning.textContent = '';
+            autoDisabledWarning.classList.add('d-none');
+          }
+        }
+
+        const filteredSchedules = (state.schedules || []).filter((item) => {
+          const direction = String(item.direction || '').toLowerCase();
+          if (state.schedulerDirectionTab === 'inbound' && direction !== 'inbound') {
+            return false;
+          }
+          if (state.schedulerDirectionTab === 'outbound' && direction !== 'outbound') {
+            return false;
+          }
+          if (state.schedulerActiveFilter === 'active' && !item.active) {
+            return false;
+          }
+          if (state.schedulerActiveFilter === 'inactive' && item.active) {
+            return false;
+          }
+          if (!state.schedulerConnectorFilterId) {
+            return true;
+          }
+          return String(item.connectorId || '').trim() === state.schedulerConnectorFilterId;
+        });
+
+        if (!filteredSchedules.length) {
+          body.innerHTML = '<tr><td colspan="6" class="text-secondary">Keine Scheduler gefunden.</td></tr>';
+          return;
+        }
+
+        const scheduleById = new Map(filteredSchedules.map((item) => [item.id, item]));
         const roots = [];
         const childrenByParent = new Map();
-        const filteredSchedules = (state.schedules || []).slice();
 
         filteredSchedules.forEach((item) => {
           const parentId = String(item.parentScheduleId || '').trim();
@@ -77,7 +115,7 @@ export function renderSchedulerUiModule(): string {
               ? '<button class="btn btn-sm btn-outline-danger mt-2" title="Letzter Fehler: ' + esc(lastFailedRun.errorMessage || 'Unbekannter Fehler') + '" data-show-run-logs="' + esc(lastFailedRun.id) + '">Fehlerdetails</button>'
               : '<span class="small text-secondary d-block mt-2">keine offenen Fehler</span>';
             
-            return '<tr>' +
+            return '<tr data-schedule-active="' + (item.active ? 'active' : 'inactive') + '">' +
               '<td><div style="padding-left:' + indent + 'px"><strong class="text-truncate d-block" title="' + esc(item.name) + '">' + esc(item.name) + hierarchyBadge + '</strong><div class="small text-secondary text-truncate" title="' + esc(item.objectName) + ' / ' + esc(item.operation) + '">' + objectIcon + ' ' + esc(item.objectName) + ' / ' + esc(item.operation) + '</div><div class="small text-secondary text-truncate mt-1" title="' + esc(parentName) + '">Parent: ' + esc(parentName) + (item.inheritTimingFromParent ? ' <span class="badge bg-primary-subtle text-primary border">inherits</span>' : '') + '</div></div></td>' +
               '<td><div class="form-check form-switch mb-1"><input class="form-check-input" type="checkbox" role="switch" data-toggle-schedule-active="' + esc(item.id) + '"' + (item.active ? ' checked' : '') + '></div>' + activeHint + '</td>' +
               '<td>' + getStatusBadge(item.status) + errorMarkup + '</td>' +
@@ -175,10 +213,7 @@ export function renderSchedulerUiModule(): string {
           });
         });
 
-        const schedulersFilter = document.getElementById('schedulers-filter');
-        if (schedulersFilter && String(schedulersFilter.value || '').trim()) {
-          schedulersFilter.dispatchEvent(new Event('input'));
-        }
+        applySchedulerTableClientFilters();
 
         setTimeout(() => initializeTableFilters(), 100);
       }

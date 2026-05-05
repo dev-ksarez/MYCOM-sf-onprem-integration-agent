@@ -291,6 +291,122 @@ body {
   fill: #e9edf0;
 }
 
+.scheduler-filter-badges {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.scheduler-filter-badge {
+  background: rgba(255, 255, 255, 0.84);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+  color: var(--layout-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.45rem 0.8rem;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.scheduler-filter-badge:hover,
+.scheduler-filter-badge:focus-visible {
+  border-color: rgba(47, 105, 168, 0.34);
+  color: var(--layout-text);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.scheduler-filter-badge.is-active {
+  background: rgba(47, 105, 168, 0.12);
+  border-color: rgba(47, 105, 168, 0.42);
+  color: #1f4f81;
+}
+
+.connector-type-visual {
+  align-items: center;
+  border-radius: 18px;
+  display: inline-flex;
+  gap: 0.85rem;
+  min-width: 11rem;
+  overflow: hidden;
+  padding: 0.85rem 1rem;
+  position: relative;
+}
+
+.connector-type-visual-bg {
+  inset: 0;
+  opacity: 0.95;
+  position: absolute;
+}
+
+.connector-type-visual-icon,
+.connector-type-visual-meta {
+  position: relative;
+  z-index: 1;
+}
+
+.connector-type-visual-icon {
+  align-items: center;
+  backdrop-filter: blur(6px);
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  border-radius: 14px;
+  display: inline-flex;
+  font-size: 1.45rem;
+  height: 3rem;
+  justify-content: center;
+  min-width: 3rem;
+}
+
+.connector-type-visual-meta {
+  min-width: 0;
+}
+
+.connector-type-visual-label {
+  color: #10263a;
+  font-size: 0.92rem;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.connector-type-visual-caption {
+  color: rgba(16, 38, 58, 0.68);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  margin-top: 0.2rem;
+  text-transform: uppercase;
+}
+
+.connector-type-visual.graph-connector-salesforce .connector-type-visual-bg {
+  background: linear-gradient(135deg, rgba(98, 177, 255, 0.26), rgba(33, 95, 154, 0.16));
+}
+
+.connector-type-visual.graph-connector-rest .connector-type-visual-bg {
+  background: linear-gradient(135deg, rgba(93, 173, 226, 0.24), rgba(0, 119, 182, 0.15));
+}
+
+.connector-type-visual.graph-connector-mssql .connector-type-visual-bg {
+  background: linear-gradient(135deg, rgba(68, 68, 138, 0.22), rgba(116, 60, 132, 0.16));
+}
+
+.connector-type-visual.graph-connector-file .connector-type-visual-bg {
+  background: linear-gradient(135deg, rgba(255, 198, 77, 0.25), rgba(240, 135, 57, 0.16));
+}
+
+.connector-type-visual.graph-connector-mock .connector-type-visual-bg {
+  background: linear-gradient(135deg, rgba(76, 201, 167, 0.25), rgba(20, 124, 88, 0.16));
+}
+
+.connector-type-visual.graph-connector-erp .connector-type-visual-bg {
+  background: linear-gradient(135deg, rgba(196, 132, 252, 0.24), rgba(124, 58, 180, 0.15));
+}
+
+.connector-type-visual.graph-connector-generic .connector-type-visual-bg {
+  background: linear-gradient(135deg, rgba(148, 163, 184, 0.22), rgba(100, 116, 139, 0.14));
+}
+
 .graph-inbound .graph-card-bg {
   fill: #edf5ff;
   stroke: #2276d2;
@@ -2078,7 +2194,7 @@ body {
 }
 
 .agent-topbar-menu {
-  display: none;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   min-width: 2.4rem;
@@ -2090,7 +2206,21 @@ body {
 }
 
 .agent-offcanvas-header {
-  display: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 1.15rem 1.15rem 0.85rem;
+}
+
+.agent-offcanvas-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.agent-offcanvas-subtitle {
+  color: var(--layout-muted);
+  font-size: 0.82rem;
 }
 
 .agent-topbar-brand {
@@ -2102,17 +2232,147 @@ body {
 }
 
 .agent-navbar-actions {
+  width: min(360px, 100vw);
+  border-left: 1px solid var(--layout-card-border);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.94) 0%, rgba(248,250,252,0.98) 100%),
+    var(--layout-surface);
   gap: 0.4rem;
 }
 
 .agent-navbar-actions-body {
   display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.4rem;
-  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: flex-start;
+  flex-direction: column;
+  gap: 0.9rem;
+  flex-wrap: nowrap;
   width: 100%;
+  padding: 0.35rem 1.15rem 1.15rem;
+}
+
+.agent-menu-panel {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 16px;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+  padding: 0.9rem;
+  backdrop-filter: blur(10px);
+}
+
+.agent-menu-panel-primary {
+  background: linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(240,246,255,0.94) 100%);
+}
+
+.agent-menu-panel-footer {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
   padding: 0;
+}
+
+.agent-menu-section-label {
+  color: var(--layout-muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.7rem;
+  text-transform: uppercase;
+}
+
+.agent-menu-inline-note {
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  color: var(--layout-muted);
+  font-size: 0.84rem;
+  margin-bottom: 0.75rem;
+  padding: 0.7rem 0.8rem;
+}
+
+.agent-menu-nav-grid {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.agent-menu-tab {
+  display: flex;
+  align-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--layout-text);
+  gap: 0.55rem;
+  justify-content: flex-start;
+  font-weight: 600;
+  min-height: 3rem;
+  padding: 0.8rem 0.9rem;
+  text-align: left;
+  transition: transform 140ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.agent-menu-tab:hover,
+.agent-menu-tab:focus-visible {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: rgba(47, 105, 168, 0.36);
+  box-shadow: 0 10px 20px rgba(47, 105, 168, 0.12);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.agent-menu-tab.is-active {
+  background: linear-gradient(180deg, rgba(47, 105, 168, 0.12) 0%, rgba(47, 105, 168, 0.18) 100%);
+  border-color: rgba(47, 105, 168, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(47, 105, 168, 0.12);
+}
+
+.agent-menu-tab-icon {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 10px;
+  display: inline-flex;
+  height: 2rem;
+  justify-content: center;
+  min-width: 2rem;
+}
+
+.agent-menu-control-grid,
+.agent-menu-action-grid {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.agent-menu-control-card,
+.agent-menu-status-card {
+  background: rgba(248, 250, 252, 0.84);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  padding: 0.75rem;
+}
+
+.agent-menu-control-card {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.agent-menu-status-card {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.agent-menu-status-head {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.agent-menu-action-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.agent-menu-action-grid-compact .btn {
+  min-height: 2.75rem;
 }
 
 .agent-navbar-actions .btn {
@@ -2524,12 +2784,9 @@ body {
 }
 
 @media (max-width: 992px) {
-  .agent-topbar-menu {
-    display: inline-flex;
-  }
-
-  .agent-offcanvas-header {
-    display: flex;
+  .connector-type-visual {
+    min-width: 9.25rem;
+    padding: 0.7rem 0.8rem;
   }
 
   .connector-wizard-steps {
@@ -2559,13 +2816,13 @@ body {
     grid-template-columns: 1fr;
   }
 
-  .agent-navbar-actions.offcanvas-lg {
+  .agent-navbar-actions.offcanvas {
     width: min(360px, 100vw);
     border-left: 1px solid var(--layout-card-border);
     background: var(--layout-surface);
   }
 
-  .agent-navbar-actions.offcanvas-lg .offcanvas-header {
+  .agent-navbar-actions.offcanvas .offcanvas-header {
     border-bottom: 1px solid var(--layout-card-border);
   }
 
@@ -2582,6 +2839,11 @@ body {
   .agent-update-controls {
     align-items: flex-start !important;
     flex-direction: column;
+  }
+
+  .agent-menu-nav-grid,
+  .agent-menu-action-grid {
+    grid-template-columns: 1fr;
   }
 
   .agent-update-controls .btn {

@@ -1,6 +1,6 @@
 {
   "name": "sf-onprem-integration-agent",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Salesforce controlled on-prem integration agent",
   "main": "dist/main.js",
@@ -19,6 +19,7 @@
     "win:repair-service-env": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/repair-agent-service-env.ps1",
     "win:uninstall-service": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/uninstall-agent-service.ps1",
     "win:update-now": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/update-agent.ps1",
+    "win:update-existing": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/update-existing-installation.ps1",
     "win:register-updater": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/register-agent-updater-task.ps1",
     "win:build-package": "node scripts/windows/build-customer-package.js",
     "win:build-package:with-node-modules": "node scripts/windows/build-customer-package.js --include-node-modules",

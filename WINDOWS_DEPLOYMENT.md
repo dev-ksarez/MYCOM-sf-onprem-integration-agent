@@ -212,6 +212,29 @@ cd C:\apps\sf-onprem-integration-agent
 npm run win:update-now -- -ServiceName "SfOnpremIntegrationAgent" -UpdateManifestUrl "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json" -AppRoot "C:\apps\sf-onprem-integration-agent"
 ```
 
+## Update einer bereits vorhandenen Windows-Installation
+
+Fuer eine bestehende Kundeninstallation gibt es jetzt einen vereinfachten Wrapper, der standardmaessig auf das neueste GitHub Release zeigt:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:update-existing -- -AppRoot "C:\apps\sf-onprem-integration-agent"
+```
+
+Gezielt auf eine bestimmte Release-Version aktualisieren:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:update-existing -- -AppRoot "C:\apps\sf-onprem-integration-agent" -ReleaseVersion "0.2.2"
+```
+
+Wenn nach dem Update auch der geplante Auto-Updater auf dieselbe Manifest-URL umgestellt werden soll:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:update-existing -- -AppRoot "C:\apps\sf-onprem-integration-agent" -ReleaseVersion "0.2.2" -ReRegisterUpdaterTask
+```
+
 ## Was beim Update automatisch passiert
 
 - Manifest laden (`version`, `packageUrl`, `sha256`)

@@ -80,6 +80,7 @@ Neue serverseitige und UI-nahe Logik sollte bevorzugt in diesen Modulen oder wei
 - `npm run win:install-service` - Windows-Dienst installieren
 - `npm run win:uninstall-service` - Windows-Dienst deinstallieren
 - `npm run win:update-now` - Manuelles Update ausfuehren
+- `npm run win:update-existing` - Bestehende Windows-Installation auf Latest oder Ziel-Release aktualisieren
 - `npm run win:register-updater` - Scheduled Task fuer Auto-Update registrieren
 - `npm run win:build-package` - Kunden-ZIP erzeugen
 - `npm run win:build-package:with-node-modules` - Kunden-ZIP inkl. `node_modules`
@@ -107,6 +108,13 @@ Kurzablauf:
 3. Optional: `npm run init:installation -- --mode SAGE100` (fragt Salesforce URL/Client und SQL Server fuer SAGE100 ab)
 4. Dienst installieren
 5. Auto-Updater registrieren
+
+Fuer spaetere Bestandsupdates:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:update-existing -- -AppRoot "C:\apps\sf-onprem-integration-agent" -ReleaseVersion "0.2.2"
+```
 
 ## Linux-Deployment und gehaerteter Betrieb
 
