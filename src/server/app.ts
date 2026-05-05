@@ -5318,7 +5318,7 @@ function htmlShell(): string {
       function normalizeRelativeDirectoryInput(value) {
         return String(value || '')
           .trim()
-          .replace(/\\+/g, '/')
+          .replace(/\\\\+/g, '/')
           .split('/')
           .map((segment) => String(segment || '').trim())
           .filter((segment) => segment && segment !== '.')
@@ -5386,7 +5386,7 @@ function htmlShell(): string {
         let definition = parsed ? { ...parsed } : null;
 
         if (!definition && (relativeDirectory || archiveRelativeDirectory)) {
-          const looksLikePath = rawValue.includes('/') || rawValue.includes('\\');
+          const looksLikePath = rawValue.includes('/') || rawValue.includes('\\\\');
           definition = looksLikePath ? { filePath: rawValue } : { fileName: rawValue };
           const detectedFormat = detectFileFormatFromName(rawValue);
           if (detectedFormat) {
@@ -5422,9 +5422,9 @@ function htmlShell(): string {
           return base;
         }
 
-        const separator = base.includes('\\') ? '\\' : '/';
-        const normalizedBase = base.replace(/[\\/]+$/, '');
-        const normalizedRelative = relative.replace(/\//g, separator);
+        const separator = base.includes('\\\\') ? '\\\\' : '/';
+        const normalizedBase = base.replace(/[\\\\/]+$/, '');
+        const normalizedRelative = relative.replace(/\\\//g, separator);
         return normalizedBase + separator + normalizedRelative;
       }
 
@@ -5446,7 +5446,7 @@ function htmlShell(): string {
         let effectiveFilePath = '';
 
         if (explicitPath) {
-          if (/^[a-zA-Z]:[\\/]/.test(explicitPath) || explicitPath.startsWith('\\\\') || explicitPath.startsWith('/')) {
+          if (/^[a-zA-Z]:[\\\\/]/.test(explicitPath) || explicitPath.startsWith('\\\\\\\\') || explicitPath.startsWith('/')) {
             effectiveFilePath = explicitPath;
           } else {
             effectiveFilePath = joinAgentPath(filePaths.basePath, explicitPath);
@@ -5581,14 +5581,16 @@ function htmlShell(): string {
               queryText,
               deltaStrategy: String(parsed.delta && parsed.delta.strategy || '').trim(),
               deltaField: String(parsed.delta && parsed.delta.field || '').trim(),
-              afterExportText: afterExportEntries.join(',')
+              afterExportText: afterExportEntries.join(','),
+              relativeDirectory: '',
+              archiveRelativeDirectory: ''
             };
           }
         } catch {
           // Backward compatible: plain query text.
         }
 
-        return { queryText: trimmed, deltaStrategy: '', deltaField: '', afterExportText: '' };
+        return { queryText: trimmed, deltaStrategy: '', deltaField: '', afterExportText: '', relativeDirectory: '', archiveRelativeDirectory: '' };
       }
 
       function parseAfterExportAssignments(rawValue) {
@@ -5608,6 +5610,14 @@ function htmlShell(): string {
 
       function buildScheduleSourceDefinitionValue() {
         const sourceType = document.getElementById('sch-source-type').value;
+        if (isFileScheduleSourceType(String(sourceType || '').trim().toUpperCase())) {
+          return buildScheduleFileDefinitionValue(
+            'sch-source-definition',
+            'sch-source-relative-directory',
+            'sch-source-archive-relative-directory'
+          );
+        }
+
         const queryText = String(document.getElementById('sch-source-definition').value || '').trim();
         if (sourceType !== 'MSSQL_SQL' && sourceType !== 'SALESFORCE_SOQL') {
           return queryText || undefined;
@@ -5636,6 +5646,33 @@ function htmlShell(): string {
         }
 
         return JSON.stringify(definition, null, 2);
+      }
+
+      function parseScheduleTargetDefinition(targetType, rawDefinition) {
+        const trimmed = String(rawDefinition || '').trim();
+        if (!isFileScheduleTargetType(String(targetType || '').trim().toUpperCase())) {
+          return { editorText: trimmed, relativeDirectory: '', archiveRelativeDirectory: '' };
+        }
+
+        const fileDefinition = parseScheduleFileDefinition(trimmed);
+        return {
+          editorText: fileDefinition.editorText,
+          relativeDirectory: fileDefinition.relativeDirectory,
+          archiveRelativeDirectory: fileDefinition.archiveRelativeDirectory
+        };
+      }
+
+      function buildScheduleTargetDefinitionValue() {
+        const targetType = document.getElementById('sch-target-type').value;
+        if (isFileScheduleTargetType(String(targetType || '').trim().toUpperCase())) {
+          return buildScheduleFileDefinitionValue(
+            'sch-target-definition',
+            'sch-target-relative-directory',
+            'sch-target-archive-relative-directory'
+          );
+        }
+
+        return String(document.getElementById('sch-target-definition').value || '').trim() || undefined;
       }
 
       async function loadScheduleCheckpoint(scheduleId) {
@@ -5764,41 +5801,18 @@ function htmlShell(): string {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-              afterExportText: afterExportEntries.join(','),
-              relativeDirectory: '',
-              archiveRelativeDirectory: ''
+              legend: {
                 position: 'top'
               }
             },
             scales: {
               x: {
                 stacked: false
-        return { queryText: trimmed, deltaStrategy: '', deltaField: '', afterExportText: '', relativeDirectory: '', archiveRelativeDirectory: '' };
+              },
               y: {
-
-      function parseScheduleTargetDefinition(targetType, rawDefinition) {
-        const trimmed = String(rawDefinition || '').trim();
-        if (!isFileScheduleTargetType(String(targetType || '').trim().toUpperCase())) {
-          return { editorText: trimmed, relativeDirectory: '', archiveRelativeDirectory: '' };
-        }
-
-        const fileDefinition = parseScheduleFileDefinition(trimmed);
-        return {
-          editorText: fileDefinition.editorText,
-          relativeDirectory: fileDefinition.relativeDirectory,
-          archiveRelativeDirectory: fileDefinition.archiveRelativeDirectory
-        };
-      }
                 beginAtZero: true,
                 stacked: false,
                 ticks: {
-        if (isFileScheduleSourceType(String(sourceType || '').trim().toUpperCase())) {
-          return buildScheduleFileDefinitionValue(
-            'sch-source-definition',
-            'sch-source-relative-directory',
-            'sch-source-archive-relative-directory'
-          );
-        }
                   precision: 0
                 }
               }
@@ -5809,19 +5823,6 @@ function htmlShell(): string {
               }
 
               const point = elements[0];
-
-                    function buildScheduleTargetDefinitionValue() {
-                      const targetType = document.getElementById('sch-target-type').value;
-                      if (isFileScheduleTargetType(String(targetType || '').trim().toUpperCase())) {
-                        return buildScheduleFileDefinitionValue(
-                          'sch-target-definition',
-                          'sch-target-relative-directory',
-                          'sch-target-archive-relative-directory'
-                        );
-                      }
-
-                      return String(document.getElementById('sch-target-definition').value || '').trim() || undefined;
-                    }
               const bucket = summary?.buckets?.[point.index];
               if (!bucket) {
                 return;
@@ -8670,7 +8671,7 @@ function htmlShell(): string {
         const lines = (logs.items || []).slice(0, 30).map((entry) => {
           return '[' + formatDate(entry.createdAt, 'short') + '] [' + (entry.level || '-') + '] ' + (entry.step || '-') + ' | ' + (entry.message || '');
         });
-        outputEl.textContent = lines.join('\n') || 'Keine Logs für den letzten Run gefunden.';
+        outputEl.textContent = lines.join('\\n') || 'Keine Logs für den letzten Run gefunden.';
       }
 
       async function previewSql() {
