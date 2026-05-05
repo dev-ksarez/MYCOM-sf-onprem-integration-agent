@@ -13,6 +13,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $script:ScriptDirectory = Split-Path -Parent $PSCommandPath
 
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
 function Resolve-AppRoot {
   param([string]$InputPath)
 
@@ -159,6 +161,45 @@ function Cleanup-DirectoriesByCount {
   }
 }
 
+function Expand-ZipArchive {
+  param(
+    [string]$ArchivePath,
+    [string]$DestinationPath
+  )
+
+  if (Test-Path $DestinationPath) {
+    Remove-Item -Path $DestinationPath -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  Ensure-Directory -Path $DestinationPath
+
+  $zip = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+  try {
+    foreach ($entry in $zip.Entries) {
+      $entryPath = $entry.FullName
+      if (-not $entryPath) {
+        continue
+      }
+
+      $targetPath = Join-Path $DestinationPath $entryPath
+      $targetDirectory = Split-Path -Parent $targetPath
+      if ($targetDirectory) {
+        Ensure-Directory -Path $targetDirectory
+      }
+
+      if ($entryPath.EndsWith('/')) {
+        Ensure-Directory -Path $targetPath
+        continue
+      }
+
+      [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $targetPath, $true)
+    }
+  }
+  finally {
+    $zip.Dispose()
+  }
+}
+
 function Invoke-MaintenanceCleanup {
   $backupBase = Join-Path $appRootResolved "backups"
   if (Test-Path $backupBase) {
@@ -217,7 +258,7 @@ if ($sha256) {
 }
 
 $extractRoot = Join-Path $runRoot "extract"
-Expand-Archive -Path $zipPath -DestinationPath $extractRoot -Force
+Expand-ZipArchive -ArchivePath $zipPath -DestinationPath $extractRoot
 
 $payloadRoot = $extractRoot
 $topDirs = Get-ChildItem -Path $extractRoot -Directory

@@ -42,14 +42,14 @@ function Resolve-ManifestUrl {
 function Resolve-UpdateScriptPath {
   param([string]$Root)
 
-  $installedScript = Join-Path $Root "scripts\windows\update-agent.ps1"
-  if (Test-Path $installedScript) {
-    return $installedScript
-  }
-
   $localScript = Join-Path $script:ScriptDirectory "update-agent.ps1"
   if (Test-Path $localScript) {
     return $localScript
+  }
+
+  $installedScript = Join-Path $Root "scripts\windows\update-agent.ps1"
+  if (Test-Path $installedScript) {
+    return $installedScript
   }
 
   throw "update-agent.ps1 wurde weder unter $installedScript noch neben diesem Skript gefunden."
@@ -58,14 +58,14 @@ function Resolve-UpdateScriptPath {
 function Resolve-RegisterScriptPath {
   param([string]$Root)
 
-  $installedScript = Join-Path $Root "scripts\windows\register-agent-updater-task.ps1"
-  if (Test-Path $installedScript) {
-    return $installedScript
-  }
-
   $localScript = Join-Path $script:ScriptDirectory "register-agent-updater-task.ps1"
   if (Test-Path $localScript) {
     return $localScript
+  }
+
+  $installedScript = Join-Path $Root "scripts\windows\register-agent-updater-task.ps1"
+  if (Test-Path $installedScript) {
+    return $installedScript
   }
 
   throw "register-agent-updater-task.ps1 wurde weder unter $installedScript noch neben diesem Skript gefunden."
