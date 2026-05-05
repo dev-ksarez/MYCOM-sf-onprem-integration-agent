@@ -15,7 +15,7 @@ import {
   ScheduleFormOptions
 } from "./admin-data-service";
 import { getDashboardUpdateStatus, triggerDashboardUpdate } from "./dashboard-update-service";
-import { renderMigrationFailedRecordsModule, renderMigrationProgressModule, renderMigrationRunResultModule, renderMigrationUiModule } from "./migration-ui-module";
+import { renderMigrationFailedRecordsModule, renderMigrationPreflightModule, renderMigrationProgressModule, renderMigrationRunResultModule, renderMigrationUiModule } from "./migration-ui-module";
 
 const BOOTSTRAP_CSS_FILE = path.resolve(process.cwd(), "node_modules/bootstrap/dist/css/bootstrap.min.css");
 const BOOTSTRAP_JS_FILE = path.resolve(process.cwd(), "node_modules/bootstrap/dist/js/bootstrap.bundle.min.js");
@@ -8651,74 +8651,6 @@ function htmlShell(): string {
         });
       }
 
-      function renderMigPreflightWarnings() {
-        const el = document.getElementById('mig-preflight-summary');
-        if (!el) return;
-
-        if (migState.preflightWarningsLoading) {
-          el.innerHTML = '<div class="alert alert-light border small mb-0">Pruefe Salesforce-Dubletten fuer Upserts…</div>';
-          return;
-        }
-
-        const items = Array.isArray(migState.preflightWarnings?.items) ? migState.preflightWarnings.items : [];
-        if (!items.length) {
-          el.innerHTML = '<div class="alert alert-success small mb-0">Vorab-Check: Keine mehrdeutigen External-ID-Treffer in Salesforce gefunden.</div>';
-          return;
-        }
-
-        el.innerHTML = '<div class="alert alert-warning small mb-0">' +
-          '<strong>Vorab-Check:</strong> Es wurden ' + items.reduce((sum, item) => sum + Number(item.affectedRecordCount || 0), 0) +
-          ' Datensaetze mit mehrdeutiger External ID in Salesforce gefunden.' +
-          items.map((item) => {
-            const preview = (item.conflicts || []).slice(0, 10).map((conflict) =>
-              '<li><code>' + esc(conflict.value) + '</code> — Zeilen ' + esc((conflict.rowIndexes || []).join(', ')) +
-              ' — Salesforce IDs: ' + esc((conflict.existingIds || []).join(', ')) + '</li>'
-            ).join('');
-            const remaining = Math.max(0, Number(item.conflictCount || 0) - 10);
-            return '<div class="mt-2"><strong>' + esc(item.salesforceObject) + '</strong> via <code>' + esc(item.externalIdField) + '</code>: ' +
-              Number(item.conflictCount || 0) + ' Konflikte / ' + Number(item.affectedRecordCount || 0) + ' betroffene Zeilen' +
-              '<ul class="mt-1 mb-0">' + preview + (remaining ? '<li>… und ' + remaining + ' weitere</li>' : '') + '</ul></div>';
-          }).join('') +
-          '</div>';
-      }
-
-      async function loadMigPreflightWarnings(force) {
-        if (!migState.id) {
-          migState.preflightWarnings = { items: [] };
-          renderMigPreflightWarnings();
-          return migState.preflightWarnings;
-        }
-        if (!force && migState.preflightWarnings) {
-          renderMigPreflightWarnings();
-          return migState.preflightWarnings;
-        }
-        if (migState.preflightWarningsLoading) {
-          return migState.preflightWarnings;
-        }
-
-        migState.preflightWarningsLoading = true;
-        renderMigPreflightWarnings();
-        try {
-          const res = await fetch('/api/migrations/' + encodeURIComponent(migState.id) + '/preflight');
-          const result = await res.json();
-          if (!res.ok) throw new Error(result.error || 'Fehler');
-          migState.preflightWarnings = result;
-          return result;
-        } catch (err) {
-          migState.preflightWarnings = { items: [], error: err instanceof Error ? err.message : String(err) };
-          const el = document.getElementById('mig-preflight-summary');
-          if (el) {
-            el.innerHTML = '<div class="alert alert-secondary small mb-0">Vorab-Check konnte nicht geladen werden: ' + esc(migState.preflightWarnings.error) + '</div>';
-          }
-          return migState.preflightWarnings;
-        } finally {
-          migState.preflightWarningsLoading = false;
-          if (!migState.preflightWarnings?.error) {
-            renderMigPreflightWarnings();
-          }
-        }
-      }
-
       function renderMigDepSelects() {
         ['mig-dep-from', 'mig-dep-to'].forEach((id) => {
           const sel = document.getElementById(id);
@@ -8757,10 +8689,15 @@ function htmlShell(): string {
       }
 
       function openMigWizard(migration, options) {
+        const requestedStep = Number(options && options.startStep ? options.startStep : 1);
+        const hasLastRunResult = !!(migration && migration.lastRunResult && (
+          (Array.isArray(migration.lastRunResult.steps) && migration.lastRunResult.steps.length) ||
+          String(migration.lastRunResult.reportPath || '').trim()
+        ));
         migState.id = migration ? migration.id : null;
-        migState.step = 1;
+        migState.step = requestedStep >= 1 && requestedStep <= migState.totalSteps ? requestedStep : 1;
         migState.status = migration ? String(migration.status || 'draft') : 'draft';
-        migState.activeRunVisible = migState.status === 'running';
+        migState.activeRunVisible = migState.status === 'running' || hasLastRunResult || !!(options && options.showRunSummary);
         migState.name = migration ? migration.name : (options && options.name ? options.name : '');
         migState.description = migration ? (migration.description || '') : (options && options.description ? options.description : '');
         migState.objects = migration ? sanitizeMigObjects(migration.objects || []) : [];
@@ -8792,6 +8729,12 @@ function htmlShell(): string {
         renderMigSelectedObjects();
         renderMigPendingImportHint();
         renderMigImportSuggestions();
+        if (migState.step === 2) renderMigFileAssignments();
+        if (migState.step === 3) renderMigMappingObjectSelect();
+        if (migState.step === 4) { renderMigDependencies(); renderMigDepSelects(); }
+        if (migState.step === 5) renderMigOrderList();
+        if (migState.step === 6) renderMigMissingFields();
+        if (migState.step === 7) renderMigReview();
 
         const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('migration-modal'));
         document.getElementById('migration-modal-title').textContent = migration ? 'Migration bearbeiten: ' + migration.name : 'Neue Migration';
@@ -8799,6 +8742,7 @@ function htmlShell(): string {
       }
 
 ${renderMigrationUiModule()}
+      ${renderMigrationPreflightModule()}
 ${renderMigrationProgressModule()}
 ${renderMigrationFailedRecordsModule()}
 ${renderMigrationRunResultModule()}

@@ -172,6 +172,10 @@ export function renderMigrationUiModule(): string {
             const map = { draft: 'secondary', ready: 'info', running: 'warning', done: 'success', error: 'danger' };
             return '<span class="badge bg-' + (map[s] || 'secondary') + '">' + esc(s) + '</span>';
           };
+          const hasLastRunResult = (mig) => {
+            const steps = Array.isArray(mig && mig.lastRunResult && mig.lastRunResult.steps) ? mig.lastRunResult.steps : [];
+            return steps.length > 0 || !!String(mig && mig.lastRunResult && mig.lastRunResult.reportPath || '').trim();
+          };
           body.innerHTML = items.map((mig) =>
             '<tr>' +
             '<td>' + esc(mig.name) + '</td>' +
@@ -184,6 +188,9 @@ export function renderMigrationUiModule(): string {
             '<td>' +
             '<div class="btn-group btn-group-sm">' +
             '<button class="btn btn-outline-primary" data-mig-edit="' + esc(mig.id) + '">Bearbeiten</button>' +
+            (hasLastRunResult(mig)
+              ? '<button class="btn btn-outline-secondary" data-mig-last-run="' + esc(mig.id) + '">Letzter Lauf</button>'
+              : '') +
             '<button class="btn btn-outline-success" data-mig-run="' + esc(mig.id) + '" ' + (mig.status === 'running' ? 'disabled' : '') + '>▶ Starten</button>' +
             '<button class="btn btn-outline-danger" data-mig-delete="' + esc(mig.id) + '">✕</button>' +
             '</div></td></tr>'
@@ -206,15 +213,21 @@ export function renderMigrationUiModule(): string {
             });
           });
 
+          body.querySelectorAll('[data-mig-last-run]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+              const id = btn.getAttribute('data-mig-last-run');
+              const res = await fetch('/api/migrations/' + encodeURIComponent(id));
+              const mig = await res.json();
+              openMigWizard(mig, { startStep: 7, showRunSummary: true });
+            });
+          });
+
           body.querySelectorAll('[data-mig-run]').forEach((btn) => {
             btn.addEventListener('click', async () => {
               const id = btn.getAttribute('data-mig-run');
               const res = await fetch('/api/migrations/' + encodeURIComponent(id));
               const mig = await res.json();
-              openMigWizard(mig);
-              migState.step = migState.totalSteps;
-              renderMigWizardSteps();
-              renderMigReview();
+              openMigWizard(mig, { startStep: 7, showRunSummary: true });
             });
           });
         } catch (err) {
@@ -242,6 +255,78 @@ export function renderMigrationUiModule(): string {
       }
 
       initMigrationTabUi();
+`;
+}
+
+export function renderMigrationPreflightModule(): string {
+  return `
+      function renderMigPreflightWarnings() {
+        const el = document.getElementById('mig-preflight-summary');
+        if (!el) return;
+
+        if (migState.preflightWarningsLoading) {
+          el.innerHTML = '<div class="alert alert-light border small mb-0">Pruefe Salesforce-Dubletten fuer Upserts…</div>';
+          return;
+        }
+
+        const items = Array.isArray(migState.preflightWarnings?.items) ? migState.preflightWarnings.items : [];
+        if (!items.length) {
+          el.innerHTML = '<div class="alert alert-success small mb-0">Vorab-Check: Keine mehrdeutigen External-ID-Treffer in Salesforce gefunden.</div>';
+          return;
+        }
+
+        el.innerHTML = '<div class="alert alert-warning small mb-0">' +
+          '<strong>Vorab-Check:</strong> Es wurden ' + items.reduce((sum, item) => sum + Number(item.affectedRecordCount || 0), 0) +
+          ' Datensaetze mit mehrdeutiger External ID in Salesforce gefunden.' +
+          items.map((item) => {
+            const preview = (item.conflicts || []).slice(0, 10).map((conflict) =>
+              '<li><code>' + esc(conflict.value) + '</code> — Zeilen ' + esc((conflict.rowIndexes || []).join(', ')) +
+              ' — Salesforce IDs: ' + esc((conflict.existingIds || []).join(', ')) + '</li>'
+            ).join('');
+            const remaining = Math.max(0, Number(item.conflictCount || 0) - 10);
+            return '<div class="mt-2"><strong>' + esc(item.salesforceObject) + '</strong> via <code>' + esc(item.externalIdField) + '</code>: ' +
+              Number(item.conflictCount || 0) + ' Konflikte / ' + Number(item.affectedRecordCount || 0) + ' betroffene Zeilen' +
+              '<ul class="mt-1 mb-0">' + preview + (remaining ? '<li>… und ' + remaining + ' weitere</li>' : '') + '</ul></div>';
+          }).join('') +
+          '</div>';
+      }
+
+      async function loadMigPreflightWarnings(force) {
+        if (!migState.id) {
+          migState.preflightWarnings = { items: [] };
+          renderMigPreflightWarnings();
+          return migState.preflightWarnings;
+        }
+        if (!force && migState.preflightWarnings) {
+          renderMigPreflightWarnings();
+          return migState.preflightWarnings;
+        }
+        if (migState.preflightWarningsLoading) {
+          return migState.preflightWarnings;
+        }
+
+        migState.preflightWarningsLoading = true;
+        renderMigPreflightWarnings();
+        try {
+          const res = await fetch('/api/migrations/' + encodeURIComponent(migState.id) + '/preflight');
+          const result = await res.json();
+          if (!res.ok) throw new Error(result.error || 'Fehler');
+          migState.preflightWarnings = result;
+          return result;
+        } catch (err) {
+          migState.preflightWarnings = { items: [], error: err instanceof Error ? err.message : String(err) };
+          const el = document.getElementById('mig-preflight-summary');
+          if (el) {
+            el.innerHTML = '<div class="alert alert-secondary small mb-0">Vorab-Check konnte nicht geladen werden: ' + esc(migState.preflightWarnings.error) + '</div>';
+          }
+          return migState.preflightWarnings;
+        } finally {
+          migState.preflightWarningsLoading = false;
+          if (!migState.preflightWarnings?.error) {
+            renderMigPreflightWarnings();
+          }
+        }
+      }
 `;
 }
 
