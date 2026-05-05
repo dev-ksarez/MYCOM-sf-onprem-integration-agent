@@ -4,7 +4,9 @@ param(
   [string]$UpdateManifestUrl,
   [string]$TempRoot = "$env:TEMP\\sf-agent-updater",
   [int]$StartTimeoutSeconds = 60,
-  [int]$KeepBackupCount = 5
+  [int]$KeepBackupCount = 5,
+  [int]$KeepTempRunCount = 10,
+  [int]$LogRetentionDays = 30
 )
 
 Set-StrictMode -Version Latest
@@ -119,6 +121,59 @@ function Restore-Path {
   }
 }
 
+function Cleanup-FilesByAge {
+  param(
+    [string]$Root,
+    [int]$RetentionDays
+  )
+
+  if ($RetentionDays -lt 1 -or -not (Test-Path $Root)) {
+    return
+  }
+
+  $cutoff = (Get-Date).AddDays(-$RetentionDays)
+  Get-ChildItem -Path $Root -File -Recurse -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTime -lt $cutoff -and ($_.Extension -in @('.log', '.txt')) } |
+    ForEach-Object {
+      Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Cleanup-DirectoriesByCount {
+  param(
+    [string]$Root,
+    [int]$KeepCount
+  )
+
+  if ($KeepCount -lt 0 -or -not (Test-Path $Root)) {
+    return
+  }
+
+  $directories = Get-ChildItem -Path $Root -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+  if ($directories.Count -le $KeepCount) {
+    return
+  }
+
+  $directories | Select-Object -Skip $KeepCount | ForEach-Object {
+    Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Invoke-MaintenanceCleanup {
+  $backupBase = Join-Path $appRootResolved "backups"
+  if (Test-Path $backupBase) {
+    $backupDirs = Get-ChildItem -Path $backupBase -Directory | Sort-Object Name -Descending
+    if ($backupDirs.Count -gt $KeepBackupCount) {
+      $backupDirs | Select-Object -Skip $KeepBackupCount | ForEach-Object {
+        Remove-Item -Path $_.FullName -Recurse -Force
+      }
+    }
+  }
+
+  Cleanup-DirectoriesByCount -Root $TempRoot -KeepCount $KeepTempRunCount
+  Cleanup-FilesByAge -Root (Join-Path $appRootResolved "logs") -RetentionDays $LogRetentionDays
+}
+
 $appRootResolved = Resolve-AppRoot -InputPath $AppRoot
 $currentVersion = Get-CurrentVersion -Root $appRootResolved
 
@@ -145,6 +200,7 @@ if (-not $targetVersion -or -not $packageUrl) {
 
 if ((Compare-Version -Left $targetVersion -Right $currentVersion) -le 0) {
   Write-Host "No update needed. Current=$currentVersion Target=$targetVersion"
+  Invoke-MaintenanceCleanup
   exit 0
 }
 
@@ -243,12 +299,4 @@ try {
   }
 }
 
-$backupBase = Join-Path $appRootResolved "backups"
-if (Test-Path $backupBase) {
-  $backupDirs = Get-ChildItem -Path $backupBase -Directory | Sort-Object Name -Descending
-  if ($backupDirs.Count -gt $KeepBackupCount) {
-    $backupDirs | Select-Object -Skip $KeepBackupCount | ForEach-Object {
-      Remove-Item -Path $_.FullName -Recurse -Force
-    }
-  }
-}
+Invoke-MaintenanceCleanup

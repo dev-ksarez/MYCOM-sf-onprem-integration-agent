@@ -132,6 +132,12 @@ function htmlShell(): string {
                 <option value="midnight">Midnight Dark</option>
               </select>
             </div>
+            <div class="agent-update-controls d-flex gap-2 align-items-center flex-wrap">
+              <label class="small text-secondary mb-0">Updates</label>
+              <div id="overview-update-status" class="small text-secondary">Update-Status wird geladen...</div>
+              <button id="overview-check-update" type="button" class="btn btn-sm btn-outline-secondary">Update prüfen</button>
+              <button id="overview-run-update" type="button" class="btn btn-sm btn-outline-primary">Update starten</button>
+            </div>
             <div class="btn-group btn-group-sm" role="group" aria-label="Setup Aktionen">
               <button id="export-setup" class="btn btn-outline-secondary agent-btn-subtle" title="Setup exportieren"><span class="agent-btn-icon" aria-hidden="true">⭳</span><span>Export</span></button>
               <button id="import-setup" class="btn btn-outline-secondary agent-btn-subtle" title="Setup importieren"><span class="agent-btn-icon" aria-hidden="true">⭱</span><span>Import</span></button>
@@ -158,9 +164,6 @@ function htmlShell(): string {
           <div class="d-flex justify-content-between align-items-center mb-2">
             <div class="small text-secondary">Dashboard Zeitraum</div>
             <div class="d-flex gap-2 align-items-center flex-wrap justify-content-end">
-              <div id="overview-update-status" class="small text-secondary">Update-Status wird geladen...</div>
-              <button id="overview-check-update" type="button" class="btn btn-sm btn-outline-secondary">Update prüfen</button>
-              <button id="overview-run-update" type="button" class="btn btn-sm btn-outline-primary">Update starten</button>
               <div id="overview-stats-range" class="btn-group btn-group-sm overview-stats-range" role="group" aria-label="Dashboard Zeitraum">
                 <button type="button" class="btn btn-outline-secondary" data-range="day">Heute</button>
                 <button type="button" class="btn btn-outline-secondary active" data-range="month">Monat</button>
@@ -4631,9 +4634,12 @@ function htmlShell(): string {
         runButton.disabled = !status.updateAvailable || status.supported === false;
       }
 
-      async function loadOverviewUpdateStatus(force) {
+      async function loadOverviewUpdateStatus(force, notifyUser) {
         if (!force && state.updateStatus && (Date.now() - Number(state.updateStatusCheckedAt || 0) < 60000)) {
           renderOverviewUpdateStatus();
+          if (notifyUser) {
+            window.alert(state.updateStatus?.message || 'Update-Status unbekannt.');
+          }
           return;
         }
 
@@ -4648,8 +4654,8 @@ function htmlShell(): string {
         state.updateStatusCheckedAt = Date.now();
         renderOverviewUpdateStatus();
 
-        if (status?.updateAvailable) {
-          window.alert(status.message || 'Ein Update ist verfügbar.');
+        if (notifyUser) {
+          window.alert(status?.message || (status?.updateAvailable ? 'Ein Update ist verfügbar.' : 'Kein Update verfügbar.'));
         }
       }
 
@@ -7333,7 +7339,7 @@ function htmlShell(): string {
       });
       document.getElementById('refresh-all').addEventListener('click', refresh);
       document.getElementById('overview-check-update').addEventListener('click', async () => {
-        await loadOverviewUpdateStatus(true);
+        await loadOverviewUpdateStatus(true, true);
       });
       document.getElementById('overview-run-update').addEventListener('click', async () => {
         try {

@@ -9,6 +9,9 @@ param(
   [int]$WebUiPort = 8080,
   [int]$SchedulerIntervalMs = 60000,
   [int]$EveryMinutes = 15,
+  [string]$UpdaterTaskUser = "SYSTEM",
+  [string]$UpdaterTaskPassword,
+  [int]$UpdateLogRetentionDays = 30,
   [switch]$InstallDependencies,
   [switch]$CopyEnvExample,
   [switch]$PromptForEnv,
@@ -81,6 +84,24 @@ function Ask-YesNo {
   }
 
   return $answer.Trim().ToLowerInvariant().StartsWith("y")
+}
+
+function Test-IsBuiltInTaskAccount {
+  param([string]$AccountName)
+
+  if (-not $AccountName) {
+    return $true
+  }
+
+  $normalized = $AccountName.Trim().ToUpperInvariant()
+  return $normalized -in @(
+    "SYSTEM",
+    "NT AUTHORITY\SYSTEM",
+    "LOCAL SERVICE",
+    "NT AUTHORITY\LOCAL SERVICE",
+    "NETWORK SERVICE",
+    "NT AUTHORITY\NETWORK SERVICE"
+  )
 }
 
 function Test-IsElevated {
@@ -494,10 +515,26 @@ try {
   }
   Write-InstallerLog -Message ("Using node executable: " + $nodeExe)
 
+  if (-not $SkipUpdater) {
+    $UpdaterTaskUser = if ($UpdaterTaskUser -and $UpdaterTaskUser.Trim()) { $UpdaterTaskUser.Trim() } else { "SYSTEM" }
+    if (-not $PSBoundParameters.ContainsKey('UpdaterTaskUser')) {
+      Write-Host "Konfiguration Auto-Updater:" -ForegroundColor Cyan
+      $UpdaterTaskUser = Read-ConfigValue -Prompt 'Benutzer fuer Updater-Task (SYSTEM oder DOMAIN\Benutzer)' -DefaultValue $UpdaterTaskUser -Required -HelpText 'SYSTEM benoetigt kein Passwort. Fuer einen eigenen Benutzer DOMAIN\Benutzer oder COMPUTER\Benutzer eingeben.'
+    }
+
+    if (-not (Test-IsBuiltInTaskAccount -AccountName $UpdaterTaskUser) -and -not $PSBoundParameters.ContainsKey('UpdaterTaskPassword')) {
+      $UpdaterTaskPassword = Read-ConfigValue -Prompt 'Passwort fuer Updater-Task' -DefaultValue $UpdaterTaskPassword -Required -Secret -HelpText 'Erforderlich, wenn der Auto-Updater nicht als SYSTEM oder Dienstkonto laufen soll.'
+    }
+  }
+
   Write-Host "Installationskonfiguration:" -ForegroundColor Cyan
   Write-Host "  Zielordner           : $appRootResolved"
   Write-Host "  Dienstname           : $ServiceName"
   Write-Host "  Updater-Task         : $TaskName"
+  if (-not $SkipUpdater) {
+    Write-Host "  Updater-Task-User    : $UpdaterTaskUser"
+    Write-Host "  Log-Bereinigung      : $UpdateLogRetentionDays Tage"
+  }
   Write-Host "  Node.exe             : $nodeExe"
   Write-Host "  Einstiegspunkt       : $entryPoint"
   Write-Host "  Abhaengigkeiten      : $InstallDependencies"
@@ -649,12 +686,19 @@ try {
   if (-not $SkipUpdater) {
   Write-Host "Registriere den Auto-Updater als geplante Aufgabe ..." -ForegroundColor Cyan
   Write-InstallerLog -Message "Invoking updater registration script."
-  & $registerUpdaterScript `
-    -TaskName $TaskName `
-    -ServiceName $ServiceName `
-    -ManifestUrl $ManifestUrl `
-    -EveryMinutes $EveryMinutes `
-    -AppRoot $appRootResolved
+  $updaterRegistrationParameters = @{
+    TaskName = $TaskName
+    ServiceName = $ServiceName
+    ManifestUrl = $ManifestUrl
+    EveryMinutes = $EveryMinutes
+    UpdaterTaskUser = $UpdaterTaskUser
+    LogRetentionDays = $UpdateLogRetentionDays
+    AppRoot = $appRootResolved
+  }
+  if ($UpdaterTaskPassword) {
+    $updaterRegistrationParameters['UpdaterTaskPassword'] = $UpdaterTaskPassword
+  }
+  & $registerUpdaterScript @updaterRegistrationParameters
 
     if ($LASTEXITCODE -ne 0) {
       Write-InstallerLog -Level ERROR -Message ("Updater registration exited with code " + $LASTEXITCODE)
