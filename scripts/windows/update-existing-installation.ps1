@@ -16,6 +16,22 @@ $ErrorActionPreference = "Stop"
 $script:ScriptDirectory = Split-Path -Parent $PSCommandPath
 $repoReleaseBase = "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases"
 
+function Resolve-PackagedScriptPath {
+  param(
+    [string[]]$RelativePaths,
+    [string]$ScriptName
+  )
+
+  foreach ($relativePath in $RelativePaths) {
+    $candidate = Join-Path $script:ScriptDirectory $relativePath
+    if (Test-Path $candidate) {
+      return $candidate
+    }
+  }
+
+  return $null
+}
+
 function Resolve-ManifestUrl {
   param(
     [string]$ManifestUrl,
@@ -42,8 +58,11 @@ function Resolve-ManifestUrl {
 function Resolve-UpdateScriptPath {
   param([string]$Root)
 
-  $localScript = Join-Path $script:ScriptDirectory "update-agent.ps1"
-  if (Test-Path $localScript) {
+  $localScript = Resolve-PackagedScriptPath -RelativePaths @(
+    "update-agent.ps1",
+    "sf-onprem-integration-agent\scripts\windows\update-agent.ps1"
+  ) -ScriptName "update-agent.ps1"
+  if ($localScript) {
     return $localScript
   }
 
@@ -52,14 +71,17 @@ function Resolve-UpdateScriptPath {
     return $installedScript
   }
 
-  throw "update-agent.ps1 wurde weder unter $installedScript noch neben diesem Skript gefunden."
+  throw "update-agent.ps1 wurde weder unter $installedScript noch im entpackten Release-Paket gefunden."
 }
 
 function Resolve-RegisterScriptPath {
   param([string]$Root)
 
-  $localScript = Join-Path $script:ScriptDirectory "register-agent-updater-task.ps1"
-  if (Test-Path $localScript) {
+  $localScript = Resolve-PackagedScriptPath -RelativePaths @(
+    "register-agent-updater-task.ps1",
+    "sf-onprem-integration-agent\scripts\windows\register-agent-updater-task.ps1"
+  ) -ScriptName "register-agent-updater-task.ps1"
+  if ($localScript) {
     return $localScript
   }
 
@@ -68,7 +90,7 @@ function Resolve-RegisterScriptPath {
     return $installedScript
   }
 
-  throw "register-agent-updater-task.ps1 wurde weder unter $installedScript noch neben diesem Skript gefunden."
+  throw "register-agent-updater-task.ps1 wurde weder unter $installedScript noch im entpackten Release-Paket gefunden."
 }
 
 $manifestUrl = Resolve-ManifestUrl -ManifestUrl $UpdateManifestUrl -Version $ReleaseVersion
