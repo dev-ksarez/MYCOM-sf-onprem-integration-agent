@@ -1150,8 +1150,6 @@ export class SalesforceClient {
     }
 
     const normalizedLimit = Math.max(1, Math.min(limit, 5000));
-    const escapedStartIso = startIso.replace(/'/g, "\\'");
-    const escapedEndIso = endIso.replace(/'/g, "\\'");
     const soql = `
       SELECT
         Id,
@@ -1170,8 +1168,8 @@ export class SalesforceClient {
         MSD_CorrelationId__c,
         MSD_AgentId__c
       FROM MSD_Run__c
-      WHERE MSD_StartedAt__c >= '${escapedStartIso}'
-        AND MSD_StartedAt__c < '${escapedEndIso}'
+      WHERE MSD_StartedAt__c >= ${formatSoqlDateTime(startIso)}
+        AND MSD_StartedAt__c < ${formatSoqlDateTime(endIso)}
       ORDER BY MSD_StartedAt__c ASC
       LIMIT ${normalizedLimit}
     `;
