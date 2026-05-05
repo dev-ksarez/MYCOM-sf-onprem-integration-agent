@@ -200,6 +200,32 @@ function Expand-ZipArchive {
   }
 }
 
+function Resolve-ExtractedPayloadRoot {
+  param([string]$ExtractRoot)
+
+  $candidateRoots = @($ExtractRoot)
+  $topDirs = @(Get-ChildItem -Path $ExtractRoot -Directory -ErrorAction SilentlyContinue)
+
+  if ($topDirs.Count -eq 1) {
+    $candidateRoots += $topDirs[0].FullName
+    $candidateRoots += Join-Path $topDirs[0].FullName "sf-onprem-integration-agent"
+  }
+
+  foreach ($candidateRoot in $candidateRoots | Select-Object -Unique) {
+    if (-not $candidateRoot) {
+      continue
+    }
+
+    $candidatePackageJson = Join-Path $candidateRoot "package.json"
+    $candidateDist = Join-Path $candidateRoot "dist"
+    if ((Test-Path $candidatePackageJson) -and (Test-Path $candidateDist)) {
+      return $candidateRoot
+    }
+  }
+
+  return $ExtractRoot
+}
+
 function Invoke-MaintenanceCleanup {
   $backupBase = Join-Path $appRootResolved "backups"
   if (Test-Path $backupBase) {
@@ -260,11 +286,7 @@ if ($sha256) {
 $extractRoot = Join-Path $runRoot "extract"
 Expand-ZipArchive -ArchivePath $zipPath -DestinationPath $extractRoot
 
-$payloadRoot = $extractRoot
-$topDirs = @(Get-ChildItem -Path $extractRoot -Directory)
-if ($topDirs.Count -eq 1 -and (Test-Path (Join-Path $topDirs[0].FullName "package.json"))) {
-  $payloadRoot = $topDirs[0].FullName
-}
+$payloadRoot = Resolve-ExtractedPayloadRoot -ExtractRoot $extractRoot
 
 $requiredDist = Join-Path $payloadRoot "dist"
 if (-not (Test-Path $requiredDist)) {
