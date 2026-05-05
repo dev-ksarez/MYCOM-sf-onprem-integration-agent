@@ -49,9 +49,9 @@ async function ensureDir(p) {
   await fsp.mkdir(p, { recursive: true });
 }
 
-async function copyIfExists(src, dst) {
+async function copyIfExists(src, dst, options = {}) {
   if (await exists(src)) {
-    await fsp.cp(src, dst, { recursive: true, force: true });
+    await fsp.cp(src, dst, { recursive: true, force: true, ...options });
   }
 }
 
@@ -115,7 +115,21 @@ async function main() {
     force: true,
   });
   await copyIfExists(path.join(appRoot, "src", "css"), path.join(stagingAppRoot, "src", "css"));
-  await copyIfExists(path.join(appRoot, "artifacts"), path.join(stagingAppRoot, "artifacts"));
+  await copyIfExists(path.join(appRoot, "artifacts"), path.join(stagingAppRoot, "artifacts"), {
+    filter: (sourcePath) => {
+      const relativePath = path.relative(path.join(appRoot, "artifacts"), sourcePath);
+      if (!relativePath || relativePath === "") {
+        return true;
+      }
+
+      const normalizedRelativePath = relativePath.split(path.sep).join("/");
+      if (normalizedRelativePath === "release" || normalizedRelativePath.startsWith("release/")) {
+        return false;
+      }
+
+      return path.extname(sourcePath).toLowerCase() !== ".zip";
+    },
+  });
   await copyIfExists(path.join(appRoot, "migrations"), path.join(stagingAppRoot, "migrations"));
   await copyIfExists(path.join(appRoot, "salesforce"), path.join(stagingAppRoot, "salesforce"));
   await fsp.cp(path.join(appRoot, "package.json"), path.join(stagingAppRoot, "package.json"), {
