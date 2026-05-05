@@ -833,8 +833,9 @@ function htmlShell(): string {
               aria-label="Header-Menü öffnen"
             >
               ☰
+              <span id="agent-menu-update-bullet" class="agent-update-bullet d-none" aria-hidden="true"></span>
             </button>
-            <div class="agent-topbar-brand">SF Integration Agent</div>
+            <div class="agent-topbar-brand">SF Integration Agent <span id="agent-version-label" class="agent-version-label">v-</span></div>
           </div>
           <div class="agent-navbar-actions offcanvas offcanvas-end" tabindex="-1" id="agent-header-menu" aria-labelledby="agent-header-menu-title">
             <div class="offcanvas-header agent-offcanvas-header">
@@ -849,7 +850,7 @@ function htmlShell(): string {
                 <div class="agent-menu-section-label">Navigation</div>
                 <div class="agent-menu-nav-grid" role="navigation" aria-label="Hauptnavigation">
                   <button type="button" class="agent-menu-tab" data-menu-tab="#tab-overview" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">▦</span><span>Übersicht</span></button>
-                  <button type="button" class="agent-menu-tab" data-menu-tab="#tab-installer" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">⚙</span><span>Installation</span></button>
+                  <button type="button" class="agent-menu-tab" data-menu-tab="#tab-installer" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">⚙</span><span>Installation</span><span id="agent-install-update-bullet" class="agent-update-bullet agent-update-bullet-inline d-none" aria-hidden="true"></span></button>
                   <button type="button" class="agent-menu-tab" data-menu-tab="#tab-schedulers" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">◷</span><span>Scheduler</span></button>
                   <button type="button" class="agent-menu-tab" data-menu-tab="#tab-connectors" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">◫</span><span>Connectoren</span></button>
                   <button type="button" class="agent-menu-tab" data-menu-tab="#tab-monitor" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">◉</span><span>Monitoring</span></button>
@@ -2033,6 +2034,7 @@ function htmlShell(): string {
         mappingFields: [],
         targetFields: [],
         mappingRules: [],
+        rawMappingEditorDirty: false,
         selectedMappingRuleId: '',
         logSummary: null,
         salesforceOverview: null,
@@ -4962,7 +4964,13 @@ function htmlShell(): string {
         if (!mappingInput) {
           return;
         }
+
+        if (state.rawMappingEditorDirty) {
+          return;
+        }
+
         mappingInput.value = JSON.stringify(state.mappingRules.map(toStoredMappingRule), null, 2);
+        state.rawMappingEditorDirty = false;
       }
 
       function updateMappingDetailEditorState() {
@@ -5451,6 +5459,7 @@ function htmlShell(): string {
       function hydrateMappingRulesFromDefinition() {
         const mappingRaw = document.getElementById('sch-mapping').value || '';
         const raw = mappingRaw.trim();
+        state.rawMappingEditorDirty = false;
         state.mappingRules = [];
         state.selectedMappingRuleId = '';
 
@@ -6353,6 +6362,9 @@ function htmlShell(): string {
         const progressUpdatedAtEl = document.getElementById('overview-update-progress-updated-at');
         const checkButton = document.getElementById('overview-check-update');
         const runButton = document.getElementById('overview-run-update');
+        const versionLabelEl = document.getElementById('agent-version-label');
+        const menuUpdateBulletEl = document.getElementById('agent-menu-update-bullet');
+        const installUpdateBulletEl = document.getElementById('agent-install-update-bullet');
         if (!statusEl || !progressWrap || !progressStageEl || !progressPercentEl || !progressBarEl || !progressUpdatedAtEl || !checkButton || !runButton) {
           return;
         }
@@ -6389,7 +6401,18 @@ function htmlShell(): string {
           ? Math.max(0, Math.min(100, Math.round(progressPercent)))
           : 0;
         const hasFailureMessage = /fehlgeschlagen/i.test(String(status.message || ''));
+        const currentVersion = String(status.currentVersion || '').trim() || '-';
+        const hasUpdateAvailable = !!status.updateAvailable;
         statusEl.textContent = status.message || 'Update-Status unbekannt';
+        if (versionLabelEl) {
+          versionLabelEl.textContent = 'v' + currentVersion;
+        }
+        if (menuUpdateBulletEl) {
+          menuUpdateBulletEl.classList.toggle('d-none', !hasUpdateAvailable);
+        }
+        if (installUpdateBulletEl) {
+          installUpdateBulletEl.classList.toggle('d-none', !hasUpdateAvailable);
+        }
         progressWrap.classList.toggle('d-none', !isInProgress && !status.stage && !Number.isFinite(progressPercent));
         progressStageEl.textContent = status.stage
           ? 'Schritt: ' + getUpdateStageLabel(status.stage)
@@ -8623,6 +8646,7 @@ function htmlShell(): string {
         document.getElementById('sch-pricebook2id').value = '';
         document.getElementById('sch-target-relative-directory').value = parsedTargetDefinition.relativeDirectory || '';
         document.getElementById('sch-target-archive-relative-directory').value = parsedTargetDefinition.archiveRelativeDirectory || '';
+        state.rawMappingEditorDirty = false;
         document.getElementById('sch-mapping').value = entry?.mappingDefinition || '';
         await syncSchedulerExternalIdUi();
         state.customObjectFieldOverrides = {};
@@ -9534,7 +9558,11 @@ function htmlShell(): string {
         await syncSchedulerExternalIdUi();
         updateScheduleFilePathSummaries();
       });
+      bindEventListenerOnce('sch-mapping', 'input', () => {
+        state.rawMappingEditorDirty = true;
+      });
       bindEventListenerOnce('sch-mapping', 'change', async () => {
+        hydrateMappingRulesFromDefinition();
         await syncSchedulerExternalIdUi();
       });
       bindEventListenerOnce('sch-connector', 'change', async () => {
@@ -9810,7 +9838,11 @@ function htmlShell(): string {
       bindEventListenerOnce('sch-target-definition', 'change', async () => {
         await syncSchedulerExternalIdUi();
       });
+      bindEventListenerOnce('sch-mapping', 'input', () => {
+        state.rawMappingEditorDirty = true;
+      });
       bindEventListenerOnce('sch-mapping', 'change', async () => {
+        hydrateMappingRulesFromDefinition();
         await syncSchedulerExternalIdUi();
       });
       document.getElementById('sch-create-custom-object').addEventListener('click', createSalesforceCustomObjectFromSource);

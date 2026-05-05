@@ -2203,6 +2203,7 @@ body {
   font-size: 1.15rem;
   line-height: 1;
   padding: 0;
+  position: relative;
 }
 
 .agent-offcanvas-header {
@@ -2229,6 +2230,17 @@ body {
   font-weight: 700;
   letter-spacing: 0.2px;
   white-space: nowrap;
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+}
+
+.agent-version-label {
+  color: var(--layout-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .agent-navbar-actions {
@@ -2308,6 +2320,7 @@ body {
   font-weight: 600;
   min-height: 3rem;
   padding: 0.8rem 0.9rem;
+  position: relative;
   text-align: left;
   transition: transform 140ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
 }
@@ -2336,6 +2349,28 @@ body {
   height: 2rem;
   justify-content: center;
   min-width: 2rem;
+}
+
+.agent-update-bullet {
+  background: #d33c2d;
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px rgba(211, 60, 45, 0.15);
+  display: inline-block;
+  height: 0.7rem;
+  width: 0.7rem;
+}
+
+.agent-topbar-menu .agent-update-bullet {
+  position: absolute;
+  right: 0.35rem;
+  top: 0.32rem;
+}
+
+.agent-update-bullet-inline {
+  border-color: rgba(243, 244, 246, 0.96);
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .agent-menu-control-grid,

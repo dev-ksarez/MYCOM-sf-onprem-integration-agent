@@ -34,7 +34,21 @@ function readSourceValue(record: MappingSourceRecord, sourceField: string): unkn
     return undefined;
   }
 
-  return record[sourceField];
+  if (Object.prototype.hasOwnProperty.call(record, sourceField)) {
+    return record[sourceField];
+  }
+
+  if (!sourceField.includes(".")) {
+    return record[sourceField];
+  }
+
+  return sourceField.split(".").reduce<unknown>((currentValue, keyPart) => {
+    if (currentValue === undefined || currentValue === null || typeof currentValue !== "object") {
+      return undefined;
+    }
+
+    return (currentValue as Record<string, unknown>)[keyPart];
+  }, record);
 }
 
 function applyPicklistMappings(value: unknown, mappings?: MappingPicklistEntry[]): unknown {
