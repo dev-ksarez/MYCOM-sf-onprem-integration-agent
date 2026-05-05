@@ -6,6 +6,7 @@ const DEFAULT_UPDATE_MANIFEST_URL =
   process.env.UPDATE_MANIFEST_URL ||
   "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json";
 const DEFAULT_WINDOWS_SERVICE_NAME = process.env.AGENT_SERVICE_NAME || "SfOnpremIntegrationAgent";
+const UPDATE_PROGRESS_FILE = path.resolve(process.cwd(), "logs", "dashboard-update-status.json");
 
 export interface DashboardUpdateStatus {
   currentVersion: string;
@@ -15,12 +16,49 @@ export interface DashboardUpdateStatus {
   hostPlatform: string;
   manifestUrl: string;
   message: string;
+  inProgress?: boolean;
+  progressPercent?: number;
+  stage?: string;
+  updatedAt?: string;
 }
 
 export interface DashboardUpdateTriggerResult {
   ok: boolean;
   message: string;
   output?: string;
+}
+
+interface DashboardUpdateProgressState {
+  state: "idle" | "running" | "completed" | "failed";
+  message: string;
+  progressPercent?: number;
+  stage?: string;
+  targetVersion?: string;
+  updatedAt: string;
+}
+
+async function readUpdateProgress(): Promise<DashboardUpdateProgressState | null> {
+  try {
+    const raw = await fs.readFile(UPDATE_PROGRESS_FILE, "utf8");
+    const parsed = JSON.parse(raw) as DashboardUpdateProgressState;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeUpdateProgress(progress: DashboardUpdateProgressState): Promise<void> {
+  await fs.mkdir(path.dirname(UPDATE_PROGRESS_FILE), { recursive: true });
+  await fs.writeFile(UPDATE_PROGRESS_FILE, JSON.stringify(progress, null, 2), "utf8");
+}
+
+function normalizeProgressPercent(value: unknown): number | undefined {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return undefined;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(numericValue)));
 }
 
 function getHostPlatformLabel(): string {
@@ -68,6 +106,23 @@ export async function getDashboardUpdateStatus(): Promise<DashboardUpdateStatus>
   const currentVersion = await getCurrentPackageVersion();
   const supported = process.platform === "win32";
   const hostPlatform = getHostPlatformLabel();
+  const progress = await readUpdateProgress();
+
+  if (progress?.state === "running") {
+    return {
+      currentVersion,
+      targetVersion: progress.targetVersion,
+      updateAvailable: false,
+      supported,
+      hostPlatform,
+      manifestUrl: DEFAULT_UPDATE_MANIFEST_URL,
+      message: progress.message || "Update wird ausgefuehrt.",
+      inProgress: true,
+      progressPercent: normalizeProgressPercent(progress.progressPercent),
+      stage: progress.stage,
+      updatedAt: progress.updatedAt
+    };
+  }
 
   try {
     const response = await fetch(DEFAULT_UPDATE_MANIFEST_URL, {
@@ -108,9 +163,17 @@ export async function getDashboardUpdateStatus(): Promise<DashboardUpdateStatus>
       supported,
       hostPlatform,
       manifestUrl: DEFAULT_UPDATE_MANIFEST_URL,
-      message: !supported
+      message: progress?.state === "completed"
+        ? progress.message
+        : progress?.state === "failed"
+          ? progress.message
+          : !supported
         ? `${baseMessage}. Der Direktstart richtet sich nach dem Agent-Host, nicht nach dem Browser-Client. Aktueller Agent-Host: ${hostPlatform}.`
-        : baseMessage
+        : baseMessage,
+      inProgress: false,
+      progressPercent: normalizeProgressPercent(progress?.progressPercent),
+      stage: progress?.stage,
+      updatedAt: progress?.updatedAt
     };
   } catch (error) {
     return {
@@ -133,7 +196,16 @@ export async function triggerDashboardUpdate(): Promise<DashboardUpdateTriggerRe
   }
 
   const scriptPath = path.resolve(process.cwd(), "scripts/windows/update-agent.ps1");
+  await writeUpdateProgress({
+    state: "running",
+    message: "Update wird vorbereitet.",
+    progressPercent: 5,
+    stage: "start",
+    updatedAt: new Date().toISOString()
+  });
+
   return await new Promise((resolve) => {
+    let settled = false;
     const child = spawn(
       "powershell.exe",
       [
@@ -147,34 +219,38 @@ export async function triggerDashboardUpdate(): Promise<DashboardUpdateTriggerRe
         "-AppRoot",
         process.cwd(),
         "-UpdateManifestUrl",
-        DEFAULT_UPDATE_MANIFEST_URL
+        DEFAULT_UPDATE_MANIFEST_URL,
+        "-StatusFilePath",
+        UPDATE_PROGRESS_FILE
       ],
       {
         cwd: process.cwd(),
-        windowsHide: true
+        windowsHide: true,
+        detached: true,
+        stdio: "ignore"
       }
     );
 
-    let output = "";
-    child.stdout.on("data", (chunk) => {
-      output += String(chunk || "");
-    });
-    child.stderr.on("data", (chunk) => {
-      output += String(chunk || "");
-    });
-    child.on("close", (code) => {
-      resolve({
-        ok: code === 0,
-        message: code === 0 ? "Update-Prozess erfolgreich gestartet oder abgeschlossen." : "Update-Prozess fehlgeschlagen.",
-        output: output.trim() || undefined
-      });
-    });
-    child.on("error", (error) => {
+    child.once("error", (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
       resolve({
         ok: false,
-        message: error instanceof Error ? error.message : String(error),
-        output: output.trim() || undefined
+        message: error instanceof Error ? error.message : String(error)
       });
     });
+
+    child.unref();
+
+    if (!settled) {
+      settled = true;
+      resolve({
+        ok: true,
+        message: "Update-Prozess im Hintergrund gestartet. Der Agent-Dienst kann dabei kurz beendet und neu gestartet werden."
+      });
+    }
   });
 }

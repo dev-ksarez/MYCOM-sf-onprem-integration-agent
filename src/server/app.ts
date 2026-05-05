@@ -853,6 +853,16 @@ function htmlShell(): string {
                     <span class="small text-secondary">Updates</span>
                     <div id="overview-update-status" class="small text-secondary">Update-Status wird geladen...</div>
                   </div>
+                  <div id="overview-update-progress-wrap" class="mt-2 d-none">
+                    <div class="d-flex justify-content-between gap-2 small text-secondary">
+                      <span id="overview-update-progress-stage">Update wird vorbereitet...</span>
+                      <span id="overview-update-progress-percent">0%</span>
+                    </div>
+                    <div class="progress mt-1" style="height: 6px;">
+                      <div id="overview-update-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+                    </div>
+                    <div id="overview-update-progress-updated-at" class="small text-secondary mt-1"></div>
+                  </div>
                   <div id="overview-log-retention-status" class="small text-secondary mt-2">Log-Retention wird geladen...</div>
                   <div class="agent-menu-action-grid">
                     <button id="overview-check-update" type="button" class="btn btn-sm btn-outline-secondary">Update prüfen</button>
@@ -1988,6 +1998,7 @@ function htmlShell(): string {
         recordsSummary: null,
         updateStatus: null,
         updateStatusCheckedAt: 0,
+        updateStatusPollTimer: null,
         mappingFields: [],
         targetFields: [],
         mappingRules: [],
@@ -5965,23 +5976,94 @@ function htmlShell(): string {
 
       function renderOverviewUpdateStatus() {
         const statusEl = document.getElementById('overview-update-status');
+        const progressWrap = document.getElementById('overview-update-progress-wrap');
+        const progressStageEl = document.getElementById('overview-update-progress-stage');
+        const progressPercentEl = document.getElementById('overview-update-progress-percent');
+        const progressBarEl = document.getElementById('overview-update-progress-bar');
+        const progressUpdatedAtEl = document.getElementById('overview-update-progress-updated-at');
+        const checkButton = document.getElementById('overview-check-update');
         const runButton = document.getElementById('overview-run-update');
-        if (!statusEl || !runButton) {
+        if (!statusEl || !progressWrap || !progressStageEl || !progressPercentEl || !progressBarEl || !progressUpdatedAtEl || !checkButton || !runButton) {
           return;
         }
 
         const status = state.updateStatus;
         if (!status) {
           statusEl.textContent = 'Update-Status unbekannt';
+          progressWrap.classList.add('d-none');
+          checkButton.disabled = false;
           runButton.disabled = true;
           return;
         }
 
+        const getUpdateStageLabel = (stage) => {
+          const normalized = String(stage || '').trim().toLowerCase();
+          if (normalized === 'init' || normalized === 'start') return 'Vorbereitung';
+          if (normalized === 'manifest') return 'Manifest laden';
+          if (normalized === 'download') return 'Paket herunterladen';
+          if (normalized === 'verify') return 'Paket prüfen';
+          if (normalized === 'extract') return 'Paket entpacken';
+          if (normalized === 'stop-service') return 'Dienst stoppen';
+          if (normalized === 'apply') return 'Dateien einspielen';
+          if (normalized === 'start-service') return 'Dienst starten';
+          if (normalized === 'rollback') return 'Rollback';
+          if (normalized === 'completed') return 'Abgeschlossen';
+          if (normalized === 'failed') return 'Fehlgeschlagen';
+          if (normalized === 'idle') return 'Bereit';
+          return normalized || 'Unbekannt';
+        };
+
+        const isInProgress = !!status.inProgress;
+        const progressPercent = Number(status.progressPercent);
+        const normalizedProgressPercent = Number.isFinite(progressPercent)
+          ? Math.max(0, Math.min(100, Math.round(progressPercent)))
+          : 0;
+        const hasFailureMessage = /fehlgeschlagen/i.test(String(status.message || ''));
         statusEl.textContent = status.message || 'Update-Status unbekannt';
-        runButton.disabled = !status.updateAvailable;
+        progressWrap.classList.toggle('d-none', !isInProgress && !status.stage && !Number.isFinite(progressPercent));
+        progressStageEl.textContent = status.stage
+          ? 'Schritt: ' + getUpdateStageLabel(status.stage)
+          : (isInProgress ? 'Update wird ausgefuehrt.' : 'Kein laufendes Update');
+        progressPercentEl.textContent = normalizedProgressPercent + '%';
+        progressBarEl.style.width = normalizedProgressPercent + '%';
+        progressBarEl.setAttribute('aria-valuenow', String(normalizedProgressPercent));
+        progressBarEl.classList.toggle('bg-danger', hasFailureMessage);
+        progressBarEl.classList.toggle('bg-success', !isInProgress && !hasFailureMessage && normalizedProgressPercent >= 100);
+        progressUpdatedAtEl.textContent = status.updatedAt
+          ? 'Stand: ' + formatDate(status.updatedAt, 'short')
+          : '';
+
+        checkButton.disabled = isInProgress;
+        runButton.disabled = isInProgress || !status.updateAvailable;
         runButton.title = status.supported === false
           ? 'Der Direktstart richtet sich nach dem Agent-Host, nicht nach dem Browser-Client.'
           : '';
+
+        if (isInProgress) {
+          startOverviewUpdatePolling();
+        } else {
+          stopOverviewUpdatePolling();
+        }
+      }
+
+      function stopOverviewUpdatePolling() {
+        if (!state.updateStatusPollTimer) {
+          return;
+        }
+
+        window.clearTimeout(state.updateStatusPollTimer);
+        state.updateStatusPollTimer = null;
+      }
+
+      function startOverviewUpdatePolling() {
+        if (state.updateStatusPollTimer) {
+          return;
+        }
+
+        state.updateStatusPollTimer = window.setTimeout(async () => {
+          state.updateStatusPollTimer = null;
+          await loadOverviewUpdateStatus(true, false, true);
+        }, 3000);
       }
 
       function renderOverviewLogRetentionStatus() {
@@ -5996,7 +6078,7 @@ function htmlShell(): string {
           : 'Log-Retention: deaktiviert';
       }
 
-      async function loadOverviewUpdateStatus(force, notifyUser) {
+      async function loadOverviewUpdateStatus(force, notifyUser, silent) {
         if (!force && state.updateStatus && (Date.now() - Number(state.updateStatusCheckedAt || 0) < 60000)) {
           renderOverviewUpdateStatus();
           if (notifyUser) {
@@ -6005,13 +6087,30 @@ function htmlShell(): string {
           return;
         }
 
-        const status = await safeRequest('/api/system/update-status', {
-          currentVersion: '-',
-          updateAvailable: false,
-          supported: false,
-          manifestUrl: '',
-          message: 'Update-Status konnte nicht geladen werden.'
-        });
+        let status = null;
+        try {
+          status = await requestJson('/api/system/update-status');
+        } catch (error) {
+          if (!silent) {
+            showError(error.message || 'Update-Status konnte nicht geladen werden.');
+          }
+
+          if (state.updateStatus?.inProgress) {
+            status = {
+              ...state.updateStatus,
+              message: 'Update wird ausgefuehrt. Verbindung zum Agenten wird neu aufgebaut.'
+            };
+          } else {
+            status = {
+              currentVersion: '-',
+              updateAvailable: false,
+              supported: false,
+              manifestUrl: '',
+              message: 'Update-Status konnte nicht geladen werden.'
+            };
+          }
+        }
+
         state.updateStatus = status;
         state.updateStatusCheckedAt = Date.now();
         renderOverviewUpdateStatus();
@@ -6034,7 +6133,7 @@ function htmlShell(): string {
         if (result.output) {
           console.log('Update output:', result.output);
         }
-        await loadOverviewUpdateStatus(true);
+        await loadOverviewUpdateStatus(true, false, true);
       }
 
       async function setScheduleActive(scheduleId, active) {

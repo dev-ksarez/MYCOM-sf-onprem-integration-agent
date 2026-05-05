@@ -2,6 +2,7 @@ param(
   [string]$ServiceName = "SfOnpremIntegrationAgent",
   [string]$AppRoot,
   [string]$UpdateManifestUrl,
+  [string]$StatusFilePath,
   [string]$TempRoot = "$env:TEMP\\sf-agent-updater",
   [int]$StartTimeoutSeconds = 60,
   [int]$KeepBackupCount = 5,
@@ -81,6 +82,31 @@ function Ensure-Directory {
   if (-not (Test-Path $Path)) {
     New-Item -ItemType Directory -Path $Path | Out-Null
   }
+}
+
+function Write-UpdateProgress {
+  param(
+    [string]$State,
+    [string]$Message,
+    [int]$ProgressPercent = -1,
+    [string]$Stage = "",
+    [string]$TargetVersion = ""
+  )
+
+  if (-not $script:StatusFilePathResolved) {
+    return
+  }
+
+  Ensure-Directory -Path (Split-Path -Parent $script:StatusFilePathResolved)
+  $payload = [ordered]@{
+    state = $State
+    message = $Message
+    progressPercent = $(if ($ProgressPercent -ge 0) { $ProgressPercent } else { $null })
+    stage = $(if ($Stage) { $Stage } else { $null })
+    targetVersion = $(if ($TargetVersion) { $TargetVersion } else { $null })
+    updatedAt = [DateTime]::UtcNow.ToString("o")
+  }
+  $payload | ConvertTo-Json | Set-Content -Path $script:StatusFilePathResolved -Encoding UTF8
 }
 
 function Backup-Path {
@@ -242,7 +268,9 @@ function Invoke-MaintenanceCleanup {
 }
 
 $appRootResolved = Resolve-AppRoot -InputPath $AppRoot
+$script:StatusFilePathResolved = if ($StatusFilePath -and $StatusFilePath.Trim()) { $StatusFilePath } else { Join-Path $appRootResolved "logs\dashboard-update-status.json" }
 $currentVersion = Get-CurrentVersion -Root $appRootResolved
+Write-UpdateProgress -State "running" -Message "Update wird initialisiert." -ProgressPercent 5 -Stage "init"
 
 if (-not $UpdateManifestUrl) {
   throw "UpdateManifestUrl is required."
@@ -254,6 +282,7 @@ $runRoot = Join-Path $TempRoot $runId
 Ensure-Directory -Path $runRoot
 
 $manifestPath = Join-Path $runRoot "manifest.json"
+Write-UpdateProgress -State "running" -Message "Update-Manifest wird geladen." -ProgressPercent 10 -Stage "manifest"
 Invoke-WebRequest -Uri $UpdateManifestUrl -OutFile $manifestPath
 $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
 
@@ -267,16 +296,19 @@ if (-not $targetVersion -or -not $packageUrl) {
 
 if ((Compare-Version -Left $targetVersion -Right $currentVersion) -le 0) {
   Write-Host "No update needed. Current=$currentVersion Target=$targetVersion"
+  Write-UpdateProgress -State "completed" -Message "Kein Update erforderlich." -ProgressPercent 100 -Stage "idle" -TargetVersion $targetVersion
   Invoke-MaintenanceCleanup
   exit 0
 }
 
 Write-Host "Update available: $currentVersion -> $targetVersion" -ForegroundColor Cyan
+Write-UpdateProgress -State "running" -Message "Updatepaket wird heruntergeladen." -ProgressPercent 20 -Stage "download" -TargetVersion $targetVersion
 
 $zipPath = Join-Path $runRoot "update.zip"
 Invoke-WebRequest -Uri $packageUrl -OutFile $zipPath
 
 if ($sha256) {
+  Write-UpdateProgress -State "running" -Message "Paketintegritaet wird geprueft." -ProgressPercent 35 -Stage "verify" -TargetVersion $targetVersion
   $actualHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($actualHash -ne $sha256.ToLowerInvariant()) {
     throw "SHA256 mismatch for downloaded package."
@@ -284,6 +316,7 @@ if ($sha256) {
 }
 
 $extractRoot = Join-Path $runRoot "extract"
+Write-UpdateProgress -State "running" -Message "Updatepaket wird entpackt." -ProgressPercent 45 -Stage "extract" -TargetVersion $targetVersion
 Expand-ZipArchive -ArchivePath $zipPath -DestinationPath $extractRoot
 
 $payloadRoot = Resolve-ExtractedPayloadRoot -ExtractRoot $extractRoot
@@ -313,6 +346,7 @@ foreach ($item in $restorePlan) {
 
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($service -and $service.Status -ne "Stopped") {
+  Write-UpdateProgress -State "running" -Message "Agent-Dienst wird gestoppt." -ProgressPercent 60 -Stage "stop-service" -TargetVersion $targetVersion
   Stop-Service -Name $ServiceName -Force
   if (-not (Wait-ServiceState -Name $ServiceName -ExpectedState "Stopped" -TimeoutSeconds 60)) {
     throw "Service $ServiceName did not stop in time."
@@ -322,6 +356,7 @@ if ($service -and $service.Status -ne "Stopped") {
 $updateSucceeded = $false
 
 try {
+  Write-UpdateProgress -State "running" -Message "Update-Dateien werden eingespielt." -ProgressPercent 75 -Stage "apply" -TargetVersion $targetVersion
   foreach ($item in $restorePlan) {
     if (-not (Test-Path $item.Payload)) {
       continue
@@ -339,6 +374,7 @@ try {
   }
 
   if ($service) {
+    Write-UpdateProgress -State "running" -Message "Agent-Dienst wird neu gestartet." -ProgressPercent 90 -Stage "start-service" -TargetVersion $targetVersion
     Start-Service -Name $ServiceName
     if (-not (Wait-ServiceState -Name $ServiceName -ExpectedState "Running" -TimeoutSeconds $StartTimeoutSeconds)) {
       throw "Service $ServiceName did not return to Running state after update."
@@ -346,9 +382,11 @@ try {
   }
 
   $updateSucceeded = $true
+  Write-UpdateProgress -State "completed" -Message "Update auf Version $targetVersion abgeschlossen." -ProgressPercent 100 -Stage "completed" -TargetVersion $targetVersion
   Write-Host "Update to version $targetVersion completed." -ForegroundColor Green
 } finally {
   if (-not $updateSucceeded) {
+    Write-UpdateProgress -State "failed" -Message "Update fehlgeschlagen. Rollback wird gestartet." -ProgressPercent 95 -Stage "rollback" -TargetVersion $targetVersion
     Write-Warning "Update failed. Starting rollback."
 
     if ($service) {
@@ -364,6 +402,8 @@ try {
       Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
       [void](Wait-ServiceState -Name $ServiceName -ExpectedState "Running" -TimeoutSeconds $StartTimeoutSeconds)
     }
+
+    Write-UpdateProgress -State "failed" -Message "Update fehlgeschlagen. Der vorherige Stand wurde wiederhergestellt." -ProgressPercent 100 -Stage "failed" -TargetVersion $targetVersion
   }
 }
 
