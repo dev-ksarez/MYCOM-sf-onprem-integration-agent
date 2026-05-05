@@ -261,7 +261,7 @@ $extractRoot = Join-Path $runRoot "extract"
 Expand-ZipArchive -ArchivePath $zipPath -DestinationPath $extractRoot
 
 $payloadRoot = $extractRoot
-$topDirs = Get-ChildItem -Path $extractRoot -Directory
+$topDirs = @(Get-ChildItem -Path $extractRoot -Directory)
 if ($topDirs.Count -eq 1 -and (Test-Path (Join-Path $topDirs[0].FullName "package.json"))) {
   $payloadRoot = $topDirs[0].FullName
 }
