@@ -216,6 +216,26 @@ npm run win:update-now -- -ServiceName "SfOnpremIntegrationAgent" -UpdateManifes
 
 Fuer eine bestehende Kundeninstallation gibt es jetzt einen vereinfachten Wrapper, der standardmaessig auf das neueste GitHub Release zeigt:
 
+Wichtig fuer bestehende Installationen vor Version 0.2.2:
+
+- der Befehl `npm run win:update-existing` ist dort noch nicht im bereits installierten `package.json` vorhanden
+- deshalb das aktuelle Release-ZIP herunterladen und den enthaltenen Launcher aus dem ZIP-Wurzelverzeichnis starten
+
+Direkt aus dem entpackten Release-Paket:
+
+```powershell
+cd <entpacktes-release-verzeichnis>
+.\update-existing-installation.ps1 -AppRoot "C:\apps\sf-onprem-integration-agent" -ReleaseVersion "0.2.2"
+```
+
+Oder per CMD-Launcher:
+
+```cmd
+update-existing-installation.cmd -AppRoot "C:\apps\sf-onprem-integration-agent" -ReleaseVersion "0.2.2"
+```
+
+Sobald die Installation auf 0.2.2 oder neuer ist, funktioniert auch der npm-Aufruf direkt aus dem installierten Verzeichnis:
+
 ```powershell
 cd C:\apps\sf-onprem-integration-agent
 npm run win:update-existing -- -AppRoot "C:\apps\sf-onprem-integration-agent"

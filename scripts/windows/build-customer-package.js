@@ -148,6 +148,14 @@ async function main() {
     path.join(appRoot, "scripts", "windows", "install-customer-package.cmd"),
     path.join(packageRoot, "install-customer-package.cmd")
   );
+  await copyIfExists(
+    path.join(appRoot, "scripts", "windows", "update-existing-installation.ps1"),
+    path.join(packageRoot, "update-existing-installation.ps1")
+  );
+  await copyIfExists(
+    path.join(appRoot, "scripts", "windows", "update-existing-installation.cmd"),
+    path.join(packageRoot, "update-existing-installation.cmd")
+  );
 
   if (args.includeNodeModules) {
     const nodeModulesPath = path.join(appRoot, "node_modules");
@@ -177,6 +185,7 @@ async function main() {
   }
   console.log("Bundled runtime helper included: nssm.exe");
   console.log("Bootstrap launcher included: install-customer-package.cmd / .ps1");
+  console.log("Update launcher included for existing Windows installations: update-existing-installation.cmd / .ps1");
 
   await fsp.rm(stagingRoot, { recursive: true, force: true });
 }

@@ -116,6 +116,11 @@ cd C:\apps\sf-onprem-integration-agent
 npm run win:update-existing -- -AppRoot "C:\apps\sf-onprem-integration-agent" -ReleaseVersion "0.2.2"
 ```
 
+Hinweis fuer Altstaende vor 0.2.2:
+
+- das neue npm-Skript ist dort lokal noch nicht vorhanden
+- in diesem Fall das Release-ZIP entpacken und den Launcher `update-existing-installation.ps1` oder `update-existing-installation.cmd` aus dem ZIP-Wurzelverzeichnis starten
+
 ## Linux-Deployment und gehaerteter Betrieb
 
 Die Linux-Runbooks sind jetzt getrennt:
