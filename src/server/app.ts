@@ -1,4 +1,5 @@
 import http from "node:http";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -26,6 +27,9 @@ const APP_STYLE_CSS_FILE = path.resolve(process.cwd(), "src/css/style.css");
 const AGENT_UI_CSS_FILE = path.resolve(process.cwd(), "src/css/agent-ui.css");
 const TEMPLATE_STORE_CSS_FILE = path.resolve(process.cwd(), "src/css/template-store.css");
 const UI_ASSET_VERSION = "20260505-linux-security-ui-1";
+const ADMIN_SESSION_COOKIE_NAME = "sf_agent_session";
+const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const adminSessions = new Map<string, number>();
 const SETUP_EXAMPLE_JSON_FILE = path.resolve(
   process.cwd(),
   "artifacts/file-examples/setup-file-import-export.example.json"
@@ -68,6 +72,201 @@ function getCpuLoadPercent(): number | undefined {
   }
 
   return Math.max(0, Math.min(100, Math.round((load1m / coreCount) * 100)));
+}
+
+function getAdminAuthConfig(): { username: string; password: string; enabled: boolean } {
+  const username = String(process.env.ADMIN_UI_USERNAME || "").trim();
+  const password = String(process.env.ADMIN_UI_PASSWORD || "");
+  return {
+    username,
+    password,
+    enabled: Boolean(username && password)
+  };
+}
+
+function escapeHtml(value: string): string {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function parseCookies(headerValue: string | undefined): Record<string, string> {
+  return String(headerValue || "")
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce<Record<string, string>>((cookies, part) => {
+      const separatorIndex = part.indexOf("=");
+      if (separatorIndex <= 0) {
+        return cookies;
+      }
+
+      const key = part.slice(0, separatorIndex).trim();
+      const value = part.slice(separatorIndex + 1).trim();
+      cookies[key] = decodeURIComponent(value);
+      return cookies;
+    }, {});
+}
+
+function pruneExpiredAdminSessions(now = Date.now()): void {
+  for (const [token, expiresAt] of adminSessions.entries()) {
+    if (expiresAt <= now) {
+      adminSessions.delete(token);
+    }
+  }
+}
+
+function createAdminSession(): string {
+  pruneExpiredAdminSessions();
+  const token = crypto.randomBytes(32).toString("hex");
+  adminSessions.set(token, Date.now() + ADMIN_SESSION_TTL_MS);
+  return token;
+}
+
+function isSecureRequest(req: http.IncomingMessage): boolean {
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  const value = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+  return String(value || "").toLowerCase() === "https";
+}
+
+function buildSessionCookie(req: http.IncomingMessage, token: string): string {
+  const securePart = isSecureRequest(req) ? "; Secure" : "";
+  return `${ADMIN_SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(ADMIN_SESSION_TTL_MS / 1000)}${securePart}`;
+}
+
+function buildExpiredSessionCookie(req: http.IncomingMessage): string {
+  const securePart = isSecureRequest(req) ? "; Secure" : "";
+  return `${ADMIN_SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${securePart}`;
+}
+
+function constantTimeEquals(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(String(left || ""), "utf8");
+  const rightBuffer = Buffer.from(String(right || ""), "utf8");
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function hasValidAdminSession(req: http.IncomingMessage): boolean {
+  pruneExpiredAdminSessions();
+  const token = parseCookies(req.headers.cookie)[ADMIN_SESSION_COOKIE_NAME];
+  if (!token) {
+    return false;
+  }
+
+  const expiresAt = adminSessions.get(token);
+  if (!expiresAt || expiresAt <= Date.now()) {
+    adminSessions.delete(token);
+    return false;
+  }
+
+  adminSessions.set(token, Date.now() + ADMIN_SESSION_TTL_MS);
+  return true;
+}
+
+function clearAdminSession(req: http.IncomingMessage): void {
+  const token = parseCookies(req.headers.cookie)[ADMIN_SESSION_COOKIE_NAME];
+  if (token) {
+    adminSessions.delete(token);
+  }
+}
+
+function renderLoginShell(errorMessage = ""): string {
+  const safeErrorMessage = escapeHtml(errorMessage);
+  return `<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SF Integration Agent Login</title>
+    <link href="/assets/bootstrap.min.css" rel="stylesheet" />
+    <link href="/assets/style.css?v=${UI_ASSET_VERSION}" rel="stylesheet" />
+    <style>
+      body { min-height: 100vh; margin: 0; background: linear-gradient(135deg, #eef4f8 0%, #d9e7ef 100%); }
+      .agent-login-shell { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 2rem; }
+      .agent-login-card { width: min(100%, 28rem); border: 0; border-radius: 1.25rem; box-shadow: 0 1.5rem 3rem rgba(31, 57, 76, 0.16); }
+    </style>
+  </head>
+  <body>
+    <main class="agent-login-shell">
+      <div class="card agent-login-card">
+        <div class="card-body p-4 p-lg-5">
+          <div class="mb-4">
+            <div class="text-uppercase text-secondary small fw-semibold">Geschützter Bereich</div>
+            <h1 class="h3 mb-2">SF Integration Agent</h1>
+            <p class="text-secondary mb-0">Bitte mit Admin-Benutzer und Passwort anmelden.</p>
+          </div>
+          <div id="login-error" class="alert alert-danger ${safeErrorMessage ? "" : "d-none"}" role="alert">${safeErrorMessage || "Anmeldung fehlgeschlagen"}</div>
+          <form id="login-form" class="d-grid gap-3">
+            <div>
+              <label for="login-username" class="form-label">Benutzername</label>
+              <input id="login-username" name="username" class="form-control" autocomplete="username" required />
+            </div>
+            <div>
+              <label for="login-password" class="form-label">Passwort</label>
+              <input id="login-password" name="password" type="password" class="form-control" autocomplete="current-password" required />
+            </div>
+            <button type="submit" class="btn btn-primary">Anmelden</button>
+          </form>
+        </div>
+      </div>
+    </main>
+    <script>
+      document.getElementById('login-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const username = String(document.getElementById('login-username').value || '').trim();
+        const password = String(document.getElementById('login-password').value || '');
+        const errorBox = document.getElementById('login-error');
+        errorBox.classList.add('d-none');
+        try {
+          const response = await fetch('/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+          });
+          const payload = await response.json().catch(() => ({ error: 'Anmeldung fehlgeschlagen' }));
+          if (!response.ok) {
+            throw new Error(payload.error || 'Anmeldung fehlgeschlagen');
+          }
+          window.location.href = '/';
+        } catch (error) {
+          errorBox.textContent = error.message || 'Anmeldung fehlgeschlagen';
+          errorBox.classList.remove('d-none');
+        }
+      });
+    </script>
+  </body>
+</html>`;
+}
+
+function renderAuthConfigurationShell(): string {
+  return `<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SF Integration Agent Konfiguration erforderlich</title>
+    <link href="/assets/bootstrap.min.css" rel="stylesheet" />
+    <link href="/assets/style.css?v=${UI_ASSET_VERSION}" rel="stylesheet" />
+  </head>
+  <body class="bg-light">
+    <main class="container py-5">
+      <div class="card shadow-sm border-0 mx-auto" style="max-width: 40rem;">
+        <div class="card-body p-4">
+          <div class="text-uppercase text-secondary small fw-semibold mb-2">Sichere Voreinstellung</div>
+          <h1 class="h4 mb-3">Admin-Zugang ist noch nicht konfiguriert</h1>
+          <p class="text-secondary mb-3">Im Produktionsmodus bleibt die Web-UI gesperrt, bis ADMIN_UI_USERNAME und ADMIN_UI_PASSWORD gesetzt sind.</p>
+          <div class="alert alert-warning mb-0" role="alert">Bitte die Environment-Datei ergänzen und den Dienst neu starten.</div>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>`;
 }
 
 function htmlShell(): string {
@@ -164,6 +363,7 @@ function htmlShell(): string {
               <button id="add-instance" class="btn btn-outline-secondary agent-btn-subtle" title="Instanz hinzufügen"><span class="agent-btn-icon" aria-hidden="true">＋</span><span>Instanz</span></button>
               <button id="refresh-all" class="btn btn-outline-secondary agent-btn-subtle" title="Aktualisieren"><span class="agent-btn-icon" aria-hidden="true">↻</span><span>Refresh</span></button>
             </div>
+            <button id="logout-admin" class="btn btn-outline-danger btn-sm agent-btn-subtle" title="Abmelden"><span class="agent-btn-icon" aria-hidden="true">⇥</span><span>Logout</span></button>
             </div>
           </div>
         </nav>
@@ -2564,6 +2764,10 @@ function htmlShell(): string {
 
       async function requestJson(path, options) {
         const response = await fetch(withInstance(path), options);
+        if (response.status === 401) {
+          window.location.href = '/';
+          throw new Error('Sitzung abgelaufen');
+        }
         let data;
         try {
           data = await response.json();
@@ -7356,6 +7560,13 @@ function htmlShell(): string {
         }
       });
       document.getElementById('refresh-all').addEventListener('click', refresh);
+      document.getElementById('logout-admin')?.addEventListener('click', async () => {
+        try {
+          await fetch('/auth/logout', { method: 'POST' });
+        } finally {
+          window.location.href = '/';
+        }
+      });
       document.getElementById('overview-check-update').addEventListener('click', async () => {
         await loadOverviewUpdateStatus(true, true);
       });
@@ -9117,10 +9328,20 @@ export function createAppServer(
 ): http.Server {
   return http.createServer((req, res) => {
     void (async () => {
+      const adminAuth = getAdminAuthConfig();
+      const adminAuthRequired = adminAuth.enabled;
+      const adminAuthMisconfigured = process.env.NODE_ENV === "production" && !adminAuthRequired;
       const requestUrl = new URL(req.url || "/", "http://localhost");
       const sendJson = (statusCode: number, payload: unknown): void => {
         res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
         res.end(JSON.stringify(payload));
+      };
+      const sendHtml = (statusCode: number, html: string, headers: Record<string, string> = {}): void => {
+        res.writeHead(statusCode, {
+          "Content-Type": "text/html; charset=utf-8",
+          ...headers
+        });
+        res.end(html);
       };
       const sendFile = async (filePath: string, contentType: string): Promise<void> => {
         const file = await fs.readFile(filePath);
@@ -9132,6 +9353,65 @@ export function createAppServer(
         });
         res.end(file);
       };
+      const isAuthenticated = !adminAuthRequired || hasValidAdminSession(req);
+      const isAssetRequest = requestUrl.pathname.startsWith("/assets/");
+      const isPublicRequest =
+        requestUrl.pathname === "/api/system/health" ||
+        requestUrl.pathname === "/auth/login" ||
+        requestUrl.pathname === "/auth/logout";
+
+      if (adminAuthMisconfigured && !isAssetRequest && !isPublicRequest) {
+        if (requestUrl.pathname === "/") {
+          sendHtml(503, renderAuthConfigurationShell());
+          return;
+        }
+
+        if (requestUrl.pathname.startsWith("/api/")) {
+          sendJson(503, { error: "Admin-Zugang ist nicht konfiguriert" });
+          return;
+        }
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/auth/login") {
+        if (!adminAuthRequired) {
+          sendJson(adminAuthMisconfigured ? 503 : 200, { ok: !adminAuthMisconfigured, authEnabled: false, error: adminAuthMisconfigured ? "Admin-Zugang ist nicht konfiguriert" : undefined });
+          return;
+        }
+
+        const body = (await readJsonBody(req)) as { username?: string; password?: string };
+        const username = String(body.username || "").trim();
+        const password = String(body.password || "");
+        const valid = constantTimeEquals(username, adminAuth.username) && constantTimeEquals(password, adminAuth.password);
+        if (!valid) {
+          res.setHeader("Set-Cookie", buildExpiredSessionCookie(req));
+          sendJson(401, { error: "Ungültige Zugangsdaten" });
+          return;
+        }
+
+        const sessionToken = createAdminSession();
+        res.setHeader("Set-Cookie", buildSessionCookie(req, sessionToken));
+        sendJson(200, { ok: true });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/auth/logout") {
+        clearAdminSession(req);
+        res.setHeader("Set-Cookie", buildExpiredSessionCookie(req));
+        sendJson(200, { ok: true });
+        return;
+      }
+
+      if (adminAuthRequired && !isAuthenticated && !isAssetRequest && !isPublicRequest) {
+        if (requestUrl.pathname === "/") {
+          sendHtml(401, renderLoginShell());
+          return;
+        }
+
+        if (requestUrl.pathname.startsWith("/api/")) {
+          sendJson(401, { error: "Authentifizierung erforderlich" });
+          return;
+        }
+      }
 
       const instanceId = requestUrl.searchParams.get("instanceId") || undefined;
       const connectorTestMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/test$/) : null;
@@ -9927,8 +10207,7 @@ export function createAppServer(
       }
 
       if (req.method === "GET" && requestUrl.pathname === "/") {
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(htmlShell());
+        sendHtml(200, htmlShell());
         return;
       }
 

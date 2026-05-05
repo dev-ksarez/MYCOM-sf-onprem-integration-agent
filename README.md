@@ -27,6 +27,11 @@ Der Agent holt Konfigurationen aus Salesforce, liest Daten aus Quellsystemen (z.
 - npm
 - Zugriff auf Salesforce und ggf. MSSQL
 
+Fuer geschuetzte Admin-Zugaenge der Web UI:
+
+- ADMIN_UI_USERNAME
+- ADMIN_UI_PASSWORD
+
 ## Lokale Entwicklung
 
 ```bash
@@ -103,6 +108,11 @@ Kurzablauf:
 3. systemd-Service und nginx-Reverse-Proxy aus [scripts/linux](scripts/linux) aktivieren
 4. TLS am Reverse Proxy terminieren und nur HTTPS oeffentlich exponieren
 5. Optional: abgesicherten SFTP-Drop-User fuer Datei-Connectoren mit `npm run linux:setup-sftp -- --sftp-user <name>` einrichten
+
+Wichtige Security-Variablen fuer die Web UI:
+
+- `ADMIN_UI_USERNAME` und `ADMIN_UI_PASSWORD` aktivieren den Login-Schutz fuer Root und Admin-API.
+- Im Produktionsmodus bleibt die Web UI ohne diese beiden Variablen gesperrt.
 
 Hinweis fuer Datei-Connectoren:
 

@@ -18,6 +18,11 @@ Dieses Runbook beschreibt den gehaerteten Minimalpfad fuer den Betrieb des Agent
 - Laufzeitdaten: `/var/lib/sf-integration-agent`
 - SFTP-Drop fuer Datei-Connectoren: `/var/lib/sf-integration-agent/sftp/<user>/drop`
 
+Pflichtvariablen fuer gesicherte Admin-Zugaenge:
+
+- `ADMIN_UI_USERNAME=<admin-user>`
+- `ADMIN_UI_PASSWORD=<starkes-passwort>`
+
 ## Vorbereitung
 
 1. Node.js 22 installieren.
@@ -54,6 +59,7 @@ Der Installer:
 - erstellt `/etc/sf-integration-agent/agent.env`, falls sie fehlt
 - installiert die systemd-Unit aus [scripts/linux/sf-integration-agent.service](scripts/linux/sf-integration-agent.service)
 - installiert eine nginx-Template-Konfiguration aus [scripts/linux/nginx-sf-integration-agent.conf](scripts/linux/nginx-sf-integration-agent.conf)
+- laesst die Web-UI im Produktionsmodus gesperrt, bis Admin-Credentials in der Environment-Datei gesetzt sind
 
 ## SFTP fuer Datei-Connectoren
 
