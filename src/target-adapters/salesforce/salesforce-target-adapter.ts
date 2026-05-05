@@ -191,7 +191,7 @@ function parseTargetDefinition(rawDefinition: string): SalesforceTargetDefinitio
     path: string
   ): SalesforceObjectTargetDefinition => {
     const objectApiName = candidate.objectApiName;
-    const operation = candidate.operation;
+    const operation = typeof candidate.operation === "string" ? candidate.operation.trim().toLowerCase() : candidate.operation;
     const externalIdField = candidate.externalIdField;
     const picklists = candidate.picklists;
 

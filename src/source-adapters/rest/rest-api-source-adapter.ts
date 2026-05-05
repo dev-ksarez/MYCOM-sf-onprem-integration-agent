@@ -404,6 +404,49 @@ export async function fetchRestRows(
   return normalizeRows(payload, definition.resultPath, limit);
 }
 
+export async function testRestConnection(
+  connectorConfig: ConnectorConfig,
+  options?: { endpoint?: string; method?: string }
+): Promise<{ url: string; status: number; statusText: string; contentType: string }> {
+  const method = String(options?.method || connectorConfig.parameters?.method || "GET").trim().toUpperCase() || "GET";
+  const baseUrl = String(connectorConfig.parameters?.baseUrl || "").trim();
+  const endpointCandidate = String(
+    options?.endpoint || connectorConfig.parameters?.resourcePath || connectorConfig.parameters?.endpoint || baseUrl
+  ).trim();
+  const url = new URL(toAbsoluteUrl(baseUrl, endpointCandidate));
+  const headers: Record<string, string> = {
+    Accept: "*/*"
+  };
+
+  const parameterHeaders = connectorConfig.parameters?.headers;
+  if (parameterHeaders && typeof parameterHeaders === "object" && !Array.isArray(parameterHeaders)) {
+    Object.entries(parameterHeaders as Record<string, unknown>).forEach(([key, value]) => {
+      if (typeof value === "string" && value.trim()) {
+        headers[key] = value.trim();
+      }
+    });
+  }
+
+  await applyAuthHeaders(connectorConfig, headers);
+
+  const response = await fetch(url.toString(), {
+    method,
+    headers
+  });
+
+  if (!response.ok) {
+    const rawText = await response.text();
+    throw new Error(`REST Request fehlgeschlagen (${response.status} ${response.statusText}): ${rawText.slice(0, 300)}`);
+  }
+
+  return {
+    url: url.toString(),
+    status: response.status,
+    statusText: response.statusText,
+    contentType: String(response.headers.get("content-type") || "").trim() || "unbekannt"
+  };
+}
+
 export class RestApiSourceAdapter implements SourceAdapter {
   private readonly connectorConfig: ConnectorConfig;
   private readonly sourceDefinition: string;

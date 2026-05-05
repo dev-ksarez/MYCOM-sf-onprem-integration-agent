@@ -23,7 +23,7 @@ const CHART_JS_FILE = path.resolve(process.cwd(), "node_modules/chart.js/dist/ch
 const APP_STYLE_CSS_FILE = path.resolve(process.cwd(), "src/css/style.css");
 const AGENT_UI_CSS_FILE = path.resolve(process.cwd(), "src/css/agent-ui.css");
 const TEMPLATE_STORE_CSS_FILE = path.resolve(process.cwd(), "src/css/template-store.css");
-const UI_ASSET_VERSION = "20260504-connector-ui-3";
+const UI_ASSET_VERSION = "20260505-connector-ui-4";
 const SETUP_EXAMPLE_JSON_FILE = path.resolve(
   process.cwd(),
   "artifacts/file-examples/setup-file-import-export.example.json"
@@ -348,8 +348,8 @@ function htmlShell(): string {
                   </select>
                 </div>
                 <div id="schedulers-auto-disabled-warning" class="alert alert-warning mx-2 mb-2 py-2 d-none" role="alert"></div>
-                <table class="table table-hover mb-0" id="schedulers-table">
-                  <thead><tr><th data-sortable="true">Name</th><th>Parent</th><th>Aktiv</th><th>Status</th><th>Connector</th><th>Intervall</th><th>Nächster Lauf</th><th>Fehler</th><th>Aktion</th></tr></thead>
+                <table class="table table-hover align-middle mb-0" id="schedulers-table">
+                  <thead><tr><th data-sortable="true">Scheduler</th><th>Aktiv</th><th>Laufstatus</th><th>Connector</th><th>Timing</th><th>Aktion</th></tr></thead>
                   <tbody id="schedules-body"></tbody>
                 </table>
               </div>
@@ -366,14 +366,12 @@ function htmlShell(): string {
                 <button id="new-connector" class="btn btn-sm btn-primary">Neuer Connector</button>
               </div>
             </div>
-            <div class="card-body p-0">
-              <div class="table-responsive">
-                <input type="search" class="form-control form-control-sm mb-2" placeholder="Suche Connectoren..." id="connectors-filter" />
-                <table class="table table-hover mb-0" id="connectors-table">
-                  <thead><tr><th data-sortable="true">Name</th><th>Typ</th><th>Status</th><th>Parameter</th><th>Aktion</th></tr></thead>
-                  <tbody id="connectors-body"></tbody>
-                </table>
+            <div class="card-body">
+              <div class="d-flex flex-column flex-lg-row gap-2 align-items-lg-center mb-3">
+                <input type="search" class="form-control form-control-sm" placeholder="Suche Connectoren..." id="connectors-filter" />
+                <div id="connectors-summary" class="small text-secondary text-lg-end">Connectoren werden geladen...</div>
               </div>
+              <div id="connectors-panels" class="row g-3"></div>
             </div>
           </div>
         </section>
@@ -1173,6 +1171,7 @@ function htmlShell(): string {
         instanceId: '',
         schedules: [],
         connectors: [],
+        connectorTestResults: {},
         migrations: [],
         cpuLoadHistory: [],
         connectorWizardStep: 1,
@@ -3221,10 +3220,10 @@ function htmlShell(): string {
         const externalIdField = String(document.getElementById('sch-external-id-field')?.value || '').trim();
         const nextDefinition = {
           objectApiName,
-          operation: normalizeOperationValue(document.getElementById('sch-operation')?.value || 'Upsert') || 'Upsert'
+          operation: String(normalizeOperationValue(document.getElementById('sch-operation')?.value || 'Upsert') || 'Upsert').toLowerCase()
         };
 
-        if (nextDefinition.operation === 'Upsert' && externalIdField) {
+        if (nextDefinition.operation === 'upsert' && externalIdField) {
           nextDefinition.externalIdField = externalIdField;
         }
 
@@ -3237,7 +3236,7 @@ function htmlShell(): string {
           const parsed = JSON.parse(raw);
           parsed.objectApiName = objectApiName;
           parsed.operation = nextDefinition.operation;
-          if (nextDefinition.operation === 'Upsert') {
+          if (nextDefinition.operation === 'upsert') {
             if (externalIdField) {
               parsed.externalIdField = externalIdField;
             }
@@ -3254,7 +3253,7 @@ function htmlShell(): string {
         const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
         const targetSystem = resolveEffectiveTargetSystem();
         const operation = normalizeOperationValue(document.getElementById('sch-operation')?.value || '');
-        return targetType === 'SALESFORCE' && targetSystem === 'Salesforce' && operation === 'Upsert';
+        return targetType === 'SALESFORCE' && targetSystem === 'Salesforce' && String(operation || '').toLowerCase() === 'upsert';
       }
 
       function getSchedulerTargetDefinitionExternalIdField() {
@@ -5559,7 +5558,7 @@ function htmlShell(): string {
         });
 
         if (!filteredSchedules.length) {
-          body.innerHTML = '<tr><td colspan="9" class="text-secondary">Keine Scheduler gefunden.</td></tr>';
+          body.innerHTML = '<tr><td colspan="6" class="text-secondary">Keine Scheduler gefunden.</td></tr>';
           return;
         }
 
@@ -5622,13 +5621,9 @@ function htmlShell(): string {
             const hierarchyBadge = depth > 0
               ? '<span class="badge bg-light text-dark border ms-1">Level ' + (depth + 1) + '</span>'
               : '<span class="badge bg-secondary-subtle text-secondary border ms-1">Root</span>';
-            const activeBadge = item.active
-              ? '<span class="badge bg-success-subtle text-success border">aktiv</span>'
-              : item.autoDisabledDueToErrors
-                ? '<span class="badge bg-warning-subtle text-warning border" title="Automatisch wegen Fehlern deaktiviert">inaktiv (auto)</span>'
-                : '<span class="badge bg-secondary-subtle text-secondary border">inaktiv</span>';
-            const toggleLabel = item.active ? 'Deaktivieren' : 'Aktivieren';
-            const toggleClass = item.active ? 'btn-outline-warning' : 'btn-outline-success';
+            const activeHint = item.autoDisabledDueToErrors
+              ? '<span class="badge bg-warning-subtle text-warning border mt-1" title="Automatisch wegen Fehlern deaktiviert">auto deaktiviert</span>'
+              : '<span class="small text-secondary">' + (item.active ? 'aktiv' : 'inaktiv') + '</span>';
             const lastFailedRun = (state.runs || [])
               .filter((run) => run.scheduleId === item.id && run.status === 'Failed')
               .sort((a, b) => {
@@ -5637,26 +5632,23 @@ function htmlShell(): string {
                 return timeB - timeA;
               })
               [0];
-            const errorCell = lastFailedRun
-              ? '<td><button class="btn btn-sm btn-outline-danger" title="Letzter Fehler: ' + esc(lastFailedRun.errorMessage || 'Unbekannter Fehler') + '" data-show-run-logs="' + esc(lastFailedRun.id) + '">🔴</button></td>'
-              : '<td>-</td>';
+            const errorMarkup = lastFailedRun
+              ? '<button class="btn btn-sm btn-outline-danger mt-2" title="Letzter Fehler: ' + esc(lastFailedRun.errorMessage || 'Unbekannter Fehler') + '" data-show-run-logs="' + esc(lastFailedRun.id) + '">Fehlerdetails</button>'
+              : '<span class="small text-secondary d-block mt-2">keine offenen Fehler</span>';
             
             return '<tr>' +
-              '<td><div style="padding-left:' + indent + 'px"><strong class="text-truncate d-block" title="' + esc(item.name) + '">' + esc(item.name) + hierarchyBadge + '</strong><div class="small text-secondary text-truncate" title="' + esc(item.objectName) + ' / ' + esc(item.operation) + '">' + objectIcon + ' ' + esc(item.objectName) + ' / ' + esc(item.operation) + '</div></div></td>' +
-              '<td class="text-truncate" title="' + esc(parentName) + '">' + esc(parentName) + (item.inheritTimingFromParent ? ' <span class="badge bg-primary-subtle text-primary border">inherits</span>' : '') + '</td>' +
-              '<td>' + activeBadge + '</td>' +
-              '<td>' + getStatusBadge(item.status) + '</td>' +
-              '<td class="text-truncate" title="' + esc(connectorName) + '">' + esc(connectorName) + '</td>' +
-              '<td>' + esc(intervalLabel) + '</td>' +
-              '<td>' + formatDate(item.nextRunAt, 'short') + '</td>' +
-              errorCell +
-              '<td>' +
-                '<button class="btn btn-sm ' + toggleClass + ' me-1" data-toggle-schedule-active="' + esc(item.id) + '" data-next-active="' + esc(String(!item.active)) + '">' + toggleLabel + '</button>' +
-                '<button class="btn btn-sm btn-outline-primary me-1" data-edit-schedule="' + esc(item.id) + '">Edit</button>' +
-                '<button class="btn btn-sm btn-outline-secondary me-1" data-dup-schedule="' + esc(item.id) + '">Dupl</button>' +
-                '<button class="btn btn-sm btn-outline-success me-1" data-run-now="' + esc(item.id) + '">Run</button>' +
-                '<button class="btn btn-sm btn-outline-info me-1" data-dry-run="' + esc(item.id) + '">DryRun</button>' +
-                '<button class="btn btn-sm btn-outline-danger" data-delete-schedule="' + esc(item.id) + '">Del</button>' +
+              '<td><div style="padding-left:' + indent + 'px"><strong class="text-truncate d-block" title="' + esc(item.name) + '">' + esc(item.name) + hierarchyBadge + '</strong><div class="small text-secondary text-truncate" title="' + esc(item.objectName) + ' / ' + esc(item.operation) + '">' + objectIcon + ' ' + esc(item.objectName) + ' / ' + esc(item.operation) + '</div><div class="small text-secondary text-truncate mt-1" title="' + esc(parentName) + '">Parent: ' + esc(parentName) + (item.inheritTimingFromParent ? ' <span class="badge bg-primary-subtle text-primary border">inherits</span>' : '') + '</div></div></td>' +
+              '<td><div class="form-check form-switch mb-1"><input class="form-check-input" type="checkbox" role="switch" data-toggle-schedule-active="' + esc(item.id) + '"' + (item.active ? ' checked' : '') + '></div>' + activeHint + '</td>' +
+              '<td>' + getStatusBadge(item.status) + errorMarkup + '</td>' +
+              '<td><div class="fw-semibold text-truncate" title="' + esc(connectorName) + '">' + esc(connectorName) + '</div><div class="small text-secondary">' + esc(item.direction || '-') + '</div></td>' +
+              '<td><div class="fw-semibold">' + esc(intervalLabel) + '</div><div class="small text-secondary">Nächster Lauf: ' + formatDate(item.nextRunAt, 'short') + '</div></td>' +
+              '<td><div class="d-flex flex-wrap gap-1">' +
+                '<button class="btn btn-sm btn-outline-primary" data-edit-schedule="' + esc(item.id) + '">Öffnen</button>' +
+                '<button class="btn btn-sm btn-outline-secondary" data-dup-schedule="' + esc(item.id) + '">Dupl.</button>' +
+                '<button class="btn btn-sm btn-outline-success" data-run-now="' + esc(item.id) + '">Run</button>' +
+                '<button class="btn btn-sm btn-outline-info" data-dry-run="' + esc(item.id) + '">Dry-Run</button>' +
+                '<button class="btn btn-sm btn-outline-danger" data-delete-schedule="' + esc(item.id) + '">Löschen</button>' +
+              '</div>' +
               '</td>' +
             '</tr>';
         }).join('');
@@ -5665,16 +5657,17 @@ function htmlShell(): string {
           button.addEventListener('click', () => openScheduleModal(button.getAttribute('data-edit-schedule')));
         });
 
-        body.querySelectorAll('button[data-toggle-schedule-active]').forEach((button) => {
-          button.addEventListener('click', async () => {
-            const scheduleId = String(button.getAttribute('data-toggle-schedule-active') || '').trim();
-            const nextActive = String(button.getAttribute('data-next-active') || '').trim() === 'true';
+        body.querySelectorAll('input[data-toggle-schedule-active]').forEach((input) => {
+          input.addEventListener('change', async () => {
+            const scheduleId = String(input.getAttribute('data-toggle-schedule-active') || '').trim();
+            const nextActive = Boolean(input.checked);
             if (!scheduleId) {
               return;
             }
             try {
               await setScheduleActive(scheduleId, nextActive);
             } catch (error) {
+              input.checked = !nextActive;
               showError(error.message || 'Scheduler-Status konnte nicht geändert werden');
             }
           });
@@ -5750,7 +5743,8 @@ function htmlShell(): string {
       }
 
       function renderConnectors() {
-        const body = document.getElementById('connectors-body');
+        const panels = document.getElementById('connectors-panels');
+        const summary = document.getElementById('connectors-summary');
         const sqlSelect = document.getElementById('sql-connector-select');
 
         const mssqlItems = state.connectors.filter((item) => String(item.connectorType).toLowerCase() === 'mssql');
@@ -5759,37 +5753,133 @@ function htmlShell(): string {
           sqlSelect.innerHTML = '<option value="">Keine MSSQL-Connectoren</option>';
         }
 
+        const totalConnectors = (state.connectors || []).length;
+        const activeConnectors = (state.connectors || []).filter((item) => item.active).length;
+        const testedConnectors = Object.keys(state.connectorTestResults || {}).length;
+        if (summary) {
+          summary.textContent = totalConnectors + ' Connectoren, ' + activeConnectors + ' aktiv, ' + testedConnectors + ' mit Teststatus';
+        }
+
         if (!state.connectors.length) {
-          body.innerHTML = '<tr><td colspan="5" class="text-secondary">Keine Connectoren gefunden.</td></tr>';
+          panels.innerHTML = '<div class="col-12"><div class="alert alert-light border text-secondary mb-0">Keine Connectoren gefunden.</div></div>';
           return;
         }
 
-        body.innerHTML = state.connectors.map((item) =>
-          '<tr>' +
-          '<td><strong>' + esc(item.name) + '</strong></td>' +
-          '<td>' + esc(item.connectorType) + '</td>' +
-          '<td>' + (item.active ? 'aktiv' : 'inaktiv') + '</td>' +
-          '<td>' + esc((item.parameterKeys || []).join(', ') || '-') + '</td>' +
-          '<td>' +
-            '<button class="btn btn-sm btn-outline-primary me-1" data-edit-connector="' + esc(item.id) + '">Edit</button>' +
-            '<button class="btn btn-sm btn-outline-secondary me-1" data-test-connector="' + esc(item.id) + '">Test</button>' +
-            '<button class="btn btn-sm btn-outline-danger" data-delete-connector="' + esc(item.id) + '">Del</button>' +
-          '</td>' +
-          '</tr>'
+        const orderedConnectors = (state.connectors || []).slice().sort((left, right) => {
+          if (Boolean(left.active) !== Boolean(right.active)) {
+            return left.active ? -1 : 1;
+          }
+          return String(left.name || '').localeCompare(String(right.name || ''), 'de', { sensitivity: 'base' });
+        });
+
+        function buildConnectorFacts(item) {
+          const parameters = item && typeof item.parameters === 'object' && !Array.isArray(item.parameters) ? item.parameters : {};
+          if (String(item.connectorType || '').toLowerCase() === 'mssql') {
+            return [
+              'Server: ' + esc(parameters.server || '-'),
+              'DB: ' + esc(parameters.database || '-'),
+              'Schema/Tabelle: ' + esc([parameters.schemaName, parameters.tableName].filter(Boolean).join('.') || '-')
+            ];
+          }
+          if (isRestConnectorType(item.connectorType)) {
+            return [
+              'Base URL: ' + esc(parameters.baseUrl || '-'),
+              'Pfad: ' + esc(parameters.resourcePath || parameters.endpoint || '/'),
+              'Auth: ' + esc(parameters.authType || 'none')
+            ];
+          }
+          if (isFileConnectorType(item.connectorType)) {
+            return [
+              'Import: ' + esc(parameters.importPath || 'inbound'),
+              'Export: ' + esc(parameters.exportPath || 'outbound'),
+              'Archiv: ' + esc(parameters.archivePath || 'archive')
+            ];
+          }
+          return [
+            'Parameter: ' + esc((item.parameterKeys || []).slice(0, 5).join(', ') || '-'),
+            'Target: ' + esc(item.targetSystem || '-'),
+            'Richtung: ' + esc(item.direction || '-')
+          ];
+        }
+
+        function buildConnectorTestMarkup(item) {
+          const result = state.connectorTestResults ? state.connectorTestResults[item.id] : null;
+          if (!result) {
+            return '<div class="small text-secondary">Noch kein Test ausgeführt.</div>';
+          }
+          if (result.pending) {
+            return '<div class="alert alert-info py-2 mb-0 small">Connector-Test läuft...</div>';
+          }
+          const tone = result.ok ? 'success' : 'danger';
+          const checks = Array.isArray(result.checks) ? result.checks : [];
+          return '<div class="alert alert-' + tone + ' py-2 mb-0 small">' +
+            '<div class="fw-semibold mb-1">' + esc(result.message || (result.ok ? 'Test erfolgreich' : 'Test fehlgeschlagen')) + '</div>' +
+            (checks.length ? '<ul class="mb-0 ps-3">' + checks.map((check) => '<li><strong>' + esc(check.label) + ':</strong> ' + esc(check.details) + '</li>').join('') + '</ul>' : '') +
+          '</div>';
+        }
+
+        panels.innerHTML = orderedConnectors.map((item) =>
+          '<div class="col-12 col-xl-6" data-connector-panel>' +
+            '<div class="card h-100 border-0 shadow-sm bg-body-tertiary">' +
+              '<div class="card-body d-flex flex-column gap-3">' +
+                '<div class="d-flex justify-content-between align-items-start gap-3">' +
+                  '<div>' +
+                    '<div class="d-flex flex-wrap gap-2 align-items-center mb-1"><strong>' + esc(item.name) + '</strong><span class="badge bg-secondary-subtle text-secondary border">' + esc(item.connectorType) + '</span>' + (item.active ? '<span class="badge bg-success-subtle text-success border">aktiv</span>' : '<span class="badge bg-secondary-subtle text-secondary border">inaktiv</span>') + '</div>' +
+                    '<div class="small text-secondary">' + esc(item.direction || '-') + ' • ' + esc(item.targetSystem || 'kein Zielsystem') + '</div>' +
+                  '</div>' +
+                  '<div class="d-flex flex-wrap gap-1 justify-content-end">' +
+                    '<button class="btn btn-sm btn-outline-primary" data-edit-connector="' + esc(item.id) + '">Öffnen</button>' +
+                    '<button class="btn btn-sm btn-outline-secondary" data-test-connector="' + esc(item.id) + '">Testen</button>' +
+                    '<button class="btn btn-sm btn-outline-danger" data-delete-connector="' + esc(item.id) + '">Löschen</button>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="small d-grid gap-1">' + buildConnectorFacts(item).map((line) => '<div>' + line + '</div>').join('') + '</div>' +
+                '<div>' + buildConnectorTestMarkup(item) + '</div>' +
+              '</div>' +
+            '</div>' +
+          '</div>'
         ).join('');
 
-        body.querySelectorAll('button[data-edit-connector]').forEach((button) => {
+        panels.querySelectorAll('button[data-edit-connector]').forEach((button) => {
           button.addEventListener('click', () => openConnectorModal(button.getAttribute('data-edit-connector')));
         });
 
-        body.querySelectorAll('button[data-test-connector]').forEach((button) => {
+        panels.querySelectorAll('button[data-test-connector]').forEach((button) => {
           button.addEventListener('click', async () => {
-            const result = await requestJson('/api/connectors/' + encodeURIComponent(button.getAttribute('data-test-connector')) + '/test', { method: 'POST' });
-            alert(result.message || (result.ok ? 'OK' : 'Fehler'));
+            const connectorId = String(button.getAttribute('data-test-connector') || '').trim();
+            const connector = (state.connectors || []).find((item) => String(item.id || '').trim() === connectorId);
+            if (!connectorId) {
+              return;
+            }
+            state.connectorTestResults[connectorId] = {
+              pending: true,
+              ok: true,
+              message: 'Connector-Test läuft...',
+              connectorId,
+              connectorName: connector?.name || connectorId,
+              connectorType: connector?.connectorType || '',
+              checks: []
+            };
+            renderConnectors();
+            try {
+              const result = await requestJson('/api/connectors/' + encodeURIComponent(connectorId) + '/test', { method: 'POST' });
+              state.connectorTestResults[connectorId] = result;
+            } catch (error) {
+              state.connectorTestResults[connectorId] = {
+                ok: false,
+                connectorId,
+                connectorName: connector?.name || connectorId,
+                connectorType: connector?.connectorType || '',
+                message: error.message || 'Connector-Test fehlgeschlagen',
+                testedAt: new Date().toISOString(),
+                checks: [{ label: 'Connector-Test', ok: false, details: error.message || 'Connector-Test fehlgeschlagen' }]
+              };
+            }
+            renderConnectors();
           });
         });
 
-        body.querySelectorAll('button[data-delete-connector]').forEach((button) => {
+        panels.querySelectorAll('button[data-delete-connector]').forEach((button) => {
           button.addEventListener('click', async () => {
             const connectorId = button.getAttribute('data-delete-connector');
             if (!connectorId) {
@@ -5806,6 +5896,7 @@ function htmlShell(): string {
             }
 
             await requestJson('/api/connectors/' + encodeURIComponent(connectorId), { method: 'DELETE' });
+            delete state.connectorTestResults[connectorId];
             await refresh();
           });
         });
@@ -6393,10 +6484,10 @@ function htmlShell(): string {
               '</g>'
             : '';
           const togglePillMarkup = node.kind === 'scheduler'
-            ? '<g class="graph-status-pill graph-status-pill-clickable" transform="translate(156,34)" data-toggle-schedule-id="' + esc(node.refId || '') + '" data-next-active="' + esc(String(!node.active)) + '">' +
-                '<rect class="graph-status-pill-bg" width="92" height="22" rx="11" />' +
-                '<circle class="graph-status-pill-dot" cx="11" cy="10" r="4" />' +
-                '<text class="graph-status-pill-label" x="20" y="13">' + esc(node.active ? 'Deaktivieren' : 'Aktivieren') + '</text>' +
+            ? '<g class="graph-status-pill graph-status-pill-clickable" transform="translate(152,38)" data-toggle-schedule-id="' + esc(node.refId || '') + '" data-next-active="' + esc(String(!node.active)) + '">' +
+                '<text class="graph-status-pill-label" x="0" y="12" style="fill:#5f6b76;font-size:10px;font-weight:700">Aktiv</text>' +
+                '<rect x="40" y="0" width="46" height="20" rx="10" style="fill:' + (node.active ? '#2e9b4d' : '#a0aab5') + ';opacity:0.95" />' +
+                '<circle cx="' + (node.active ? '74' : '52') + '" cy="10" r="7" style="fill:#ffffff;stroke:rgba(47,64,80,0.15);stroke-width:1" />' +
               '</g>'
             : '';
 
@@ -7784,11 +7875,11 @@ function htmlShell(): string {
           connectorsFilter.dataset.bound = '1';
           connectorsFilter.addEventListener('input', (e) => {
             const query = e.target.value.toLowerCase();
-            const rows = document.querySelectorAll('#connectors-body tr');
-            rows.forEach(row => {
-              const text = row.textContent.toLowerCase();
+            const panels = document.querySelectorAll('#connectors-panels [data-connector-panel]');
+            panels.forEach(panel => {
+              const text = panel.textContent.toLowerCase();
               const isMatch = text.includes(query);
-              row.style.display = isMatch ? '' : 'none';
+              panel.style.display = isMatch ? '' : 'none';
             });
             try {
               localStorage.setItem(TABLE_STORAGE_KEY + '.connectors', query);

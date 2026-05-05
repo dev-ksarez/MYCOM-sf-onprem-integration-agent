@@ -39,7 +39,7 @@ import { IntegrationSchedule } from "../types/integration-schedule";
 import { runScheduleNow } from "../agent/agent-runner";
 import { analyzeUploadedFile, decodeTextBuffer, parseDelimitedRows, parseFileFromConnector } from "../utils/file-transfer";
 import { parseQuerySourceDefinition } from "../utils/query-source-definition";
-import { fetchRestRows } from "../source-adapters/rest/rest-api-source-adapter";
+import { fetchRestRows, testRestConnection } from "../source-adapters/rest/rest-api-source-adapter";
 
 interface SalesforceInstanceEnvConfig {
   id: string;
@@ -388,6 +388,12 @@ export interface ConnectorTestResult {
   connectorName: string;
   connectorType: string;
   message: string;
+  testedAt: string;
+  checks: Array<{
+    label: string;
+    ok: boolean;
+    details: string;
+  }>;
 }
 
 export interface RunListItem {
@@ -1411,48 +1417,240 @@ export class AdminDataService {
     const client = await this.createClient(instanceId);
     const config = await client.queryConnector(connectorId);
 
+    if (String(config.connectorType || "").trim().toLowerCase() === "mssql") {
+      return this.testMssqlConnector(config);
+    }
+
     if (this.isFileConnectorType(config.connectorType)) {
-      return {
-        ok: true,
-        connectorId: config.id,
-        connectorName: config.name,
-        connectorType: config.connectorType,
-        message: "Datei-Connector bereit (Pfad-/Datei-Pruefung erfolgt zur Laufzeit pro Scheduler)."
-      };
+      return this.testFileConnector(config);
     }
 
     if (this.isRestConnectorType(config.connectorType)) {
-      return {
-        ok: true,
-        connectorId: config.id,
-        connectorName: config.name,
-        connectorType: config.connectorType,
-        message: "REST-Connector konfiguriert (Endpunkt-Pruefung erfolgt zur Laufzeit pro Scheduler)."
-      };
+      return this.testRestConnector(config);
     }
 
     const registry = new ConnectorRegistry();
-    const connector = registry.getConnectorByConfig(config);
 
     try {
+      const connector = registry.getConnectorByConfig(config);
       const ok = await connector.testConnection();
-      return {
-        ok,
-        connectorId: config.id,
-        connectorName: config.name,
-        connectorType: config.connectorType,
-        message: ok ? "Connection test successful" : "Connection test returned false"
-      };
+      return this.buildConnectorTestResult(config, [
+        {
+          label: "Verbindungstest",
+          ok,
+          details: ok ? "Verbindung erfolgreich hergestellt." : "Der Connector hat false zurueckgegeben."
+        }
+      ]);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown connector test error";
-      return {
-        ok: false,
-        connectorId: config.id,
-        connectorName: config.name,
-        connectorType: config.connectorType,
-        message
-      };
+      return this.buildConnectorTestResult(config, [
+        {
+          label: "Verbindungstest",
+          ok: false,
+          details: message
+        }
+      ]);
     }
+  }
+
+  private buildConnectorTestResult(
+    config: ConnectorConfig,
+    checks: Array<{ label: string; ok: boolean; details: string }>
+  ): ConnectorTestResult {
+    const normalizedChecks = checks.map((check) => ({
+      label: String(check.label || "Pruefung").trim() || "Pruefung",
+      ok: Boolean(check.ok),
+      details: String(check.details || "").trim() || (check.ok ? "OK" : "Fehlgeschlagen")
+    }));
+    const ok = normalizedChecks.every((check) => check.ok);
+    const failedCheck = normalizedChecks.find((check) => !check.ok);
+    const passedCount = normalizedChecks.filter((check) => check.ok).length;
+    const message = ok
+      ? `${passedCount}/${normalizedChecks.length} Pruefungen erfolgreich.`
+      : failedCheck?.details || `${normalizedChecks.length - passedCount} Pruefung(en) fehlgeschlagen.`;
+
+    return {
+      ok,
+      connectorId: config.id,
+      connectorName: config.name,
+      connectorType: config.connectorType,
+      message,
+      testedAt: new Date().toISOString(),
+      checks: normalizedChecks
+    };
+  }
+
+  private async testMssqlConnector(config: ConnectorConfig): Promise<ConnectorTestResult> {
+    const server = getRequiredString(config.parameters, "server");
+    const port = getOptionalNumber(config.parameters, "port") || 1433;
+    const databaseName = getRequiredString(config.parameters, "database");
+    const database = new MssqlDatabase({
+      server,
+      port,
+      database: databaseName,
+      user: getRequiredString(config.parameters, "user"),
+      password: resolvePassword(config),
+      encrypt: getOptionalBoolean(config.parameters, "encrypt"),
+      trustServerCertificate: getOptionalBoolean(config.parameters, "trustServerCertificate"),
+      connectionTimeout: config.timeoutMs,
+      requestTimeout: config.timeoutMs
+    });
+
+    const checks: Array<{ label: string; ok: boolean; details: string }> = [];
+
+    try {
+      await database.testConnection();
+      checks.push({
+        label: "SQL Server erreichbar",
+        ok: true,
+        details: `${server}:${port} / ${databaseName}`
+      });
+
+      const result = await database.query<{ TABLE_NAME: string; TABLE_SCHEMA: string }>(
+        "SELECT TOP 10 TABLE_NAME, TABLE_SCHEMA FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME"
+      );
+      const tables = result.recordset
+        .map((row) => (row.TABLE_SCHEMA ? `${row.TABLE_SCHEMA}.${row.TABLE_NAME}` : row.TABLE_NAME))
+        .filter(Boolean);
+      checks.push({
+        label: "Tabellen lesbar",
+        ok: true,
+        details: tables.length ? `${tables.length} Tabelle(n) gefunden, z. B. ${tables.slice(0, 3).join(", ")}` : "Verbindung erfolgreich, aber keine Basistabellen gefunden."
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unbekannter MSSQL-Fehler";
+      if (!checks.length) {
+        checks.push({
+          label: "SQL Server erreichbar",
+          ok: false,
+          details: message
+        });
+      }
+      if (checks.length === 1) {
+        checks.push({
+          label: "Tabellen lesbar",
+          ok: false,
+          details: "Tabellen konnten wegen des Verbindungsfehlers nicht gelesen werden."
+        });
+      }
+    } finally {
+      await database.close();
+    }
+
+    return this.buildConnectorTestResult(config, checks);
+  }
+
+  private async testRestConnector(config: ConnectorConfig): Promise<ConnectorTestResult> {
+    const baseUrl = String(config.parameters?.baseUrl || "").trim();
+    const endpoint = String(config.parameters?.resourcePath || config.parameters?.endpoint || "").trim();
+    const method = String(config.parameters?.method || "GET").trim().toUpperCase() || "GET";
+    const authType = String(config.parameters?.authType || "none").trim().toLowerCase() || "none";
+    const checks: Array<{ label: string; ok: boolean; details: string }> = [];
+
+    try {
+      const resolvedUrl = endpoint ? new URL(endpoint, baseUrl).toString() : new URL(baseUrl).toString();
+      checks.push({
+        label: "API URL valide",
+        ok: true,
+        details: `${method} ${resolvedUrl}`
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Ungueltige URL";
+      return this.buildConnectorTestResult(config, [
+        {
+          label: "API URL valide",
+          ok: false,
+          details: message
+        },
+        {
+          label: authType === "none" ? "API Zugriff" : "Authentifizierung + API Zugriff",
+          ok: false,
+          details: "Request wurde wegen ungueltiger URL nicht ausgefuehrt."
+        }
+      ]);
+    }
+
+    try {
+      const response = await testRestConnection(config, {
+        endpoint: endpoint || baseUrl,
+        method
+      });
+      checks.push({
+        label: authType === "none" ? "API Zugriff" : "Authentifizierung + API Zugriff",
+        ok: true,
+        details: `Request erfolgreich (${response.status} ${response.statusText || "OK"}), Content-Type: ${response.contentType}`
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unbekannter REST-Fehler";
+      checks.push({
+        label: authType === "none" ? "API Zugriff" : "Authentifizierung + API Zugriff",
+        ok: false,
+        details: message
+      });
+    }
+
+    return this.buildConnectorTestResult(config, checks);
+  }
+
+  private testFileConnector(config: ConnectorConfig): ConnectorTestResult {
+    const parameters = config.parameters || {};
+    const basePath = path.resolve(process.cwd(), String(parameters.basePath || parameters.fileBasePath || "artifacts/files"));
+    const importPath = path.resolve(basePath, String(parameters.importPath || "inbound"));
+    const exportPath = path.resolve(basePath, String(parameters.exportPath || "outbound"));
+    const archivePath = path.resolve(basePath, String(parameters.archivePath || "archive"));
+    const checks: Array<{ label: string; ok: boolean; details: string }> = [];
+
+    try {
+      fs.accessSync(importPath, fs.constants.R_OK);
+      checks.push({
+        label: "Dateipfad lesbar",
+        ok: true,
+        details: importPath
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Importpfad ist nicht lesbar";
+      checks.push({
+        label: "Dateipfad lesbar",
+        ok: false,
+        details: `${importPath} (${message})`
+      });
+    }
+
+    try {
+      fs.mkdirSync(archivePath, { recursive: true });
+      fs.accessSync(archivePath, fs.constants.W_OK);
+      checks.push({
+        label: "Archivpfad beschreibbar",
+        ok: true,
+        details: archivePath
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Archivpfad ist nicht beschreibbar";
+      checks.push({
+        label: "Archivpfad beschreibbar",
+        ok: false,
+        details: `${archivePath} (${message})`
+      });
+    }
+
+    try {
+      fs.mkdirSync(exportPath, { recursive: true });
+      fs.accessSync(exportPath, fs.constants.W_OK);
+      checks.push({
+        label: "Exportpfad beschreibbar",
+        ok: true,
+        details: exportPath
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Exportpfad ist nicht beschreibbar";
+      checks.push({
+        label: "Exportpfad beschreibbar",
+        ok: false,
+        details: `${exportPath} (${message})`
+      });
+    }
+
+    return this.buildConnectorTestResult(config, checks);
   }
 
   public async triggerScheduleNow(
