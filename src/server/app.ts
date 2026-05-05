@@ -1,4 +1,5 @@
 import http from "node:http";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -22,6 +23,10 @@ const APP_STYLE_CSS_FILE = path.resolve(process.cwd(), "src/css/style.css");
 const AGENT_UI_CSS_FILE = path.resolve(process.cwd(), "src/css/agent-ui.css");
 const TEMPLATE_STORE_CSS_FILE = path.resolve(process.cwd(), "src/css/template-store.css");
 const UI_ASSET_VERSION = "20260504-connector-ui-3";
+const DEFAULT_UPDATE_MANIFEST_URL =
+  process.env.UPDATE_MANIFEST_URL ||
+  "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json";
+const DEFAULT_WINDOWS_SERVICE_NAME = process.env.AGENT_SERVICE_NAME || "SfOnpremIntegrationAgent";
 const SETUP_EXAMPLE_JSON_FILE = path.resolve(
   process.cwd(),
   "artifacts/file-examples/setup-file-import-export.example.json"
@@ -64,6 +69,144 @@ function getCpuLoadPercent(): number | undefined {
   }
 
   return Math.max(0, Math.min(100, Math.round((load1m / coreCount) * 100)));
+}
+
+async function getCurrentPackageVersion(): Promise<string> {
+  const packageJsonPath = path.resolve(process.cwd(), "package.json");
+  const raw = await fs.readFile(packageJsonPath, "utf8");
+  const parsed = JSON.parse(raw) as { version?: string };
+  return String(parsed.version || "0.0.0").trim() || "0.0.0";
+}
+
+function compareVersions(left: string, right: string): number {
+  const parse = (value: string): number[] =>
+    String(value || "0")
+      .split(".")
+      .map((segment) => Number(segment.replace(/[^0-9].*$/, "") || 0));
+
+  const leftParts = parse(left);
+  const rightParts = parse(right);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = Number(leftParts[index] || 0) - Number(rightParts[index] || 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return 0;
+}
+
+async function getDashboardUpdateStatus(): Promise<{
+  currentVersion: string;
+  targetVersion?: string;
+  updateAvailable: boolean;
+  supported: boolean;
+  manifestUrl: string;
+  message: string;
+}> {
+  const currentVersion = await getCurrentPackageVersion();
+
+  try {
+    const response = await fetch(DEFAULT_UPDATE_MANIFEST_URL, {
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) {
+      return {
+        currentVersion,
+        updateAvailable: false,
+        supported: process.platform === "win32",
+        manifestUrl: DEFAULT_UPDATE_MANIFEST_URL,
+        message: `Manifest nicht erreichbar (${response.status})`
+      };
+    }
+
+    const manifest = (await response.json()) as { version?: string };
+    const targetVersion = String(manifest.version || "").trim();
+    if (!targetVersion) {
+      return {
+        currentVersion,
+        updateAvailable: false,
+        supported: process.platform === "win32",
+        manifestUrl: DEFAULT_UPDATE_MANIFEST_URL,
+        message: "Manifest enthält keine Zielversion"
+      };
+    }
+
+    const updateAvailable = compareVersions(targetVersion, currentVersion) > 0;
+    return {
+      currentVersion,
+      targetVersion,
+      updateAvailable,
+      supported: process.platform === "win32",
+      manifestUrl: DEFAULT_UPDATE_MANIFEST_URL,
+      message: updateAvailable
+        ? `Update verfügbar: ${currentVersion} → ${targetVersion}`
+        : `Kein Update erforderlich (${currentVersion})`
+    };
+  } catch (error) {
+    return {
+      currentVersion,
+      updateAvailable: false,
+      supported: process.platform === "win32",
+      manifestUrl: DEFAULT_UPDATE_MANIFEST_URL,
+      message: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+async function triggerDashboardUpdate(): Promise<{ ok: boolean; message: string; output?: string }> {
+  if (process.platform !== "win32") {
+    return {
+      ok: false,
+      message: "Dashboard-Update kann nur auf Windows-Agenten direkt gestartet werden."
+    };
+  }
+
+  const scriptPath = path.resolve(process.cwd(), "scripts/windows/update-agent.ps1");
+  return await new Promise((resolve) => {
+    const child = spawn(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        scriptPath,
+        "-ServiceName",
+        DEFAULT_WINDOWS_SERVICE_NAME,
+        "-AppRoot",
+        process.cwd(),
+        "-UpdateManifestUrl",
+        DEFAULT_UPDATE_MANIFEST_URL
+      ],
+      {
+        cwd: process.cwd(),
+        windowsHide: true
+      }
+    );
+
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      output += String(chunk || "");
+    });
+    child.stderr.on("data", (chunk) => {
+      output += String(chunk || "");
+    });
+    child.on("close", (code) => {
+      resolve({
+        ok: code === 0,
+        message: code === 0 ? "Update-Prozess erfolgreich gestartet oder abgeschlossen." : "Update-Prozess fehlgeschlagen.",
+        output: output.trim() || undefined
+      });
+    });
+    child.on("error", (error) => {
+      resolve({
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+        output: output.trim() || undefined
+      });
+    });
+  });
 }
 
 function htmlShell(): string {
@@ -153,10 +296,15 @@ function htmlShell(): string {
           </div>
           <div class="d-flex justify-content-between align-items-center mb-2">
             <div class="small text-secondary">Dashboard Zeitraum</div>
-            <div id="overview-stats-range" class="btn-group btn-group-sm overview-stats-range" role="group" aria-label="Dashboard Zeitraum">
-              <button type="button" class="btn btn-outline-secondary" data-range="day">Heute</button>
-              <button type="button" class="btn btn-outline-secondary active" data-range="month">Monat</button>
-              <button type="button" class="btn btn-outline-secondary" data-range="year">Jahr</button>
+            <div class="d-flex gap-2 align-items-center flex-wrap justify-content-end">
+              <div id="overview-update-status" class="small text-secondary">Update-Status wird geladen...</div>
+              <button id="overview-check-update" type="button" class="btn btn-sm btn-outline-secondary">Update prüfen</button>
+              <button id="overview-run-update" type="button" class="btn btn-sm btn-outline-primary">Update starten</button>
+              <div id="overview-stats-range" class="btn-group btn-group-sm overview-stats-range" role="group" aria-label="Dashboard Zeitraum">
+                <button type="button" class="btn btn-outline-secondary" data-range="day">Heute</button>
+                <button type="button" class="btn btn-outline-secondary active" data-range="month">Monat</button>
+                <button type="button" class="btn btn-outline-secondary" data-range="year">Jahr</button>
+              </div>
             </div>
           </div>
           <div class="row g-3 mb-3">
@@ -1168,6 +1316,8 @@ function htmlShell(): string {
         runs: [],
         staleRuns: [],
         recordsSummary: null,
+        updateStatus: null,
+        updateStatusCheckedAt: 0,
         mappingFields: [],
         targetFields: [],
         mappingRules: [],
@@ -4953,6 +5103,66 @@ function htmlShell(): string {
         renderRecordsTrendChart(summary);
       }
 
+      function renderOverviewUpdateStatus() {
+        const statusEl = document.getElementById('overview-update-status');
+        const runButton = document.getElementById('overview-run-update');
+        if (!statusEl || !runButton) {
+          return;
+        }
+
+        const status = state.updateStatus;
+        if (!status) {
+          statusEl.textContent = 'Update-Status unbekannt';
+          runButton.disabled = true;
+          return;
+        }
+
+        statusEl.textContent = status.message || 'Update-Status unbekannt';
+        runButton.disabled = !status.updateAvailable || status.supported === false;
+      }
+
+      async function loadOverviewUpdateStatus(force) {
+        if (!force && state.updateStatus && (Date.now() - Number(state.updateStatusCheckedAt || 0) < 60000)) {
+          renderOverviewUpdateStatus();
+          return;
+        }
+
+        const status = await safeRequest('/api/system/update-status', {
+          currentVersion: '-',
+          updateAvailable: false,
+          supported: false,
+          manifestUrl: '',
+          message: 'Update-Status konnte nicht geladen werden.'
+        });
+        state.updateStatus = status;
+        state.updateStatusCheckedAt = Date.now();
+        renderOverviewUpdateStatus();
+
+        if (status?.updateAvailable) {
+          window.alert(status.message || 'Ein Update ist verfügbar.');
+        }
+      }
+
+      async function triggerOverviewUpdate() {
+        const result = await requestJson('/api/system/update-now', {
+          method: 'POST'
+        });
+        window.alert(result.message || (result.ok ? 'Update gestartet.' : 'Update fehlgeschlagen.'));
+        if (result.output) {
+          console.log('Update output:', result.output);
+        }
+        await loadOverviewUpdateStatus(true);
+      }
+
+      async function setScheduleActive(scheduleId, active) {
+        await requestJson('/api/schedules/' + encodeURIComponent(scheduleId) + '/active', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ active: !!active })
+        });
+        await refresh({ refreshChart: false });
+      }
+
       async function openRecordSchedulersByBucket(bucket, connectorName) {
         if (!bucket) {
           return;
@@ -5875,6 +6085,8 @@ function htmlShell(): string {
               : item.autoDisabledDueToErrors
                 ? '<span class="badge bg-warning-subtle text-warning border" title="Automatisch wegen Fehlern deaktiviert">inaktiv (auto)</span>'
                 : '<span class="badge bg-secondary-subtle text-secondary border">inaktiv</span>';
+            const toggleLabel = item.active ? 'Deaktivieren' : 'Aktivieren';
+            const toggleClass = item.active ? 'btn-outline-warning' : 'btn-outline-success';
             const lastFailedRun = (state.runs || [])
               .filter((run) => run.scheduleId === item.id && run.status === 'Failed')
               .sort((a, b) => {
@@ -5897,6 +6109,7 @@ function htmlShell(): string {
               '<td>' + formatDate(item.nextRunAt, 'short') + '</td>' +
               errorCell +
               '<td>' +
+                '<button class="btn btn-sm ' + toggleClass + ' me-1" data-toggle-schedule-active="' + esc(item.id) + '" data-next-active="' + esc(String(!item.active)) + '">' + toggleLabel + '</button>' +
                 '<button class="btn btn-sm btn-outline-primary me-1" data-edit-schedule="' + esc(item.id) + '">Edit</button>' +
                 '<button class="btn btn-sm btn-outline-secondary me-1" data-dup-schedule="' + esc(item.id) + '">Dupl</button>' +
                 '<button class="btn btn-sm btn-outline-success me-1" data-run-now="' + esc(item.id) + '">Run</button>' +
@@ -5908,6 +6121,21 @@ function htmlShell(): string {
 
         body.querySelectorAll('button[data-edit-schedule]').forEach((button) => {
           button.addEventListener('click', () => openScheduleModal(button.getAttribute('data-edit-schedule')));
+        });
+
+        body.querySelectorAll('button[data-toggle-schedule-active]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            const scheduleId = String(button.getAttribute('data-toggle-schedule-active') || '').trim();
+            const nextActive = String(button.getAttribute('data-next-active') || '').trim() === 'true';
+            if (!scheduleId) {
+              return;
+            }
+            try {
+              await setScheduleActive(scheduleId, nextActive);
+            } catch (error) {
+              showError(error.message || 'Scheduler-Status konnte nicht geändert werden');
+            }
+          });
         });
 
         body.querySelectorAll('button[data-dup-schedule]').forEach((button) => {
@@ -6622,6 +6850,13 @@ function htmlShell(): string {
                 '<text class="graph-status-pill-label" x="20" y="13">' + esc(schedulerStatus.label) + '</text>' +
               '</g>'
             : '';
+          const togglePillMarkup = node.kind === 'scheduler'
+            ? '<g class="graph-status-pill graph-status-pill-clickable" transform="translate(156,34)" data-toggle-schedule-id="' + esc(node.refId || '') + '" data-next-active="' + esc(String(!node.active)) + '">' +
+                '<rect class="graph-status-pill-bg" width="92" height="22" rx="11" />' +
+                '<circle class="graph-status-pill-dot" cx="11" cy="10" r="4" />' +
+                '<text class="graph-status-pill-label" x="20" y="13">' + esc(node.active ? 'Deaktivieren' : 'Aktivieren') + '</text>' +
+              '</g>'
+            : '';
 
           // Inline styles to guarantee fill even when external CSS is not applied to inline SVG
           let cardBgStyle, accentStyle, badgeStyle, iconStyle, metaStyle;
@@ -6664,6 +6899,7 @@ function htmlShell(): string {
               '<circle class="graph-icon-badge" style="' + badgeStyle + '" cx="30" cy="41" r="18" />' +
               '<text class="graph-icon" style="' + iconStyle + '" x="30" y="47">' + esc(icon) + '</text>' +
               statusPillMarkup +
+              togglePillMarkup +
               titleMarkup.replace('<text ', '<text style="fill:#2f4050;font-weight:700;font-size:12px" ') +
               subtitleMarkup.replace('<text ', '<text style="fill:#66717d;font-size:11px" ') +
               metaMarkup.replace('<text ', '<text style="' + metaStyle + ';font-size:10px;font-weight:700;letter-spacing:0.6px" ') +
@@ -6706,6 +6942,21 @@ function htmlShell(): string {
               return '[' + (log.level || 'INFO') + '] ' + (log.step || '') + ': ' + (log.message || '');
             }).join('\\n');
             window.alert('Fehlerdetails für ' + (scheduleName || 'diesen Scheduler') + ':\\n\\n' + (logList || 'Keine Fehlerdetails vorhanden.'));
+          });
+        });
+        svg.querySelectorAll('g.graph-status-pill[data-toggle-schedule-id]').forEach((pillEl) => {
+          pillEl.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            const scheduleId = String(pillEl.getAttribute('data-toggle-schedule-id') || '').trim();
+            const nextActive = String(pillEl.getAttribute('data-next-active') || '').trim() === 'true';
+            if (!scheduleId) {
+              return;
+            }
+            try {
+              await setScheduleActive(scheduleId, nextActive);
+            } catch (error) {
+              showError(error.message || 'Scheduler-Status konnte nicht geändert werden');
+            }
           });
         });
         svg.querySelectorAll('g.graph-node').forEach((nodeEl) => {
@@ -7551,6 +7802,7 @@ function htmlShell(): string {
         renderOverviewConnectorFilter();
         redrawOverviewGraph();
         await loadRecordsSummary();
+        await loadOverviewUpdateStatus();
         if (shouldRefreshChart) {
           await loadLogSummary();
         }
@@ -7607,6 +7859,16 @@ function htmlShell(): string {
         }
       });
       document.getElementById('refresh-all').addEventListener('click', refresh);
+      document.getElementById('overview-check-update').addEventListener('click', async () => {
+        await loadOverviewUpdateStatus(true);
+      });
+      document.getElementById('overview-run-update').addEventListener('click', async () => {
+        try {
+          await triggerOverviewUpdate();
+        } catch (error) {
+          showError(error.message || 'Update konnte nicht gestartet werden');
+        }
+      });
       document.getElementById('overview-connector-filter').addEventListener('change', (event) => {
         state.overviewConnectorFilterId = String(event.target?.value || '');
         redrawOverviewGraph();
@@ -9798,6 +10060,17 @@ export function createAppServer(
         return;
       }
 
+      if (req.method === "GET" && requestUrl.pathname === "/api/system/update-status") {
+        sendJson(200, await getDashboardUpdateStatus());
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/system/update-now") {
+        const result = await triggerDashboardUpdate();
+        sendJson(result.ok ? 200 : 500, result);
+        return;
+      }
+
       if (req.method === "GET" && requestUrl.pathname === "/assets/bootstrap.min.css") {
         await sendFile(BOOTSTRAP_CSS_FILE, "text/css; charset=utf-8");
         return;
@@ -9978,6 +10251,14 @@ export function createAppServer(
       if (req.method === "POST" && requestUrl.pathname === "/api/schedules") {
         const body = (await readJsonBody(req)) as ScheduleMutationInput;
         const result = await adminDataService.saveSchedule(body, instanceId);
+        sendJson(200, result);
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/active$/)) {
+        const scheduleId = decodeURIComponent(requestUrl.pathname.replace(/^\/api\/schedules\/([^/]+)\/active$/, "$1"));
+        const body = (await readJsonBody(req)) as { active?: boolean };
+        const result = await adminDataService.setScheduleActive(scheduleId, body.active === true, instanceId);
         sendJson(200, result);
         return;
       }

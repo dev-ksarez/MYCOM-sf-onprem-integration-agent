@@ -1598,6 +1598,23 @@ export class AdminDataService {
     };
   }
 
+  public async setScheduleActive(scheduleId: string, active: boolean, instanceId?: string): Promise<{ id: string; active: boolean }> {
+    const resolvedInstance = this.resolveInstance(instanceId);
+    const client = await this.createClient(resolvedInstance.id);
+    await client.updateScheduleRecord(scheduleId, {
+      Active__c: active
+    });
+
+    if (active) {
+      this.clearScheduleAutoDisabledFlag(scheduleId);
+    }
+
+    return {
+      id: scheduleId,
+      active
+    };
+  }
+
   public async listStaleRuns(limit = 50, instanceId?: string): Promise<StaleRunListItem[]> {
     const client = await this.createClient(instanceId);
     const staleThresholdMinutes = this.getStaleRunThresholdMinutes();
