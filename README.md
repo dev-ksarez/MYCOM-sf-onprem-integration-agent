@@ -86,6 +86,16 @@ Neue serverseitige und UI-nahe Logik sollte bevorzugt in diesen Modulen oder wei
 - `npm run init:installation -- --mode SAGE100` - Interaktive Erstinstallation (Salesforce + SAGE100 SQL + Basis-Importprofile)
 - `npm run sf:deploy-metadata` - Salesforce Metadaten deployen
 
+## Setup-Szenarien
+
+Es gibt jetzt drei verbindliche Setup-Szenarien:
+
+1. [WINDOWS_DEPLOYMENT.md](WINDOWS_DEPLOYMENT.md): Windows Server als Dienst im lokalen Netz
+2. [UBUNTU_LOCAL_DEPLOYMENT.md](UBUNTU_LOCAL_DEPLOYMENT.md): Ubuntu-Server im lokalen Netz
+3. [LINUX_DEPLOYMENT.md](LINUX_DEPLOYMENT.md): öffentlicher Linux-Server mit Reverse Proxy und TLS
+
+Die Web UI im Tab Installation kann zwischen diesen drei Szenarien umschalten und dafür passende Artefakte erzeugen.
+
 ## Kunden-Deployment (Windows)
 
 Das detaillierte Runbook steht in [WINDOWS_DEPLOYMENT.md](WINDOWS_DEPLOYMENT.md).
@@ -100,7 +110,10 @@ Kurzablauf:
 
 ## Linux-Deployment und gehaerteter Betrieb
 
-Das Linux-Runbook steht in [LINUX_DEPLOYMENT.md](LINUX_DEPLOYMENT.md).
+Die Linux-Runbooks sind jetzt getrennt:
+
+- [UBUNTU_LOCAL_DEPLOYMENT.md](UBUNTU_LOCAL_DEPLOYMENT.md) fuer Ubuntu im lokalen Netz
+- [LINUX_DEPLOYMENT.md](LINUX_DEPLOYMENT.md) fuer den öffentlichen Linux-Server
 
 Kurzablauf:
 
@@ -120,8 +133,10 @@ Wichtige Security-Variablen fuer die Web UI:
 Erster webbasierter Installer-Einstieg:
 
 - In der Web UI steht ein neuer Tab Installation zur Verfuegung.
-- Dort werden Linux-Zielpfade, sichere Default-Variablen, SFTP-Setup und empfohlene Betriebsbefehle zusammengefasst.
-- Dort koennen jetzt auch Linux-Vorlagendateien unter `artifacts/installer/generated/...` erzeugt werden.
+- Dort werden jetzt drei Setup-Szenarien angeboten: Windows Server / Dienst, Linux (Ubuntu) und öffentlicher Linux Server.
+- Dort werden je Szenario Zielpfade, sichere Default-Variablen, SFTP-Setup und empfohlene Betriebsbefehle zusammengefasst.
+- Dort koennen jetzt auch szenariospezifische Vorlagendateien unter `artifacts/installer/generated/...` erzeugt werden.
+- Nach der Erzeugung steht das jeweilige Installer-Paket auch direkt als ZIP-Download aus der Web UI bereit.
 
 Ubuntu-Docker-Verifikation:
 

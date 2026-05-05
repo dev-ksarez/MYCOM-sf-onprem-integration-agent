@@ -1,8 +1,10 @@
 import http from "node:http";
 import crypto from "node:crypto";
+import { createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import archiver from "archiver";
 import {
   AdminDataService,
   SalesforceInstanceMutationInput,
@@ -86,18 +88,169 @@ function getAdminAuthConfig(): { username: string; password: string; enabled: bo
   };
 }
 
+type InstallerScenarioId = "windows-service-local" | "linux-ubuntu-local" | "linux-public-secure";
+
+interface InstallerScenarioSummary {
+  id: InstallerScenarioId;
+  label: string;
+  networkScope: string;
+  description: string;
+  generatedFilesLabel: string;
+  generatorMode: "windows" | "linux-local" | "linux-public";
+  defaults: {
+    appDir: string;
+    serviceUser: string;
+    serviceGroup: string;
+    publicHost: string;
+    port: number;
+    adminUsername: string;
+  };
+  paths: Record<string, string>;
+  commands: string[];
+  checks: Array<{ label: string; status: "ready" | "in-progress" | "missing"; detail: string }>;
+  envTemplate: string;
+}
+
+function buildInstallerEnvTemplate(options: {
+  nodeEnv?: string;
+  webUiHost: string;
+  webUiPort: number;
+  logLevel?: string;
+  adminUsername: string;
+  schedulerIntervalMs?: number;
+}): string {
+  return [
+    `NODE_ENV=${options.nodeEnv || "production"}`,
+    "WEB_UI_ENABLED=1",
+    `WEB_UI_HOST=${options.webUiHost}`,
+    `WEB_UI_PORT=${options.webUiPort}`,
+    `LOG_LEVEL=${options.logLevel || "info"}`,
+    `ADMIN_UI_USERNAME=${options.adminUsername}`,
+    "ADMIN_UI_PASSWORD=<starkes-passwort>",
+    `SCHEDULER_INTERVAL_MS=${options.schedulerIntervalMs || 60000}`
+  ].join("\n");
+}
+
+function getInstallerScenarios(adminAuth: { username: string; password: string; enabled: boolean }): InstallerScenarioSummary[] {
+  return [
+    {
+      id: "windows-service-local",
+      label: "Windows Server / Dienst",
+      networkScope: "Lokales Netz",
+      description: "Windows-Server im internen Netz. Der Agent läuft als Windows-Dienst, die Web UI ist nur im LAN oder über VPN vorgesehen.",
+      generatedFilesLabel: "Windows-Installationshinweise und .env-Vorlage",
+      generatorMode: "windows",
+      defaults: {
+        appDir: "C:\\apps\\sf-onprem-integration-agent",
+        serviceUser: "SfOnpremIntegrationAgent",
+        serviceGroup: "SfOnpremIntegrationAgent",
+        publicHost: "windows-agent.intern.local",
+        port: 9010,
+        adminUsername: adminAuth.username || "admin"
+      },
+      paths: {
+        appDir: "C:\\apps\\sf-onprem-integration-agent",
+        envFile: "C:\\apps\\sf-onprem-integration-agent\\.env",
+        logDir: "C:\\apps\\sf-onprem-integration-agent\\logs",
+        dataDir: "C:\\apps\\sf-onprem-integration-agent\\artifacts",
+        fileDrop: "C:\\apps\\sf-onprem-integration-agent\\artifacts\\files"
+      },
+      commands: [
+        "npm run build",
+        "npm run win:install-service -- -AppRoot \"C:\\apps\\sf-onprem-integration-agent\"",
+        "npm run win:register-updater -- -EveryMinutes 15 -AppRoot \"C:\\apps\\sf-onprem-integration-agent\"",
+        "Get-Service SfOnpremIntegrationAgent"
+      ],
+      checks: [
+        { label: "Bereitstellung", status: "ready", detail: "Runbook und Dienstskripte für Windows sind vorhanden." },
+        { label: "Netzwerkgrenze", status: "ready", detail: "Szenario ist für internes LAN oder VPN gedacht, nicht für direkte Internet-Exponierung." },
+        { label: "Admin-Login", status: adminAuth.enabled ? "ready" : "missing", detail: adminAuth.enabled ? "ADMIN_UI_USERNAME und ADMIN_UI_PASSWORD gesetzt" : "Admin-Credentials für die Web UI fehlen noch" },
+        { label: "Updates", status: "ready", detail: "Windows-Updater und Rollback-Pfad sind dokumentiert." }
+      ],
+      envTemplate: buildInstallerEnvTemplate({ webUiHost: "0.0.0.0", webUiPort: 9010, adminUsername: adminAuth.username || "admin" })
+    },
+    {
+      id: "linux-ubuntu-local",
+      label: "Linux (Ubuntu)",
+      networkScope: "Lokales Netz",
+      description: "Ubuntu-Server im lokalen Netz. systemd wird genutzt, die Web UI kann intern direkt oder über internen Reverse Proxy bereitgestellt werden.",
+      generatedFilesLabel: "Ubuntu-LAN-Dateien für systemd und .env",
+      generatorMode: "linux-local",
+      defaults: {
+        appDir: "/opt/sf-integration-agent",
+        serviceUser: "sfagent",
+        serviceGroup: "sfagent",
+        publicHost: "ubuntu-agent.intern.local",
+        port: 9010,
+        adminUsername: adminAuth.username || "admin"
+      },
+      paths: {
+        appDir: "/opt/sf-integration-agent",
+        envFile: "/etc/sf-integration-agent/agent.env",
+        logDir: "/var/log/sf-integration-agent",
+        dataDir: "/var/lib/sf-integration-agent",
+        fileDrop: "/opt/sf-integration-agent/artifacts/files"
+      },
+      commands: [
+        "sudo bash scripts/linux/install-linux-agent.sh --app-dir /opt/sf-integration-agent --service-user sfagent --service-group sfagent --port 9010 --public-host ubuntu-agent.intern.local",
+        "sudo systemctl enable --now sf-integration-agent.service",
+        "sudo bash scripts/linux/setup-sftp-user.sh --app-dir /opt/sf-integration-agent --service-user sfagent --sftp-user sfagentdrop",
+        "sudo systemctl status sf-integration-agent.service"
+      ],
+      checks: [
+        { label: "Bereitstellung", status: "ready", detail: "Ubuntu-Setup nutzt systemd und lokale Dateipfade." },
+        { label: "Netzwerkgrenze", status: "ready", detail: "Szenario ist für internes LAN oder VPN ausgelegt; HTTPS ist optional über internen Proxy." },
+        { label: "Datei-Connectoren", status: "ready", detail: "Optionaler SFTP-Drop für inbound, outbound und archive ist vorgesehen." },
+        { label: "Admin-Login", status: adminAuth.enabled ? "ready" : "missing", detail: adminAuth.enabled ? "ADMIN_UI_USERNAME und ADMIN_UI_PASSWORD gesetzt" : "Admin-Credentials für die Web UI fehlen noch" }
+      ],
+      envTemplate: buildInstallerEnvTemplate({ webUiHost: "0.0.0.0", webUiPort: 9010, adminUsername: adminAuth.username || "admin" })
+    },
+    {
+      id: "linux-public-secure",
+      label: "Öffentlicher Linux Server",
+      networkScope: "Öffentlich erreichbar",
+      description: "Öffentliche Linux-VM mit Reverse Proxy, TLS, Login-Schutz und abgesichertem SFTP-Zugang. Der Node-Prozess bleibt auf localhost gebunden.",
+      generatedFilesLabel: "Harte Linux-Internet-Dateien für systemd, nginx und .env",
+      generatorMode: "linux-public",
+      defaults: {
+        appDir: "/opt/sf-integration-agent",
+        serviceUser: "sfagent",
+        serviceGroup: "sfagent",
+        publicHost: "agent.example.com",
+        port: 9010,
+        adminUsername: adminAuth.username || "admin"
+      },
+      paths: {
+        appDir: "/opt/sf-integration-agent",
+        envFile: "/etc/sf-integration-agent/agent.env",
+        logDir: "/var/log/sf-integration-agent",
+        dataDir: "/var/lib/sf-integration-agent",
+        sftpDropRoot: "/var/lib/sf-integration-agent/sftp/<user>/drop"
+      },
+      commands: [
+        "sudo bash scripts/linux/install-linux-agent.sh --app-dir /opt/sf-integration-agent --service-user sfagent --service-group sfagent --port 9010 --public-host agent.example.com",
+        "sudo bash scripts/linux/setup-sftp-user.sh --app-dir /opt/sf-integration-agent --service-user sfagent --sftp-user sfagentdrop",
+        "sudo systemctl enable --now sf-integration-agent.service",
+        "sudo nginx -t && sudo systemctl reload nginx"
+      ],
+      checks: [
+        { label: "Admin-Login", status: adminAuth.enabled ? "ready" : "missing", detail: adminAuth.enabled ? "ADMIN_UI_USERNAME und ADMIN_UI_PASSWORD gesetzt" : "Vor öffentlichem Betrieb müssen Admin-Credentials gesetzt werden" },
+        { label: "CSRF/Origin Schutz", status: "ready", detail: "Mutierende Requests verlangen X-CSRF-Token und prüfen die Request-Origin." },
+        { label: "Reverse Proxy + TLS", status: "ready", detail: "nginx- und systemd-Artefakte liegen im Repo; TLS wird am Proxy terminiert." },
+        { label: "Datei-Connector SFTP", status: "ready", detail: "SFTP-Drop für inbound, outbound und archive ist vorgesehen." }
+      ],
+      envTemplate: buildInstallerEnvTemplate({ webUiHost: "127.0.0.1", webUiPort: 9010, adminUsername: adminAuth.username || "admin" })
+    }
+  ];
+}
+
+function getInstallerScenarioById(id: string | undefined, scenarios: InstallerScenarioSummary[]): InstallerScenarioSummary {
+  return scenarios.find((scenario) => scenario.id === id) || scenarios[0];
+}
+
 function getInstallerSummary() {
   const adminAuth = getAdminAuthConfig();
-  const envTemplate = [
-    "NODE_ENV=production",
-    "WEB_UI_ENABLED=1",
-    "WEB_UI_HOST=127.0.0.1",
-    "WEB_UI_PORT=9010",
-    "LOG_LEVEL=info",
-    "ADMIN_UI_USERNAME=admin",
-    "ADMIN_UI_PASSWORD=<starkes-passwort>",
-    "SCHEDULER_INTERVAL_MS=60000"
-  ].join("\n");
+  const scenarios = getInstallerScenarios(adminAuth);
 
   return {
     mode: adminAuth.enabled ? "secured" : "needs-admin-auth",
@@ -105,33 +258,20 @@ function getInstallerSummary() {
     csrfProtectionEnabled: true,
     originProtectionEnabled: true,
     nodeEnv: String(process.env.NODE_ENV || "development"),
-    linuxPaths: {
-      appDir: "/opt/sf-integration-agent",
-      envFile: "/etc/sf-integration-agent/agent.env",
-      logDir: "/var/log/sf-integration-agent",
-      dataDir: "/var/lib/sf-integration-agent",
-      sftpDropRoot: "/var/lib/sf-integration-agent/sftp/<user>/drop"
-    },
+    defaultScenarioId: "windows-service-local" as InstallerScenarioId,
+    scenarios,
     fileConnectorDefaults: {
       basePath: "artifacts/files",
       importPath: "inbound",
       exportPath: "outbound",
       archivePath: "archive"
     },
-    commands: [
-      "sudo bash scripts/linux/install-linux-agent.sh --app-dir /opt/sf-integration-agent --service-user sfagent --service-group sfagent --port 9010 --public-host agent.example.com",
-      "sudo bash scripts/linux/setup-sftp-user.sh --app-dir /opt/sf-integration-agent --service-user sfagent --sftp-user sfagentdrop",
-      "sudo systemctl enable --now sf-integration-agent.service",
-      "sudo nginx -t && sudo systemctl reload nginx"
-    ],
     checks: [
-      { label: "Admin-Login", status: adminAuth.enabled ? "ready" : "missing", detail: adminAuth.enabled ? "ADMIN_UI_USERNAME und ADMIN_UI_PASSWORD gesetzt" : "Admin-Credentials fehlen noch" },
-      { label: "CSRF/Origin Schutz", status: "ready", detail: "Mutierende Requests verlangen X-CSRF-Token und prüfen die Request-Origin." },
-      { label: "Linux Service", status: "ready", detail: "systemd- und nginx-Artefakte liegen im Repo." },
-      { label: "Datei-Connector SFTP", status: "ready", detail: "SFTP-Drop für inbound/outbound/archive ist vorgesehen." },
-      { label: "Webbasierter Installer", status: "in-progress", detail: "Geführte Installer-Ansicht ist verfügbar und kann Linux-Dateien unter artifacts/installer/generated erzeugen." }
+      { label: "Windows Szenario", status: "ready", detail: "Windows Server als Dienst im lokalen Netz ist abgedeckt." },
+      { label: "Ubuntu Szenario", status: "ready", detail: "Ubuntu im lokalen Netz ist als separater Setup-Pfad abgedeckt." },
+      { label: "Öffentlicher Linux Server", status: "ready", detail: "Öffentliche Linux-VM mit Reverse Proxy und TLS ist als eigener Pfad abgedeckt." },
+      { label: "Webbasierter Installer", status: "in-progress", detail: "Der Installer kann jetzt zwischen drei Setup-Szenarien umschalten und passende Artefakte erzeugen." }
     ],
-    envTemplate,
     dockerTest: {
       image: "sf-agent-ubuntu-test",
       dockerfile: "Dockerfile.ubuntu-test",
@@ -141,6 +281,7 @@ function getInstallerSummary() {
 }
 
 interface InstallerGenerationInput {
+  scenarioId?: InstallerScenarioId;
   appDir?: string;
   serviceUser?: string;
   serviceGroup?: string;
@@ -149,77 +290,149 @@ interface InstallerGenerationInput {
   adminUsername?: string;
 }
 
-function sanitizeInstallerGenerationInput(input: InstallerGenerationInput | undefined): Required<InstallerGenerationInput> {
-  const appDir = String(input?.appDir || "/opt/sf-integration-agent").trim() || "/opt/sf-integration-agent";
-  const serviceUser = String(input?.serviceUser || "sfagent").trim() || "sfagent";
-  const serviceGroup = String(input?.serviceGroup || serviceUser).trim() || serviceUser;
-  const publicHost = String(input?.publicHost || "agent.example.com").trim() || "agent.example.com";
-  const adminUsername = String(input?.adminUsername || "admin").trim() || "admin";
-  const parsedPort = Number(input?.port);
-  const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 9010;
-  return { appDir, serviceUser, serviceGroup, publicHost, port, adminUsername };
+async function createInstallerArchive(outputDir: string, archiveBaseName: string): Promise<{ archivePath: string; archiveFileName: string }> {
+  const archiveFileName = `${archiveBaseName}.zip`;
+  const archivePath = path.join(outputDir, archiveFileName);
+
+  await new Promise<void>((resolve, reject) => {
+    const output = createWriteStream(archivePath);
+    const archive = archiver("zip", { zlib: { level: 9 } });
+
+    output.on("close", () => resolve());
+    output.on("error", reject);
+    archive.on("error", reject);
+
+    archive.pipe(output);
+    archive.directory(outputDir, false, (entry) => (entry.name === archiveFileName ? false : entry));
+    void archive.finalize();
+  });
+
+  return { archivePath, archiveFileName };
 }
 
-async function generateInstallerFiles(input: InstallerGenerationInput | undefined): Promise<{ outputDir: string; files: string[]; installCommand: string }> {
+function sanitizeInstallerGenerationInput(input: InstallerGenerationInput | undefined): Required<InstallerGenerationInput> {
+  const scenarioId = (String(input?.scenarioId || "windows-service-local").trim() || "windows-service-local") as InstallerScenarioId;
+  const scenarios = getInstallerScenarios(getAdminAuthConfig());
+  const scenario = getInstallerScenarioById(scenarioId, scenarios);
+  const appDir = String(input?.appDir || scenario.defaults.appDir).trim() || scenario.defaults.appDir;
+  const serviceUser = String(input?.serviceUser || scenario.defaults.serviceUser).trim() || scenario.defaults.serviceUser;
+  const serviceGroup = String(input?.serviceGroup || scenario.defaults.serviceGroup).trim() || scenario.defaults.serviceGroup;
+  const publicHost = String(input?.publicHost || scenario.defaults.publicHost).trim() || scenario.defaults.publicHost;
+  const adminUsername = String(input?.adminUsername || scenario.defaults.adminUsername).trim() || scenario.defaults.adminUsername;
+  const parsedPort = Number(input?.port);
+  const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : scenario.defaults.port;
+  return { scenarioId: scenario.id, appDir, serviceUser, serviceGroup, publicHost, port, adminUsername };
+}
+
+async function generateInstallerFiles(input: InstallerGenerationInput | undefined): Promise<{ outputDir: string; files: string[]; installCommand: string; archiveFileName: string; downloadUrl: string }> {
   const sanitized = sanitizeInstallerGenerationInput(input);
+  const scenarios = getInstallerScenarios(getAdminAuthConfig());
+  const scenario = getInstallerScenarioById(sanitized.scenarioId, scenarios);
   const outputDir = path.join(INSTALLER_OUTPUT_DIR, new Date().toISOString().replace(/[:.]/g, "-"));
   const envFile = "/etc/sf-integration-agent/agent.env";
   const logDir = "/var/log/sf-integration-agent";
-  const envTemplate = [
-    "NODE_ENV=production",
-    "WEB_UI_ENABLED=1",
-    "WEB_UI_HOST=127.0.0.1",
-    `WEB_UI_PORT=${sanitized.port}`,
-    "LOG_LEVEL=info",
-    `ADMIN_UI_USERNAME=${sanitized.adminUsername}`,
-    "ADMIN_UI_PASSWORD=<starkes-passwort>",
-    "SCHEDULER_INTERVAL_MS=60000"
-  ].join("\n") + "\n";
-  const serviceTemplate = await fs.readFile(path.resolve(process.cwd(), "scripts/linux/sf-integration-agent.service"), "utf-8");
-  const nginxTemplate = await fs.readFile(path.resolve(process.cwd(), "scripts/linux/nginx-sf-integration-agent.conf"), "utf-8");
-  const renderedService = serviceTemplate
-    .replaceAll("__APP_DIR__", sanitized.appDir)
-    .replaceAll("__SERVICE_USER__", sanitized.serviceUser)
-    .replaceAll("__SERVICE_GROUP__", sanitized.serviceGroup)
-    .replaceAll("__ENV_FILE__", envFile)
-    .replaceAll("__LOG_DIR__", logDir);
-  const renderedNginx = nginxTemplate
-    .replaceAll("__PUBLIC_HOST__", sanitized.publicHost)
-    .replaceAll("__APP_PORT__", String(sanitized.port));
-  const installNotes = [
-    "# Linux Installer Preview",
-    "",
-    `App Dir: ${sanitized.appDir}`,
-    `Service User: ${sanitized.serviceUser}`,
-    `Service Group: ${sanitized.serviceGroup}`,
-    `Public Host: ${sanitized.publicHost}`,
-    `Port: ${sanitized.port}`,
-    "",
-    "Next steps:",
-    `1. Copy agent.env.example to ${envFile}`,
-    "2. Review systemd and nginx files",
-    `3. Run: sudo bash scripts/linux/install-linux-agent.sh --app-dir ${sanitized.appDir} --service-user ${sanitized.serviceUser} --service-group ${sanitized.serviceGroup} --port ${sanitized.port} --public-host ${sanitized.publicHost}`,
-    `4. Optional SFTP: sudo bash scripts/linux/setup-sftp-user.sh --app-dir ${sanitized.appDir} --service-user ${sanitized.serviceUser} --sftp-user ${sanitized.serviceUser}drop`
-  ].join("\n") + "\n";
+  const envTemplate = buildInstallerEnvTemplate({
+    webUiHost: scenario.generatorMode === "linux-public" ? "127.0.0.1" : "0.0.0.0",
+    webUiPort: sanitized.port,
+    adminUsername: sanitized.adminUsername
+  }) + "\n";
 
   await fs.mkdir(outputDir, { recursive: true });
-  const files = [
-    path.join(outputDir, "agent.env.example"),
-    path.join(outputDir, "sf-integration-agent.service"),
-    path.join(outputDir, "nginx-sf-integration-agent.conf"),
-    path.join(outputDir, "INSTALLER-README.txt")
-  ];
-  await Promise.all([
-    fs.writeFile(files[0], envTemplate, "utf-8"),
-    fs.writeFile(files[1], renderedService, "utf-8"),
-    fs.writeFile(files[2], renderedNginx, "utf-8"),
-    fs.writeFile(files[3], installNotes, "utf-8")
-  ]);
+  let files: string[] = [];
+  let installCommand = "";
+
+  if (scenario.generatorMode === "windows") {
+    const installNotes = [
+      "# Windows Server / Dienst Installer Preview",
+      "",
+      `Szenario: ${scenario.label}`,
+      `Netzwerk: ${scenario.networkScope}`,
+      `App Dir: ${sanitized.appDir}`,
+      `Web UI Port: ${sanitized.port}`,
+      `Admin Username: ${sanitized.adminUsername}`,
+      "",
+      "Next steps:",
+      `1. Copy .env.example to ${path.join(sanitized.appDir, ".env")}`,
+      `2. Run: npm run win:install-service -- -AppRoot \"${sanitized.appDir}\"`,
+      `3. Run: npm run win:register-updater -- -EveryMinutes 15 -AppRoot \"${sanitized.appDir}\"`,
+      "4. Verify the service with Get-Service SfOnpremIntegrationAgent"
+    ].join("\n") + "\n";
+    const commandNotes = [
+      `npm run win:install-service -- -AppRoot \"${sanitized.appDir}\"`,
+      `npm run win:register-updater -- -EveryMinutes 15 -AppRoot \"${sanitized.appDir}\"`,
+      "Get-Service SfOnpremIntegrationAgent"
+    ].join("\n") + "\n";
+    files = [
+      path.join(outputDir, ".env.example"),
+      path.join(outputDir, "WINDOWS-INSTALL-README.txt"),
+      path.join(outputDir, "WINDOWS-INSTALL-COMMANDS.txt")
+    ];
+    await Promise.all([
+      fs.writeFile(files[0], envTemplate, "utf-8"),
+      fs.writeFile(files[1], installNotes, "utf-8"),
+      fs.writeFile(files[2], commandNotes, "utf-8")
+    ]);
+    installCommand = `npm run win:install-service -- -AppRoot \"${sanitized.appDir}\"`;
+  } else {
+    const serviceTemplate = await fs.readFile(path.resolve(process.cwd(), "scripts/linux/sf-integration-agent.service"), "utf-8");
+    const renderedService = serviceTemplate
+      .replaceAll("__APP_DIR__", sanitized.appDir)
+      .replaceAll("__SERVICE_USER__", sanitized.serviceUser)
+      .replaceAll("__SERVICE_GROUP__", sanitized.serviceGroup)
+      .replaceAll("__ENV_FILE__", envFile)
+      .replaceAll("__LOG_DIR__", logDir);
+    installCommand = `sudo bash scripts/linux/install-linux-agent.sh --app-dir ${sanitized.appDir} --service-user ${sanitized.serviceUser} --service-group ${sanitized.serviceGroup} --port ${sanitized.port} --public-host ${sanitized.publicHost}`;
+    const installNotes = [
+      scenario.generatorMode === "linux-public" ? "# Öffentlicher Linux Installer Preview" : "# Ubuntu LAN Installer Preview",
+      "",
+      `Szenario: ${scenario.label}`,
+      `Netzwerk: ${scenario.networkScope}`,
+      `App Dir: ${sanitized.appDir}`,
+      `Service User: ${sanitized.serviceUser}`,
+      `Service Group: ${sanitized.serviceGroup}`,
+      `Host: ${sanitized.publicHost}`,
+      `Port: ${sanitized.port}`,
+      "",
+      "Next steps:",
+      `1. Copy agent.env.example to ${envFile}`,
+      "2. Review the generated systemd file",
+      `3. Run: ${installCommand}`,
+      `4. Optional SFTP: sudo bash scripts/linux/setup-sftp-user.sh --app-dir ${sanitized.appDir} --service-user ${sanitized.serviceUser} --sftp-user ${sanitized.serviceUser}drop`
+    ];
+
+    files = [
+      path.join(outputDir, "agent.env.example"),
+      path.join(outputDir, "sf-integration-agent.service")
+    ];
+    const writes: Array<Promise<void>> = [
+      fs.writeFile(files[0], envTemplate, "utf-8"),
+      fs.writeFile(files[1], renderedService, "utf-8")
+    ];
+
+    if (scenario.generatorMode === "linux-public") {
+      const nginxTemplate = await fs.readFile(path.resolve(process.cwd(), "scripts/linux/nginx-sf-integration-agent.conf"), "utf-8");
+      const renderedNginx = nginxTemplate
+        .replaceAll("__PUBLIC_HOST__", sanitized.publicHost)
+        .replaceAll("__APP_PORT__", String(sanitized.port));
+      files.push(path.join(outputDir, "nginx-sf-integration-agent.conf"));
+      writes.push(fs.writeFile(files[2], renderedNginx, "utf-8"));
+      installNotes.splice(10, 0, "TLS/Reverse Proxy: nginx-Konfiguration liegt für das öffentliche Szenario bei.");
+    }
+
+    files.push(path.join(outputDir, scenario.generatorMode === "linux-public" ? "PUBLIC-LINUX-README.txt" : "UBUNTU-LAN-README.txt"));
+    writes.push(fs.writeFile(files[files.length - 1], installNotes.join("\n") + "\n", "utf-8"));
+    await Promise.all(writes);
+  }
+
+  const archiveBaseName = `installer-${scenario.id}-${path.basename(outputDir)}`;
+  const { archiveFileName } = await createInstallerArchive(outputDir, archiveBaseName);
 
   return {
     outputDir,
     files,
-    installCommand: `sudo bash scripts/linux/install-linux-agent.sh --app-dir ${sanitized.appDir} --service-user ${sanitized.serviceUser} --service-group ${sanitized.serviceGroup} --port ${sanitized.port} --public-host ${sanitized.publicHost}`
+    installCommand,
+    archiveFileName,
+    downloadUrl: `/api/installer/archive?dir=${encodeURIComponent(path.basename(outputDir))}&file=${encodeURIComponent(archiveFileName)}`
   };
 }
 
@@ -750,6 +963,11 @@ function htmlShell(): string {
                 <div class="card-header bg-white fw-semibold">Installationsstatus</div>
                 <div class="card-body">
                   <div id="installer-status-summary" class="small text-secondary mb-3">Installer-Status wird geladen...</div>
+                  <div class="mb-3">
+                    <label class="form-label">Setup-Szenario</label>
+                    <select id="installer-scenario" class="form-select"></select>
+                    <div id="installer-scenario-description" class="form-text">Szenario wird geladen...</div>
+                  </div>
                   <div id="installer-checks" class="d-grid gap-2"></div>
                 </div>
               </div>
@@ -768,6 +986,7 @@ function htmlShell(): string {
                   </div>
                   <div class="d-flex gap-2 align-items-center flex-wrap">
                     <button id="installer-generate-files" class="btn btn-primary">Dateien erzeugen</button>
+                    <a id="installer-download-archive" class="btn btn-outline-secondary d-none" href="#" download>ZIP laden</a>
                     <div id="installer-generate-status" class="small text-secondary">Noch keine Dateien erzeugt.</div>
                   </div>
                   <pre id="installer-generated-files" class="bg-dark text-light p-3 rounded small mt-3 mb-0">Noch keine Dateien erzeugt.</pre>
@@ -2845,7 +3064,9 @@ function htmlShell(): string {
         const pathsContainer = document.getElementById('installer-paths');
         const commandsList = document.getElementById('installer-commands');
         const envTemplate = document.getElementById('installer-env-template');
-        if (!statusSummary || !checksContainer || !pathsContainer || !commandsList || !envTemplate) {
+        const scenarioSelect = document.getElementById('installer-scenario');
+        const scenarioDescription = document.getElementById('installer-scenario-description');
+        if (!statusSummary || !checksContainer || !pathsContainer || !commandsList || !envTemplate || !scenarioSelect || !scenarioDescription) {
           return;
         }
 
@@ -2858,11 +3079,25 @@ function htmlShell(): string {
           return;
         }
 
-        statusSummary.textContent = summary.authConfigured
-          ? 'Admin-Login, CSRF- und Origin-Schutz sind aktiv. Der Installer zeigt jetzt den Linux-Zielpfad und die sicheren Defaults.'
-          : 'Admin-Zugang ist noch nicht vollständig konfiguriert. Vor dem öffentlichen Betrieb zuerst Credentials setzen.';
+        const scenarios = Array.isArray(summary.scenarios) ? summary.scenarios : [];
+        if (!scenarioSelect.options.length) {
+          scenarioSelect.innerHTML = scenarios.map((item) => '<option value="' + esc(item.id) + '">' + esc(item.label) + ' - ' + esc(item.networkScope) + '</option>').join('');
+          if (summary.defaultScenarioId) {
+            scenarioSelect.value = summary.defaultScenarioId;
+          }
+        }
+        const selectedScenario = scenarios.find((item) => item.id === scenarioSelect.value) || scenarios[0];
+        if (!selectedScenario) {
+          statusSummary.textContent = 'Keine Setup-Szenarien verfügbar.';
+          return;
+        }
 
-        checksContainer.innerHTML = (Array.isArray(summary.checks) ? summary.checks : []).map((item) => {
+        scenarioDescription.textContent = selectedScenario.description + ' Generierte Dateien: ' + selectedScenario.generatedFilesLabel + '.';
+        statusSummary.textContent = summary.authConfigured
+          ? 'Das gewählte Setup-Szenario ist vorbereitet. Admin-Login, CSRF- und Origin-Schutz sind aktiv.'
+          : 'Das gewählte Setup-Szenario ist vorbereitet, aber Admin-Zugang ist noch nicht vollständig konfiguriert.';
+
+        checksContainer.innerHTML = (Array.isArray(selectedScenario.checks) ? selectedScenario.checks : []).map((item) => {
           const badgeClass = item.status === 'ready' ? 'text-bg-success' : item.status === 'in-progress' ? 'text-bg-warning' : 'text-bg-danger';
           return '<div class="border rounded p-2 bg-light">' +
             '<div class="d-flex justify-content-between align-items-start gap-2">' +
@@ -2871,35 +3106,69 @@ function htmlShell(): string {
             '</div></div>';
         }).join('');
 
-        pathsContainer.innerHTML = Object.entries(summary.linuxPaths || {}).map(([key, value]) => (
+        pathsContainer.innerHTML = Object.entries(selectedScenario.paths || {}).map(([key, value]) => (
           '<div class="col-md-6"><div class="border rounded p-2 h-100 bg-light">' +
           '<div class="small text-secondary">' + esc(key) + '</div>' +
           '<div class="fw-semibold small">' + esc(String(value || '-')) + '</div>' +
           '</div></div>'
         )).join('');
 
-        commandsList.innerHTML = (Array.isArray(summary.commands) ? summary.commands : []).map((command) => (
+        commandsList.innerHTML = (Array.isArray(selectedScenario.commands) ? selectedScenario.commands : []).map((command) => (
           '<li class="mb-2"><code>' + esc(command) + '</code></li>'
         )).join('');
 
-        envTemplate.textContent = String(summary.envTemplate || '');
+        envTemplate.textContent = String(selectedScenario.envTemplate || '');
+      }
+
+      function applyInstallerScenarioDefaults() {
+        const summary = state.installerSummary;
+        const scenarioSelect = document.getElementById('installer-scenario');
+        if (!summary || !scenarioSelect) {
+          return;
+        }
+
+        const scenarios = Array.isArray(summary.scenarios) ? summary.scenarios : [];
+        const selectedScenario = scenarios.find((item) => item.id === scenarioSelect.value) || scenarios[0];
+        if (!selectedScenario || !selectedScenario.defaults) {
+          return;
+        }
+
+        const defaults = selectedScenario.defaults;
+        const appDirEl = document.getElementById('installer-app-dir');
+        const serviceUserEl = document.getElementById('installer-service-user');
+        const serviceGroupEl = document.getElementById('installer-service-group');
+        const publicHostEl = document.getElementById('installer-public-host');
+        const portEl = document.getElementById('installer-port');
+        const adminUsernameEl = document.getElementById('installer-admin-username');
+        if (appDirEl) appDirEl.value = defaults.appDir || '';
+        if (serviceUserEl) serviceUserEl.value = defaults.serviceUser || '';
+        if (serviceGroupEl) serviceGroupEl.value = defaults.serviceGroup || '';
+        if (publicHostEl) publicHostEl.value = defaults.publicHost || '';
+        if (portEl) portEl.value = String(defaults.port || 9010);
+        if (adminUsernameEl) adminUsernameEl.value = defaults.adminUsername || 'admin';
       }
 
       async function generateInstallerFilesFromUi() {
         const statusEl = document.getElementById('installer-generate-status');
         const outputEl = document.getElementById('installer-generated-files');
         const button = document.getElementById('installer-generate-files');
+        const downloadLink = document.getElementById('installer-download-archive');
         if (!statusEl || !outputEl || !button) {
           return;
         }
 
         button.disabled = true;
+        if (downloadLink) {
+          downloadLink.classList.add('d-none');
+          downloadLink.removeAttribute('href');
+        }
         statusEl.textContent = 'Installationsdateien werden erzeugt...';
         try {
           const result = await requestJson('/api/installer/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+              scenarioId: document.getElementById('installer-scenario')?.value,
               appDir: document.getElementById('installer-app-dir')?.value,
               serviceUser: document.getElementById('installer-service-user')?.value,
               serviceGroup: document.getElementById('installer-service-group')?.value,
@@ -2910,7 +3179,11 @@ function htmlShell(): string {
           });
           state.installerGeneratedFiles = Array.isArray(result.files) ? result.files : [];
           statusEl.textContent = 'Dateien erzeugt unter ' + String(result.outputDir || 'artifacts/installer/generated');
-          outputEl.textContent = ['Output: ' + String(result.outputDir || ''), '', ...(state.installerGeneratedFiles || []), '', 'Install: ' + String(result.installCommand || '')].join('\n');
+          outputEl.textContent = ['Output: ' + String(result.outputDir || ''), '', ...(state.installerGeneratedFiles || []), '', 'Archiv: ' + String(result.archiveFileName || ''), 'Install: ' + String(result.installCommand || '')].join('\n');
+          if (downloadLink && result.downloadUrl) {
+            downloadLink.setAttribute('href', String(result.downloadUrl));
+            downloadLink.classList.remove('d-none');
+          }
         } catch (error) {
           statusEl.textContent = error.message || 'Installationsdateien konnten nicht erzeugt werden';
           outputEl.textContent = 'Fehler: ' + (error.message || 'Unbekannter Fehler');
@@ -7837,6 +8110,9 @@ function htmlShell(): string {
 
         const healthData = await safeRequest('/api/system/health', {});
         const installerSummary = await safeRequest('/api/installer/summary', null);
+        state.installerSummary = installerSummary;
+        renderInstallerSummary();
+        applyInstallerScenarioDefaults();
         const schedules = await safeRequest('/api/schedules', { items: [] });
         const connectors = await safeRequest('/api/connectors', { items: [] });
         const runs = await safeRequest('/api/runs', { items: [] });
@@ -7852,7 +8128,6 @@ function htmlShell(): string {
         state.staleRuns = staleRuns.items || [];
         state.migrations = migrations.items || [];
         state.graphData = graph;
-        state.installerSummary = installerSummary;
         renderSalesforceOverview(salesforceOverview);
 
         renderOverview(healthData);
@@ -7922,6 +8197,10 @@ function htmlShell(): string {
       });
       document.getElementById('refresh-all').addEventListener('click', refresh);
       document.getElementById('installer-generate-files')?.addEventListener('click', generateInstallerFilesFromUi);
+      document.getElementById('installer-scenario')?.addEventListener('change', () => {
+        applyInstallerScenarioDefaults();
+        renderInstallerSummary();
+      });
       document.getElementById('logout-admin')?.addEventListener('click', async () => {
         try {
           await fetch('/auth/logout', { method: 'POST' });
@@ -9720,6 +9999,17 @@ export function createAppServer(
         });
         res.end(file);
       };
+      const sendDownloadFile = async (filePath: string, contentType: string, downloadFileName: string): Promise<void> => {
+        const file = await fs.readFile(filePath);
+        res.writeHead(200, {
+          "Content-Type": contentType,
+          "Content-Disposition": `attachment; filename="${downloadFileName.replace(/"/g, "")}"`,
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          Pragma: "no-cache",
+          Expires: "0"
+        });
+        res.end(file);
+      };
       const isAuthenticated = !adminAuthRequired || hasValidAdminSession(req);
       const isAssetRequest = requestUrl.pathname.startsWith("/assets/");
       const isPublicRequest =
@@ -9821,6 +10111,32 @@ export function createAppServer(
       if (req.method === "POST" && requestUrl.pathname === "/api/installer/generate") {
         const body = (await readJsonBody(req)) as InstallerGenerationInput;
         sendJson(200, await generateInstallerFiles(body));
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/installer/archive") {
+        const directoryName = String(requestUrl.searchParams.get("dir") || "").trim();
+        const archiveFileName = String(requestUrl.searchParams.get("file") || "").trim();
+        if (!directoryName || !archiveFileName) {
+          sendJson(400, { error: "Archivparameter fehlen" });
+          return;
+        }
+
+        const candidatePath = path.resolve(INSTALLER_OUTPUT_DIR, directoryName, archiveFileName);
+        const expectedRoot = path.resolve(INSTALLER_OUTPUT_DIR) + path.sep;
+        if (!candidatePath.startsWith(expectedRoot)) {
+          sendJson(400, { error: "Ungültiger Archivpfad" });
+          return;
+        }
+
+        try {
+          await fs.access(candidatePath);
+        } catch {
+          sendJson(404, { error: "Archiv nicht gefunden" });
+          return;
+        }
+
+        await sendDownloadFile(candidatePath, "application/zip", path.basename(candidatePath));
         return;
       }
 

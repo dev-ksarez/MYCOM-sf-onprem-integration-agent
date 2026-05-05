@@ -1,6 +1,6 @@
 # Linux Deployment
 
-Dieses Runbook beschreibt den gehaerteten Minimalpfad fuer den Betrieb des Agents auf einer oeffentlichen Linux-VM.
+Dieses Runbook beschreibt den gehaerteten Minimalpfad fuer Szenario 3: Betrieb des Agents auf einer oeffentlichen Linux-VM.
 
 ## Zielbild
 
@@ -9,6 +9,8 @@ Dieses Runbook beschreibt den gehaerteten Minimalpfad fuer den Betrieb des Agent
 - Der Agent laeuft unter einem dedizierten Service-User ohne Root-Dauerbetrieb.
 - Administrative Zugriffe werden spaeter durch Login/Token ergaenzt; bis dahin darf die Web UI nicht ungeschuetzt oeffentlich freigegeben werden.
 - Datei-Connectoren koennen ueber einen separaten, eingeschraenkten SFTP-User Dateien austauschen.
+
+Dieses Dokument gilt nicht fuer interne LAN-Installationen auf Ubuntu. Dafuer ist [UBUNTU_LOCAL_DEPLOYMENT.md](UBUNTU_LOCAL_DEPLOYMENT.md) vorgesehen.
 
 ## Verzeichnislayout
 
