@@ -151,7 +151,7 @@ function Cleanup-DirectoriesByCount {
     return
   }
 
-  $directories = Get-ChildItem -Path $Root -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+  $directories = @(Get-ChildItem -Path $Root -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
   if ($directories.Count -le $KeepCount) {
     return
   }
@@ -229,7 +229,7 @@ function Resolve-ExtractedPayloadRoot {
 function Invoke-MaintenanceCleanup {
   $backupBase = Join-Path $appRootResolved "backups"
   if (Test-Path $backupBase) {
-    $backupDirs = Get-ChildItem -Path $backupBase -Directory | Sort-Object Name -Descending
+    $backupDirs = @(Get-ChildItem -Path $backupBase -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
     if ($backupDirs.Count -gt $KeepBackupCount) {
       $backupDirs | Select-Object -Skip $KeepBackupCount | ForEach-Object {
         Remove-Item -Path $_.FullName -Recurse -Force
