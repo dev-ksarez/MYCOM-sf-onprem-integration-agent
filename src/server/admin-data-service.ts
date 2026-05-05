@@ -394,6 +394,8 @@ export interface RunListItem {
   id: string;
   scheduleId?: string;
   scheduleName?: string;
+  connectorId?: string;
+  connectorName?: string;
   status: string;
   startedAt?: string;
   finishedAt?: string;
@@ -449,6 +451,36 @@ export interface LogChartBucket {
 export interface LogChartSummary {
   range: LogChartRange;
   buckets: LogChartBucket[];
+  connectors: string[];
+}
+
+export type OverviewStatsRange = "day" | "month" | "year";
+
+export interface RecordsChartScheduleSummary {
+  scheduleId?: string;
+  scheduleName?: string;
+  connectorId?: string;
+  connectorName?: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+}
+
+export interface RecordsChartBucket {
+  label: string;
+  start: string;
+  end: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  connectorTotals: Record<string, number>;
+  connectorFailures: Record<string, number>;
+  connectorSchedules: Record<string, RecordsChartScheduleSummary[]>;
+}
+
+export interface RecordsChartSummary {
+  range: OverviewStatsRange;
+  buckets: RecordsChartBucket[];
   connectors: string[];
 }
 
@@ -1469,6 +1501,8 @@ export class AdminDataService {
       id: run.Id,
       scheduleId: run.MSD_Schedule__c,
       scheduleName: run.MSD_Schedule__r?.Name,
+      connectorId: run.MSD_Schedule__r?.MSD_Connector__c,
+      connectorName: run.MSD_Schedule__r?.MSD_Connector__r?.Name,
       status: run.MSD_Status__c || "Unknown",
       startedAt: run.MSD_StartedAt__c,
       finishedAt: run.MSD_FinishedAt__c,
@@ -1478,6 +1512,90 @@ export class AdminDataService {
       recordsFailed: run.MSD_RecordsFailed__c,
       errorMessage: run.MSD_ErrorMessage__c
     }));
+  }
+
+  public async summarizeRecordsByRange(range: OverviewStatsRange, instanceId?: string): Promise<RecordsChartSummary> {
+    const { from, to } = this.getOverviewStatsRangeWindow(range);
+    const buckets = this.createRecordsChartBuckets(range, from, to);
+    const client = await this.createClient(instanceId);
+    const runs = await client.queryRunsByDateRange(from.toISOString(), to.toISOString(), 5000);
+    const connectorNames = new Set<string>();
+
+    for (const run of runs) {
+      if (!run.MSD_StartedAt__c) {
+        continue;
+      }
+
+      const startedAt = new Date(run.MSD_StartedAt__c);
+      if (Number.isNaN(startedAt.getTime())) {
+        continue;
+      }
+
+      const bucket = buckets.find((entry) => {
+        const start = new Date(entry.start).getTime();
+        const end = new Date(entry.end).getTime();
+        const value = startedAt.getTime();
+        return value >= start && value < end;
+      });
+
+      if (!bucket) {
+        continue;
+      }
+
+      const connectorName = String(
+        run.MSD_Schedule__r?.MSD_Connector__r?.Name || run.MSD_Schedule__r?.Name || "Ohne Connector"
+      ).trim() || "Ohne Connector";
+      const connectorId = String(run.MSD_Schedule__r?.MSD_Connector__c || "").trim() || undefined;
+      const scheduleId = String(run.MSD_Schedule__c || "").trim() || undefined;
+      const scheduleName = String(run.MSD_Schedule__r?.Name || scheduleId || "Ohne Scheduler").trim() || "Ohne Scheduler";
+      const succeeded = Math.max(0, Number(run.MSD_RecordsSucceeded__c || 0));
+      const failed = Math.max(0, Number(run.MSD_RecordsFailed__c || 0));
+      const total = Math.max(0, succeeded + failed);
+
+      bucket.total += total;
+      bucket.succeeded += succeeded;
+      bucket.failed += failed;
+      bucket.connectorTotals[connectorName] = Number(bucket.connectorTotals[connectorName] || 0) + total;
+      bucket.connectorFailures[connectorName] = Number(bucket.connectorFailures[connectorName] || 0) + failed;
+      connectorNames.add(connectorName);
+
+      const scheduleEntries = bucket.connectorSchedules[connectorName] || [];
+      const scheduleEntry = scheduleEntries.find((entry) => {
+        if (scheduleId && entry.scheduleId) {
+          return entry.scheduleId === scheduleId;
+        }
+        return entry.scheduleName === scheduleName;
+      });
+
+      if (scheduleEntry) {
+        scheduleEntry.total += total;
+        scheduleEntry.succeeded += succeeded;
+        scheduleEntry.failed += failed;
+      } else {
+        scheduleEntries.push({
+          scheduleId,
+          scheduleName,
+          connectorId,
+          connectorName,
+          total,
+          succeeded,
+          failed
+        });
+      }
+
+      bucket.connectorSchedules[connectorName] = scheduleEntries.sort((left, right) => {
+        if (right.total !== left.total) {
+          return right.total - left.total;
+        }
+        return String(left.scheduleName || "").localeCompare(String(right.scheduleName || ""), undefined, { sensitivity: "base" });
+      });
+    }
+
+    return {
+      range,
+      buckets,
+      connectors: Array.from(connectorNames).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }))
+    };
   }
 
   public async listStaleRuns(limit = 50, instanceId?: string): Promise<StaleRunListItem[]> {
@@ -3158,6 +3276,26 @@ export class AdminDataService {
     return { from, to };
   }
 
+  private getOverviewStatsRangeWindow(range: OverviewStatsRange): { from: Date; to: Date } {
+    const to = new Date();
+    const from = new Date(to);
+
+    if (range === "day") {
+      from.setHours(0, 0, 0, 0);
+      return { from, to };
+    }
+
+    if (range === "year") {
+      from.setMonth(0, 1);
+      from.setHours(0, 0, 0, 0);
+      return { from, to };
+    }
+
+    from.setDate(1);
+    from.setHours(0, 0, 0, 0);
+    return { from, to };
+  }
+
   private createLogBuckets(range: LogChartRange, from: Date, to: Date): LogChartBucket[] {
     const buckets: LogChartBucket[] = [];
 
@@ -3217,6 +3355,87 @@ export class AdminDataService {
           total: 0,
           errors: 0,
           connectorErrors: {}
+        });
+        cursor.setTime(end.getTime());
+      }
+    }
+
+    if (buckets.length > 0) {
+      const firstStart = new Date(buckets[0].start);
+      if (from > firstStart) {
+        buckets[0].start = from.toISOString();
+      }
+
+      const last = buckets[buckets.length - 1];
+      const lastEnd = new Date(last.end);
+      if (to < lastEnd) {
+        last.end = to.toISOString();
+      }
+    }
+
+    return buckets;
+  }
+
+  private createRecordsChartBuckets(range: OverviewStatsRange, from: Date, to: Date): RecordsChartBucket[] {
+    const buckets: RecordsChartBucket[] = [];
+
+    if (range === "day") {
+      const cursor = new Date(from);
+      cursor.setMinutes(0, 0, 0);
+      while (cursor < to) {
+        const start = new Date(cursor);
+        const end = new Date(start.getTime() + 60 * 60_000);
+        buckets.push({
+          label: start.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }),
+          start: start.toISOString(),
+          end: end.toISOString(),
+          total: 0,
+          succeeded: 0,
+          failed: 0,
+          connectorTotals: {},
+          connectorFailures: {},
+          connectorSchedules: {}
+        });
+        cursor.setTime(end.getTime());
+      }
+    } else if (range === "month") {
+      const cursor = new Date(from);
+      cursor.setHours(0, 0, 0, 0);
+      while (cursor < to) {
+        const start = new Date(cursor);
+        const end = new Date(start);
+        end.setDate(start.getDate() + 1);
+        buckets.push({
+          label: start.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" }),
+          start: start.toISOString(),
+          end: end.toISOString(),
+          total: 0,
+          succeeded: 0,
+          failed: 0,
+          connectorTotals: {},
+          connectorFailures: {},
+          connectorSchedules: {}
+        });
+        cursor.setTime(end.getTime());
+      }
+    } else {
+      const cursor = new Date(from);
+      cursor.setDate(1);
+      cursor.setHours(0, 0, 0, 0);
+      while (cursor < to) {
+        const start = new Date(cursor);
+        const end = new Date(start);
+        end.setMonth(start.getMonth() + 1, 1);
+        buckets.push({
+          label: start.toLocaleDateString("de-DE", { month: "short" }),
+          start: start.toISOString(),
+          end: end.toISOString(),
+          total: 0,
+          succeeded: 0,
+          failed: 0,
+          connectorTotals: {},
+          connectorFailures: {},
+          connectorSchedules: {}
         });
         cursor.setTime(end.getTime());
       }

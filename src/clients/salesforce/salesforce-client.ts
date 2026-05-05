@@ -41,6 +41,10 @@ export interface SalesforceRunRecord {
   MSD_Schedule__c?: string;
   MSD_Schedule__r?: {
     Name?: string;
+    MSD_Connector__c?: string;
+    MSD_Connector__r?: {
+      Name?: string;
+    };
   };
   MSD_StartedAt__c?: string;
   MSD_FinishedAt__c?: string;
@@ -1111,6 +1115,8 @@ export class SalesforceClient {
         MSD_Status__c,
         MSD_Schedule__c,
         MSD_Schedule__r.Name,
+        MSD_Schedule__r.MSD_Connector__c,
+        MSD_Schedule__r.MSD_Connector__r.Name,
         MSD_StartedAt__c,
         MSD_FinishedAt__c,
         MSD_RecordsRead__c,
@@ -1122,6 +1128,42 @@ export class SalesforceClient {
         MSD_AgentId__c
       FROM MSD_Run__c
       ORDER BY CreatedDate DESC
+      LIMIT ${normalizedLimit}
+    `;
+
+    const result = await this.connection.query<SalesforceRunRecord>(soql);
+    return result.records;
+  }
+
+  public async queryRunsByDateRange(startIso: string, endIso: string, limit = 5000): Promise<SalesforceRunRecord[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedLimit = Math.max(1, Math.min(limit, 5000));
+    const escapedStartIso = startIso.replace(/'/g, "\\'");
+    const escapedEndIso = endIso.replace(/'/g, "\\'");
+    const soql = `
+      SELECT
+        Id,
+        MSD_Status__c,
+        MSD_Schedule__c,
+        MSD_Schedule__r.Name,
+        MSD_Schedule__r.MSD_Connector__c,
+        MSD_Schedule__r.MSD_Connector__r.Name,
+        MSD_StartedAt__c,
+        MSD_FinishedAt__c,
+        MSD_RecordsRead__c,
+        MSD_RecordsProcessed__c,
+        MSD_RecordsSucceeded__c,
+        MSD_RecordsFailed__c,
+        MSD_ErrorMessage__c,
+        MSD_CorrelationId__c,
+        MSD_AgentId__c
+      FROM MSD_Run__c
+      WHERE MSD_StartedAt__c >= '${escapedStartIso}'
+        AND MSD_StartedAt__c < '${escapedEndIso}'
+      ORDER BY MSD_StartedAt__c ASC
       LIMIT ${normalizedLimit}
     `;
 
@@ -1141,6 +1183,8 @@ export class SalesforceClient {
         MSD_Status__c,
         MSD_Schedule__c,
         MSD_Schedule__r.Name,
+        MSD_Schedule__r.MSD_Connector__c,
+        MSD_Schedule__r.MSD_Connector__r.Name,
         MSD_StartedAt__c,
         MSD_FinishedAt__c,
         MSD_RecordsRead__c,

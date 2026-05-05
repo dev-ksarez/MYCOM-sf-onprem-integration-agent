@@ -9,6 +9,7 @@ import {
   ScheduleMutationInput,
   ScheduleCheckpointMutationInput,
   LogChartRange,
+  OverviewStatsRange,
   SetupExportDocument,
   MigrationConfig,
   ScheduleFormOptions
@@ -1127,11 +1128,27 @@ function htmlShell(): string {
       </div>
     </div>
 
+    <div class="modal fade" id="records-scheduler-modal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 id="records-scheduler-modal-title" class="modal-title">Scheduler zum Datenpunkt</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div id="records-scheduler-modal-summary" class="small text-secondary mb-3"></div>
+            <div id="records-scheduler-modal-list" class="list-group"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="/assets/chart.umd.js"></script>
     <script src="/assets/bootstrap.bundle.min.js"></script>
     <script>
       const LOG_CHART_RANGE_STORAGE_KEY = 'sf-agent.logChartRange';
       const MAX_LOG_CONNECTOR_SERIES = 5;
+      const MAX_RECORD_CONNECTOR_SERIES = 6;
       const UI_THEME_STORAGE_KEY = 'sf-agent.uiTheme';
       const OVERVIEW_STATS_RANGE_STORAGE_KEY = 'sf-agent.overviewStatsRange';
       const state = {
@@ -1150,6 +1167,7 @@ function htmlShell(): string {
         schedulerDirectionTab: 'all',
         runs: [],
         staleRuns: [],
+        recordsSummary: null,
         mappingFields: [],
         targetFields: [],
         mappingRules: [],
@@ -2609,6 +2627,7 @@ function htmlShell(): string {
       const templatePickerModal = createModalController('template-picker-modal');
       const instanceModal = createModalController('instance-modal');
       const logsModal = createModalController('logs-modal');
+      const recordsSchedulerModal = createModalController('records-scheduler-modal');
 
       function esc(value) {
         return String(value ?? '-')
@@ -4806,7 +4825,15 @@ function htmlShell(): string {
         });
       }
 
-      function renderRecordsTrendChart(runs) {
+      function getRecordsChartRange() {
+        const range = String(state.overviewStatsRange || 'month').trim();
+        if (range === 'day' || range === 'month' || range === 'year') {
+          return range;
+        }
+        return 'month';
+      }
+
+      function renderRecordsTrendChart(summary) {
         const canvas = document.getElementById('records-chart');
         if (!canvas || typeof window.Chart !== 'function') {
           return;
@@ -4816,47 +4843,73 @@ function htmlShell(): string {
           recordsChart.destroy();
         }
 
-        const sortedRuns = (Array.isArray(runs) ? runs.slice() : [])
-          .filter((item) => item && item.startedAt)
-          .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
-          .slice(-20);
+        const labels = (summary?.buckets || []).map((item) => item.label);
+        const connectorTotals = (Array.isArray(summary?.connectors) ? summary.connectors : [])
+          .map((connectorName) => ({
+            connectorName,
+            total: (summary?.buckets || []).reduce((sum, item) => sum + Number(item?.connectorTotals?.[connectorName] || 0), 0)
+          }))
+          .filter((item) => item.total > 0)
+          .sort((left, right) => right.total - left.total);
+        const primaryConnectors = connectorTotals.slice(0, MAX_RECORD_CONNECTOR_SERIES).map((item) => item.connectorName);
+        const remainingConnectors = connectorTotals.slice(MAX_RECORD_CONNECTOR_SERIES).map((item) => item.connectorName);
+        const palette = [
+          'rgba(43, 122, 184, 1)',
+          'rgba(31, 125, 87, 1)',
+          'rgba(194, 106, 45, 1)',
+          'rgba(123, 94, 167, 1)',
+          'rgba(208, 73, 73, 1)',
+          'rgba(39, 145, 132, 1)',
+          'rgba(153, 72, 122, 1)'
+        ];
+        const datasets = primaryConnectors.map((connectorName, index) => ({
+          label: connectorName,
+          connectorName,
+          data: (summary?.buckets || []).map((item) => Number(item?.connectorTotals?.[connectorName] || 0)),
+          borderColor: palette[index % palette.length],
+          backgroundColor: palette[index % palette.length].replace(', 1)', ', 0.12)'),
+          borderWidth: 2,
+          tension: 0.35,
+          fill: false,
+          pointRadius: 2,
+          pointHoverRadius: 4
+        })).filter((dataset) => dataset.data.some((value) => value > 0));
 
-        const labels = sortedRuns.map((item) => formatDate(item.startedAt, 'short'));
-        const transferred = sortedRuns.map((item) => {
-          const ok = Number(item.recordsSucceeded ?? 0);
-          const failed = Number(item.recordsFailed ?? 0);
-          return Math.max(0, ok + failed);
-        });
-        const failed = sortedRuns.map((item) => Math.max(0, Number(item.recordsFailed ?? 0)));
+        if (remainingConnectors.length) {
+          datasets.push({
+            label: 'Sonstige',
+            connectorName: '__other__',
+            data: (summary?.buckets || []).map((item) => remainingConnectors.reduce((sum, connectorName) => sum + Number(item?.connectorTotals?.[connectorName] || 0), 0)),
+            borderColor: 'rgba(93, 110, 126, 0.92)',
+            backgroundColor: 'rgba(93, 110, 126, 0.12)',
+            borderWidth: 2,
+            tension: 0.35,
+            fill: false,
+            pointRadius: 2,
+            pointHoverRadius: 4
+          });
+        }
+
+        if (!datasets.length) {
+          datasets.push({
+            label: 'Keine Datensätze',
+            connectorName: '',
+            data: labels.map(() => 0),
+            borderColor: 'rgba(93, 110, 126, 0.85)',
+            backgroundColor: 'rgba(93, 110, 126, 0.12)',
+            borderWidth: 2,
+            tension: 0.35,
+            fill: false,
+            pointRadius: 2,
+            pointHoverRadius: 4
+          });
+        }
 
         recordsChart = new window.Chart(canvas, {
           type: 'line',
           data: {
             labels,
-            datasets: [
-              {
-                label: 'Datensätze gesamt',
-                data: transferred,
-                borderColor: 'rgba(43, 122, 184, 1)',
-                backgroundColor: 'rgba(43, 122, 184, 0.14)',
-                borderWidth: 2,
-                tension: 0.35,
-                fill: false,
-                pointRadius: 2,
-                pointHoverRadius: 4
-              },
-              {
-                label: 'Datensätze fehlgeschlagen',
-                data: failed,
-                borderColor: 'rgba(184, 68, 80, 1)',
-                backgroundColor: 'rgba(184, 68, 80, 0.12)',
-                borderWidth: 2,
-                tension: 0.35,
-                fill: false,
-                pointRadius: 2,
-                pointHoverRadius: 4
-              }
-            ]
+            datasets
           },
           options: {
             responsive: true,
@@ -4873,9 +4926,96 @@ function htmlShell(): string {
                   precision: 0
                 }
               }
+            },
+            onClick: async (event, elements) => {
+              if (!elements || !elements.length) {
+                return;
+              }
+
+              const point = elements[0];
+              const bucket = summary?.buckets?.[point.index];
+              if (!bucket) {
+                return;
+              }
+
+              const connectorName = recordsChart?.data?.datasets?.[point.datasetIndex]?.connectorName || '';
+              await openRecordSchedulersByBucket(bucket, connectorName);
             }
           }
         });
+      }
+
+      async function loadRecordsSummary() {
+        const range = getRecordsChartRange();
+        const fallback = { range, buckets: [], connectors: [] };
+        const summary = await safeRequest('/api/dashboard/records-summary?range=' + encodeURIComponent(range), fallback);
+        state.recordsSummary = summary;
+        renderRecordsTrendChart(summary);
+      }
+
+      async function openRecordSchedulersByBucket(bucket, connectorName) {
+        if (!bucket) {
+          return;
+        }
+
+        const connectorSchedules = bucket?.connectorSchedules || {};
+        const primaryConnectorNames = (state.recordsSummary?.connectors || []).slice(0, MAX_RECORD_CONNECTOR_SERIES);
+        let effectiveConnectorName = String(connectorName || '').trim();
+        let scheduleEntries = [];
+
+        if (effectiveConnectorName === '__other__') {
+          scheduleEntries = Object.entries(connectorSchedules)
+            .filter(([name]) => !primaryConnectorNames.includes(name))
+            .flatMap(([, entries]) => Array.isArray(entries) ? entries : []);
+          effectiveConnectorName = 'Sonstige';
+        } else {
+          scheduleEntries = Array.isArray(connectorSchedules[effectiveConnectorName]) ? connectorSchedules[effectiveConnectorName] : [];
+        }
+
+        const normalizedEntries = scheduleEntries
+          .filter((entry) => entry && (entry.scheduleId || entry.scheduleName))
+          .sort((left, right) => Number(right.total || 0) - Number(left.total || 0));
+
+        if (!normalizedEntries.length) {
+          return;
+        }
+
+        if (normalizedEntries.length === 1 && normalizedEntries[0].scheduleId) {
+          await openScheduleModal(normalizedEntries[0].scheduleId);
+          return;
+        }
+
+        const title = document.getElementById('records-scheduler-modal-title');
+        const summaryEl = document.getElementById('records-scheduler-modal-summary');
+        const listEl = document.getElementById('records-scheduler-modal-list');
+        if (!title || !summaryEl || !listEl) {
+          return;
+        }
+
+        title.textContent = 'Scheduler für ' + (effectiveConnectorName || 'Datensätze');
+        summaryEl.textContent = 'Zeitslot: ' + String(bucket.label || '-') + ' · Scheduler: ' + normalizedEntries.length;
+        listEl.innerHTML = normalizedEntries.map((entry) => {
+          const label = String(entry.scheduleName || entry.scheduleId || 'Unbekannter Scheduler');
+          const count = Number(entry.total || 0);
+          const failed = Number(entry.failed || 0);
+          return '<button type="button" class="list-group-item list-group-item-action d-flex justify-content-between align-items-start" data-open-record-scheduler="' + esc(entry.scheduleId || '') + '">' +
+            '<span><strong>' + esc(label) + '</strong><span class="d-block small text-secondary">Connector: ' + esc(entry.connectorName || effectiveConnectorName || '-') + '</span></span>' +
+            '<span class="text-end small"><span class="d-block">Datensätze: ' + count + '</span><span class="d-block text-danger">Fehler: ' + failed + '</span></span>' +
+          '</button>';
+        }).join('');
+
+        listEl.querySelectorAll('[data-open-record-scheduler]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            const scheduleId = String(button.getAttribute('data-open-record-scheduler') || '').trim();
+            if (!scheduleId) {
+              return;
+            }
+            recordsSchedulerModal.hide();
+            await openScheduleModal(scheduleId);
+          });
+        });
+
+        recordsSchedulerModal.show();
       }
 
       function isEmptyLogSummary(summary) {
@@ -5541,8 +5681,6 @@ function htmlShell(): string {
         if (sqliteErrorsCounter) {
           sqliteErrorsCounter.textContent = String(sqliteErrorCount);
         }
-
-        renderRecordsTrendChart(scopedRuns);
 
         const serviceTrend = document.getElementById('kpi-service-trend');
         if (serviceTrend) {
@@ -7412,6 +7550,7 @@ function htmlShell(): string {
         renderStaleRuns();
         renderOverviewConnectorFilter();
         redrawOverviewGraph();
+        await loadRecordsSummary();
         if (shouldRefreshChart) {
           await loadLogSummary();
         }
@@ -9921,6 +10060,17 @@ export function createAppServer(
       if (req.method === "GET" && requestUrl.pathname === "/api/runs") {
         const runs = await adminDataService.listRuns(50, instanceId);
         sendJson(200, { items: runs, total: runs.length });
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/dashboard/records-summary") {
+        const rangeParam = requestUrl.searchParams.get("range") || "month";
+        const range: OverviewStatsRange =
+          rangeParam === "day" || rangeParam === "month" || rangeParam === "year"
+            ? rangeParam
+            : "month";
+        const summary = await adminDataService.summarizeRecordsByRange(range, instanceId);
+        sendJson(200, summary);
         return;
       }
 
