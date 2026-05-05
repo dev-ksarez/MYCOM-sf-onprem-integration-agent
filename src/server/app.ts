@@ -3179,7 +3179,7 @@ function htmlShell(): string {
           });
           state.installerGeneratedFiles = Array.isArray(result.files) ? result.files : [];
           statusEl.textContent = 'Dateien erzeugt unter ' + String(result.outputDir || 'artifacts/installer/generated');
-          outputEl.textContent = ['Output: ' + String(result.outputDir || ''), '', ...(state.installerGeneratedFiles || []), '', 'Archiv: ' + String(result.archiveFileName || ''), 'Install: ' + String(result.installCommand || '')].join('\n');
+          outputEl.textContent = ['Output: ' + String(result.outputDir || ''), '', ...(state.installerGeneratedFiles || []), '', 'Archiv: ' + String(result.archiveFileName || ''), 'Install: ' + String(result.installCommand || '')].join('\\n');
           if (downloadLink && result.downloadUrl) {
             downloadLink.setAttribute('href', String(result.downloadUrl));
             downloadLink.classList.remove('d-none');
@@ -7468,7 +7468,8 @@ function htmlShell(): string {
         loadTransformFunctions();
         await loadTargetObjects(entry?.objectName || '');
         toggleCreateObjectFromSourceUi();
-        loadTargetFields();
+        await loadTargetFields();
+        await syncSchedulerExternalIdUi();
         state.scheduleWizardStep = 1;
         renderScheduleWizardStep();
         // Load mapping fields from backend metadata API
@@ -7532,6 +7533,7 @@ function htmlShell(): string {
           objectSelect.value = result.objectApiName || objectApiName;
         }
         await loadTargetFields();
+        await syncSchedulerExternalIdUi(result.objectApiName || objectApiName);
         ensureSalesforceTargetDefinition();
         setCreateObjectStatus(
           'Fertig: ' + (result.objectApiName || objectApiName) + ' (' + (result.fieldsCreated || 0) + ' Felder) und Tab bereit.',
@@ -8145,6 +8147,92 @@ function htmlShell(): string {
         }
       }
 
+      function bindEventListenerOnce(elementId, eventName, handler) {
+        const element = document.getElementById(elementId);
+        if (!element) {
+          return;
+        }
+
+        const marker = 'bound_' + eventName;
+        if (element.dataset[marker] === '1') {
+          return;
+        }
+
+        element.addEventListener(eventName, handler);
+        element.dataset[marker] = '1';
+      }
+
+      // Boot data loading before the large listener block so the UI still initializes
+      // even if a later non-critical listener registration fails.
+      (async () => {
+        try {
+          try {
+            initializeUiTheme();
+          } catch {
+            // never block initial data load because of theme handling
+          }
+          restoreLogChartRange();
+          restoreOverviewStatsRange();
+          await loadInstances();
+          await refresh();
+          updateWeekdayChips();
+          initializeTableFilters();
+          setInterval(() => {
+            void refresh({ refreshChart: false });
+          }, 7000);
+        } catch (error) {
+          console.error('UI bootstrap failed', error);
+          showError(error?.message || 'UI bootstrap failed');
+        }
+      })();
+
+      bindEventListenerOnce('new-schedule', 'click', () => openScheduleModal(''));
+      bindEventListenerOnce('new-schedule-from-template', 'click', async () => {
+        try {
+          await createFromTemplate('schedule');
+        } catch (error) {
+          showError(error.message || 'Scheduler-Vorlage konnte nicht geladen werden');
+        }
+      });
+      bindEventListenerOnce('sch-target-system', 'change', async () => {
+        applyOperationOptions('');
+        await loadTargetObjects('');
+        await loadTargetFields();
+        toggleCreateObjectFromSourceUi();
+        ensureSalesforceTargetDefinition();
+        await syncSchedulerExternalIdUi();
+      });
+      bindEventListenerOnce('sch-target-type', 'change', async () => {
+        applyOperationOptions('');
+        toggleCreateObjectFromSourceUi();
+        ensureSalesforceTargetDefinition();
+        await syncSchedulerExternalIdUi();
+      });
+      bindEventListenerOnce('sch-object', 'change', async () => {
+        await loadTargetFields();
+        ensureSalesforceTargetDefinition();
+        await syncSchedulerExternalIdUi();
+      });
+      bindEventListenerOnce('sch-operation', 'change', async () => {
+        ensureSalesforceTargetDefinition();
+        await syncSchedulerExternalIdUi();
+      });
+      bindEventListenerOnce('sch-external-id-field', 'change', () => {
+        ensureSalesforceTargetDefinition();
+      });
+      bindEventListenerOnce('sch-target-definition', 'change', async () => {
+        await syncSchedulerExternalIdUi();
+      });
+      bindEventListenerOnce('sch-connector', 'change', async () => {
+        await loadTargetObjects(document.getElementById('sch-object').value || '');
+        await loadTargetFields();
+        await syncSchedulerExternalIdUi();
+        const srcType = document.getElementById('sch-source-type').value;
+        if (srcType === 'FILE_CSV' || srcType === 'FILE_EXCEL' || srcType === 'FILE_JSON') {
+          loadMappingFields();
+        }
+      });
+
       document.getElementById('instance-select').addEventListener('change', async (event) => {
         state.instanceId = event.target.value;
         await refresh();
@@ -8252,8 +8340,8 @@ function htmlShell(): string {
       });
       document.getElementById('sch-load-source-fields').addEventListener('click', loadMappingFields);
         document.getElementById('sch-automapping').addEventListener('click', autoMapByName);
-      document.getElementById('new-schedule').addEventListener('click', () => openScheduleModal(''));
-      document.getElementById('new-schedule-from-template').addEventListener('click', async () => {
+      bindEventListenerOnce('new-schedule', 'click', () => openScheduleModal(''));
+      bindEventListenerOnce('new-schedule-from-template', 'click', async () => {
         try {
           await createFromTemplate('schedule');
         } catch (error) {
@@ -8366,7 +8454,7 @@ function htmlShell(): string {
       document.getElementById('sch-map-detail-apply').addEventListener('click', applySelectedMappingDetailChanges);
       document.getElementById('sch-map-detail-delete').addEventListener('click', deleteSelectedMappingRule);
       document.getElementById('sch-map-detail-picklist-add').addEventListener('click', addPicklistMappingEntry);
-      document.getElementById('sch-target-system').addEventListener('change', async () => {
+      bindEventListenerOnce('sch-target-system', 'change', async () => {
         applyOperationOptions('');
         await loadTargetObjects('');
         await loadTargetFields();
@@ -8374,31 +8462,32 @@ function htmlShell(): string {
         ensureSalesforceTargetDefinition();
         await syncSchedulerExternalIdUi();
       });
-      document.getElementById('sch-target-type').addEventListener('change', async () => {
+      bindEventListenerOnce('sch-target-type', 'change', async () => {
         applyOperationOptions('');
         toggleCreateObjectFromSourceUi();
         ensureSalesforceTargetDefinition();
         await syncSchedulerExternalIdUi();
       });
-      document.getElementById('sch-object').addEventListener('change', async () => {
+      bindEventListenerOnce('sch-object', 'change', async () => {
         await loadTargetFields();
         ensureSalesforceTargetDefinition();
         await syncSchedulerExternalIdUi();
       });
-      document.getElementById('sch-operation').addEventListener('change', async () => {
+      bindEventListenerOnce('sch-operation', 'change', async () => {
         ensureSalesforceTargetDefinition();
         await syncSchedulerExternalIdUi();
       });
-      document.getElementById('sch-external-id-field').addEventListener('change', () => {
+      bindEventListenerOnce('sch-external-id-field', 'change', () => {
         ensureSalesforceTargetDefinition();
       });
-      document.getElementById('sch-target-definition').addEventListener('change', async () => {
+      bindEventListenerOnce('sch-target-definition', 'change', async () => {
         await syncSchedulerExternalIdUi();
       });
       document.getElementById('sch-create-custom-object').addEventListener('click', createSalesforceCustomObjectFromSource);
-      document.getElementById('sch-connector').addEventListener('change', async () => {
+      bindEventListenerOnce('sch-connector', 'change', async () => {
         await loadTargetObjects(document.getElementById('sch-object').value || '');
         await loadTargetFields();
+        await syncSchedulerExternalIdUi();
         const srcType = document.getElementById('sch-source-type').value;
         if (srcType === 'FILE_CSV' || srcType === 'FILE_EXCEL' || srcType === 'FILE_JSON') {
           loadMappingFields();
@@ -9940,23 +10029,6 @@ ${renderMigrationRunResultModule()}
         document.body.appendChild(toast);
         setTimeout(() => toast.remove(), 2500);
       }
-
-      (async () => {
-        try {
-          initializeUiTheme();
-        } catch {
-          // never block initial data load because of theme handling
-        }
-        restoreLogChartRange();
-        restoreOverviewStatsRange();
-        await loadInstances();
-        await refresh();
-        updateWeekdayChips();
-        initializeTableFilters();
-        setInterval(() => {
-          void refresh({ refreshChart: false });
-        }, 7000);
-      })();
 
     </script>
   </body>
