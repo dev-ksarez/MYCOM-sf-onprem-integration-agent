@@ -30,6 +30,7 @@ const UI_ASSET_VERSION = "20260505-linux-security-ui-1";
 const ADMIN_SESSION_COOKIE_NAME = "sf_agent_session";
 const ADMIN_CSRF_COOKIE_NAME = "sf_agent_csrf";
 const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const INSTALLER_OUTPUT_DIR = path.resolve(process.cwd(), "artifacts/installer/generated");
 const adminSessions = new Map<string, number>();
 const SETUP_EXAMPLE_JSON_FILE = path.resolve(
   process.cwd(),
@@ -128,7 +129,7 @@ function getInstallerSummary() {
       { label: "CSRF/Origin Schutz", status: "ready", detail: "Mutierende Requests verlangen X-CSRF-Token und prüfen die Request-Origin." },
       { label: "Linux Service", status: "ready", detail: "systemd- und nginx-Artefakte liegen im Repo." },
       { label: "Datei-Connector SFTP", status: "ready", detail: "SFTP-Drop für inbound/outbound/archive ist vorgesehen." },
-      { label: "Webbasierter Installer", status: "in-progress", detail: "Geführte Installer-Ansicht ist verfügbar; Persistenz- und Schreibpfade folgen im nächsten Paket." }
+      { label: "Webbasierter Installer", status: "in-progress", detail: "Geführte Installer-Ansicht ist verfügbar und kann Linux-Dateien unter artifacts/installer/generated erzeugen." }
     ],
     envTemplate,
     dockerTest: {
@@ -136,6 +137,89 @@ function getInstallerSummary() {
       dockerfile: "Dockerfile.ubuntu-test",
       verifyCommand: "docker build -f Dockerfile.ubuntu-test -t sf-agent-ubuntu-test . && docker run --rm sf-agent-ubuntu-test"
     }
+  };
+}
+
+interface InstallerGenerationInput {
+  appDir?: string;
+  serviceUser?: string;
+  serviceGroup?: string;
+  publicHost?: string;
+  port?: number;
+  adminUsername?: string;
+}
+
+function sanitizeInstallerGenerationInput(input: InstallerGenerationInput | undefined): Required<InstallerGenerationInput> {
+  const appDir = String(input?.appDir || "/opt/sf-integration-agent").trim() || "/opt/sf-integration-agent";
+  const serviceUser = String(input?.serviceUser || "sfagent").trim() || "sfagent";
+  const serviceGroup = String(input?.serviceGroup || serviceUser).trim() || serviceUser;
+  const publicHost = String(input?.publicHost || "agent.example.com").trim() || "agent.example.com";
+  const adminUsername = String(input?.adminUsername || "admin").trim() || "admin";
+  const parsedPort = Number(input?.port);
+  const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 9010;
+  return { appDir, serviceUser, serviceGroup, publicHost, port, adminUsername };
+}
+
+async function generateInstallerFiles(input: InstallerGenerationInput | undefined): Promise<{ outputDir: string; files: string[]; installCommand: string }> {
+  const sanitized = sanitizeInstallerGenerationInput(input);
+  const outputDir = path.join(INSTALLER_OUTPUT_DIR, new Date().toISOString().replace(/[:.]/g, "-"));
+  const envFile = "/etc/sf-integration-agent/agent.env";
+  const logDir = "/var/log/sf-integration-agent";
+  const envTemplate = [
+    "NODE_ENV=production",
+    "WEB_UI_ENABLED=1",
+    "WEB_UI_HOST=127.0.0.1",
+    `WEB_UI_PORT=${sanitized.port}`,
+    "LOG_LEVEL=info",
+    `ADMIN_UI_USERNAME=${sanitized.adminUsername}`,
+    "ADMIN_UI_PASSWORD=<starkes-passwort>",
+    "SCHEDULER_INTERVAL_MS=60000"
+  ].join("\n") + "\n";
+  const serviceTemplate = await fs.readFile(path.resolve(process.cwd(), "scripts/linux/sf-integration-agent.service"), "utf-8");
+  const nginxTemplate = await fs.readFile(path.resolve(process.cwd(), "scripts/linux/nginx-sf-integration-agent.conf"), "utf-8");
+  const renderedService = serviceTemplate
+    .replaceAll("__APP_DIR__", sanitized.appDir)
+    .replaceAll("__SERVICE_USER__", sanitized.serviceUser)
+    .replaceAll("__SERVICE_GROUP__", sanitized.serviceGroup)
+    .replaceAll("__ENV_FILE__", envFile)
+    .replaceAll("__LOG_DIR__", logDir);
+  const renderedNginx = nginxTemplate
+    .replaceAll("__PUBLIC_HOST__", sanitized.publicHost)
+    .replaceAll("__APP_PORT__", String(sanitized.port));
+  const installNotes = [
+    "# Linux Installer Preview",
+    "",
+    `App Dir: ${sanitized.appDir}`,
+    `Service User: ${sanitized.serviceUser}`,
+    `Service Group: ${sanitized.serviceGroup}`,
+    `Public Host: ${sanitized.publicHost}`,
+    `Port: ${sanitized.port}`,
+    "",
+    "Next steps:",
+    `1. Copy agent.env.example to ${envFile}`,
+    "2. Review systemd and nginx files",
+    `3. Run: sudo bash scripts/linux/install-linux-agent.sh --app-dir ${sanitized.appDir} --service-user ${sanitized.serviceUser} --service-group ${sanitized.serviceGroup} --port ${sanitized.port} --public-host ${sanitized.publicHost}`,
+    `4. Optional SFTP: sudo bash scripts/linux/setup-sftp-user.sh --app-dir ${sanitized.appDir} --service-user ${sanitized.serviceUser} --sftp-user ${sanitized.serviceUser}drop`
+  ].join("\n") + "\n";
+
+  await fs.mkdir(outputDir, { recursive: true });
+  const files = [
+    path.join(outputDir, "agent.env.example"),
+    path.join(outputDir, "sf-integration-agent.service"),
+    path.join(outputDir, "nginx-sf-integration-agent.conf"),
+    path.join(outputDir, "INSTALLER-README.txt")
+  ];
+  await Promise.all([
+    fs.writeFile(files[0], envTemplate, "utf-8"),
+    fs.writeFile(files[1], renderedService, "utf-8"),
+    fs.writeFile(files[2], renderedNginx, "utf-8"),
+    fs.writeFile(files[3], installNotes, "utf-8")
+  ]);
+
+  return {
+    outputDir,
+    files,
+    installCommand: `sudo bash scripts/linux/install-linux-agent.sh --app-dir ${sanitized.appDir} --service-user ${sanitized.serviceUser} --service-group ${sanitized.serviceGroup} --port ${sanitized.port} --public-host ${sanitized.publicHost}`
   };
 }
 
@@ -671,6 +755,24 @@ function htmlShell(): string {
               </div>
             </div>
             <div class="col-lg-8">
+              <div class="card soft-card mb-3">
+                <div class="card-header bg-white fw-semibold">Installationsdateien erzeugen</div>
+                <div class="card-body">
+                  <div class="row g-2 mb-3">
+                    <div class="col-md-6"><label class="form-label">App Dir</label><input id="installer-app-dir" class="form-control" value="/opt/sf-integration-agent" /></div>
+                    <div class="col-md-3"><label class="form-label">Service User</label><input id="installer-service-user" class="form-control" value="sfagent" /></div>
+                    <div class="col-md-3"><label class="form-label">Service Group</label><input id="installer-service-group" class="form-control" value="sfagent" /></div>
+                    <div class="col-md-6"><label class="form-label">Public Host</label><input id="installer-public-host" class="form-control" value="agent.example.com" /></div>
+                    <div class="col-md-3"><label class="form-label">Port</label><input id="installer-port" type="number" class="form-control" value="9010" /></div>
+                    <div class="col-md-3"><label class="form-label">Admin Username</label><input id="installer-admin-username" class="form-control" value="admin" /></div>
+                  </div>
+                  <div class="d-flex gap-2 align-items-center flex-wrap">
+                    <button id="installer-generate-files" class="btn btn-primary">Dateien erzeugen</button>
+                    <div id="installer-generate-status" class="small text-secondary">Noch keine Dateien erzeugt.</div>
+                  </div>
+                  <pre id="installer-generated-files" class="bg-dark text-light p-3 rounded small mt-3 mb-0">Noch keine Dateien erzeugt.</pre>
+                </div>
+              </div>
               <div class="card soft-card mb-3">
                 <div class="card-header bg-white fw-semibold">Linux Zielpfade</div>
                 <div class="card-body">
@@ -1361,7 +1463,7 @@ function htmlShell(): string {
                 <div class="col-12 d-none" id="con-mssql-settings-wrap">
                 <div class="border rounded p-2 bg-light">
                   <div id="con-sql-settings-title" class="fw-semibold mb-2">SQL Verbindung</div>
-                  <div id="con-sql-settings-text" class="small text-secondary mb-2">Pflicht: Server, Datenbank und Benutzer. Passwort kann direkt eingegeben werden. Alternativ kann das Passwort über Secret Key (ENV) aus einer Umgebungsvariable gelesen werden.</div>
+                  <div id="con-sql-settings-text" class="small text-secondary mb-2">Pflicht: Server, Datenbank und Benutzer. Bevorzugt Secret Key (ENV) statt Klartext-Passwort. Sichere Defaults: Encrypt aktiv, Trust Server Certificate deaktiviert.</div>
                   <div class="row g-2">
                     <div class="col-md-4"><label class="form-label">Server / Host</label><input id="con-mssql-server" class="form-control" placeholder="sql.example.local" /></div>
                     <div class="col-md-2"><label class="form-label">Port</label><input id="con-mssql-port" type="number" class="form-control" placeholder="1433" /></div>
@@ -1369,7 +1471,7 @@ function htmlShell(): string {
                     <div class="col-md-3"><label class="form-label">Benutzer</label><input id="con-mssql-user" class="form-control" placeholder="etl_user" /></div>
                     <div class="col-md-4"><label class="form-label">Passwort</label><input id="con-mssql-password" type="password" class="form-control" placeholder="Optional: direkt speichern" autocomplete="new-password" /></div>
                     <div class="col-md-3 d-flex align-items-end"><div class="form-check"><input id="con-mssql-encrypt" class="form-check-input" type="checkbox" checked /><label class="form-check-label">Encrypt</label></div></div>
-                    <div class="col-md-5 d-flex align-items-end"><div class="form-check"><input id="con-mssql-trust-server-certificate" class="form-check-input" type="checkbox" checked /><label class="form-check-label">Trust Server Certificate</label></div></div>
+                    <div class="col-md-5 d-flex align-items-end"><div class="form-check"><input id="con-mssql-trust-server-certificate" class="form-check-input" type="checkbox" /><label class="form-check-label">Trust Server Certificate</label></div></div>
                   </div>
                 </div>
                 </div>
@@ -1565,6 +1667,7 @@ function htmlShell(): string {
         logSummary: null,
         salesforceOverview: null,
         installerSummary: null,
+        installerGeneratedFiles: [],
         customObjectFieldOverrides: {},
         scheduleOptions: {
           objectNames: [],
@@ -2780,6 +2883,40 @@ function htmlShell(): string {
         )).join('');
 
         envTemplate.textContent = String(summary.envTemplate || '');
+      }
+
+      async function generateInstallerFilesFromUi() {
+        const statusEl = document.getElementById('installer-generate-status');
+        const outputEl = document.getElementById('installer-generated-files');
+        const button = document.getElementById('installer-generate-files');
+        if (!statusEl || !outputEl || !button) {
+          return;
+        }
+
+        button.disabled = true;
+        statusEl.textContent = 'Installationsdateien werden erzeugt...';
+        try {
+          const result = await requestJson('/api/installer/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              appDir: document.getElementById('installer-app-dir')?.value,
+              serviceUser: document.getElementById('installer-service-user')?.value,
+              serviceGroup: document.getElementById('installer-service-group')?.value,
+              publicHost: document.getElementById('installer-public-host')?.value,
+              port: Number(document.getElementById('installer-port')?.value || '9010'),
+              adminUsername: document.getElementById('installer-admin-username')?.value
+            })
+          });
+          state.installerGeneratedFiles = Array.isArray(result.files) ? result.files : [];
+          statusEl.textContent = 'Dateien erzeugt unter ' + String(result.outputDir || 'artifacts/installer/generated');
+          outputEl.textContent = ['Output: ' + String(result.outputDir || ''), '', ...(state.installerGeneratedFiles || []), '', 'Install: ' + String(result.installCommand || '')].join('\n');
+        } catch (error) {
+          statusEl.textContent = error.message || 'Installationsdateien konnten nicht erzeugt werden';
+          outputEl.textContent = 'Fehler: ' + (error.message || 'Unbekannter Fehler');
+        } finally {
+          button.disabled = false;
+        }
       }
 
       function getTemplateHeroLabel(item) {
@@ -7261,7 +7398,7 @@ function htmlShell(): string {
         document.getElementById('con-mssql-user').value = String(params.user || '');
         document.getElementById('con-mssql-password').value = '';
         document.getElementById('con-mssql-encrypt').checked = params.encrypt === undefined ? (params.ssl === undefined ? true : !!params.ssl) : !!params.encrypt;
-        document.getElementById('con-mssql-trust-server-certificate').checked = params.trustServerCertificate === undefined ? true : !!params.trustServerCertificate;
+        document.getElementById('con-mssql-trust-server-certificate').checked = params.trustServerCertificate === undefined ? false : !!params.trustServerCertificate;
       }
 
       function mergeMssqlConnectorSettingsIntoParameters(parameters) {
@@ -7784,6 +7921,7 @@ function htmlShell(): string {
         }
       });
       document.getElementById('refresh-all').addEventListener('click', refresh);
+      document.getElementById('installer-generate-files')?.addEventListener('click', generateInstallerFilesFromUi);
       document.getElementById('logout-admin')?.addEventListener('click', async () => {
         try {
           await fetch('/auth/logout', { method: 'POST' });
@@ -9677,6 +9815,12 @@ export function createAppServer(
 
       if (req.method === "GET" && requestUrl.pathname === "/api/installer/summary") {
         sendJson(200, getInstallerSummary());
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/installer/generate") {
+        const body = (await readJsonBody(req)) as InstallerGenerationInput;
+        sendJson(200, await generateInstallerFiles(body));
         return;
       }
 

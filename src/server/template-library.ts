@@ -329,8 +329,8 @@ const builtInTemplates: TemplateDefinition[] = [
           port: 1433,
           database: "${SAGE100_SQL_DATABASE}",
           user: "${SAGE100_SQL_USER}",
-          encrypt: false,
-          trustServerCertificate: true
+          encrypt: true,
+          trustServerCertificate: false
         }
       },
       schedule: {

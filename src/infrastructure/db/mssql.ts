@@ -37,8 +37,8 @@ export class MssqlDatabase {
       user: this.config.user,
       password: this.config.password,
       options: {
-        encrypt: this.config.encrypt ?? false,
-        trustServerCertificate: this.config.trustServerCertificate ?? true
+        encrypt: this.config.encrypt ?? true,
+        trustServerCertificate: this.config.trustServerCertificate ?? false
       },
       connectionTimeout: this.config.connectionTimeout ?? 30000,
       requestTimeout: this.config.requestTimeout ?? 30000,

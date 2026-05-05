@@ -115,11 +115,13 @@ Wichtige Security-Variablen fuer die Web UI:
 - `ADMIN_UI_USERNAME` und `ADMIN_UI_PASSWORD` aktivieren den Login-Schutz fuer Root und Admin-API.
 - Im Produktionsmodus bleibt die Web UI ohne diese beiden Variablen gesperrt.
 - Mutierende Requests der Web UI werden zusaetzlich durch CSRF-Token und Origin-Pruefung abgesichert.
+- MSSQL-Verbindungen nutzen jetzt sichere Defaults: `encrypt=true`, `trustServerCertificate=false`.
 
 Erster webbasierter Installer-Einstieg:
 
 - In der Web UI steht ein neuer Tab Installation zur Verfuegung.
 - Dort werden Linux-Zielpfade, sichere Default-Variablen, SFTP-Setup und empfohlene Betriebsbefehle zusammengefasst.
+- Dort koennen jetzt auch Linux-Vorlagendateien unter `artifacts/installer/generated/...` erzeugt werden.
 
 Ubuntu-Docker-Verifikation:
 

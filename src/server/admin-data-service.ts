@@ -2471,6 +2471,21 @@ export class AdminDataService {
     instanceId?: string
   ): Promise<{ id: string; action: "created" | "updated" }> {
     const client = await this.createClient(instanceId);
+    const sanitizedParameters = { ...(input.parameters || {}) };
+    if (String(input.secretKey || "").trim()) {
+      delete sanitizedParameters.password;
+      delete sanitizedParameters.bearerToken;
+      delete sanitizedParameters.apiKeyValue;
+      delete sanitizedParameters.clientSecret;
+    }
+    if (String(input.connectorType || "").trim().toUpperCase() === "MSSQL") {
+      if (sanitizedParameters.encrypt === undefined) {
+        sanitizedParameters.encrypt = true;
+      }
+      if (sanitizedParameters.trustServerCertificate === undefined) {
+        sanitizedParameters.trustServerCertificate = false;
+      }
+    }
     const fields = {
       Name: input.name,
       MSD_Active__c: input.active,
@@ -2481,7 +2496,7 @@ export class AdminDataService {
       MSD_TimeoutMs__c: input.timeoutMs,
       MSD_MaxRetries__c: input.maxRetries,
       MSD_Description__c: input.description,
-      MSD_Parameters__c: JSON.stringify(input.parameters || {})
+      MSD_Parameters__c: JSON.stringify(sanitizedParameters)
     };
 
     if (input.id) {
