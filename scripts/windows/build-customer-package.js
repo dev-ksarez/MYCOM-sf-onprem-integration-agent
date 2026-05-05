@@ -115,21 +115,34 @@ async function main() {
     force: true,
   });
   await copyIfExists(path.join(appRoot, "src", "css"), path.join(stagingAppRoot, "src", "css"));
-  await copyIfExists(path.join(appRoot, "artifacts"), path.join(stagingAppRoot, "artifacts"), {
-    filter: (sourcePath) => {
-      const relativePath = path.relative(path.join(appRoot, "artifacts"), sourcePath);
-      if (!relativePath || relativePath === "") {
-        return true;
-      }
-
-      const normalizedRelativePath = relativePath.split(path.sep).join("/");
-      if (normalizedRelativePath === "release" || normalizedRelativePath.startsWith("release/")) {
-        return false;
-      }
-
-      return path.extname(sourcePath).toLowerCase() !== ".zip";
-    },
-  });
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "dev-sandbox-schedule-examples.json"),
+    path.join(stagingAppRoot, "artifacts", "dev-sandbox-schedule-examples.json")
+  );
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "migrations.json"),
+    path.join(stagingAppRoot, "artifacts", "migrations.json")
+  );
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "schedule-health.json"),
+    path.join(stagingAppRoot, "artifacts", "schedule-health.json")
+  );
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "schedule-timing.json"),
+    path.join(stagingAppRoot, "artifacts", "schedule-timing.json")
+  );
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "sf-instances.json"),
+    path.join(stagingAppRoot, "artifacts", "sf-instances.json")
+  );
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "file-examples"),
+    path.join(stagingAppRoot, "artifacts", "file-examples")
+  );
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "templates"),
+    path.join(stagingAppRoot, "artifacts", "templates")
+  );
   await copyIfExists(path.join(appRoot, "migrations"), path.join(stagingAppRoot, "migrations"));
   await copyIfExists(path.join(appRoot, "salesforce"), path.join(stagingAppRoot, "salesforce"));
   await fsp.cp(path.join(appRoot, "package.json"), path.join(stagingAppRoot, "package.json"), {
