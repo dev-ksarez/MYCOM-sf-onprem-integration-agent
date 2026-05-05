@@ -25,7 +25,7 @@ const CHART_JS_FILE = path.resolve(process.cwd(), "node_modules/chart.js/dist/ch
 const APP_STYLE_CSS_FILE = path.resolve(process.cwd(), "src/css/style.css");
 const AGENT_UI_CSS_FILE = path.resolve(process.cwd(), "src/css/agent-ui.css");
 const TEMPLATE_STORE_CSS_FILE = path.resolve(process.cwd(), "src/css/template-store.css");
-const UI_ASSET_VERSION = "20260505-connector-ui-4";
+const UI_ASSET_VERSION = "20260505-linux-security-ui-1";
 const SETUP_EXAMPLE_JSON_FILE = path.resolve(
   process.cwd(),
   "artifacts/file-examples/setup-file-import-export.example.json"
@@ -118,8 +118,25 @@ function htmlShell(): string {
 
       <div class="agent-main">
         <nav class="agent-topbar">
-          <div class="agent-topbar-brand">SF Integration Agent</div>
-          <div class="agent-navbar-actions ms-auto">
+          <div class="agent-topbar-primary">
+            <button
+              class="btn btn-outline-secondary agent-topbar-menu"
+              type="button"
+              data-bs-toggle="offcanvas"
+              data-bs-target="#agent-header-menu"
+              aria-controls="agent-header-menu"
+              aria-label="Header-Menü öffnen"
+            >
+              ☰
+            </button>
+            <div class="agent-topbar-brand">SF Integration Agent</div>
+          </div>
+          <div class="agent-navbar-actions offcanvas-lg offcanvas-end ms-lg-auto" tabindex="-1" id="agent-header-menu" aria-labelledby="agent-header-menu-title">
+            <div class="offcanvas-header agent-offcanvas-header">
+              <div id="agent-header-menu-title" class="fw-semibold">Header-Aktionen</div>
+              <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Schließen"></button>
+            </div>
+            <div class="offcanvas-body agent-navbar-actions-body">
             <div class="agent-instance-picker d-flex gap-2 align-items-center">
               <label class="small text-secondary">Instanz</label>
               <select id="instance-select" class="form-select form-select-sm"></select>
@@ -146,6 +163,7 @@ function htmlShell(): string {
             <div class="btn-group btn-group-sm" role="group" aria-label="Instanz Aktionen">
               <button id="add-instance" class="btn btn-outline-secondary agent-btn-subtle" title="Instanz hinzufügen"><span class="agent-btn-icon" aria-hidden="true">＋</span><span>Instanz</span></button>
               <button id="refresh-all" class="btn btn-outline-secondary agent-btn-subtle" title="Aktualisieren"><span class="agent-btn-icon" aria-hidden="true">↻</span><span>Refresh</span></button>
+            </div>
             </div>
           </div>
         </nav>
