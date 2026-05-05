@@ -7,6 +7,8 @@ const DEFAULT_UPDATE_MANIFEST_URL =
   "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json";
 const DEFAULT_WINDOWS_SERVICE_NAME = process.env.AGENT_SERVICE_NAME || "SfOnpremIntegrationAgent";
 const UPDATE_PROGRESS_FILE = path.resolve(process.cwd(), "logs", "dashboard-update-status.json");
+const UPDATE_PREPARING_STALE_MS = 90 * 1000;
+const UPDATE_RUNNING_STALE_MS = 15 * 60 * 1000;
 
 export interface DashboardUpdateStatus {
   currentVersion: string;
@@ -61,6 +63,37 @@ function normalizeProgressPercent(value: unknown): number | undefined {
   return Math.max(0, Math.min(100, Math.round(numericValue)));
 }
 
+function getProgressAgeMs(progress: DashboardUpdateProgressState | null): number | null {
+  if (!progress?.updatedAt) {
+    return null;
+  }
+
+  const timestamp = Date.parse(progress.updatedAt);
+  if (!Number.isFinite(timestamp)) {
+    return null;
+  }
+
+  return Math.max(0, Date.now() - timestamp);
+}
+
+function isRunningProgressStale(progress: DashboardUpdateProgressState | null): boolean {
+  if (!progress || progress.state !== "running") {
+    return false;
+  }
+
+  const ageMs = getProgressAgeMs(progress);
+  if (ageMs === null) {
+    return false;
+  }
+
+  const stage = String(progress.stage || "").trim().toLowerCase();
+  if (stage === "start" || stage === "init") {
+    return ageMs > UPDATE_PREPARING_STALE_MS;
+  }
+
+  return ageMs > UPDATE_RUNNING_STALE_MS;
+}
+
 function getHostPlatformLabel(): string {
   if (process.platform === "win32") {
     return "Windows";
@@ -106,7 +139,19 @@ export async function getDashboardUpdateStatus(): Promise<DashboardUpdateStatus>
   const currentVersion = await getCurrentPackageVersion();
   const supported = process.platform === "win32";
   const hostPlatform = getHostPlatformLabel();
-  const progress = await readUpdateProgress();
+  let progress = await readUpdateProgress();
+
+  if (isRunningProgressStale(progress)) {
+    progress = {
+      ...progress,
+      state: "failed",
+      stage: "failed",
+      progressPercent: normalizeProgressPercent(progress?.progressPercent) ?? 100,
+      updatedAt: new Date().toISOString(),
+      message: "Der Update-Status ist veraltet. Bitte Update erneut pruefen oder neu starten."
+    };
+    await writeUpdateProgress(progress);
+  }
 
   if (progress?.state === "running") {
     return {

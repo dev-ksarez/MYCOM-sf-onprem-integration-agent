@@ -2373,6 +2373,9 @@ body {
 
 .agent-menu-action-grid-compact .btn {
   min-height: 2.75rem;
+  width: 100%;
+  justify-content: center;
+  white-space: nowrap;
 }
 
 .agent-navbar-actions .btn {

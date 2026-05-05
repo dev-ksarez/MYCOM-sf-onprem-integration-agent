@@ -900,18 +900,18 @@ function htmlShell(): string {
                   </div>
                 </div>
                 <div class="agent-menu-action-grid agent-menu-action-grid-compact">
-                  <button id="export-setup" class="btn btn-outline-secondary agent-btn-subtle" title="Setup exportieren"><span class="agent-btn-icon" aria-hidden="true">⭳</span><span>Export</span></button>
-                  <button id="import-setup" class="btn btn-outline-secondary agent-btn-subtle" title="Setup importieren"><span class="agent-btn-icon" aria-hidden="true">⭱</span><span>Import</span></button>
+                  <button id="export-setup" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Setup exportieren"><span class="agent-btn-icon" aria-hidden="true">⭳</span><span>Export</span></button>
+                  <button id="import-setup" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Setup importieren"><span class="agent-btn-icon" aria-hidden="true">⭱</span><span>Import</span></button>
                 </div>
                 <input id="setup-import-input" type="file" accept="application/json" class="d-none" />
                 <div class="agent-menu-action-grid agent-menu-action-grid-compact">
-                  <button id="add-instance" class="btn btn-outline-secondary agent-btn-subtle" title="Instanz hinzufügen"><span class="agent-btn-icon" aria-hidden="true">＋</span><span>Instanz</span></button>
-                  <button id="refresh-all" class="btn btn-outline-secondary agent-btn-subtle" title="Aktualisieren"><span class="agent-btn-icon" aria-hidden="true">↻</span><span>Refresh</span></button>
+                  <button id="add-instance" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Instanz hinzufügen"><span class="agent-btn-icon" aria-hidden="true">＋</span><span>Instanz</span></button>
+                  <button id="refresh-all" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Aktualisieren"><span class="agent-btn-icon" aria-hidden="true">↻</span><span>Refresh</span></button>
                 </div>
               </section>
 
               <section id="agent-menu-auth-panel" class="agent-menu-panel agent-menu-panel-footer">
-                <button id="logout-admin" class="btn btn-outline-danger btn-sm agent-btn-subtle w-100" title="Abmelden"><span class="agent-btn-icon" aria-hidden="true">⇥</span><span>Logout</span></button>
+                <button id="logout-admin" class="btn btn-outline-danger btn-sm agent-btn-subtle w-100" aria-label="Abmelden"><span class="agent-btn-icon" aria-hidden="true">⇥</span><span>Logout</span></button>
               </section>
             </div>
           </div>
@@ -4543,6 +4543,48 @@ function htmlShell(): string {
         }));
       }
 
+      function matchesKnownTargetField(targetField, targetFields) {
+        const requested = String(targetField || '').trim();
+        if (!requested) {
+          return false;
+        }
+
+        const requestedKey = normalizeFieldKey(requested);
+        return targetFields.some((field) => {
+          const apiName = String(field?.name || '').trim();
+          const label = String(field?.label || '').trim();
+          return apiName === requested
+            || normalizeFieldKey(apiName) === requestedKey
+            || (label && normalizeFieldKey(label) === requestedKey);
+        });
+      }
+
+      function resetIncompatibleScheduleMappingsIfNeeded() {
+        const mappingRules = Array.isArray(state.mappingRules) ? state.mappingRules : [];
+        const sourceFields = Array.isArray(state.mappingFields) ? state.mappingFields : [];
+        const targetFields = Array.isArray(state.targetFields) ? state.targetFields : [];
+        if (!mappingRules.length || !sourceFields.length || !targetFields.length) {
+          return;
+        }
+
+        const hasCompatibleRule = mappingRules.some((rule) => {
+          const sourceField = resolveSourceFieldName(rule?.sourceField);
+          const hasSourceMatch = sourceFields.some((field) => String(field?.name || '').trim() === sourceField);
+          const hasTargetMatch = matchesKnownTargetField(rule?.targetField, targetFields);
+          return hasSourceMatch && hasTargetMatch;
+        });
+
+        if (hasCompatibleRule) {
+          return;
+        }
+
+        state.mappingRules = [];
+        state.selectedMappingRuleId = '';
+        renderMappingRulesTable();
+        renderGenericPreviewTable('sch-mapping-preview-header', 'sch-mapping-preview-body', []);
+        showModalError('Das gespeicherte Mapping passt nicht mehr zur aktuellen Quelle oder zum Ziel und wurde geleert.');
+      }
+
       function getOperationOptionsForTarget() {
         const targetSystem = normalizeSystemValue(document.getElementById('sch-target-system')?.value || '');
         const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
@@ -4905,6 +4947,8 @@ function htmlShell(): string {
           } else if (currentValue) {
             select.value = currentValue;
           }
+
+          resetIncompatibleScheduleMappingsIfNeeded();
         } catch (error) {
           state.targetFields = [];
           select.innerHTML = '<option value="">Fehler beim Laden</option>';
@@ -9364,6 +9408,7 @@ function htmlShell(): string {
           const fields = Array.isArray(result.fields) ? result.fields : [];
           state.mappingFields = fields;
           reconcileMappingRuleSourceFields();
+          resetIncompatibleScheduleMappingsIfNeeded();
           sourceFieldsBody.innerHTML = fields.length
             ? fields.map((field, idx) =>
               '<tr data-field-index="' + idx + '" draggable="true">' +
