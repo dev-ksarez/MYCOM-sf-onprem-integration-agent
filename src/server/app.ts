@@ -1114,6 +1114,17 @@ function htmlShell(): string {
                 <div class="col-md-2"><label class="form-label">Timeout</label><input id="con-timeout" type="number" class="form-control" /></div>
                 <div class="col-md-2"><label class="form-label">Retries</label><input id="con-retries" type="number" class="form-control" /></div>
                 <div class="col-md-12"><label class="form-label">Beschreibung</label><textarea id="con-description" class="form-control" rows="2"></textarea></div>
+                <div class="col-md-12">
+                  <div class="border rounded p-2 bg-light">
+                    <div class="fw-semibold mb-2">Salesforce Task-Benachrichtigung</div>
+                    <div class="row g-2">
+                      <div class="col-md-3 d-flex align-items-end"><div class="form-check"><input id="con-task-notify-enabled" class="form-check-input" type="checkbox" /><label class="form-check-label">Aktiv</label></div></div>
+                      <div class="col-md-4"><label class="form-label">Owner / User Id</label><input id="con-task-owner-id" class="form-control" placeholder="005..." /></div>
+                      <div class="col-md-5"><label class="form-label">Fehlerklassen</label><input id="con-task-error-classes" class="form-control" placeholder="CONNECTION,AUTH,DATA,VALIDATION,UNKNOWN" /></div>
+                      <div class="col-md-12"><div class="small text-secondary">Erzeugt bei passenden Connector-Fehlern automatisch einen Salesforce-Task mit Connector-, Scheduler- und Fehlerdetails.</div></div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -5380,11 +5391,44 @@ function htmlShell(): string {
         if (isBinaryImportConnectorType(normalizedConnectorType)) {
           parsedParameters = mergeBinaryImportConnectorSettingsIntoParameters(parsedParameters);
         }
+        parsedParameters = mergeConnectorNotificationSettingsIntoParameters(parsedParameters);
 
         return {
           connectorType: normalizedConnectorType,
           parameters: parsedParameters
         };
+      }
+
+      function fillConnectorNotificationSettingsFromParameters(parameters) {
+        const params = parameters || {};
+        document.getElementById('con-task-notify-enabled').checked = params.notificationTaskEnabled === true;
+        document.getElementById('con-task-owner-id').value = String(params.notificationTaskOwnerId || '');
+        const errorClasses = Array.isArray(params.notificationTaskErrorClasses)
+          ? params.notificationTaskErrorClasses.join(',')
+          : String(params.notificationTaskErrorClasses || '');
+        document.getElementById('con-task-error-classes').value = errorClasses;
+      }
+
+      function mergeConnectorNotificationSettingsIntoParameters(parameters) {
+        const merged = { ...(parameters || {}) };
+        const enabled = !!document.getElementById('con-task-notify-enabled').checked;
+        const ownerId = String(document.getElementById('con-task-owner-id').value || '').trim();
+        const errorClasses = String(document.getElementById('con-task-error-classes').value || '')
+          .split(',')
+          .map((value) => value.trim().toUpperCase())
+          .filter(Boolean);
+
+        if (enabled && ownerId) {
+          merged.notificationTaskEnabled = true;
+          merged.notificationTaskOwnerId = ownerId;
+          merged.notificationTaskErrorClasses = errorClasses.length ? errorClasses : ['CONNECTION', 'AUTH', 'DATA', 'VALIDATION', 'UNKNOWN'];
+        } else {
+          delete merged.notificationTaskEnabled;
+          delete merged.notificationTaskOwnerId;
+          delete merged.notificationTaskErrorClasses;
+        }
+
+        return merged;
       }
 
       function updateConnectorReviewStep() {
@@ -7542,6 +7586,7 @@ function htmlShell(): string {
         document.getElementById('con-description').value = entry?.description || '';
         const parameters = entry?.parameters || {};
         document.getElementById('con-parameters').value = JSON.stringify(parameters, null, 2);
+        fillConnectorNotificationSettingsFromParameters(parameters);
         fillMssqlConnectorSettingsFromParameters(parameters);
         fillFileConnectorSettingsFromParameters(parameters);
         fillRestConnectorSettingsFromParameters(parameters);

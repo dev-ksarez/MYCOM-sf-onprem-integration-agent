@@ -1,7 +1,7 @@
 import pino from "pino";
 import fs from "node:fs";
 import path from "node:path";
-import { SalesforceClient, SalesforceScheduleRecord } from "../clients/salesforce/salesforce-client";
+import { ConnectorConfig, SalesforceClient, SalesforceScheduleRecord } from "../clients/salesforce/salesforce-client";
 import { ConnectorRegistry } from "../core/connector-registry/connector-registry";
 import { DataTransferJob } from "../core/job-runner/data-transfer-job";
 import { LookupResolverFn } from "../core/mapping-dsl/mapping-definition-engine";
@@ -163,6 +163,147 @@ function markScheduleAutoDisabled(scheduleId: string): void {
     autoDisabledAt: new Date().toISOString()
   };
   writeLocalScheduleHealth(store);
+}
+
+type NotificationErrorClass = "CONNECTION" | "AUTH" | "DATA" | "VALIDATION" | "UNKNOWN";
+
+function normalizeNotificationErrorClass(value: unknown): NotificationErrorClass | null {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (
+    normalized === "CONNECTION" ||
+    normalized === "AUTH" ||
+    normalized === "DATA" ||
+    normalized === "VALIDATION" ||
+    normalized === "UNKNOWN"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function getConnectorNotificationSettings(connectorConfig: ConnectorConfig): {
+  enabled: boolean;
+  ownerId?: string;
+  errorClasses: Set<NotificationErrorClass>;
+} {
+  const parameters = connectorConfig.parameters || {};
+  const ownerId = String(parameters.notificationTaskOwnerId || "").trim() || undefined;
+  const enabled = parameters.notificationTaskEnabled === true && !!ownerId;
+  const rawClasses = Array.isArray(parameters.notificationTaskErrorClasses)
+    ? parameters.notificationTaskErrorClasses
+    : String(parameters.notificationTaskErrorClasses || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+  const normalizedClasses = rawClasses
+    .map((value) => normalizeNotificationErrorClass(value))
+    .filter((value): value is NotificationErrorClass => value !== null);
+
+  return {
+    enabled,
+    ownerId,
+    errorClasses: new Set(normalizedClasses.length ? normalizedClasses : ["CONNECTION", "AUTH", "DATA", "VALIDATION", "UNKNOWN"])
+  };
+}
+
+function classifyNotificationError(message: string, statusCode?: string): NotificationErrorClass {
+  const combined = `${String(statusCode || "")} ${String(message || "")}`.toLowerCase();
+  if (/invalid_client|invalid_grant|oauth|auth|unauthori|forbidden|login/i.test(combined)) {
+    return "AUTH";
+  }
+  if (/connection|timeout|econn|enotfound|network|socket|unreachable|refused|mssql_connection_failed/i.test(combined)) {
+    return "CONNECTION";
+  }
+  if (/validation|required|invalid field|field integrity|picklist|malformed|bad request/i.test(combined)) {
+    return "VALIDATION";
+  }
+  if (/duplicate|record_error|upsert|insert|update|delete|constraint|conflict/i.test(combined)) {
+    return "DATA";
+  }
+  return "UNKNOWN";
+}
+
+function getNotificationNextStep(errorClass: NotificationErrorClass): string {
+  if (errorClass === "AUTH") {
+    return "Connected App, Credentials und Login-URL prüfen.";
+  }
+  if (errorClass === "CONNECTION") {
+    return "Connector-Erreichbarkeit, Netzwerk und Zielsystem-Verbindung prüfen.";
+  }
+  if (errorClass === "VALIDATION") {
+    return "Feldmapping, Pflichtfelder und Zielvalidierungen prüfen.";
+  }
+  if (errorClass === "DATA") {
+    return "Fehlerhafte Datensätze, Dubletten und Upsert-Schlüssel prüfen.";
+  }
+  return "Run-Logs und Connector-Konfiguration prüfen.";
+}
+
+async function maybeCreateConnectorNotificationTask(
+  logger: pino.Logger,
+  salesforceClient: SalesforceClient,
+  connectorConfig: ConnectorConfig,
+  schedule: IntegrationSchedule,
+  context: {
+    runId: string;
+    errorMessage: string;
+    errorClass: NotificationErrorClass;
+    statusCode?: string;
+    failureCount?: number;
+  }
+): Promise<void> {
+  const settings = getConnectorNotificationSettings(connectorConfig);
+  if (!settings.enabled || !settings.ownerId || !settings.errorClasses.has(context.errorClass)) {
+    return;
+  }
+
+  const subject = `[Agent] ${context.errorClass} | ${connectorConfig.name} | ${schedule.name}`;
+  const description = [
+    "SF OnPrem Integration Agent",
+    "==========================",
+    "",
+    `Fehlerklasse: ${context.errorClass}`,
+    `Connector: ${connectorConfig.name} (${connectorConfig.connectorType})`,
+    `Scheduler: ${schedule.name}`,
+    `Objekt / Operation: ${schedule.objectName} / ${schedule.operation}`,
+    `Run-ID: ${context.runId}`,
+    context.statusCode ? `Statuscode: ${context.statusCode}` : undefined,
+    context.failureCount ? `Anzahl betroffener Fehler: ${context.failureCount}` : undefined,
+    "",
+    "Fehlerdetail:",
+    String(context.errorMessage || "Unbekannter Fehler").trim(),
+    "",
+    `Nächster Schritt: ${getNotificationNextStep(context.errorClass)}`
+  ].filter(Boolean).join("\n");
+
+  try {
+    const taskId = await salesforceClient.createTask({
+      ownerId: settings.ownerId,
+      subject,
+      description,
+      priority: "High",
+      status: "Not Started"
+    });
+    logger.info(
+      {
+        scheduleId: schedule.id,
+        connectorId: connectorConfig.id,
+        taskId,
+        errorClass: context.errorClass
+      },
+      "Created Salesforce notification task for connector failure"
+    );
+  } catch (error) {
+    logger.warn(
+      {
+        scheduleId: schedule.id,
+        connectorId: connectorConfig.id,
+        errorClass: context.errorClass,
+        err: error
+      },
+      "Failed to create Salesforce notification task"
+    );
+  }
 }
 
 function extractHierarchySettings(targetDefinition?: string): {
@@ -790,6 +931,18 @@ async function executeSchedule(
       });
     }
 
+    const failedConnectorResults = result.connectorResults.filter((connectorResult) => !connectorResult.success);
+    if (failedConnectorResults.length > 0) {
+      const primaryFailure = failedConnectorResults[0];
+      await maybeCreateConnectorNotificationTask(logger, salesforceClient, connectorConfig, schedule, {
+        runId,
+        errorMessage: primaryFailure.message || "Unknown connector error",
+        statusCode: primaryFailure.statusCode,
+        errorClass: classifyNotificationError(primaryFailure.message || "Unknown connector error", primaryFailure.statusCode),
+        failureCount: failedConnectorResults.length
+      });
+    }
+
     const finishedAt = new Date().toISOString();
 
     if (schedule.sourceType === "SALESFORCE_SOQL") {
@@ -902,6 +1055,14 @@ async function executeSchedule(
       !forceRun &&
       schedule.active &&
       health.consecutiveFailures >= AUTO_DISABLE_FAILURE_THRESHOLD;
+
+    await maybeCreateConnectorNotificationTask(logger, salesforceClient, connectorConfig, schedule, {
+      runId,
+      errorMessage,
+      statusCode: forceRun ? "RUN_NOW_FAILED" : "RUN_FAILED",
+      errorClass: classifyNotificationError(errorMessage),
+      failureCount: 1
+    });
 
     if (shouldAutoDisable) {
       await salesforceClient.updateScheduleRecord(schedule.id, {

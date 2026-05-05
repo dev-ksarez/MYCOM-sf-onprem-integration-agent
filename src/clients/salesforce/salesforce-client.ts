@@ -143,6 +143,15 @@ export interface CreateLogInput {
   recordKey?: string;
 }
 
+export interface CreateTaskInput {
+  ownerId: string;
+  subject: string;
+  description: string;
+  priority?: "Normal" | "High";
+  status?: "Not Started" | "In Progress" | "Completed" | "Waiting on someone else" | "Deferred";
+  activityDate?: string;
+}
+
 export interface CheckpointData {
   id: string;
   scheduleId?: string;
@@ -1327,6 +1336,27 @@ export class SalesforceClient {
 
     if (!result.success || !result.id) {
       throw new Error("Failed to create MSD_Log__c record");
+    }
+
+    return result.id;
+  }
+
+  public async createTask(input: CreateTaskInput): Promise<string> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const result = await this.connection.sobject("Task").create({
+      OwnerId: input.ownerId,
+      Subject: input.subject,
+      Description: input.description,
+      Priority: input.priority || "High",
+      Status: input.status || "Not Started",
+      ActivityDate: input.activityDate || new Date().toISOString().slice(0, 10)
+    });
+
+    if (!result.success || !result.id) {
+      throw new Error("Failed to create Salesforce Task record");
     }
 
     return result.id;
