@@ -245,6 +245,143 @@ export function renderMigrationUiModule(): string {
 `;
 }
 
+export function renderMigrationProgressModule(): string {
+  return `
+      function getMigProgressSteps() {
+        const progressSteps = Array.isArray(migState.lastRunResult?.steps) ? migState.lastRunResult.steps : [];
+        if (progressSteps.length) {
+          return progressSteps;
+        }
+
+        return getMigOrderedObjects().map((obj) => ({
+          objectId: obj.id,
+          salesforceObject: obj.salesforceObject,
+          status: 'pending',
+          recordsProcessed: 0,
+          recordsSucceeded: 0,
+          recordsFailed: 0
+        }));
+      }
+
+      function renderMigRunProgress() {
+        const progressEl = document.getElementById('mig-run-progress');
+        const stepsEl = document.getElementById('mig-run-steps');
+        const progressTitleEl = document.getElementById('mig-run-status-title');
+        const spinnerEl = document.getElementById('mig-run-status-spinner');
+        if (!progressEl || !stepsEl) return;
+
+        const steps = getMigProgressSteps();
+        const totalSteps = Math.max(1, steps.length || 1);
+        const totalProcessed = steps.reduce((sum, step) => sum + Math.max(0, Number(step.recordsProcessed || 0) || 0), 0);
+        const totalSucceeded = steps.reduce((sum, step) => sum + Math.max(0, Number(step.recordsSucceeded || 0) || 0), 0);
+        const totalFailed = steps.reduce((sum, step) => sum + Math.max(0, Number(step.recordsFailed || 0) || 0), 0);
+        const completedUnits = steps.reduce((sum, step) => {
+          if (step.status === 'done' || step.status === 'error') {
+            return sum + 1;
+          }
+          if (step.status === 'running') {
+            const totalRecords = Math.max(0, Number(step.recordsProcessed || 0) || 0);
+            const completedRecords = Math.max(0, Number(step.recordsSucceeded || 0) + Number(step.recordsFailed || 0));
+            return sum + (totalRecords > 0 ? Math.min(1, completedRecords / totalRecords) : 0);
+          }
+          return sum;
+        }, 0);
+        const percent = Math.max(0, Math.min(100, Math.round((completedUnits / totalSteps) * 100)));
+        const badgeClassByStatus = { pending: 'secondary', running: 'warning', done: 'success', error: 'danger' };
+        const completedSteps = steps.filter((step) => step.status === 'done' || step.status === 'error').length;
+        const summaryText = steps.length
+          ? steps.map((step) => {
+              const totalRecords = Math.max(0, Number(step.recordsProcessed || 0) || 0);
+              const completedRecords = Math.max(0, Number(step.recordsSucceeded || 0) + Number(step.recordsFailed || 0));
+              return String(step.salesforceObject || 'Objekt') + ': ' + String(step.status || 'pending') + (totalRecords ? (' ' + completedRecords + '/' + totalRecords) : '');
+            }).join(' • ')
+          : 'Migration läuft...';
+
+        progressEl.classList.remove('d-none');
+        if (spinnerEl) {
+          spinnerEl.classList.toggle('d-none', migState.status !== 'running');
+        }
+        if (progressTitleEl) {
+          progressTitleEl.textContent = migState.status === 'running' ? 'Migration läuft...' : 'Ausführungsergebnis';
+        }
+        stepsEl.innerHTML =
+          '<div class="mb-3">' +
+            '<div class="progress" role="progressbar" aria-valuenow="' + percent + '" aria-valuemin="0" aria-valuemax="100">' +
+              '<div class="progress-bar progress-bar-striped' + (migState.status === 'running' ? ' progress-bar-animated' : '') + '" style="width:' + percent + '%">' + percent + '%</div>' +
+            '</div>' +
+            '<div class="d-flex flex-wrap gap-2 mt-2 small">' +
+              '<span class="badge text-bg-light border">' + completedSteps + '/' + steps.length + ' Objekte</span>' +
+              '<span class="badge text-bg-light border">' + totalSucceeded + ' OK</span>' +
+              '<span class="badge text-bg-light border">' + totalFailed + ' Fehler</span>' +
+              (totalProcessed ? ('<span class="badge text-bg-light border">' + totalProcessed + ' Datensätze</span>') : '') +
+            '</div>' +
+            '<div class="small text-secondary mt-2">' + esc(summaryText) + '</div>' +
+          '</div>' +
+          '<div class="vstack gap-2">' +
+            steps.map((step) => {
+              const totalRecords = Math.max(0, Number(step.recordsProcessed || 0) || 0);
+              const completedRecords = Math.max(0, Number(step.recordsSucceeded || 0) + Number(step.recordsFailed || 0));
+              const itemPercent = totalRecords > 0
+                ? Math.max(0, Math.min(100, Math.round((completedRecords / totalRecords) * 100)))
+                : (step.status === 'done' || step.status === 'error' ? 100 : 0);
+              return '<div class="border rounded px-2 py-2">' +
+                '<div class="d-flex flex-wrap align-items-center gap-2">' +
+                  '<strong class="me-auto">' + esc(String(step.salesforceObject || 'Objekt')) + '</strong>' +
+                  '<span class="badge bg-' + esc(badgeClassByStatus[step.status] || 'secondary') + '">' + esc(String(step.status || 'pending')) + '</span>' +
+                  '<span class="small text-secondary">' + completedRecords + (totalRecords ? ('/' + totalRecords) : '') + '</span>' +
+                  '<span class="small text-success">OK ' + Math.max(0, Number(step.recordsSucceeded || 0)) + '</span>' +
+                  '<span class="small text-danger">Fehler ' + Math.max(0, Number(step.recordsFailed || 0)) + '</span>' +
+                '</div>' +
+                '<div class="progress mt-2" style="height:6px" role="progressbar" aria-valuenow="' + itemPercent + '" aria-valuemin="0" aria-valuemax="100">' +
+                  '<div class="progress-bar bg-' + esc(step.status === 'error' ? 'danger' : (step.status === 'done' ? 'success' : 'warning')) + '" style="width:' + itemPercent + '%"></div>' +
+                '</div>' +
+                (step.errorMessage ? '<div class="small text-danger mt-1">' + esc(String(step.errorMessage || '')) + '</div>' : '') +
+              '</div>';
+            }).join('') +
+          '</div>';
+      }
+
+      function renderMigReview() {
+        const el = document.getElementById('mig-review-summary');
+        if (!el) return;
+        resetMigTransientUi();
+        const ordered = [...migState.executionPlan].sort((a, b) => a.order - b.order);
+        el.innerHTML = '<div class="card soft-card"><div class="card-body"><h6>' + esc(migState.name) + '</h6>' +
+          '<p class="text-secondary small">' + esc(migState.description || '') + '</p>' +
+          '<strong>Ausführungsplan:</strong><ol class="mt-1">' +
+          ordered.map((step) => {
+            const obj = migState.objects.find((o) => o.id === step.objectId);
+            if (!obj) return '';
+            const fileSummary = renderMigFileSummary(obj);
+            return '<li>' + esc(obj.salesforceObject) + ' — ' + esc(obj.operation) +
+              ' — Modus: ' + esc(obj.processingMode === 'file' ? 'Datei direkt' : 'SQLite-Staging') +
+              ' — Datei: <code>' + esc(obj.filePath || '(keine)') + '</code>' +
+              ' — Felder gemappt: ' + (obj.fieldMappings || []).length +
+              (fileSummary ? '<div class="small text-secondary mt-1">' + esc(fileSummary) + '</div>' : '') +
+              '</li>';
+          }).join('') +
+          '</ol>' +
+          (migState.dependencies.length ? '<strong>Abhängigkeiten:</strong><ul>' +
+            migState.dependencies.map((dep) => {
+              const from = migState.objects.find((o) => o.id === dep.fromObjectId);
+              const to = migState.objects.find((o) => o.id === dep.toObjectId);
+              return '<li>' + esc(from?.salesforceObject || '') + ' → ' + esc(to?.salesforceObject || '') + '</li>';
+            }).join('') + '</ul>' : '') +
+          '<div id="mig-preflight-summary" class="mt-3"></div>' +
+          '</div></div>';
+        renderMigPreflightWarnings();
+        loadMigPreflightWarnings();
+        if (migState.status === 'running' || migState.activeRunVisible) {
+          renderMigRunProgress();
+          renderMigRunResult();
+        }
+        if (migState.status === 'running') {
+          pollMigRunProgress();
+        }
+      }
+`;
+}
+
 export function renderMigrationFailedRecordsModule(): string {
   return `
       function renderMigFailedRecordsCards(failedSteps) {
