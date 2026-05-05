@@ -60,6 +60,11 @@ export interface HealthSnapshot {
   logRetentionDays?: number;
 }
 
+interface CpuSample {
+  idle: number;
+  total: number;
+}
+
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -75,14 +80,39 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
 }
 
 function getCpuLoadPercent(): number | undefined {
-  const [load1m] = os.loadavg();
-  const coreCount = os.cpus().length;
-  if (!Number.isFinite(load1m) || coreCount <= 0) {
+  const cpus = os.cpus();
+  if (!cpus.length) {
     return undefined;
   }
 
-  return Math.max(0, Math.min(100, Math.round((load1m / coreCount) * 100)));
+  const currentSample = cpus.reduce<CpuSample>(
+    (sample, cpu) => {
+      const cpuTimes = cpu.times;
+      const total = cpuTimes.user + cpuTimes.nice + cpuTimes.sys + cpuTimes.idle + cpuTimes.irq;
+      sample.idle += cpuTimes.idle;
+      sample.total += total;
+      return sample;
+    },
+    { idle: 0, total: 0 }
+  );
+
+  const previousSample = getCpuLoadPercent.previousSample;
+  getCpuLoadPercent.previousSample = currentSample;
+  if (!previousSample) {
+    return undefined;
+  }
+
+  const idleDelta = currentSample.idle - previousSample.idle;
+  const totalDelta = currentSample.total - previousSample.total;
+  if (!Number.isFinite(idleDelta) || !Number.isFinite(totalDelta) || totalDelta <= 0) {
+    return undefined;
+  }
+
+  const loadPercent = (1 - idleDelta / totalDelta) * 100;
+  return Math.max(0, Math.min(100, Math.round(loadPercent)));
 }
+
+getCpuLoadPercent.previousSample = undefined as CpuSample | undefined;
 
 function getOperatingSystemLabel(): string | undefined {
   if (process.platform === "win32") {
