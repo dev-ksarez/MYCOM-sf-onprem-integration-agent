@@ -6,9 +6,11 @@ export function renderConnectorUiModule(): string {
         const sqlSelect = document.getElementById('sql-connector-select');
 
         const mssqlItems = state.connectors.filter((item) => String(item.connectorType).toLowerCase() === 'mssql');
-        sqlSelect.innerHTML = mssqlItems.map((item) => '<option value="' + esc(item.id) + '">' + esc(item.name) + '</option>').join('');
-        if (!sqlSelect.innerHTML) {
-          sqlSelect.innerHTML = '<option value="">Keine MSSQL-Connectoren</option>';
+        if (sqlSelect) {
+          sqlSelect.innerHTML = mssqlItems.map((item) => '<option value="' + esc(item.id) + '">' + esc(item.name) + '</option>').join('');
+          if (!sqlSelect.innerHTML) {
+            sqlSelect.innerHTML = '<option value="">Keine MSSQL-Connectoren</option>';
+          }
         }
 
         const totalConnectors = (state.connectors || []).length;
@@ -32,6 +34,7 @@ export function renderConnectorUiModule(): string {
 
         function buildConnectorFacts(item) {
           const parameters = item && typeof item.parameters === 'object' && !Array.isArray(item.parameters) ? item.parameters : {};
+          const filePaths = item && item.filePaths && typeof item.filePaths === 'object' ? item.filePaths : null;
           if (String(item.connectorType || '').toLowerCase() === 'mssql') {
             return [
               'Server: ' + esc(parameters.server || '-'),
@@ -48,9 +51,10 @@ export function renderConnectorUiModule(): string {
           }
           if (isFileConnectorType(item.connectorType)) {
             return [
-              'Import: ' + esc(parameters.importPath || 'inbound'),
-              'Export: ' + esc(parameters.exportPath || 'outbound'),
-              'Archiv: ' + esc(parameters.archivePath || 'archive')
+              'Root: ' + esc(filePaths?.basePath || parameters.basePath || parameters.fileBasePath || 'artifacts/files'),
+              'Import: ' + esc(filePaths?.importPath || parameters.importPath || 'inbound'),
+              'Export: ' + esc(filePaths?.exportPath || parameters.exportPath || 'outbound'),
+              'Archiv: ' + esc(filePaths?.archivePath || parameters.archivePath || 'archive')
             ];
           }
           return [

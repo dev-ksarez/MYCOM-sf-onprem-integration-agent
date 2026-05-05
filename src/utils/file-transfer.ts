@@ -8,6 +8,8 @@ export type FileDataFormat = "csv" | "excel" | "json";
 export interface FileTransferDefinition {
   fileName?: string;
   filePath?: string;
+  relativeDirectory?: string;
+  archiveRelativeDirectory?: string;
   format?: FileDataFormat;
   charset?: string;
   delimiter?: string;
@@ -217,6 +219,29 @@ function parseDefinition(rawDefinition: string): FileTransferDefinition {
   }
 }
 
+function normalizeRelativeDirectory(rawValue: unknown): string {
+  const trimmed = String(rawValue || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const normalized = path.normalize(trimmed);
+  if (path.isAbsolute(normalized)) {
+    throw new Error("Unterverzeichnis muss relativ zum Connector-Pfad sein");
+  }
+
+  const segments = normalized
+    .split(path.sep)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  if (segments.some((segment) => segment === "..")) {
+    throw new Error("Unterverzeichnis darf den Connector-Pfad nicht verlassen");
+  }
+
+  return segments.join(path.sep);
+}
+
 function resolveRuntimeConfig(connectorConfig: ConnectorConfig): FileConnectorRuntimeConfig {
   const parameters = connectorConfig.parameters || {};
   const basePath = path.resolve(
@@ -394,10 +419,22 @@ function buildAbsoluteFilePath(
   }
 
   const root = mode === "read" ? runtime.importPath : runtime.exportPath;
+  const relativeDirectory = normalizeRelativeDirectory(definition.relativeDirectory);
+  const targetDirectory = relativeDirectory ? path.resolve(root, relativeDirectory) : root;
   return {
-    absolutePath: path.resolve(root, fileName),
+    absolutePath: path.resolve(targetDirectory, fileName),
     fileName
   };
+}
+
+function resolveArchiveTargetPath(
+  definition: FileTransferDefinition,
+  runtime: FileConnectorRuntimeConfig
+): string {
+  const relativeDirectory = normalizeRelativeDirectory(
+    definition.archiveRelativeDirectory || definition.relativeDirectory
+  );
+  return relativeDirectory ? path.resolve(runtime.archivePath, relativeDirectory) : runtime.archivePath;
 }
 
 async function archiveFile(originalPath: string, fileName: string, archivePath: string): Promise<void> {
@@ -416,6 +453,7 @@ export async function parseFileFromConnector(
   const definition = parseDefinition(rawDefinition);
   const runtime = resolveRuntimeConfig(connectorConfig);
   const { absolutePath, fileName } = buildAbsoluteFilePath(definition, runtime, "read");
+  const archiveTargetPath = resolveArchiveTargetPath(definition, runtime);
   const format = definition.format || detectFormatByName(fileName);
   const charset = String(definition.charset || runtime.defaultCharset).trim() || "utf8";
 
@@ -437,7 +475,7 @@ export async function parseFileFromConnector(
 
     const shouldArchive = options?.archiveOnRead === undefined ? runtime.archiveOnRead : options.archiveOnRead;
     if (shouldArchive) {
-      await archiveFile(absolutePath, fileName, runtime.archivePath);
+      await archiveFile(absolutePath, fileName, archiveTargetPath);
     }
 
     return {
@@ -471,7 +509,7 @@ export async function parseFileFromConnector(
 
     const shouldArchive = options?.archiveOnRead === undefined ? runtime.archiveOnRead : options.archiveOnRead;
     if (shouldArchive) {
-      await archiveFile(absolutePath, fileName, runtime.archivePath);
+      await archiveFile(absolutePath, fileName, archiveTargetPath);
     }
 
     return {
@@ -497,7 +535,7 @@ export async function parseFileFromConnector(
 
   const shouldArchive = options?.archiveOnRead === undefined ? runtime.archiveOnRead : options.archiveOnRead;
   if (shouldArchive) {
-    await archiveFile(absolutePath, fileName, runtime.archivePath);
+    await archiveFile(absolutePath, fileName, archiveTargetPath);
   }
 
   return {
@@ -518,6 +556,7 @@ export async function writeFileFromConnector(
   const definition = parseDefinition(rawDefinition);
   const runtime = resolveRuntimeConfig(connectorConfig);
   const { absolutePath, fileName } = buildAbsoluteFilePath(definition, runtime, "write");
+  const archiveTargetPath = resolveArchiveTargetPath(definition, runtime);
   const format = definition.format || detectFormatByName(fileName);
   const charset = String(definition.charset || runtime.defaultCharset).trim() || "utf8";
 
@@ -554,7 +593,7 @@ export async function writeFileFromConnector(
   }
 
   if (runtime.archiveOnWrite) {
-    await archiveFile(absolutePath, fileName, runtime.archivePath);
+    await archiveFile(absolutePath, fileName, archiveTargetPath);
   }
 
   return {

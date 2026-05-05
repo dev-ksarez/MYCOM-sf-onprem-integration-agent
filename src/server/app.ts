@@ -57,6 +57,7 @@ export interface HealthSnapshot {
   schedulesFound?: number;
   dueSchedules?: number;
   processedSchedules?: number;
+  logRetentionDays?: number;
 }
 
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
@@ -852,6 +853,7 @@ function htmlShell(): string {
                     <span class="small text-secondary">Updates</span>
                     <div id="overview-update-status" class="small text-secondary">Update-Status wird geladen...</div>
                   </div>
+                  <div id="overview-log-retention-status" class="small text-secondary mt-2">Log-Retention wird geladen...</div>
                   <div class="agent-menu-action-grid">
                     <button id="overview-check-update" type="button" class="btn btn-sm btn-outline-secondary">Update prüfen</button>
                     <button id="overview-run-update" type="button" class="btn btn-sm btn-outline-primary">Update starten</button>
@@ -1176,7 +1178,7 @@ function htmlShell(): string {
                 <div class="card-header bg-white fw-semibold">Runs</div>
                 <div class="card-body p-0">
                   <table class="table table-sm mb-0">
-                    <thead><tr><th>Schedule</th><th>Status</th><th>Ergebnis</th><th>Logs</th><th>Aktion</th></tr></thead>
+                    <thead><tr><th>Schedule</th><th>Status</th><th>Datum / Zeit</th><th>Dauer</th><th>Ergebnis</th><th>Logs</th><th>Aktion</th></tr></thead>
                     <tbody id="runs-body"></tbody>
                   </table>
                 </div>
@@ -1198,7 +1200,7 @@ function htmlShell(): string {
               </div>
             </div>
             <div class="col-lg-6">
-              <div class="card soft-card mb-3">
+              <div class="card soft-card">
                 <div class="card-header bg-white fw-semibold">Run-Logs</div>
                 <div class="card-body">
                   <div class="input-group mb-2">
@@ -1206,20 +1208,6 @@ function htmlShell(): string {
                     <button id="load-logs" class="btn btn-outline-primary">Laden</button>
                   </div>
                   <pre id="logs-output" class="bg-dark text-light p-3 rounded small mb-0">Noch keine Logs geladen.</pre>
-                </div>
-              </div>
-              <div class="card soft-card">
-                <div class="card-header bg-white fw-semibold">SQL / Mapping Vorschau</div>
-                <div class="card-body">
-                  <div class="input-group mb-2">
-                    <select id="sql-connector-select" class="form-select"></select>
-                    <button id="preview-sql" class="btn btn-outline-primary">SQL testen</button>
-                  </div>
-                  <textarea id="sql-query" class="form-control mb-2" rows="3" placeholder="SELECT ..."></textarea>
-                  <textarea id="mapping-definition" class="form-control mb-2" rows="2" placeholder="target;string=source;NONE"></textarea>
-                  <textarea id="mapping-source" class="form-control mb-2" rows="3" placeholder='[{"source":"value"}]'></textarea>
-                  <button id="preview-mapping" class="btn btn-outline-secondary btn-sm mb-2">Mapping prüfen</button>
-                  <pre id="mapping-output" class="bg-dark text-light p-3 rounded small mb-0">Noch keine Vorschau.</pre>
                 </div>
               </div>
             </div>
@@ -1470,6 +1458,18 @@ function htmlShell(): string {
                   <div class="col-md-6"><label class="form-label">Nächster Lauf</label><input id="sch-next-run" type="datetime-local" class="form-control" /></div>
                   <div class="col-md-6"><label class="form-label">Letzter Lauf</label><input id="sch-last-run" type="datetime-local" class="form-control" readonly /></div>
                   <div class="col-md-12 d-flex align-items-end"><div class="form-check"><input id="sch-active" class="form-check-input" type="checkbox" checked /><label class="form-check-label">Aktiv</label></div></div>
+                  <div class="col-md-12 mt-2">
+                    <div class="border rounded p-2 bg-light">
+                      <div class="d-flex justify-content-between align-items-center gap-2 mb-2">
+                        <div>
+                          <div class="fw-semibold">Letzte Scheduler-Logs</div>
+                          <div id="sch-recent-logs-meta" class="small text-secondary">Noch kein Run geladen.</div>
+                        </div>
+                        <button id="sch-refresh-recent-logs" type="button" class="btn btn-outline-secondary btn-sm">Logs aktualisieren</button>
+                      </div>
+                      <pre id="sch-recent-logs-output" class="bg-dark text-light p-3 rounded small mb-0" style="max-height: 220px; overflow-y: auto;">Noch keine Logs geladen.</pre>
+                    </div>
+                  </div>
                 </div>
               </div>
               
@@ -1479,6 +1479,9 @@ function htmlShell(): string {
                   <div class="col-md-6"><label class="form-label">Source System</label><select id="sch-source-system" class="form-select"><option value="">- Wählen -</option></select></div>
                   <div class="col-md-6"><label class="form-label">Source Type</label><select id="sch-source-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE_SOQL">SALESFORCE_SOQL</option><option value="MSSQL_SQL">MSSQL_SQL</option><option value="REST_API">REST_API</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
                   <div class="col-md-12"><label class="form-label">Source Definition / Abfrage</label><textarea id="sch-source-definition" class="form-control" rows="4" placeholder='SELECT Id, Name FROM Account'></textarea></div>
+                  <div id="sch-source-relative-directory-wrap" class="col-md-6 d-none"><label class="form-label">Source Unterverzeichnis relativ zum Connector-Importpfad</label><input id="sch-source-relative-directory" class="form-control" placeholder="z. B. kunden/import" /></div>
+                  <div id="sch-source-archive-relative-directory-wrap" class="col-md-6 d-none"><label class="form-label">Archiv-Unterverzeichnis relativ zum Connector-Archivpfad</label><input id="sch-source-archive-relative-directory" class="form-control" placeholder="optional, sonst gleiches Unterverzeichnis" /></div>
+                  <div id="sch-source-path-summary-wrap" class="col-md-12 d-none"><div id="sch-source-path-summary" class="small text-secondary border rounded p-2 bg-light">Keine Agent-Pfade berechnet.</div></div>
                   <div id="sch-source-delta-wrap" class="col-md-12 d-none">
                     <div class="border rounded p-2 bg-light">
                       <div class="row g-2 align-items-end">
@@ -1530,6 +1533,9 @@ function htmlShell(): string {
                   <div class="col-md-4"><label class="form-label">Direction</label><select id="sch-direction" class="form-select"><option value="">- Wählen -</option></select></div>
                   <div id="sch-external-id-wrap" class="col-md-4 d-none"><label class="form-label">Upsert Feld</label><select id="sch-external-id-field" class="form-select"><option value="">- External ID wählen -</option></select><div id="sch-external-id-help" class="form-text">Nur echte Salesforce External-ID-Felder werden angeboten.</div></div>
                   <div class="col-md-12"><label class="form-label">Target Definition (JSON)</label><textarea id="sch-target-definition" class="form-control" rows="4" placeholder='{"fields":[...]}'></textarea></div>
+                  <div id="sch-target-relative-directory-wrap" class="col-md-6 d-none"><label class="form-label">Target Unterverzeichnis relativ zum Connector-Exportpfad</label><input id="sch-target-relative-directory" class="form-control" placeholder="z. B. kunden/export" /></div>
+                  <div id="sch-target-archive-relative-directory-wrap" class="col-md-6 d-none"><label class="form-label">Archiv-Unterverzeichnis relativ zum Connector-Archivpfad</label><input id="sch-target-archive-relative-directory" class="form-control" placeholder="optional, sonst gleiches Unterverzeichnis" /></div>
+                  <div id="sch-target-path-summary-wrap" class="col-md-12 d-none"><div id="sch-target-path-summary" class="small text-secondary border rounded p-2 bg-light">Keine Agent-Pfade berechnet.</div></div>
                   <div id="sch-create-object-wrap" class="col-md-12 d-none">
                     <div class="border rounded p-2 bg-light">
                       <div class="fw-semibold mb-1">Custom-Objekt aus Quelle erzeugen</div>
@@ -3956,6 +3962,41 @@ function htmlShell(): string {
         }
       }
 
+      function formatDurationMinSec(milliseconds) {
+        const numericValue = Number(milliseconds);
+        if (!Number.isFinite(numericValue) || numericValue < 0) {
+          return '-';
+        }
+
+        const totalSeconds = Math.round(numericValue / 1000);
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        if (minutes >= 60) {
+          const hours = Math.floor(minutes / 60);
+          const restMinutes = minutes % 60;
+          return hours + ':' + String(restMinutes).padStart(2, '0') + ':' + String(seconds).padStart(2, '0');
+        }
+        return minutes + ':' + String(seconds).padStart(2, '0');
+      }
+
+      function getRunDurationMs(run) {
+        if (!run?.startedAt) {
+          return null;
+        }
+
+        const startedAt = new Date(run.startedAt).getTime();
+        if (Number.isNaN(startedAt)) {
+          return null;
+        }
+
+        const finishedAt = run?.finishedAt ? new Date(run.finishedAt).getTime() : Date.now();
+        if (Number.isNaN(finishedAt) || finishedAt < startedAt) {
+          return null;
+        }
+
+        return finishedAt - startedAt;
+      }
+
       function getConnectorNameById(connectorId) {
         if (!connectorId) return '-';
         const connector = state.connectors?.find((item) => item.id === connectorId);
@@ -5208,6 +5249,9 @@ function htmlShell(): string {
 
         deltaWrap.classList.toggle('d-none', !supportsDelta);
         afterExportWrap.classList.toggle('d-none', !supportsAfterExport);
+        document.getElementById('sch-source-relative-directory-wrap').classList.toggle('d-none', !isFile);
+        document.getElementById('sch-source-archive-relative-directory-wrap').classList.toggle('d-none', !isFile);
+        document.getElementById('sch-source-path-summary-wrap').classList.toggle('d-none', !isFile);
         if (deltaCurrentInput) {
           deltaCurrentInput.disabled = !supportsDelta;
         }
@@ -5245,12 +5289,283 @@ function htmlShell(): string {
           highlight.textContent = '';
           status.textContent = 'Es werden bis zu 10 Datensätze angezeigt.';
         }
+
+        updateScheduleFilePathSummaries();
+      }
+
+      function isFileScheduleSourceType(sourceType) {
+        return sourceType === 'FILE_CSV' || sourceType === 'FILE_EXCEL' || sourceType === 'FILE_JSON';
+      }
+
+      function isFileScheduleTargetType(targetType) {
+        return targetType === 'FILE_CSV' || targetType === 'FILE_EXCEL' || targetType === 'FILE_JSON';
+      }
+
+      function detectFileFormatFromName(value) {
+        const normalized = String(value || '').trim().toLowerCase();
+        if (normalized.endsWith('.json')) {
+          return 'json';
+        }
+        if (normalized.endsWith('.xlsx') || normalized.endsWith('.xls')) {
+          return 'excel';
+        }
+        if (normalized.endsWith('.csv') || normalized.endsWith('.txt')) {
+          return 'csv';
+        }
+        return '';
+      }
+
+      function normalizeRelativeDirectoryInput(value) {
+        return String(value || '')
+          .trim()
+          .replace(/\\+/g, '/')
+          .split('/')
+          .map((segment) => String(segment || '').trim())
+          .filter((segment) => segment && segment !== '.')
+          .join('/');
+      }
+
+      function tryParseJsonObject(rawValue) {
+        const trimmed = String(rawValue || '').trim();
+        if (!trimmed) {
+          return null;
+        }
+
+        try {
+          const parsed = JSON.parse(trimmed);
+          return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function parseScheduleFileDefinition(rawDefinition) {
+        const trimmed = String(rawDefinition || '').trim();
+        if (!trimmed) {
+          return {
+            editorText: '',
+            relativeDirectory: '',
+            archiveRelativeDirectory: '',
+            parsed: null
+          };
+        }
+
+        const parsed = tryParseJsonObject(trimmed);
+        if (!parsed) {
+          return {
+            editorText: trimmed,
+            relativeDirectory: '',
+            archiveRelativeDirectory: '',
+            parsed: null
+          };
+        }
+
+        const editable = { ...parsed };
+        const relativeDirectory = normalizeRelativeDirectoryInput(editable.relativeDirectory || '');
+        const archiveRelativeDirectory = normalizeRelativeDirectoryInput(editable.archiveRelativeDirectory || '');
+        delete editable.relativeDirectory;
+        delete editable.archiveRelativeDirectory;
+
+        return {
+          editorText: JSON.stringify(editable, null, 2),
+          relativeDirectory,
+          archiveRelativeDirectory,
+          parsed
+        };
+      }
+
+      function buildScheduleFileDefinitionValue(textareaId, relativeDirectoryId, archiveRelativeDirectoryId) {
+        const rawValue = String(document.getElementById(textareaId)?.value || '').trim();
+        const relativeDirectory = normalizeRelativeDirectoryInput(document.getElementById(relativeDirectoryId)?.value || '');
+        const archiveRelativeDirectory = normalizeRelativeDirectoryInput(document.getElementById(archiveRelativeDirectoryId)?.value || '');
+        if (!rawValue) {
+          return undefined;
+        }
+
+        const parsed = tryParseJsonObject(rawValue);
+        let definition = parsed ? { ...parsed } : null;
+
+        if (!definition && (relativeDirectory || archiveRelativeDirectory)) {
+          const looksLikePath = rawValue.includes('/') || rawValue.includes('\\');
+          definition = looksLikePath ? { filePath: rawValue } : { fileName: rawValue };
+          const detectedFormat = detectFileFormatFromName(rawValue);
+          if (detectedFormat) {
+            definition.format = detectedFormat;
+          }
+        }
+
+        if (!definition) {
+          return rawValue;
+        }
+
+        if (relativeDirectory) {
+          definition.relativeDirectory = relativeDirectory;
+        } else {
+          delete definition.relativeDirectory;
+        }
+        if (archiveRelativeDirectory) {
+          definition.archiveRelativeDirectory = archiveRelativeDirectory;
+        } else {
+          delete definition.archiveRelativeDirectory;
+        }
+
+        return JSON.stringify(definition, null, 2);
+      }
+
+      function joinAgentPath(basePath, relativePath) {
+        const base = String(basePath || '').trim();
+        const relative = normalizeRelativeDirectoryInput(relativePath || '');
+        if (!base) {
+          return relative;
+        }
+        if (!relative) {
+          return base;
+        }
+
+        const separator = base.includes('\\') ? '\\' : '/';
+        const normalizedBase = base.replace(/[\\/]+$/, '');
+        const normalizedRelative = relative.replace(/\//g, separator);
+        return normalizedBase + separator + normalizedRelative;
+      }
+
+      function resolveScheduleFilePathDetails(mode, connector, rawDefinition) {
+        const filePaths = connector && connector.filePaths ? connector.filePaths : null;
+        if (!filePaths) {
+          return null;
+        }
+
+        const parsed = tryParseJsonObject(rawDefinition || '');
+        const relativeDirectory = normalizeRelativeDirectoryInput(parsed?.relativeDirectory || '');
+        const archiveRelativeDirectory = normalizeRelativeDirectoryInput(parsed?.archiveRelativeDirectory || relativeDirectory || '');
+        const isRead = mode === 'read';
+        const rootPath = isRead ? filePaths.importPath : filePaths.exportPath;
+        const effectiveDirectory = joinAgentPath(rootPath, relativeDirectory);
+        const archiveDirectory = joinAgentPath(filePaths.archivePath, archiveRelativeDirectory);
+        const explicitPath = String(parsed?.filePath || '').trim();
+        const fileName = String(parsed?.fileName || '').trim();
+        let effectiveFilePath = '';
+
+        if (explicitPath) {
+          if (/^[a-zA-Z]:[\\/]/.test(explicitPath) || explicitPath.startsWith('\\\\') || explicitPath.startsWith('/')) {
+            effectiveFilePath = explicitPath;
+          } else {
+            effectiveFilePath = joinAgentPath(filePaths.basePath, explicitPath);
+          }
+        } else if (fileName) {
+          effectiveFilePath = joinAgentPath(effectiveDirectory, fileName);
+        }
+
+        return {
+          rootPath,
+          effectiveDirectory,
+          archiveDirectory,
+          effectiveFilePath
+        };
+      }
+
+      function buildScheduleFilePathLines(schedule) {
+        const connectorId = String(schedule?.connectorId || '').trim();
+        const connector = (state.connectors || []).find((item) => String(item.id || '').trim() === connectorId);
+        if (!connector || !connector.filePaths) {
+          return [];
+        }
+
+        const lines = [];
+        if (isFileScheduleSourceType(String(schedule?.sourceType || '').trim().toUpperCase())) {
+          const sourceDetails = resolveScheduleFilePathDetails('read', connector, schedule?.sourceDefinition || '');
+          if (sourceDetails) {
+            lines.push('Quelle: ' + sourceDetails.effectiveDirectory);
+            if (sourceDetails.effectiveFilePath) {
+              lines.push('Quelldatei: ' + sourceDetails.effectiveFilePath);
+            }
+            lines.push('Archiv: ' + sourceDetails.archiveDirectory);
+          }
+        }
+        if (isFileScheduleTargetType(String(schedule?.targetType || '').trim().toUpperCase())) {
+          const targetDetails = resolveScheduleFilePathDetails('write', connector, schedule?.targetDefinition || '');
+          if (targetDetails) {
+            lines.push('Ziel: ' + targetDetails.effectiveDirectory);
+            if (targetDetails.effectiveFilePath) {
+              lines.push('Zieldatei: ' + targetDetails.effectiveFilePath);
+            }
+            lines.push('Archiv: ' + targetDetails.archiveDirectory);
+          }
+        }
+        return lines;
+      }
+
+      function renderScheduleFilePathLines(lines) {
+        const entries = Array.isArray(lines) ? lines.filter(Boolean) : [];
+        if (!entries.length) {
+          return '<span class="text-secondary">Keine Datei-Pfade aktiv.</span>';
+        }
+        return entries.map((line) => '<div>' + esc(line) + '</div>').join('');
+      }
+
+      function updateScheduleFilePathSummaries() {
+        const connectorId = String(document.getElementById('sch-connector')?.value || '').trim();
+        const connector = (state.connectors || []).find((item) => String(item.id || '').trim() === connectorId);
+        const sourceSummary = document.getElementById('sch-source-path-summary');
+        const targetSummary = document.getElementById('sch-target-path-summary');
+        const sourceType = String(document.getElementById('sch-source-type')?.value || '').trim().toUpperCase();
+        const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
+
+        document.getElementById('sch-target-relative-directory-wrap').classList.toggle('d-none', !isFileScheduleTargetType(targetType));
+        document.getElementById('sch-target-archive-relative-directory-wrap').classList.toggle('d-none', !isFileScheduleTargetType(targetType));
+        document.getElementById('sch-target-path-summary-wrap').classList.toggle('d-none', !isFileScheduleTargetType(targetType));
+
+        if (sourceSummary) {
+          if (!isFileScheduleSourceType(sourceType)) {
+            sourceSummary.textContent = 'Keine Datei-Quelle aktiv.';
+          } else if (!connector || !connector.filePaths) {
+            sourceSummary.textContent = 'Für Datei-Pfade bitte einen File-Connector wählen.';
+          } else {
+            const details = resolveScheduleFilePathDetails('read', connector, buildScheduleSourceDefinitionValue() || '');
+            const lines = details
+              ? [
+                'Importpfad: ' + details.effectiveDirectory,
+                details.effectiveFilePath ? 'Quelldatei: ' + details.effectiveFilePath : '',
+                'Archivpfad: ' + details.archiveDirectory
+              ].filter(Boolean)
+              : ['Datei-Definition ist noch nicht vollständig.'];
+            sourceSummary.innerHTML = renderScheduleFilePathLines(lines);
+          }
+        }
+
+        if (targetSummary) {
+          if (!isFileScheduleTargetType(targetType)) {
+            targetSummary.textContent = 'Kein Datei-Ziel aktiv.';
+          } else if (!connector || !connector.filePaths) {
+            targetSummary.textContent = 'Für Datei-Pfade bitte einen File-Connector wählen.';
+          } else {
+            const details = resolveScheduleFilePathDetails('write', connector, buildScheduleTargetDefinitionValue() || '');
+            const lines = details
+              ? [
+                'Exportpfad: ' + details.effectiveDirectory,
+                details.effectiveFilePath ? 'Zieldatei: ' + details.effectiveFilePath : '',
+                'Archivpfad: ' + details.archiveDirectory
+              ].filter(Boolean)
+              : ['Datei-Definition ist noch nicht vollständig.'];
+            targetSummary.innerHTML = renderScheduleFilePathLines(lines);
+          }
+        }
       }
 
       function parseScheduleSourceDefinition(sourceType, rawDefinition) {
         const trimmed = String(rawDefinition || '').trim();
+        if (isFileScheduleSourceType(String(sourceType || '').trim().toUpperCase())) {
+          const fileDefinition = parseScheduleFileDefinition(trimmed);
+          return {
+            queryText: fileDefinition.editorText,
+            deltaStrategy: '',
+            deltaField: '',
+            afterExportText: '',
+            relativeDirectory: fileDefinition.relativeDirectory,
+            archiveRelativeDirectory: fileDefinition.archiveRelativeDirectory
+          };
+        }
         if ((sourceType !== 'MSSQL_SQL' && sourceType !== 'SALESFORCE_SOQL') || !trimmed) {
-          return { queryText: trimmed, deltaStrategy: '', deltaField: '', afterExportText: '' };
+          return { queryText: trimmed, deltaStrategy: '', deltaField: '', afterExportText: '', relativeDirectory: '', archiveRelativeDirectory: '' };
         }
 
         try {
@@ -5449,18 +5764,41 @@ function htmlShell(): string {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-              legend: {
+              afterExportText: afterExportEntries.join(','),
+              relativeDirectory: '',
+              archiveRelativeDirectory: ''
                 position: 'top'
               }
             },
             scales: {
               x: {
                 stacked: false
-              },
+        return { queryText: trimmed, deltaStrategy: '', deltaField: '', afterExportText: '', relativeDirectory: '', archiveRelativeDirectory: '' };
               y: {
+
+      function parseScheduleTargetDefinition(targetType, rawDefinition) {
+        const trimmed = String(rawDefinition || '').trim();
+        if (!isFileScheduleTargetType(String(targetType || '').trim().toUpperCase())) {
+          return { editorText: trimmed, relativeDirectory: '', archiveRelativeDirectory: '' };
+        }
+
+        const fileDefinition = parseScheduleFileDefinition(trimmed);
+        return {
+          editorText: fileDefinition.editorText,
+          relativeDirectory: fileDefinition.relativeDirectory,
+          archiveRelativeDirectory: fileDefinition.archiveRelativeDirectory
+        };
+      }
                 beginAtZero: true,
                 stacked: false,
                 ticks: {
+        if (isFileScheduleSourceType(String(sourceType || '').trim().toUpperCase())) {
+          return buildScheduleFileDefinitionValue(
+            'sch-source-definition',
+            'sch-source-relative-directory',
+            'sch-source-archive-relative-directory'
+          );
+        }
                   precision: 0
                 }
               }
@@ -5471,6 +5809,19 @@ function htmlShell(): string {
               }
 
               const point = elements[0];
+
+                    function buildScheduleTargetDefinitionValue() {
+                      const targetType = document.getElementById('sch-target-type').value;
+                      if (isFileScheduleTargetType(String(targetType || '').trim().toUpperCase())) {
+                        return buildScheduleFileDefinitionValue(
+                          'sch-target-definition',
+                          'sch-target-relative-directory',
+                          'sch-target-archive-relative-directory'
+                        );
+                      }
+
+                      return String(document.getElementById('sch-target-definition').value || '').trim() || undefined;
+                    }
               const bucket = summary?.buckets?.[point.index];
               if (!bucket) {
                 return;
@@ -5626,7 +5977,22 @@ function htmlShell(): string {
         }
 
         statusEl.textContent = status.message || 'Update-Status unbekannt';
-        runButton.disabled = !status.updateAvailable || status.supported === false;
+        runButton.disabled = !status.updateAvailable;
+        runButton.title = status.supported === false
+          ? 'Der Direktstart richtet sich nach dem Agent-Host, nicht nach dem Browser-Client.'
+          : '';
+      }
+
+      function renderOverviewLogRetentionStatus() {
+        const retentionEl = document.getElementById('overview-log-retention-status');
+        if (!retentionEl) {
+          return;
+        }
+
+        const retentionDays = Number(state.health?.logRetentionDays || 0);
+        retentionEl.textContent = retentionDays > 0
+          ? 'Log-Retention: ' + retentionDays + ' Tage'
+          : 'Log-Retention: deaktiviert';
       }
 
       async function loadOverviewUpdateStatus(force, notifyUser) {
@@ -5655,6 +6021,11 @@ function htmlShell(): string {
       }
 
       async function triggerOverviewUpdate() {
+        if (state.updateStatus?.supported === false) {
+          window.alert(state.updateStatus?.message || 'Der Direktstart richtet sich nach dem Agent-Host, nicht nach dem Browser-Client.');
+          return;
+        }
+
         const result = await requestJson('/api/system/update-now', {
           method: 'POST'
         });
@@ -6246,32 +6617,9 @@ function htmlShell(): string {
           return formatByteSize(used) + ' / ' + formatByteSize(total) + ' (' + percentage + '%)';
         };
 
-        const formatDurationMinSec = (milliseconds) => {
-          if (!Number.isFinite(milliseconds) || milliseconds < 0) {
-            return '-';
-          }
-
-          const totalSeconds = Math.max(0, Math.round(milliseconds / 1000));
-          const minutes = Math.floor(totalSeconds / 60);
-          const seconds = totalSeconds % 60;
-          return String(minutes) + ':' + String(seconds).padStart(2, '0');
-        };
-
-        const getRunDurationMs = (run) => {
-          if (!run?.startedAt || !run?.finishedAt) {
-            return null;
-          }
-
-          const startedAt = new Date(run.startedAt).getTime();
-          const finishedAt = new Date(run.finishedAt).getTime();
-          if (Number.isNaN(startedAt) || Number.isNaN(finishedAt) || finishedAt < startedAt) {
-            return null;
-          }
-
-          return finishedAt - startedAt;
-        };
-
         renderOverviewStatsRangeButtons();
+        state.health = healthData || {};
+        renderOverviewLogRetentionStatus();
         document.getElementById('kpi-service').textContent = healthData.service || '-';
         document.getElementById('kpi-scheduler').textContent = healthData.scheduler || '-';
         document.getElementById('kpi-schedules').textContent = String(state.schedules.length);
@@ -6814,7 +7162,7 @@ function htmlShell(): string {
         const body = document.getElementById('runs-body');
         const select = document.getElementById('log-run-select');
         if (!state.runs.length) {
-          body.innerHTML = '<tr><td colspan="5" class="text-secondary">Keine Runs gefunden.</td></tr>';
+          body.innerHTML = '<tr><td colspan="7" class="text-secondary">Keine Runs gefunden.</td></tr>';
           select.innerHTML = '<option value="">Keine Runs</option>';
           return;
         }
@@ -6825,9 +7173,12 @@ function htmlShell(): string {
             const actionMarkup = canCancel
               ? '<button class="btn btn-sm btn-outline-danger" data-cancel-run="' + esc(item.id) + '">Abbrechen</button>'
               : '<span class="text-secondary small">-</span>';
+            const durationMs = getRunDurationMs(item);
             return '<tr>' +
               '<td class="text-truncate" title="' + esc(item.scheduleName || item.scheduleId || '-') + '">' + esc(item.scheduleName || item.scheduleId || '-') + '</td>' +
               '<td>' + getStatusBadge(item.status) + '</td>' +
+              '<td>' + esc(formatDate(item.startedAt || item.finishedAt, 'short')) + '</td>' +
+              '<td>' + esc(formatDurationMinSec(durationMs)) + '</td>' +
               '<td>' + esc((item.recordsSucceeded ?? 0) + ' ok / ' + (item.recordsFailed ?? 0) + ' fail') + '</td>' +
               '<td><button class="btn btn-sm btn-outline-primary" data-log-run="' + esc(item.id) + '">Logs</button></td>' +
               '<td>' + actionMarkup + '</td>' +
@@ -7600,7 +7951,7 @@ function htmlShell(): string {
           nextRunAt: localDateTimeInputToIso(document.getElementById('sch-next-run').value),
           lastRunAt: localDateTimeInputToIso(document.getElementById('sch-last-run').value),
           sourceDefinition: buildScheduleSourceDefinitionValue(),
-          targetDefinition: document.getElementById('sch-target-definition').value || undefined,
+          targetDefinition: buildScheduleTargetDefinitionValue(),
           mappingDefinition: document.getElementById('sch-mapping').value || undefined,
           timingDefinition: JSON.stringify(timingDefinition)
         };
@@ -7655,12 +8006,17 @@ function htmlShell(): string {
         document.getElementById('sch-active').checked = entry ? !!entry.active : true;
         const parsedSourceDefinition = parseScheduleSourceDefinition(entry?.sourceType || '', entry?.sourceDefinition || '');
         document.getElementById('sch-source-definition').value = parsedSourceDefinition.queryText || '';
+        document.getElementById('sch-source-relative-directory').value = parsedSourceDefinition.relativeDirectory || '';
+        document.getElementById('sch-source-archive-relative-directory').value = parsedSourceDefinition.archiveRelativeDirectory || '';
         document.getElementById('sch-source-delta-strategy').value = parsedSourceDefinition.deltaStrategy || '';
         document.getElementById('sch-source-delta-field').value = parsedSourceDefinition.deltaField || '';
         document.getElementById('sch-source-after-export').value = parsedSourceDefinition.afterExportText || '';
         document.getElementById('sch-source-delta-current').value = String(entry?.currentDeltaCheckpoint || '');
         document.getElementById('sch-source-delta-record-id').value = String(entry?.currentDeltaRecordId || '');
-        document.getElementById('sch-target-definition').value = entry?.targetDefinition || '';
+        const parsedTargetDefinition = parseScheduleTargetDefinition(entry?.targetType || '', entry?.targetDefinition || '');
+        document.getElementById('sch-target-definition').value = parsedTargetDefinition.editorText || '';
+        document.getElementById('sch-target-relative-directory').value = parsedTargetDefinition.relativeDirectory || '';
+        document.getElementById('sch-target-archive-relative-directory').value = parsedTargetDefinition.archiveRelativeDirectory || '';
         document.getElementById('sch-mapping').value = entry?.mappingDefinition || '';
         await syncSchedulerExternalIdUi();
         state.customObjectFieldOverrides = {};
@@ -7701,6 +8057,8 @@ function htmlShell(): string {
         renderGenericPreviewTable('sch-source-preview-header', 'sch-source-preview-body', []);
         clearModalError();
         updateSourceQueryAssist();
+        updateScheduleFilePathSummaries();
+        await renderScheduleRecentLogs(entry?.id || '');
         await loadScheduleCheckpoint(entry?.id || '');
         setupMappingDropZone();
         hydrateMappingRulesFromDefinition();
@@ -8269,8 +8627,50 @@ function htmlShell(): string {
         }
 
         const logs = await safeRequest('/api/runs/' + encodeURIComponent(runId) + '/logs', { items: [] });
-        const lines = (logs.items || []).map((entry) => '[' + (entry.level || '-') + '] ' + (entry.step || '-') + ' | ' + (entry.message || ''));
+        const lines = (logs.items || []).map((entry) => '[' + formatDate(entry.createdAt, 'short') + '] [' + (entry.level || '-') + '] ' + (entry.step || '-') + ' | ' + (entry.message || ''));
         document.getElementById('logs-output').textContent = lines.join('\\n') || 'Keine Logs gefunden.';
+      }
+
+      async function renderScheduleRecentLogs(scheduleId) {
+        const outputEl = document.getElementById('sch-recent-logs-output');
+        const metaEl = document.getElementById('sch-recent-logs-meta');
+        if (!outputEl || !metaEl) {
+          return;
+        }
+
+        const normalizedScheduleId = String(scheduleId || '').trim();
+        if (!normalizedScheduleId) {
+          metaEl.textContent = 'Scheduler noch nicht gespeichert.';
+          outputEl.textContent = 'Logs stehen nach dem ersten Lauf zur Verfügung.';
+          return;
+        }
+
+        const latestRun = (state.runs || [])
+          .filter((run) => String(run.scheduleId || '').trim() === normalizedScheduleId)
+          .sort((left, right) => {
+            const leftTime = new Date(left.startedAt || left.finishedAt || 0).getTime();
+            const rightTime = new Date(right.startedAt || right.finishedAt || 0).getTime();
+            return rightTime - leftTime;
+          })[0];
+
+        if (!latestRun) {
+          metaEl.textContent = 'Noch kein Run für diesen Scheduler gefunden.';
+          outputEl.textContent = 'Keine Logs vorhanden.';
+          return;
+        }
+
+        metaEl.textContent = [
+          'Letzter Run: ' + formatDate(latestRun.startedAt || latestRun.finishedAt, 'short'),
+          'Status: ' + String(latestRun.status || '-'),
+          'Dauer: ' + formatDurationMinSec(getRunDurationMs(latestRun))
+        ].join(' • ');
+
+        outputEl.textContent = 'Logs werden geladen...';
+        const logs = await safeRequest('/api/runs/' + encodeURIComponent(latestRun.id) + '/logs', { items: [] });
+        const lines = (logs.items || []).slice(0, 30).map((entry) => {
+          return '[' + formatDate(entry.createdAt, 'short') + '] [' + (entry.level || '-') + '] ' + (entry.step || '-') + ' | ' + (entry.message || '');
+        });
+        outputEl.textContent = lines.join('\n') || 'Keine Logs für den letzten Run gefunden.';
       }
 
       async function previewSql() {
@@ -8501,6 +8901,7 @@ function htmlShell(): string {
         toggleCreateObjectFromSourceUi();
         ensureSalesforceTargetDefinition();
         await syncSchedulerExternalIdUi();
+        updateScheduleFilePathSummaries();
       });
       bindEventListenerOnce('sch-object', 'change', async () => {
         await loadTargetFields();
@@ -8516,11 +8917,13 @@ function htmlShell(): string {
       });
       bindEventListenerOnce('sch-target-definition', 'change', async () => {
         await syncSchedulerExternalIdUi();
+        updateScheduleFilePathSummaries();
       });
       bindEventListenerOnce('sch-connector', 'change', async () => {
         await loadTargetObjects(document.getElementById('sch-object').value || '');
         await loadTargetFields();
         await syncSchedulerExternalIdUi();
+        updateScheduleFilePathSummaries();
         const srcType = document.getElementById('sch-source-type').value;
         if (srcType === 'FILE_CSV' || srcType === 'FILE_EXCEL' || srcType === 'FILE_JSON') {
           loadMappingFields();
@@ -8691,6 +9094,12 @@ function htmlShell(): string {
           loadMappingFields();
         }
       });
+      document.getElementById('sch-source-relative-directory').addEventListener('input', updateScheduleFilePathSummaries);
+      document.getElementById('sch-source-archive-relative-directory').addEventListener('input', updateScheduleFilePathSummaries);
+      document.getElementById('sch-target-type').addEventListener('change', updateScheduleFilePathSummaries);
+      document.getElementById('sch-target-definition').addEventListener('input', updateScheduleFilePathSummaries);
+      document.getElementById('sch-target-relative-directory').addEventListener('input', updateScheduleFilePathSummaries);
+      document.getElementById('sch-target-archive-relative-directory').addEventListener('input', updateScheduleFilePathSummaries);
       document.getElementById('sch-source-definition').addEventListener('input', updateSourceQueryAssist);
       document.getElementById('sch-source-delta-strategy').addEventListener('change', updateSourceQueryAssist);
       document.getElementById('sch-source-delta-field').addEventListener('input', updateSourceQueryAssist);
@@ -8724,6 +9133,9 @@ function htmlShell(): string {
       document.getElementById('con-wizard-type').addEventListener('change', () => applyConnectorWizardSelection(false));
       document.getElementById('con-rest-auth-type').addEventListener('change', updateRestAuthUi);
       document.getElementById('load-logs').addEventListener('click', loadLogs);
+      document.getElementById('sch-refresh-recent-logs')?.addEventListener('click', async () => {
+        await renderScheduleRecentLogs(document.getElementById('sch-id')?.value || '');
+      });
       document.getElementById('refresh-stale-runs')?.addEventListener('click', async () => {
         await refresh({ refreshChart: false });
       });
@@ -8743,8 +9155,6 @@ function htmlShell(): string {
           showError(error.message || 'Stale Runs konnten nicht freigegeben werden');
         }
       });
-      document.getElementById('preview-sql').addEventListener('click', previewSql);
-      document.getElementById('preview-mapping').addEventListener('click', previewMapping);
       document.getElementById('sch-map-detail-apply').addEventListener('click', applySelectedMappingDetailChanges);
       document.getElementById('sch-map-detail-delete').addEventListener('click', deleteSelectedMappingRule);
       document.getElementById('sch-map-detail-picklist-add').addEventListener('click', addPicklistMappingEntry);

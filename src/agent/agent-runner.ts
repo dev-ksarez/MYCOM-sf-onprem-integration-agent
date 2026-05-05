@@ -119,6 +119,39 @@ function writeLocalScheduleHealth(store: Record<string, LocalScheduleHealthItem>
   fs.writeFileSync(LOCAL_SCHEDULE_HEALTH_FILE, JSON.stringify(document, null, 2), "utf8");
 }
 
+async function runLogRetentionIfDue(salesforceClient: SalesforceClient, logger: pino.Logger): Promise<void> {
+  const retentionDays = salesforceClient.getLogRetentionDays();
+  if (retentionDays <= 0 || !salesforceClient.shouldRunLogCleanup()) {
+    return;
+  }
+
+  const startedAt = Date.now();
+  salesforceClient.markLogCleanupRun(startedAt);
+  const cutoffIso = new Date(startedAt - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+  try {
+    const result = await salesforceClient.deleteLogsOlderThan(cutoffIso);
+    logger.info(
+      {
+        retentionDays,
+        deletedLogs: result.deletedCount,
+        batches: result.batches,
+        cutoffIso
+      },
+      "Salesforce log retention applied"
+    );
+  } catch (error) {
+    logger.warn(
+      {
+        retentionDays,
+        cutoffIso,
+        err: error
+      },
+      "Salesforce log retention failed"
+    );
+  }
+}
+
 function markScheduleRunSuccess(scheduleId: string): void {
   const store = readLocalScheduleHealth();
   const existing = store[scheduleId];
@@ -1102,6 +1135,8 @@ export async function runDueSchedulesOnce(logger: pino.Logger, agentId: string):
 
   logger.info("Salesforce login successful");
 
+  await runLogRetentionIfDue(salesforceClient, logger);
+
   const scheduleSource = new SalesforceScheduleSource(salesforceClient);
   const schedules = await scheduleSource.getActiveSchedules();
 
@@ -1234,6 +1269,8 @@ export async function runScheduleNow(
 ): Promise<ManualRunResult> {
   const salesforceClient = new SalesforceClient(salesforceConfigOverride || getSalesforceConfig());
   await salesforceClient.login();
+
+  await runLogRetentionIfDue(salesforceClient, logger);
 
   const record = await salesforceClient.queryScheduleById(scheduleId);
   const schedule = mapSchedule(record);

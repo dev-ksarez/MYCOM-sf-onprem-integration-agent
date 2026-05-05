@@ -318,8 +318,16 @@ export interface ConnectorListItem {
   maxRetries?: number;
   description?: string;
   parameters?: Record<string, unknown>;
+  filePaths?: FileConnectorPathSummary;
   hasSecret: boolean;
   parameterKeys: string[];
+}
+
+export interface FileConnectorPathSummary {
+  basePath: string;
+  importPath: string;
+  exportPath: string;
+  archivePath: string;
 }
 
 interface SetupExportScheduleItem extends ScheduleMutationInput {
@@ -1408,6 +1416,9 @@ export class AdminDataService {
       maxRetries: connector.maxRetries,
       description: connector.description,
       parameters: connector.parameters,
+      filePaths: this.isFileConnectorType(connector.connectorType)
+        ? this.resolveFileConnectorPaths(connector.parameters || {})
+        : undefined,
       hasSecret: Boolean(connector.secretKey),
       parameterKeys: Object.keys(connector.parameters).sort()
     }));
@@ -1593,11 +1604,7 @@ export class AdminDataService {
   }
 
   private testFileConnector(config: ConnectorConfig): ConnectorTestResult {
-    const parameters = config.parameters || {};
-    const basePath = path.resolve(process.cwd(), String(parameters.basePath || parameters.fileBasePath || "artifacts/files"));
-    const importPath = path.resolve(basePath, String(parameters.importPath || "inbound"));
-    const exportPath = path.resolve(basePath, String(parameters.exportPath || "outbound"));
-    const archivePath = path.resolve(basePath, String(parameters.archivePath || "archive"));
+    const { importPath, exportPath, archivePath } = this.resolveFileConnectorPaths(config.parameters || {});
     const checks: Array<{ label: string; ok: boolean; details: string }> = [];
 
     try {
@@ -1651,6 +1658,16 @@ export class AdminDataService {
     }
 
     return this.buildConnectorTestResult(config, checks);
+  }
+
+  private resolveFileConnectorPaths(parameters: Record<string, unknown>): FileConnectorPathSummary {
+    const basePath = path.resolve(process.cwd(), String(parameters.basePath || parameters.fileBasePath || "artifacts/files"));
+    return {
+      basePath,
+      importPath: path.resolve(basePath, String(parameters.importPath || "inbound")),
+      exportPath: path.resolve(basePath, String(parameters.exportPath || "outbound")),
+      archivePath: path.resolve(basePath, String(parameters.archivePath || "archive"))
+    };
   }
 
   public async triggerScheduleNow(

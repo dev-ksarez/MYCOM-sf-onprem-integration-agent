@@ -12,6 +12,7 @@ export interface DashboardUpdateStatus {
   targetVersion?: string;
   updateAvailable: boolean;
   supported: boolean;
+  hostPlatform: string;
   manifestUrl: string;
   message: string;
 }
@@ -20,6 +21,22 @@ export interface DashboardUpdateTriggerResult {
   ok: boolean;
   message: string;
   output?: string;
+}
+
+function getHostPlatformLabel(): string {
+  if (process.platform === "win32") {
+    return "Windows";
+  }
+
+  if (process.platform === "darwin") {
+    return "macOS";
+  }
+
+  if (process.platform === "linux") {
+    return "Linux";
+  }
+
+  return process.platform;
 }
 
 function compareVersions(left: string, right: string): number {
@@ -49,6 +66,8 @@ async function getCurrentPackageVersion(): Promise<string> {
 
 export async function getDashboardUpdateStatus(): Promise<DashboardUpdateStatus> {
   const currentVersion = await getCurrentPackageVersion();
+  const supported = process.platform === "win32";
+  const hostPlatform = getHostPlatformLabel();
 
   try {
     const response = await fetch(DEFAULT_UPDATE_MANIFEST_URL, {
@@ -58,7 +77,8 @@ export async function getDashboardUpdateStatus(): Promise<DashboardUpdateStatus>
       return {
         currentVersion,
         updateAvailable: false,
-        supported: process.platform === "win32",
+        supported,
+        hostPlatform,
         manifestUrl: DEFAULT_UPDATE_MANIFEST_URL,
         message: `Manifest nicht erreichbar (${response.status})`
       };
@@ -70,28 +90,34 @@ export async function getDashboardUpdateStatus(): Promise<DashboardUpdateStatus>
       return {
         currentVersion,
         updateAvailable: false,
-        supported: process.platform === "win32",
+        supported,
+        hostPlatform,
         manifestUrl: DEFAULT_UPDATE_MANIFEST_URL,
         message: "Manifest enthaelt keine Zielversion"
       };
     }
 
     const updateAvailable = compareVersions(targetVersion, currentVersion) > 0;
+    const baseMessage = updateAvailable
+      ? `Update verfuegbar: ${currentVersion} -> ${targetVersion}`
+      : `Kein Update erforderlich (${currentVersion})`;
     return {
       currentVersion,
       targetVersion,
       updateAvailable,
-      supported: process.platform === "win32",
+      supported,
+      hostPlatform,
       manifestUrl: DEFAULT_UPDATE_MANIFEST_URL,
-      message: updateAvailable
-        ? `Update verfuegbar: ${currentVersion} -> ${targetVersion}`
-        : `Kein Update erforderlich (${currentVersion})`
+      message: !supported
+        ? `${baseMessage}. Der Direktstart richtet sich nach dem Agent-Host, nicht nach dem Browser-Client. Aktueller Agent-Host: ${hostPlatform}.`
+        : baseMessage
     };
   } catch (error) {
     return {
       currentVersion,
       updateAvailable: false,
-      supported: process.platform === "win32",
+      supported,
+      hostPlatform,
       manifestUrl: DEFAULT_UPDATE_MANIFEST_URL,
       message: error instanceof Error ? error.message : String(error)
     };
@@ -102,7 +128,7 @@ export async function triggerDashboardUpdate(): Promise<DashboardUpdateTriggerRe
   if (process.platform !== "win32") {
     return {
       ok: false,
-      message: "Dashboard-Update kann nur auf Windows-Agenten direkt gestartet werden."
+      message: `Dashboard-Update kann nur direkt gestartet werden, wenn der Agent-Host auf Windows laeuft. Aktueller Agent-Host: ${getHostPlatformLabel()}.`
     };
   }
 

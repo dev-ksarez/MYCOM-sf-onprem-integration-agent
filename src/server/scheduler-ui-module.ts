@@ -97,6 +97,7 @@ export function renderSchedulerUiModule(): string {
             const objectIcon = getObjectIcon(item.objectName);
             const connectorName = getConnectorNameById(item.connectorId);
             const intervalLabel = getScheduleIntervalLabel(item, scheduleById, false, new Set());
+            const filePathLines = buildScheduleFilePathLines(item);
             const hierarchyBadge = depth > 0
               ? '<span class="badge bg-light text-dark border ms-1">Level ' + (depth + 1) + '</span>'
               : '<span class="badge bg-secondary-subtle text-secondary border ms-1">Root</span>';
@@ -119,7 +120,7 @@ export function renderSchedulerUiModule(): string {
               '<td><div style="padding-left:' + indent + 'px"><strong class="text-truncate d-block" title="' + esc(item.name) + '">' + esc(item.name) + hierarchyBadge + '</strong><div class="small text-secondary text-truncate" title="' + esc(item.objectName) + ' / ' + esc(item.operation) + '">' + objectIcon + ' ' + esc(item.objectName) + ' / ' + esc(item.operation) + '</div><div class="small text-secondary text-truncate mt-1" title="' + esc(parentName) + '">Parent: ' + esc(parentName) + (item.inheritTimingFromParent ? ' <span class="badge bg-primary-subtle text-primary border">inherits</span>' : '') + '</div></div></td>' +
               '<td><div class="form-check form-switch mb-1"><input class="form-check-input" type="checkbox" role="switch" data-toggle-schedule-active="' + esc(item.id) + '"' + (item.active ? ' checked' : '') + '></div>' + activeHint + '</td>' +
               '<td>' + getStatusBadge(item.status) + errorMarkup + '</td>' +
-              '<td><div class="fw-semibold text-truncate" title="' + esc(connectorName) + '">' + esc(connectorName) + '</div><div class="small text-secondary">' + esc(item.direction || '-') + '</div></td>' +
+              '<td><div class="fw-semibold text-truncate" title="' + esc(connectorName) + '">' + esc(connectorName) + '</div><div class="small text-secondary">' + esc(item.direction || '-') + '</div>' + (filePathLines.length ? '<div class="small text-secondary mt-1">' + renderScheduleFilePathLines(filePathLines) + '</div>' : '') + '</td>' +
               '<td><div class="fw-semibold">' + esc(intervalLabel) + '</div><div class="small text-secondary">Nächster Lauf: ' + formatDate(item.nextRunAt, 'short') + '</div></td>' +
               '<td><div class="d-flex flex-wrap gap-1">' +
                 '<button class="btn btn-sm btn-outline-primary" data-edit-schedule="' + esc(item.id) + '">Öffnen</button>' +

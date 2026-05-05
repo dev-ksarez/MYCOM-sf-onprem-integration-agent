@@ -335,6 +335,7 @@ function buildSalesforceRecordPayload(values: Record<string, unknown>): Record<s
 export class SalesforceClient {
   private static readonly sessionCache = new Map<string, CachedSalesforceSession>();
   private static readonly loginInFlight = new Map<string, Promise<CachedSalesforceSession>>();
+  private static readonly lastLogCleanupAt = new Map<string, number>();
   private static readonly staleRunTimeoutMs = (() => {
     const configuredMinutes = Number(process.env.SF_STALE_RUN_TIMEOUT_MINUTES?.trim() || "360");
     if (!Number.isFinite(configuredMinutes) || configuredMinutes <= 0) {
@@ -342,6 +343,31 @@ export class SalesforceClient {
     }
 
     return configuredMinutes * 60 * 1000;
+  })();
+  private static readonly logRetentionDays = (() => {
+    const configuredDays = Number(process.env.SF_LOG_RETENTION_DAYS?.trim() || "30");
+    if (!Number.isFinite(configuredDays) || configuredDays <= 0) {
+      return 0;
+    }
+
+    return Math.max(1, Math.floor(configuredDays));
+  })();
+  private static readonly logCleanupIntervalMs = 24 * 60 * 60 * 1000;
+  private static readonly logCleanupBatchSize = (() => {
+    const configuredBatchSize = Number(process.env.SF_LOG_RETENTION_BATCH_SIZE?.trim() || "200");
+    if (!Number.isFinite(configuredBatchSize) || configuredBatchSize <= 0) {
+      return 200;
+    }
+
+    return Math.max(1, Math.min(Math.floor(configuredBatchSize), 200));
+  })();
+  private static readonly logCleanupMaxBatches = (() => {
+    const configuredMaxBatches = Number(process.env.SF_LOG_RETENTION_MAX_BATCHES?.trim() || "25");
+    if (!Number.isFinite(configuredMaxBatches) || configuredMaxBatches <= 0) {
+      return 25;
+    }
+
+    return Math.max(1, Math.min(Math.floor(configuredMaxBatches), 100));
   })();
 
   private readonly config: SalesforceConfig;
@@ -357,6 +383,24 @@ export class SalesforceClient {
 
   private getCacheKey(): string {
     return `${this.config.loginUrl}|${this.config.clientId}`;
+  }
+
+  public getLogRetentionDays(): number {
+    return SalesforceClient.logRetentionDays;
+  }
+
+  public shouldRunLogCleanup(now = Date.now()): boolean {
+    const retentionDays = this.getLogRetentionDays();
+    if (retentionDays <= 0) {
+      return false;
+    }
+
+    const lastCleanupAt = SalesforceClient.lastLogCleanupAt.get(this.getCacheKey()) || 0;
+    return now - lastCleanupAt >= SalesforceClient.logCleanupIntervalMs;
+  }
+
+  public markLogCleanupRun(at = Date.now()): void {
+    SalesforceClient.lastLogCleanupAt.set(this.getCacheKey(), at);
   }
 
   private applyConnection(session: CachedSalesforceSession): void {
@@ -1295,6 +1339,53 @@ export class SalesforceClient {
 
     const result = await this.connection.query<SalesforceLogRecord>(soql);
     return result.records;
+  }
+
+  public async deleteLogsOlderThan(cutoffIso: string): Promise<{ deletedCount: number; batches: number }> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const deletedIds = new Set<string>();
+    let batches = 0;
+
+    while (batches < SalesforceClient.logCleanupMaxBatches) {
+      const soql = `
+        SELECT Id
+        FROM MSD_Log__c
+        WHERE CreatedDate < ${formatSoqlDateTime(cutoffIso)}
+        ORDER BY CreatedDate ASC
+        LIMIT ${SalesforceClient.logCleanupBatchSize}
+      `;
+
+      const result = await this.connection.query<{ Id: string }>(soql);
+      const ids = result.records
+        .map((record) => String(record.Id || "").trim())
+        .filter(Boolean);
+
+      if (!ids.length) {
+        break;
+      }
+
+      const deleteResult = await this.connection.sobject("MSD_Log__c").destroy(ids);
+      const deleteResults = Array.isArray(deleteResult) ? deleteResult : [deleteResult];
+      deleteResults.forEach((entry, index) => {
+        if (entry && entry.success) {
+          deletedIds.add(ids[index]);
+        }
+      });
+
+      batches += 1;
+
+      if (ids.length < SalesforceClient.logCleanupBatchSize) {
+        break;
+      }
+    }
+
+    return {
+      deletedCount: deletedIds.size,
+      batches
+    };
   }
 
   public async updateRun(runId: string, input: UpdateRunInput): Promise<void> {

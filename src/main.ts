@@ -12,6 +12,10 @@ const startedAt = new Date();
 const schedulerIntervalMs = Number(process.env.SCHEDULER_INTERVAL_MS || 60_000);
 const webUiEnabled = process.env.WEB_UI_ENABLED === "1" || process.env.WEB_UI_ENABLED === "true";
 const webUiPort = Number(process.env.WEB_UI_PORT || 8080);
+const logRetentionDays = (() => {
+  const configured = Number(process.env.SF_LOG_RETENTION_DAYS?.trim() || "30");
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 0;
+})();
 
 let schedulerTimer: NodeJS.Timeout | undefined;
 let isSchedulerRunning = false;
@@ -42,7 +46,8 @@ function getHealthSnapshot(): HealthSnapshot {
     lastRunError,
     schedulesFound,
     dueSchedules,
-    processedSchedules
+    processedSchedules,
+    logRetentionDays
   };
 }
 
