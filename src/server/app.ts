@@ -4866,6 +4866,58 @@ function htmlShell(): string {
         }
       }
 
+      function getPreferredMssqlTargetObjectName(connectorId, selectedObjectName, objects) {
+        const items = Array.isArray(objects) ? objects : [];
+        const requested = String(selectedObjectName || '').trim();
+        const connector = Array.isArray(state.connectors)
+          ? state.connectors.find((item) => String(item?.id || '').trim() === String(connectorId || '').trim())
+          : null;
+        const configuredTable = String(connector?.parameters?.table || '').trim();
+
+        if (configuredTable && items.some((item) => String(item?.name || '').trim() === configuredTable)) {
+          return configuredTable;
+        }
+
+        return requested;
+      }
+
+      async function ensureMssqlTargetObjectSelection() {
+        const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
+        if (targetType !== 'MSSQL') {
+          return;
+        }
+
+        const select = document.getElementById('sch-object');
+        if (!select) {
+          return;
+        }
+
+        let optionValues = Array.from(select.options || [])
+          .map((option) => String(option.value || '').trim())
+          .filter(Boolean);
+        if (!optionValues.length) {
+          await loadTargetObjects(String(select.value || '').trim());
+          optionValues = Array.from(select.options || [])
+            .map((option) => String(option.value || '').trim())
+            .filter(Boolean);
+        }
+        const currentValue = String(select.value || '').trim();
+        if (currentValue && optionValues.includes(currentValue)) {
+          return;
+        }
+
+        const connectorId = String(document.getElementById('sch-connector')?.value || '').trim();
+        const preferredValue = getPreferredMssqlTargetObjectName(
+          connectorId,
+          currentValue,
+          optionValues.map((name) => ({ name }))
+        );
+        const fallbackValue = String(preferredValue || optionValues[0] || '').trim();
+        if (fallbackValue) {
+          select.value = fallbackValue;
+        }
+      }
+
       async function loadTargetObjects(selectedObjectName) {
         const targetSystem = resolveEffectiveTargetSystem();
         const connectorId = document.getElementById('sch-connector').value;
@@ -4891,7 +4943,10 @@ function htmlShell(): string {
             return;
           }
 
-          renderTargetObjectOptions(objects, selectedObjectName || '');
+          const preferredObjectName = normalizeSystemValue(targetSystem) === 'MS SQL'
+            ? getPreferredMssqlTargetObjectName(connectorId, selectedObjectName || '', objects)
+            : (selectedObjectName || '');
+          renderTargetObjectOptions(objects, preferredObjectName);
         } catch {
           renderSelectOptions('sch-object', state.scheduleOptions.objectNames || [], selectedObjectName || '');
         }
@@ -5780,7 +5835,9 @@ function htmlShell(): string {
       async function saveScheduleCheckpoint(scheduleId) {
         const deltaStrategy = String(document.getElementById('sch-source-delta-strategy').value || '').trim().toLowerCase();
         const deltaField = String(document.getElementById('sch-source-delta-field').value || '').trim();
-        if (!scheduleId || !deltaStrategy || !deltaField) {
+        const lastCheckpoint = String(document.getElementById('sch-source-delta-current').value || '').trim();
+        const lastRecordId = String(document.getElementById('sch-source-delta-record-id').value || '').trim();
+        if (!scheduleId || !deltaStrategy || !deltaField || (!lastCheckpoint && !lastRecordId)) {
           return;
         }
 
@@ -5788,8 +5845,8 @@ function htmlShell(): string {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            lastCheckpoint: String(document.getElementById('sch-source-delta-current').value || '').trim() || undefined,
-            lastRecordId: String(document.getElementById('sch-source-delta-record-id').value || '').trim() || undefined
+            lastCheckpoint: lastCheckpoint || undefined,
+            lastRecordId: lastRecordId || undefined
           })
         });
       }
@@ -8665,6 +8722,7 @@ function htmlShell(): string {
         saveButton.disabled = true;
 
         try {
+          await ensureMssqlTargetObjectSelection();
           for (let step = 1; step < getScheduleWizardTotalSteps(); step += 1) {
             validateScheduleWizardStep(step);
           }
@@ -8686,9 +8744,8 @@ function htmlShell(): string {
             body: JSON.stringify(payload)
           });
 
-          await saveScheduleCheckpoint(result?.id || scheduleId);
-
           scheduleModal.hide();
+          await saveScheduleCheckpoint(result?.id || scheduleId);
           await refresh();
         } catch (error) {
           showError(error.message || 'Scheduler konnte nicht gespeichert werden');
@@ -9245,7 +9302,7 @@ function htmlShell(): string {
           goToScheduleWizardStep(nextStep);
         });
       });
-      document.getElementById('save-schedule').addEventListener('click', saveSchedule);
+      bindEventListenerOnce('save-schedule', 'click', saveSchedule);
       document.getElementById('save-schedule-template').addEventListener('click', async () => {
         try {
           await saveCurrentAsTemplate('schedule');
@@ -9386,7 +9443,9 @@ function htmlShell(): string {
       async function loadMappingFields() {
         const sourceType = document.getElementById('sch-source-type').value;
         const sourceDefinition = buildScheduleSourceDefinitionValue() || '';
-        const objectName = document.getElementById('sch-object').value;
+        const objectName = sourceType === 'SALESFORCE_SOQL'
+          ? ''
+          : document.getElementById('sch-object').value;
         const connectorId = document.getElementById('sch-connector').value || undefined;
         const sourceFieldsBody = document.getElementById('sch-mapping-source-fields');
         if (!sourceFieldsBody) {

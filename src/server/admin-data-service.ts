@@ -4094,6 +4094,107 @@ export class AdminDataService {
     }
   }
 
+  private resolveMssqlTargetTable(
+    connector: Pick<ConnectorConfig, "connectorType" | "parameters">,
+    requestedTargetObject?: string
+  ): { schemaName: string; tableName: string } | null {
+    const configuredSchema = String(connector.parameters?.schema || "dbo").trim() || "dbo";
+    const configuredTable = String(connector.parameters?.table || "").trim();
+    const requested = String(requestedTargetObject || "").trim();
+
+    if (requested) {
+      const [schemaPart, tablePart] = requested.includes(".")
+        ? requested.split(".", 2)
+        : [configuredSchema, requested];
+      const schemaName = String(schemaPart || configuredSchema).trim() || configuredSchema;
+      const tableName = String(tablePart || "").trim();
+      if (tableName) {
+        return { schemaName, tableName };
+      }
+    }
+
+    if (configuredTable) {
+      return {
+        schemaName: configuredSchema,
+        tableName: configuredTable
+      };
+    }
+
+    return null;
+  }
+
+  private async getMssqlTargetFields(
+    connectorId: string,
+    targetObject?: string,
+    instanceId?: string
+  ): Promise<Array<{ name: string; type: string; label?: string }>> {
+    const client = await this.createClient(instanceId);
+    const connector = await client.queryConnector(connectorId);
+    if (connector.connectorType.toLowerCase() !== 'mssql') {
+      throw new Error(`MSSQL-Zielfelder werden nur für MSSQL-Connectoren unterstützt, erhalten: ${connector.connectorType}`);
+    }
+
+    const requestedTarget = this.resolveMssqlTargetTable(connector, targetObject);
+    if (!requestedTarget) {
+      return [];
+    }
+
+    const database = new MssqlDatabase({
+      server: getRequiredString(connector.parameters, 'server'),
+      port: getOptionalNumber(connector.parameters, 'port'),
+      database: getRequiredString(connector.parameters, 'database'),
+      user: getRequiredString(connector.parameters, 'user'),
+      password: resolvePassword(connector),
+      encrypt: getOptionalBoolean(connector.parameters, 'encrypt'),
+      trustServerCertificate: getOptionalBoolean(connector.parameters, 'trustServerCertificate'),
+      connectionTimeout: connector.timeoutMs,
+      requestTimeout: connector.timeoutMs
+    });
+
+    const loadColumns = async (schemaName: string, tableName: string) => {
+      const result = await database.execute<{
+        COLUMN_NAME: string;
+        DATA_TYPE: string;
+        CHARACTER_MAXIMUM_LENGTH: number | null;
+      }>(
+        `
+          SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH
+          FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = @schemaName
+            AND TABLE_NAME = @tableName
+          ORDER BY ORDINAL_POSITION
+        `,
+        {
+          schemaName,
+          tableName
+        }
+      );
+
+      return result.recordset.map((row) => ({
+        name: String(row.COLUMN_NAME || '').trim(),
+        type: row.CHARACTER_MAXIMUM_LENGTH && row.CHARACTER_MAXIMUM_LENGTH > 0
+          ? `${String(row.DATA_TYPE || 'unknown').trim()}(${row.CHARACTER_MAXIMUM_LENGTH})`
+          : String(row.DATA_TYPE || 'unknown').trim(),
+        label: `${schemaName}.${tableName}.${String(row.COLUMN_NAME || '').trim()}`
+      })).filter((field) => field.name);
+    };
+
+    try {
+      let fields = await loadColumns(requestedTarget.schemaName, requestedTarget.tableName);
+      const configuredTarget = this.resolveMssqlTargetTable(connector, undefined);
+      const requestedDiffersFromConfigured = configuredTarget
+        && (configuredTarget.schemaName !== requestedTarget.schemaName || configuredTarget.tableName !== requestedTarget.tableName);
+
+      if (!fields.length && configuredTarget && requestedDiffersFromConfigured) {
+        fields = await loadColumns(configuredTarget.schemaName, configuredTarget.tableName);
+      }
+
+      return fields;
+    } finally {
+      await database.close();
+    }
+  }
+
   private normalizeTargetSystem(targetSystem?: string): string {
     return String(targetSystem || "")
       .trim()
@@ -4181,8 +4282,8 @@ export class AdminDataService {
 
     if (this.isMssqlTargetSystem(normalizedTargetSystem) && connectorId) {
       try {
-        const tables = await this.getMssqlTables(connectorId, instanceId);
-        return { fields: tables };
+        const fields = await this.getMssqlTargetFields(connectorId, targetObject, instanceId);
+        return { fields };
       } catch {
         return { fields: [] };
       }
