@@ -2430,6 +2430,10 @@ body {
   height: 100%;
 }
 
+.mini-kpi-service .card-body {
+  padding-right: 12rem;
+}
+
 .mini-kpi .small {
   text-transform: none;
   color: var(--layout-text-muted) !important;
@@ -2463,6 +2467,21 @@ body {
   margin-top: 0;
 }
 
+.kpi-service-meta {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  display: grid;
+  gap: 0.16rem;
+  max-width: 10.5rem;
+  text-align: right;
+}
+
+.kpi-service-meta .kpi-inline-metric {
+  margin-top: 0;
+  line-height: 1.2;
+}
+
 .kpi-meter {
   margin-top: 0.38rem;
   width: 100%;
@@ -2494,6 +2513,19 @@ body {
 
 .mini-kpi-service {
   border-color: #cddbe9;
+}
+
+@media (max-width: 767.98px) {
+  .mini-kpi-service .card-body {
+    padding-right: var(--bs-card-spacer-x);
+  }
+
+  .kpi-service-meta {
+    position: static;
+    margin-top: 0.45rem;
+    max-width: none;
+    text-align: left;
+  }
 }
 
 .kpi-sparkline-wrap {

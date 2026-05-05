@@ -45,6 +45,11 @@ export interface HealthSnapshot {
   startedAt: string;
   uptimeSeconds: number;
   cpuLoadPercent?: number;
+  operatingSystem?: string;
+  memoryUsedBytes?: number;
+  memoryTotalBytes?: number;
+  diskUsedBytes?: number;
+  diskTotalBytes?: number;
   lastRunStartedAt?: string;
   lastRunFinishedAt?: string;
   lastRunStatus?: "success" | "error";
@@ -76,6 +81,66 @@ function getCpuLoadPercent(): number | undefined {
   }
 
   return Math.max(0, Math.min(100, Math.round((load1m / coreCount) * 100)));
+}
+
+function getOperatingSystemLabel(): string | undefined {
+  if (process.platform === "win32") {
+    return `Windows ${os.release()}`;
+  }
+
+  if (process.platform === "linux") {
+    return `Linux ${os.release()}`;
+  }
+
+  if (process.platform === "darwin") {
+    return `macOS ${os.release()}`;
+  }
+
+  return undefined;
+}
+
+async function getDiskUsage(): Promise<{ usedBytes?: number; totalBytes?: number }> {
+  if (process.platform !== "win32" && process.platform !== "linux" && process.platform !== "darwin") {
+    return {};
+  }
+
+  try {
+    const stats = await fs.statfs(process.cwd());
+    const blockSize = Number(stats.bsize);
+    const totalBlocks = Number(stats.blocks);
+    const freeBlocks = Number(stats.bavail || stats.bfree);
+    if (!Number.isFinite(blockSize) || !Number.isFinite(totalBlocks) || !Number.isFinite(freeBlocks)) {
+      return {};
+    }
+
+    const totalBytes = Math.max(0, Math.round(totalBlocks * blockSize));
+    const freeBytes = Math.max(0, Math.round(freeBlocks * blockSize));
+    return {
+      totalBytes,
+      usedBytes: Math.max(0, totalBytes - freeBytes)
+    };
+  } catch {
+    return {};
+  }
+}
+
+async function buildSystemHealthSnapshot(baseSnapshot: HealthSnapshot): Promise<HealthSnapshot> {
+  const totalMemoryBytes = os.totalmem();
+  const freeMemoryBytes = os.freemem();
+  const diskUsage = await getDiskUsage();
+
+  return {
+    ...baseSnapshot,
+    cpuLoadPercent: getCpuLoadPercent(),
+    operatingSystem: getOperatingSystemLabel(),
+    memoryTotalBytes: Number.isFinite(totalMemoryBytes) ? totalMemoryBytes : undefined,
+    memoryUsedBytes:
+      Number.isFinite(totalMemoryBytes) && Number.isFinite(freeMemoryBytes)
+        ? Math.max(0, totalMemoryBytes - freeMemoryBytes)
+        : undefined,
+    diskTotalBytes: diskUsage.totalBytes,
+    diskUsedBytes: diskUsage.usedBytes
+  };
 }
 
 function getAdminAuthConfig(): { username: string; password: string; enabled: boolean } {
@@ -816,7 +881,7 @@ function htmlShell(): string {
       <div class="tab-content">
         <section class="tab-pane fade show active" id="tab-overview" role="tabpanel">
           <div class="row g-3 mb-3">
-              <div class="col-md-3"><div class="card soft-card mini-kpi mini-kpi-service h-100"><div class="card-body"><div class="text-secondary small">Service</div><h5 id="kpi-service" class="mb-0">-</h5><div class="kpi-meter"><div id="kpi-service-cpu-bar" class="kpi-meter-fill" style="width:0%"></div></div><div class="kpi-service-footer"><div id="kpi-service-cpu-text" class="kpi-inline-metric">CPU Last: -</div><div class="kpi-sparkline-wrap" aria-hidden="true"><svg id="kpi-service-cpu-sparkline" class="kpi-sparkline" viewBox="0 0 120 20" preserveAspectRatio="xMidYMid meet"><path id="kpi-service-cpu-sparkline-path" class="kpi-sparkline-path" d=""></path><circle id="kpi-service-cpu-sparkline-dot" class="kpi-sparkline-dot" r="2" cx="0" cy="0"></circle></svg></div></div><div id="kpi-service-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
+              <div class="col-md-3"><div class="card soft-card mini-kpi mini-kpi-service h-100"><div class="card-body"><div class="text-secondary small">Service</div><h5 id="kpi-service" class="mb-0">-</h5><div class="kpi-meter"><div id="kpi-service-cpu-bar" class="kpi-meter-fill" style="width:0%"></div></div><div class="kpi-service-footer"><div id="kpi-service-cpu-text" class="kpi-inline-metric">CPU Last: -</div><div class="kpi-sparkline-wrap" aria-hidden="true"><svg id="kpi-service-cpu-sparkline" class="kpi-sparkline" viewBox="0 0 120 20" preserveAspectRatio="xMidYMid meet"><path id="kpi-service-cpu-sparkline-path" class="kpi-sparkline-path" d=""></path><circle id="kpi-service-cpu-sparkline-dot" class="kpi-sparkline-dot" r="2" cx="0" cy="0"></circle></svg></div></div><div class="kpi-service-meta"><div id="kpi-service-os" class="kpi-inline-metric">OS: -</div><div id="kpi-service-memory" class="kpi-inline-metric">RAM: -</div><div id="kpi-service-disk" class="kpi-inline-metric">Disk: -</div></div><div id="kpi-service-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
             <div class="col-md-3"><div class="card soft-card mini-kpi h-100"><div class="card-body"><div class="text-secondary small">Scheduler</div><h5 id="kpi-scheduler" class="mb-0">-</h5><div id="kpi-scheduler-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
             <div class="col-md-3"><div class="card soft-card mini-kpi h-100"><div class="card-body"><div class="text-secondary small">Aktive Scheduler</div><h5 id="kpi-schedules" class="mb-0">0</h5><div id="kpi-schedules-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
             <div class="col-md-3"><div class="card soft-card mini-kpi h-100"><div class="card-body"><div class="text-secondary small">Connectoren</div><h5 id="kpi-connectors" class="mb-0">0</h5><div id="kpi-connectors-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
@@ -3468,7 +3533,8 @@ function htmlShell(): string {
       }
 
       async function requestJson(path, options) {
-        const response = await fetch(withInstance(path), options);
+        const requestOptions = options && typeof options === 'object' ? options : {};
+        const response = await fetch(withInstance(path), requestOptions);
         if (response.status === 401) {
           window.location.href = '/';
           throw new Error('Sitzung abgelaufen');
@@ -6151,6 +6217,35 @@ function htmlShell(): string {
 
       function renderOverview(healthData) {
         const previousSnapshot = state.previousOverviewSnapshot;
+        const formatByteSize = (bytes) => {
+          const numericBytes = Number(bytes);
+          if (!Number.isFinite(numericBytes) || numericBytes < 0) {
+            return null;
+          }
+
+          const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+          let value = numericBytes;
+          let unitIndex = 0;
+          while (value >= 1024 && unitIndex < units.length - 1) {
+            value /= 1024;
+            unitIndex += 1;
+          }
+
+          const digits = value >= 10 || unitIndex === 0 ? 0 : 1;
+          return value.toFixed(digits) + ' ' + units[unitIndex];
+        };
+
+        const formatUsageMetric = (usedBytes, totalBytes) => {
+          const used = Number(usedBytes);
+          const total = Number(totalBytes);
+          if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) {
+            return 'nicht verfuegbar';
+          }
+
+          const percentage = Math.max(0, Math.min(100, Math.round((used / total) * 100)));
+          return formatByteSize(used) + ' / ' + formatByteSize(total) + ' (' + percentage + '%)';
+        };
+
         const formatDurationMinSec = (milliseconds) => {
           if (!Number.isFinite(milliseconds) || milliseconds < 0) {
             return '-';
@@ -6205,6 +6300,18 @@ function htmlShell(): string {
           serviceCpuText.textContent = normalizedCpuPercent === null
             ? 'CPU Last: nicht verfuegbar'
             : 'CPU Last: ' + normalizedCpuPercent + '%';
+        }
+        const serviceOsText = document.getElementById('kpi-service-os');
+        if (serviceOsText) {
+          serviceOsText.textContent = 'OS: ' + String(healthData.operatingSystem || 'nicht verfuegbar');
+        }
+        const serviceMemoryText = document.getElementById('kpi-service-memory');
+        if (serviceMemoryText) {
+          serviceMemoryText.textContent = 'RAM: ' + formatUsageMetric(healthData.memoryUsedBytes, healthData.memoryTotalBytes);
+        }
+        const serviceDiskText = document.getElementById('kpi-service-disk');
+        if (serviceDiskText) {
+          serviceDiskText.textContent = 'Disk: ' + formatUsageMetric(healthData.diskUsedBytes, healthData.diskTotalBytes);
         }
         updateServiceCpuSparkline(normalizedCpuPercent);
 
@@ -10406,10 +10513,7 @@ export function createAppServer(
           : "last_24h";
 
       if (req.method === "GET" && requestUrl.pathname === "/api/system/health") {
-        sendJson(200, {
-          ...getHealthSnapshot(),
-          cpuLoadPercent: getCpuLoadPercent()
-        });
+        sendJson(200, await buildSystemHealthSnapshot(getHealthSnapshot()));
         return;
       }
 
