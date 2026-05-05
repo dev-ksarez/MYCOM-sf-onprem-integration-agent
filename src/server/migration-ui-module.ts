@@ -258,6 +258,84 @@ export function renderMigrationUiModule(): string {
 `;
 }
 
+export function renderMigrationPlanningModule(): string {
+  return `
+      function renderMigDependencies() {
+        const container = document.getElementById('mig-dependencies-list');
+        if (!container) return;
+        if (!migState.dependencies.length) {
+          container.innerHTML = '<div class="text-secondary small">Keine Abhängigkeiten definiert.</div>';
+          return;
+        }
+        container.innerHTML = migState.dependencies.map((dep, i) => {
+          const fromObj = migState.objects.find((o) => o.id === dep.fromObjectId);
+          const toObj = migState.objects.find((o) => o.id === dep.toObjectId);
+          return '<div class="d-flex align-items-center gap-2 mb-1 p-2 border rounded">' +
+            '<strong>' + esc(fromObj?.salesforceObject || dep.fromObjectId) + '</strong>' +
+            ' → ' +
+            '<strong>' + esc(toObj?.salesforceObject || dep.toObjectId) + '</strong>' +
+            ' <span class="text-secondary small">(' + esc(dep.fromField) + ' ← ' + esc(dep.toField) + ')</span>' +
+            '<button class="btn btn-sm btn-outline-danger ms-auto" data-remove-dep="' + i + '">✕</button>' +
+            '</div>';
+        }).join('');
+        container.querySelectorAll('[data-remove-dep]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const idx = Number(btn.getAttribute('data-remove-dep'));
+            migState.dependencies.splice(idx, 1);
+            renderMigDependencies();
+          });
+        });
+      }
+
+      function renderMigOrderList() {
+        const list = document.getElementById('mig-order-list');
+        if (!list) return;
+        if (!migState.executionPlan.length && migState.objects.length) {
+          migState.executionPlan = migState.objects.map((obj, idx) => ({ order: idx + 1, objectId: obj.id }));
+        }
+        const ordered = [...migState.executionPlan].sort((a, b) => a.order - b.order);
+        list.innerHTML = ordered.map((step, i) => {
+          const obj = migState.objects.find((o) => o.id === step.objectId);
+          return '<li class="list-group-item d-flex align-items-center gap-2">' +
+            '<span class="badge bg-secondary">' + (i + 1) + '</span>' +
+            '<span class="flex-grow-1">' + esc(obj?.salesforceObject || step.objectId) + '</span>' +
+            '<div class="btn-group btn-group-sm">' +
+            '<button class="btn btn-outline-secondary" data-order-up="' + i + '" ' + (i === 0 ? 'disabled' : '') + '>↑</button>' +
+            '<button class="btn btn-outline-secondary" data-order-down="' + i + '" ' + (i === ordered.length - 1 ? 'disabled' : '') + '>↓</button>' +
+            '</div></li>';
+        }).join('');
+        list.querySelectorAll('[data-order-up]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const i = Number(btn.getAttribute('data-order-up'));
+            if (i <= 0) return;
+            [migState.executionPlan[i - 1], migState.executionPlan[i]] = [migState.executionPlan[i], migState.executionPlan[i - 1]];
+            migState.executionPlan.forEach((s, idx) => { s.order = idx + 1; });
+            renderMigOrderList();
+          });
+        });
+        list.querySelectorAll('[data-order-down]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const i = Number(btn.getAttribute('data-order-down'));
+            if (i >= migState.executionPlan.length - 1) return;
+            [migState.executionPlan[i], migState.executionPlan[i + 1]] = [migState.executionPlan[i + 1], migState.executionPlan[i]];
+            migState.executionPlan.forEach((s, idx) => { s.order = idx + 1; });
+            renderMigOrderList();
+          });
+        });
+      }
+
+      function renderMigDepSelects() {
+        ['mig-dep-from', 'mig-dep-to'].forEach((id) => {
+          const sel = document.getElementById(id);
+          if (!sel) return;
+          sel.innerHTML = migState.objects.map((obj) =>
+            '<option value="' + esc(obj.id) + '">' + esc(obj.salesforceObject) + '</option>'
+          ).join('');
+        });
+      }
+`;
+}
+
 export function renderMigrationPreflightModule(): string {
   return `
       function renderMigPreflightWarnings() {
@@ -431,6 +509,31 @@ export function renderMigrationProgressModule(): string {
         if (!el) return;
         resetMigTransientUi();
         const ordered = [...migState.executionPlan].sort((a, b) => a.order - b.order);
+        const runHistory = Array.isArray(migState.runHistory) ? migState.runHistory : [];
+        const renderRunHistory = () => {
+          if (!runHistory.length) {
+            return '<div class="small text-secondary mt-3">Noch keine Laufhistorie vorhanden.</div>';
+          }
+          return '<div class="mt-3"><strong>Laufhistorie:</strong><div class="list-group list-group-flush mt-2">' +
+            runHistory.map((run, index) => {
+              const steps = Array.isArray(run && run.steps) ? run.steps : [];
+              const hasErrors = steps.some((step) => step && step.status === 'error');
+              const statusLabel = hasErrors ? 'Fehler' : 'Erfolgreich';
+              const statusClass = hasErrors ? 'danger' : 'success';
+              const processed = steps.reduce((sum, step) => sum + Math.max(0, Number(step?.recordsProcessed || 0)), 0);
+              return '<div class="list-group-item px-0">' +
+                '<div class="d-flex flex-wrap align-items-center gap-2">' +
+                  '<span class="badge bg-' + statusClass + '">' + statusLabel + '</span>' +
+                  '<strong>Lauf ' + (index + 1) + '</strong>' +
+                  '<span class="small text-secondary">' + esc(formatDate(run.startedAt, 'short')) + '</span>' +
+                  (run.finishedAt ? '<span class="small text-secondary">bis ' + esc(formatDate(run.finishedAt, 'short')) + '</span>' : '') +
+                  (processed ? '<span class="small text-secondary">' + processed + ' Datensätze</span>' : '') +
+                '</div>' +
+                (run.reportPath ? '<div class="small mt-1"><a href="' + esc(getMigrationReportUrl(migState.id, true)) + '">Protokolldatei</a></div>' : '') +
+              '</div>';
+            }).join('') +
+          '</div></div>';
+        };
         el.innerHTML = '<div class="card soft-card"><div class="card-body"><h6>' + esc(migState.name) + '</h6>' +
           '<p class="text-secondary small">' + esc(migState.description || '') + '</p>' +
           '<strong>Ausführungsplan:</strong><ol class="mt-1">' +
@@ -452,6 +555,7 @@ export function renderMigrationProgressModule(): string {
               const to = migState.objects.find((o) => o.id === dep.toObjectId);
               return '<li>' + esc(from?.salesforceObject || '') + ' → ' + esc(to?.salesforceObject || '') + '</li>';
             }).join('') + '</ul>' : '') +
+          renderRunHistory() +
           '<div id="mig-preflight-summary" class="mt-3"></div>' +
           '</div></div>';
         renderMigPreflightWarnings();

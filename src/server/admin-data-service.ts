@@ -682,6 +682,21 @@ export interface MigrationConfig {
       failedRecordsId?: string;
     }>;
   };
+  runHistory?: Array<{
+    startedAt: string;
+    finishedAt?: string;
+    reportPath?: string;
+    steps: Array<{
+      objectId: string;
+      salesforceObject: string;
+      status: "pending" | "running" | "done" | "error";
+      recordsProcessed?: number;
+      recordsSucceeded?: number;
+      recordsFailed?: number;
+      errorMessage?: string;
+      failedRecordsId?: string;
+    }>;
+  }>;
 }
 
 export interface MigrationFailedRecord {
@@ -5921,12 +5936,17 @@ export class AdminDataService {
       }, finishedAt, failedRecordsByObjectId);
       migration.status = hasErrors ? "error" : "done";
       migration.lastRunAt = startedAt;
-      migration.lastRunResult = {
+      const finalizedRunResult = {
         startedAt,
         finishedAt,
         reportPath,
         steps: stepResults.map((s) => ({ ...s }))
       };
+      migration.lastRunResult = finalizedRunResult;
+      migration.runHistory = [
+        finalizedRunResult,
+        ...(Array.isArray(migration.runHistory) ? migration.runHistory : [])
+      ].slice(0, 10);
       this.saveMigration(migration);
 
       return { migrationId: id, startedAt, reportPath, steps: stepResults };
