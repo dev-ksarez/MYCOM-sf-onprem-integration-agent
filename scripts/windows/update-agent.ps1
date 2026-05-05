@@ -299,6 +299,10 @@ Ensure-Directory -Path $backupRoot
 $restorePlan = @(
   @{ Source = (Join-Path $appRootResolved "dist"); Backup = (Join-Path $backupRoot "dist"); Target = (Join-Path $appRootResolved "dist"); Payload = (Join-Path $payloadRoot "dist") },
   @{ Source = (Join-Path $appRootResolved "src\css"); Backup = (Join-Path $backupRoot "src\css"); Target = (Join-Path $appRootResolved "src\css"); Payload = (Join-Path $payloadRoot "src\css") },
+  @{ Source = (Join-Path $appRootResolved "scripts"); Backup = (Join-Path $backupRoot "scripts"); Target = (Join-Path $appRootResolved "scripts"); Payload = (Join-Path $payloadRoot "scripts") },
+  @{ Source = (Join-Path $appRootResolved "salesforce"); Backup = (Join-Path $backupRoot "salesforce"); Target = (Join-Path $appRootResolved "salesforce"); Payload = (Join-Path $payloadRoot "salesforce") },
+  @{ Source = (Join-Path $appRootResolved "artifacts\templates"); Backup = (Join-Path $backupRoot "artifacts\templates"); Target = (Join-Path $appRootResolved "artifacts\templates"); Payload = (Join-Path $payloadRoot "artifacts\templates") },
+  @{ Source = (Join-Path $appRootResolved "artifacts\file-examples"); Backup = (Join-Path $backupRoot "artifacts\file-examples"); Target = (Join-Path $appRootResolved "artifacts\file-examples"); Payload = (Join-Path $payloadRoot "artifacts\file-examples") },
   @{ Source = (Join-Path $appRootResolved "package.json"); Backup = (Join-Path $backupRoot "package.json"); Target = (Join-Path $appRootResolved "package.json"); Payload = (Join-Path $payloadRoot "package.json") },
   @{ Source = (Join-Path $appRootResolved "node_modules"); Backup = (Join-Path $backupRoot "node_modules"); Target = (Join-Path $appRootResolved "node_modules"); Payload = (Join-Path $payloadRoot "node_modules") }
 )
