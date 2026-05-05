@@ -15,7 +15,7 @@ import {
   ScheduleFormOptions
 } from "./admin-data-service";
 import { getDashboardUpdateStatus, triggerDashboardUpdate } from "./dashboard-update-service";
-import { renderMigrationRunResultModule, renderMigrationUiModule } from "./migration-ui-module";
+import { renderMigrationFailedRecordsModule, renderMigrationRunResultModule, renderMigrationUiModule } from "./migration-ui-module";
 
 const BOOTSTRAP_CSS_FILE = path.resolve(process.cwd(), "node_modules/bootstrap/dist/css/bootstrap.min.css");
 const BOOTSTRAP_JS_FILE = path.resolve(process.cwd(), "node_modules/bootstrap/dist/js/bootstrap.bundle.min.js");
@@ -147,6 +147,430 @@ function htmlShell(): string {
 
       <div class="tab-content">
         <section class="tab-pane fade show active" id="tab-overview" role="tabpanel">
+          <div class="row g-3 mb-3">
+              <div class="col-md-3"><div class="card soft-card mini-kpi mini-kpi-service h-100"><div class="card-body"><div class="text-secondary small">Service</div><h5 id="kpi-service" class="mb-0">-</h5><div class="kpi-meter"><div id="kpi-service-cpu-bar" class="kpi-meter-fill" style="width:0%"></div></div><div class="kpi-service-footer"><div id="kpi-service-cpu-text" class="kpi-inline-metric">CPU Last: -</div><div class="kpi-sparkline-wrap" aria-hidden="true"><svg id="kpi-service-cpu-sparkline" class="kpi-sparkline" viewBox="0 0 120 20" preserveAspectRatio="xMidYMid meet"><path id="kpi-service-cpu-sparkline-path" class="kpi-sparkline-path" d=""></path><circle id="kpi-service-cpu-sparkline-dot" class="kpi-sparkline-dot" r="2" cx="0" cy="0"></circle></svg></div></div><div id="kpi-service-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
+            <div class="col-md-3"><div class="card soft-card mini-kpi h-100"><div class="card-body"><div class="text-secondary small">Scheduler</div><h5 id="kpi-scheduler" class="mb-0">-</h5><div id="kpi-scheduler-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
+            <div class="col-md-3"><div class="card soft-card mini-kpi h-100"><div class="card-body"><div class="text-secondary small">Aktive Scheduler</div><h5 id="kpi-schedules" class="mb-0">0</h5><div id="kpi-schedules-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
+            <div class="col-md-3"><div class="card soft-card mini-kpi h-100"><div class="card-body"><div class="text-secondary small">Connectoren</div><h5 id="kpi-connectors" class="mb-0">0</h5><div id="kpi-connectors-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
+          </div>
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <div class="small text-secondary">Dashboard Zeitraum</div>
+            <div class="d-flex gap-2 align-items-center flex-wrap justify-content-end">
+              <div id="overview-update-status" class="small text-secondary">Update-Status wird geladen...</div>
+              <button id="overview-check-update" type="button" class="btn btn-sm btn-outline-secondary">Update prüfen</button>
+              <button id="overview-run-update" type="button" class="btn btn-sm btn-outline-primary">Update starten</button>
+              <div id="overview-stats-range" class="btn-group btn-group-sm overview-stats-range" role="group" aria-label="Dashboard Zeitraum">
+                <button type="button" class="btn btn-outline-secondary" data-range="day">Heute</button>
+                <button type="button" class="btn btn-outline-secondary active" data-range="month">Monat</button>
+                <button type="button" class="btn btn-outline-secondary" data-range="year">Jahr</button>
+              </div>
+            </div>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-lg-3 col-md-6">
+              <div class="card soft-card stats-card h-100">
+                <div class="card-header bg-white fw-semibold">Run-Qualität</div>
+                <div class="card-body">
+                  <div class="stats-row">
+                    <span class="stats-label">Erfolgsquote</span>
+                    <span class="stats-value" id="kpi-success-rate">0%</span>
+                  </div>
+                  <div class="progress stats-progress mb-3" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Erfolgsquote">
+                    <div id="kpi-success-rate-bar" class="progress-bar bg-success" style="width:0%"></div>
+                  </div>
+                  <div class="stats-row">
+                    <span class="stats-label">Fehlerquote</span>
+                    <span class="stats-value text-danger" id="kpi-error-rate">0%</span>
+                  </div>
+                  <div class="progress stats-progress mb-0" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Fehlerquote">
+                    <div id="kpi-error-rate-bar" class="progress-bar bg-danger" style="width:0%"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-lg-3 col-md-6">
+              <div class="card soft-card stats-card h-100">
+                <div class="card-header bg-white fw-semibold">Run-Status</div>
+                <div class="card-body">
+                  <div class="stats-grid-two">
+                    <div><div class="stats-chip stats-chip-success">Erfolg</div><div id="kpi-runs-success" class="stats-big-number">0</div></div>
+                    <div><div class="stats-chip stats-chip-danger">Fehler</div><div id="kpi-runs-failed" class="stats-big-number">0</div></div>
+                    <div><div class="stats-chip stats-chip-info">Laufend</div><div id="kpi-runs-running" class="stats-big-number">0</div></div>
+                    <div><div class="stats-chip stats-chip-muted">Gesamt</div><div id="kpi-runs-total" class="stats-big-number">0</div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-lg-3 col-md-6">
+              <div class="card soft-card stats-card h-100">
+                <div class="card-header bg-white fw-semibold">Scheduler-Statistik</div>
+                <div class="card-body">
+                  <div class="stats-row"><span class="stats-label">Inbound</span><span id="kpi-inbound-count" class="stats-value">0</span></div>
+                  <div class="stats-row"><span class="stats-label">Outbound</span><span id="kpi-outbound-count" class="stats-value">0</span></div>
+                  <div class="stats-row"><span class="stats-label">Durchschnitt Laufzeit</span><span id="kpi-average-run-duration" class="stats-value">-</span></div>
+                  <div class="stats-row"><span class="stats-label">Auto-Deaktiviert</span><span id="kpi-auto-disabled-count" class="stats-value text-warning">0</span></div>
+                  <div class="stats-row mb-0"><span class="stats-label">Letzter Run</span><span id="kpi-last-run-at" class="stats-value">-</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="col-lg-3 col-md-6">
+              <div class="card soft-card stats-card h-100">
+                <div class="card-header bg-white fw-semibold">SQLite-Staging</div>
+                <div class="card-body">
+                  <div class="stats-row"><span class="stats-label">SQLite-Objekte</span><span id="kpi-sqlite-objects" class="stats-value">0</span></div>
+                  <div class="stats-row"><span class="stats-label">SQLite offen</span><span id="kpi-sqlite-pending" class="stats-value">0</span></div>
+                  <div class="stats-row"><span class="stats-label">SQLite OK</span><span id="kpi-sqlite-success" class="stats-value text-success">0</span></div>
+                  <div class="stats-row mb-0"><span class="stats-label">SQLite Fehler</span><span id="kpi-sqlite-errors" class="stats-value text-danger">0</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-lg-6">
+              <div class="card soft-card h-100">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                  <span class="fw-semibold">Fehler je Connector</span>
+                  <select id="log-chart-range" class="form-select form-select-sm" style="max-width: 220px;">
+                    <option value="last_hour">Letzte Stunde</option>
+                    <option value="last_24h" selected>Letzte 24h</option>
+                    <option value="last_30d">Letzte 30 Tage</option>
+                  </select>
+                </div>
+                <div class="card-body">
+                  <div class="logs-chart-wrap logs-chart-wrap-compact">
+                    <canvas id="logs-chart"></canvas>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-lg-6">
+              <div class="card soft-card h-100">
+                <div class="card-header bg-white fw-semibold">Datensätze Verlauf</div>
+                <div class="card-body">
+                  <div class="records-chart-wrap">
+                    <canvas id="records-chart"></canvas>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="row g-3">
+            <div class="col-lg-7">
+              <div class="card soft-card">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                  <span class="fw-semibold">Verknüpfungsübersicht</span>
+                  <div class="d-flex align-items-center gap-2">
+                    <span id="overview-visible-schedule-count" class="badge bg-secondary">0 Scheduler sichtbar</span>
+                    <select id="overview-connector-filter" class="form-select form-select-sm" style="max-width: 280px;">
+                      <option value="">Alle Connectoren</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="card-body">
+                  <div class="graph-wrap"><svg id="graph" width="920" height="360"></svg></div>
+                  <div class="small text-secondary mt-2">Klick auf einen Knoten öffnet die passende Konfiguration im Modal. CSV/XLSX-Dateien koennen auf Datei-Connectoren gezogen werden, um automatisch einen Datei-Scheduler anzulegen.</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-lg-5">
+              <div class="card soft-card mb-3">
+                <div class="card-header bg-white fw-semibold">Salesforce Org + Limits</div>
+                <div class="card-body">
+                  <div class="stats-row"><span class="stats-label">Domain</span><span id="sf-domain" class="stats-value">-</span></div>
+                  <div class="stats-row mb-3"><span class="stats-label">Umgebung</span><span id="sf-environment" class="stats-value">-</span></div>
+                  <div class="limits-gauge-grid">
+                    <div class="limit-gauge-card">
+                      <div id="sf-api-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#2f69a8;">
+                        <div class="limit-gauge-inner"><span id="sf-api-gauge-value" class="limit-gauge-value">0%</span></div>
+                      </div>
+                      <div class="limit-gauge-label">API Calls</div>
+                      <div id="sf-api-usage" class="limit-gauge-detail">-</div>
+                    </div>
+                    <div class="limit-gauge-card">
+                      <div id="sf-data-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#1f7d57;">
+                        <div class="limit-gauge-inner"><span id="sf-data-gauge-value" class="limit-gauge-value">0%</span></div>
+                      </div>
+                      <div class="limit-gauge-label">Datenspeicher</div>
+                      <div id="sf-data-storage" class="limit-gauge-detail">-</div>
+                    </div>
+                    <div class="limit-gauge-card">
+                      <div id="sf-file-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#7b5ea7;">
+                        <div class="limit-gauge-inner"><span id="sf-file-gauge-value" class="limit-gauge-value">0%</span></div>
+                      </div>
+                      <div class="limit-gauge-label">Dateispeicher</div>
+                      <div id="sf-file-storage" class="limit-gauge-detail">-</div>
+                    </div>
+                    <div class="limit-gauge-card">
+                      <div id="sf-license-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#c26a2d;">
+                        <div class="limit-gauge-inner"><span id="sf-license-gauge-value" class="limit-gauge-value">0%</span></div>
+                      </div>
+                      <div class="limit-gauge-label">Lizenzen</div>
+                      <div id="sf-licenses" class="limit-gauge-detail">-</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="card soft-card">
+                <div class="card-header bg-white fw-semibold">Letzte Runs</div>
+                <div class="card-body p-0">
+                  <table id="overview-runs-table" class="table table-sm mb-0">
+                    <thead><tr><th>Schedule</th><th>Status</th><th>Dauer</th><th>Start</th></tr></thead>
+                    <tbody id="overview-runs-body"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-pane fade" id="tab-schedulers" role="tabpanel">
+          <div class="card soft-card">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+              <span class="fw-semibold">Scheduler-Verwaltung</span>
+              <div class="d-flex gap-2">
+                <button id="new-schedule-from-template" class="btn btn-sm btn-outline-primary">Neu von Vorlage</button>
+                <button id="new-schedule" class="btn btn-sm btn-primary">Neuer Scheduler</button>
+              </div>
+            </div>
+            <div class="card-body p-0">
+              <div class="table-responsive">
+                <div class="px-2 pt-2">
+                  <ul class="nav nav-pills nav-fill" id="schedulers-direction-tabs">
+                    <li class="nav-item"><button class="nav-link active" type="button" data-direction-tab="all">Alle</button></li>
+                    <li class="nav-item"><button class="nav-link" type="button" data-direction-tab="inbound">Inbound</button></li>
+                    <li class="nav-item"><button class="nav-link" type="button" data-direction-tab="outbound">Outbound</button></li>
+                  </ul>
+                </div>
+                <div class="d-flex flex-column flex-lg-row gap-2 p-2">
+                  <input type="search" class="form-control form-control-sm" placeholder="Suche Scheduler..." id="schedulers-filter" />
+                  <select id="schedulers-connector-filter" class="form-select form-select-sm" style="max-width: 260px;">
+                    <option value="">Alle Connectoren</option>
+                  </select>
+                </div>
+                <div id="schedulers-auto-disabled-warning" class="alert alert-warning mx-2 mb-2 py-2 d-none" role="alert"></div>
+                <table class="table table-hover mb-0" id="schedulers-table">
+                  <thead><tr><th data-sortable="true">Name</th><th>Parent</th><th>Aktiv</th><th>Status</th><th>Connector</th><th>Intervall</th><th>Nächster Lauf</th><th>Fehler</th><th>Aktion</th></tr></thead>
+                  <tbody id="schedules-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-pane fade" id="tab-connectors" role="tabpanel">
+          <div class="card soft-card">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+              <span class="fw-semibold">Connector-Verwaltung</span>
+              <div class="d-flex gap-2">
+                <button id="new-connector-from-template" class="btn btn-sm btn-outline-primary">Neu von Vorlage</button>
+                <button id="new-connector" class="btn btn-sm btn-primary">Neuer Connector</button>
+              </div>
+            </div>
+            <div class="card-body p-0">
+              <div class="table-responsive">
+                <input type="search" class="form-control form-control-sm mb-2" placeholder="Suche Connectoren..." id="connectors-filter" />
+                <table class="table table-hover mb-0" id="connectors-table">
+                  <thead><tr><th data-sortable="true">Name</th><th>Typ</th><th>Status</th><th>Parameter</th><th>Aktion</th></tr></thead>
+                  <tbody id="connectors-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-pane fade" id="tab-monitor" role="tabpanel">
+          <div class="row g-3">
+            <div class="col-lg-6">
+              <div class="card soft-card">
+                <div class="card-header bg-white fw-semibold">Runs</div>
+                <div class="card-body p-0">
+                  <table class="table table-sm mb-0">
+                    <thead><tr><th>Schedule</th><th>Status</th><th>Ergebnis</th><th>Logs</th><th>Aktion</th></tr></thead>
+                    <tbody id="runs-body"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="card soft-card mt-3">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                  <span class="fw-semibold">Stale Runs</span>
+                  <div class="d-flex gap-2">
+                    <button id="refresh-stale-runs" class="btn btn-sm btn-outline-secondary">Aktualisieren</button>
+                    <button id="release-all-stale-runs" class="btn btn-sm btn-outline-danger">Alle freigeben</button>
+                  </div>
+                </div>
+                <div class="card-body p-0">
+                  <table class="table table-sm mb-0">
+                    <thead><tr><th>Schedule</th><th>Start</th><th>Alter</th><th>Aktion</th></tr></thead>
+                    <tbody id="stale-runs-body"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+            <div class="col-lg-6">
+              <div class="card soft-card mb-3">
+                <div class="card-header bg-white fw-semibold">Run-Logs</div>
+                <div class="card-body">
+                  <div class="input-group mb-2">
+                    <select id="log-run-select" class="form-select"></select>
+                    <button id="load-logs" class="btn btn-outline-primary">Laden</button>
+                  </div>
+                  <pre id="logs-output" class="bg-dark text-light p-3 rounded small mb-0">Noch keine Logs geladen.</pre>
+                </div>
+              </div>
+              <div class="card soft-card">
+                <div class="card-header bg-white fw-semibold">SQL / Mapping Vorschau</div>
+                <div class="card-body">
+                  <div class="input-group mb-2">
+                    <select id="sql-connector-select" class="form-select"></select>
+                    <button id="preview-sql" class="btn btn-outline-primary">SQL testen</button>
+                  </div>
+                  <textarea id="sql-query" class="form-control mb-2" rows="3" placeholder="SELECT ..."></textarea>
+                  <textarea id="mapping-definition" class="form-control mb-2" rows="2" placeholder="target;string=source;NONE"></textarea>
+                  <textarea id="mapping-source" class="form-control mb-2" rows="3" placeholder='[{"source":"value"}]'></textarea>
+                  <button id="preview-mapping" class="btn btn-outline-secondary btn-sm mb-2">Mapping prüfen</button>
+                  <pre id="mapping-output" class="bg-dark text-light p-3 rounded small mb-0">Noch keine Vorschau.</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+        <!-- Migration Tab -->
+        <section class="tab-pane fade" id="tab-migration" role="tabpanel">
+          <div class="card soft-card mb-3">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+              <div>
+                <div class="migration-card-title">Daten-Migration</div>
+                <div class="migration-card-subtitle">Dateien direkt auf die Tabelle ziehen oder oben auswählen.</div>
+              </div>
+              <div class="d-flex align-items-center gap-2 flex-wrap migration-header-actions">
+                <button id="migration-dropzone-pick" type="button" class="btn btn-sm btn-outline-primary">Datei auswählen</button>
+                <button id="new-migration" class="btn btn-sm btn-primary">+ Neue Migration</button>
+                <input id="migration-dropzone-input" type="file" class="d-none" accept=".csv,.txt,.json,.xlsx,.xls" multiple />
+              </div>
+            </div>
+            <div class="card-body p-0">
+              <div id="migration-dropzone" class="migration-list-drop-target">
+                <div class="migration-drop-target-hint">Dateien hier auf die Liste ziehen, um direkt einen Entwurf zu starten. Unterstützt CSV, TXT, Excel und JSON.</div>
+                <div class="table-responsive">
+                  <table class="table table-sm mb-0" id="migration-list-table">
+                    <thead><tr><th>Name</th><th>Status</th><th>Objekte</th><th>Letzter Lauf</th><th>Aktionen</th></tr></thead>
+                    <tbody id="migration-list-body"><tr><td colspan="5" class="text-secondary">Keine Migrationen vorhanden.</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+        </main>
+      </div>
+    </div>
+
+    <!-- Migration Wizard Modal -->
+    <div class="modal fade" id="migration-modal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="migration-modal-title">Migrations-Assistent</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <!-- Wizard Steps Indicator -->
+            <div class="migration-wizard-steps-line mb-4" id="mig-wizard-steps" style="--wizard-step-count: 7; --wizard-step-count-mobile: 3;">
+              <div class="migration-wizard-step is-active" data-mig-step="1"><span class="migration-wizard-step-index">1</span><span class="migration-wizard-step-label">Objekte</span></div>
+              <div class="migration-wizard-step" data-mig-step="2"><span class="migration-wizard-step-index">2</span><span class="migration-wizard-step-label">Dateien</span></div>
+              <div class="migration-wizard-step" data-mig-step="3"><span class="migration-wizard-step-index">3</span><span class="migration-wizard-step-label">Mapping</span></div>
+              <div class="migration-wizard-step" data-mig-step="4"><span class="migration-wizard-step-index">4</span><span class="migration-wizard-step-label">Abhängigkeiten</span></div>
+              <div class="migration-wizard-step" data-mig-step="5"><span class="migration-wizard-step-index">5</span><span class="migration-wizard-step-label">Reihenfolge</span></div>
+              <div class="migration-wizard-step" data-mig-step="6"><span class="migration-wizard-step-index">6</span><span class="migration-wizard-step-label">Felder anlegen</span></div>
+              <div class="migration-wizard-step" data-mig-step="7"><span class="migration-wizard-step-index">7</span><span class="migration-wizard-step-label">Ausführen</span></div>
+            </div>
+
+            <!-- Step 1: Name + Objekte -->
+            <div class="mig-wizard-panel" data-mig-step-panel="1">
+              <h6 class="fw-semibold mb-3">Schritt 1: Migrationsname &amp; betroffene Salesforce-Objekte</h6>
+              <div class="row g-3 mb-3">
+                <div class="col-md-6">
+                  <label class="form-label">Migrationsname <span class="text-danger">*</span></label>
+                  <input type="text" id="mig-name" class="form-control" placeholder="z. B. Kundenmigration 2026" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Beschreibung</label>
+                  <input type="text" id="mig-description" class="form-control" placeholder="Optional" />
+                </div>
+              </div>
+              <div id="mig-pending-import-hint" class="alert alert-info py-2 small d-none"></div>
+              <div id="mig-import-suggestions" class="mb-3 d-none"></div>
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <label class="form-label mb-0">Salesforce-Objekte</label>
+                <button type="button" class="btn btn-sm btn-outline-primary" id="mig-load-sf-objects">SF-Objekte laden</button>
+              </div>
+              <div id="mig-sf-objects-search-wrap" class="mb-2 d-none">
+                <input type="search" id="mig-sf-objects-search" class="form-control form-control-sm" placeholder="Objekt suchen (z.B. Account, Contact, Custom__c)..." />
+              </div>
+              <div id="mig-sf-objects-list" class="mb-3" style="max-height:220px;overflow-y:auto;border:1px solid var(--bs-border-color);border-radius:6px;padding:8px;">
+                <div class="text-secondary small">Klicke „SF-Objekte laden" oder gib Objekte manuell ein.</div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Objekt manuell hinzufügen</label>
+                <div class="input-group">
+                  <input type="text" id="mig-manual-object" class="form-control" placeholder="Account" />
+                  <button type="button" class="btn btn-outline-secondary" id="mig-add-manual-object">Hinzufügen</button>
+                </div>
+              </div>
+              <div>
+                <label class="form-label">Ausgewählte Objekte</label>
+                <div id="mig-selected-objects" class="d-flex flex-wrap gap-2">
+                  <span class="text-secondary small">Noch keine Objekte ausgewählt.</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 2: Dateien zuordnen -->
+            <div class="mig-wizard-panel d-none" data-mig-step-panel="2">
+              <h6 class="fw-semibold mb-3">Schritt 2: Quelldateien den Objekten zuordnen</h6>
+              <div id="mig-file-import-hint" class="alert alert-light border py-2 small d-none"></div>
+              <div id="mig-file-assignment-list">
+                <div class="text-secondary small">Bitte zuerst Objekte in Schritt 1 auswählen.</div>
+              </div>
+            </div>
+
+            <!-- Step 3: Feldmapping -->
+            <div class="mig-wizard-panel d-none" data-mig-step-panel="3">
+              <h6 class="fw-semibold mb-3">Schritt 3: Feldzuordnung (Datei-Spalte → Salesforce-Feld)</h6>
+              <div class="mb-2">
+                <label class="form-label">Objekt auswählen</label>
+                <select id="mig-mapping-object-select" class="form-select form-select-sm"></select>
+              </div>
+              <div id="mig-mapping-panel">
+                <div class="text-secondary small">Bitte Objekt auswählen und Datei in Schritt 2 hinterlegen.</div>
+              </div>
+            </div>
+
+            <!-- Step 4: Abhängigkeiten -->
+            <div class="mig-wizard-panel d-none" data-mig-step-panel="4">
+              <h6 class="fw-semibold mb-3">Schritt 4: Abhängigkeiten zwischen Objekten</h6>
+              <p class="text-secondary small">Definiert, welches Objekt zuerst importiert werden muss (z. B. Account vor Contact).</p>
+              <div id="mig-dependencies-list" class="mb-3"></div>
+              <button type="button" class="btn btn-sm btn-outline-primary" id="mig-add-dependency">+ Abhängigkeit hinzufügen</button>
+              <div id="mig-dependency-form" class="d-none mt-3 p-3 border rounded">
+                <div class="row g-2">
+                  <div class="col-md-5">
+                    <label class="form-label small">Objekt (wird zuerst importiert)</label>
+                    <select id="mig-dep-from" class="form-select form-select-sm"></select>
+                  </div>
+                  <div class="col-md-2 d-flex align-items-end justify-content-center pb-1">→</div>
+                  <div class="col-md-5">
+                    <label class="form-label small">Objekt (hängt ab von)</label>
+                    <select id="mig-dep-to" class="form-select form-select-sm"></select>
+                  </div>
+                  <div class="col-md-5">
+                    <label class="form-label small">Feld in Abhängigem (z. B. AccountId)</label>
+                    <input type="text" id="mig-dep-from-field" class="form-control form-control-sm" placeholder="AccountId" />
+                  </div>
+                  <div class="col-md-2"></div>
                   <div class="col-md-5">
                     <label class="form-label small">Feld in Quelle (z. B. Id)</label>
                     <input type="text" id="mig-dep-to-field" class="form-control form-control-sm" placeholder="Id" />
@@ -1214,274 +1638,6 @@ function htmlShell(): string {
           recordsSucceeded: 0,
           recordsFailed: 0
         }));
-      }
-
-      function renderMigRunResult() {
-        const resultEl = document.getElementById('mig-run-result');
-        if (!resultEl) return;
-
-        const result = migState.lastRunResult;
-        const steps = Array.isArray(result && result.steps) ? result.steps : [];
-        if (!result || !steps.length || migState.status === 'running') {
-          resultEl.classList.add('d-none');
-          resultEl.innerHTML = '';
-          return;
-        }
-
-        const allOk = steps.every((step) => step.status !== 'error');
-        resultEl.classList.remove('d-none');
-        resultEl.innerHTML = '<div class="alert ' + (allOk ? 'alert-success' : 'alert-warning') + '">' +
-          (allOk ? '✓ Migration erfolgreich abgeschlossen.' : '⚠ Migration mit Fehlern abgeschlossen.') +
-          '</div>' +
-          (result.reportPath ? '<div class="alert alert-info py-2 small">Protokoll erzeugt: <a href="' + esc(getMigrationReportUrl(migState.id, true)) + '">Datei öffnen</a><div class="text-secondary mt-1"><code>' + esc(result.reportPath) + '</code></div></div>' : '') +
-          '<table class="table table-sm"><thead><tr><th>Objekt</th><th>Verarbeitet</th><th>OK</th><th>Fehler</th><th>Status</th></tr></thead><tbody>' +
-          steps.map((step) =>
-            '<tr><td>' + esc(step.salesforceObject) + '</td><td>' + (step.recordsProcessed || 0) +
-            '</td><td>' + (step.recordsSucceeded || 0) + '</td><td>' + (step.recordsFailed || 0) +
-            '</td><td><span class="badge bg-' + (step.status === 'done' ? 'success' : 'danger') + '">' + esc(step.status) + '</span>' +
-            (step.errorMessage ? '<div class="text-danger small">' + esc(step.errorMessage) + '</div>' : '') +
-            '</td></tr>'
-          ).join('') + '</tbody></table>';
-
-        const failedSteps = steps.filter((step) => step.failedRecordsId);
-        if (failedSteps.length) {
-          resultEl.innerHTML += failedSteps.map((step) => {
-            const detailsId = 'mig-errors-' + step.failedRecordsId;
-            return '<div class="card mt-3">' +
-              '<div class="card-header d-flex gap-2 align-items-center">' +
-              '<strong class="me-auto">Fehlerhafte Datensätze: ' + esc(step.salesforceObject) + '</strong>' +
-              '<button class="btn btn-sm btn-outline-danger" data-load-failed-records="' + esc(migState.id) + '" data-object-id="' + esc(step.objectId) + '" data-failed-records-id="' + esc(step.failedRecordsId) + '" data-details-id="' + esc(detailsId) + '">Details laden</button>' +
-              '</div>' +
-              '<div id="' + esc(detailsId) + '" class="card-body" style="display:none;"></div>' +
-            '</div>';
-          }).join('');
-
-          const bindLoadFailedDetails = (btn) => {
-            btn.addEventListener('click', async () => {
-              const migId = btn.getAttribute('data-load-failed-records');
-              const objectId = btn.getAttribute('data-object-id');
-              const failedRecordsId = btn.getAttribute('data-failed-records-id');
-              const detailsId = btn.getAttribute('data-details-id');
-              const detailsDiv = document.getElementById(detailsId);
-              if (!detailsDiv) return;
-
-              btn.disabled = true;
-              btn.textContent = 'Lade…';
-              detailsDiv.style.display = '';
-
-              try {
-                const failedRes = await fetch('/api/migrations/' + encodeURIComponent(migId) + '/failed-records/' + encodeURIComponent(failedRecordsId));
-                if (!failedRes.ok) throw new Error('Fehler beim Laden der Fehlerdetails');
-                const failedData = await failedRes.json();
-                const records = Array.isArray(failedData.records) ? failedData.records : [];
-                const migrationObject = (migState.objects || []).find((item) => item && item.id === objectId);
-                const allowStageSave = !!migrationObject && (migrationObject.stagingMode === 'sqlite' || migrationObject.processingMode === 'sqlite');
-
-                if (!records.length) {
-                  detailsDiv.innerHTML = '<div class="alert alert-info">Keine fehlgeschlagenen Datensätze gefunden.</div>';
-                  btn.textContent = 'Details laden';
-                  return;
-                }
-
-                detailsDiv.innerHTML =
-                  '<div class="d-flex align-items-center gap-2 mb-2 flex-wrap">' +
-                    '<button class="btn btn-sm btn-primary" data-retry-failed-records data-mode="all" data-mig-id="' + esc(migId) + '" data-object-id="' + esc(objectId) + '" data-failed-records-id="' + esc(failedRecordsId) + '" data-details-id="' + esc(detailsId) + '">Korrigierte Datensätze neu importieren</button>' +
-                    '<button class="btn btn-sm btn-outline-primary" data-retry-failed-records data-mode="partial" data-mig-id="' + esc(migId) + '" data-object-id="' + esc(objectId) + '" data-failed-records-id="' + esc(failedRecordsId) + '" data-details-id="' + esc(detailsId) + '">Nur erfolgreiche Korrekturen übernehmen</button>' +
-                    (allowStageSave
-                      ? '<button class="btn btn-sm btn-outline-secondary" data-save-failed-corrections data-mig-id="' + esc(migId) + '" data-object-id="' + esc(objectId) + '" data-failed-records-id="' + esc(failedRecordsId) + '">Korrekturen ins Staging übernehmen</button>'
-                      : '') +
-                    '<button class="btn btn-sm btn-outline-secondary" data-export-failed-csv>Restfehler als CSV exportieren</button>' +
-                    '<span class="small text-secondary" data-retry-status></span>' +
-                  '</div>' +
-                  '<p class="small text-secondary mb-2">Feldwerte direkt korrigieren und anschließend neu importieren.</p>' +
-                  '<div class="table-responsive"><table class="table table-sm table-striped"><thead><tr><th>Zeile</th><th>Fehlertyp</th><th>Fehler</th><th>Korrigierbare Feldwerte</th></tr></thead><tbody>' +
-                  records.map((rec, idx) => {
-                    const sourceObj = rec.sourceRecord || {};
-                    const sourceEntries = Object.entries(sourceObj);
-                    const previewPairs = sourceEntries.slice(0, 3)
-                      .map(([key, value]) => '<span class="badge text-bg-light border me-1 mb-1">' + esc(String(key)) + ': ' + esc(String(value ?? '')) + '</span>')
-                      .join('');
-                    return '<tr data-failed-row="' + idx + '" data-row-index="' + esc(String(rec.rowIndex || 0)) + '" data-error="' + esc(String(rec.error || '')) + '" data-error-type="' + esc(String(rec.errorType || 'mapping')) + '">' +
-                      '<td><strong>' + esc(String(rec.rowIndex)) + '</strong></td>' +
-                      '<td><span class="badge bg-' + (rec.errorType === 'salesforce' ? 'warning' : 'danger') + '">' + esc(String(rec.errorType || 'mapping')) + '</span></td>' +
-                      '<td class="text-danger small">' + esc(String(rec.error || '')) + '</td>' +
-                      '<td>' +
-                        '<div class="small text-secondary mb-1">' + sourceEntries.length + ' Felder</div>' +
-                        '<div class="mb-1">' + previewPairs + (sourceEntries.length > 3 ? '<span class="small text-secondary">…</span>' : '') + '</div>' +
-                        '<details class="border rounded p-2 bg-body-tertiary">' +
-                          '<summary class="small" style="cursor:pointer">Felder bearbeiten</summary>' +
-                          '<div class="vstack gap-1 mt-2" style="max-height: 260px; overflow:auto;">' +
-                            sourceEntries.map(([key, value]) =>
-                              '<div class="input-group input-group-sm">' +
-                                '<span class="input-group-text" style="min-width: 180px">' + esc(String(key)) + '</span>' +
-                                '<input class="form-control" data-retry-field data-field-name="' + esc(String(key)) + '" value="' + esc(String(value ?? '')) + '" />' +
-                              '</div>'
-                            ).join('') +
-                          '</div>' +
-                        '</details>' +
-                      '</td>' +
-                    '</tr>';
-                  }).join('') +
-                  '</tbody></table></div>';
-
-                const retryButtons = Array.from(detailsDiv.querySelectorAll('[data-retry-failed-records]'));
-                const saveCorrectionsBtn = detailsDiv.querySelector('[data-save-failed-corrections]');
-                const exportCsvBtn = detailsDiv.querySelector('[data-export-failed-csv]');
-                const retryStatus = detailsDiv.querySelector('[data-retry-status]');
-
-                const collectEditedRows = () => {
-                  const rows = Array.from(detailsDiv.querySelectorAll('[data-failed-row]'));
-                  return rows.map((row) => {
-                    const rowIndex = Number(row.getAttribute('data-row-index') || '0');
-                    const sourceRecord = {};
-                    row.querySelectorAll('[data-retry-field]').forEach((input) => {
-                      const key = input.getAttribute('data-field-name') || '';
-                      sourceRecord[key] = input.value;
-                    });
-                    return {
-                      rowIndex,
-                      error: row.getAttribute('data-error') || '',
-                      errorType: row.getAttribute('data-error-type') || 'mapping',
-                      sourceRecord
-                    };
-                  });
-                };
-
-                const csvEscape = (value) => {
-                  const delimiter = ';';
-                  const str = String(value ?? '');
-                  if (str.includes('"') || str.includes('\\n') || str.includes('\\r') || str.includes(delimiter)) {
-                    return '"' + str.replace(/"/g, '""') + '"';
-                  }
-                  return str;
-                };
-
-                if (exportCsvBtn) {
-                  exportCsvBtn.addEventListener('click', () => {
-                    const editedRows = collectEditedRows();
-                    if (!editedRows.length) {
-                      alert('Keine Restfehler zum Exportieren vorhanden.');
-                      return;
-                    }
-                    const sourceKeys = Array.from(new Set(editedRows.flatMap((row) => Object.keys(row.sourceRecord || {}))));
-                    const header = ['rowIndex', 'errorType', 'error', ...sourceKeys];
-                    const delimiter = ';';
-                    const lines = [header.map(csvEscape).join(delimiter)];
-                    editedRows.forEach((row) => {
-                      const values = [row.rowIndex, row.errorType, row.error, ...sourceKeys.map((key) => row.sourceRecord[key] ?? '')];
-                      lines.push(values.map(csvEscape).join(delimiter));
-                    });
-                    const bom = '\\uFEFF';
-                    const blob = new Blob([bom + lines.join('\\r\\n')], { type: 'text/csv;charset=utf-8;' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = 'restfehler-' + objectId + '-' + failedRecordsId + '.csv';
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                  });
-                }
-
-                const runRetry = async (mode) => {
-                  const payloadRecords = collectEditedRows().map((row) => ({ rowIndex: row.rowIndex, sourceRecord: row.sourceRecord }));
-                  retryButtons.forEach((button) => { button.disabled = true; });
-                  if (saveCorrectionsBtn) saveCorrectionsBtn.disabled = true;
-                  if (retryStatus) {
-                    retryStatus.textContent = mode === 'partial'
-                      ? 'Neuimport läuft (nur erfolgreiche Korrekturen werden übernommen)...'
-                      : 'Neuimport läuft...';
-                  }
-                  try {
-                    const retryRes = await fetch(
-                      '/api/migrations/' + encodeURIComponent(migId) + '/failed-records/' + encodeURIComponent(objectId) + '/' + encodeURIComponent(failedRecordsId) + '/retry',
-                      {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ records: payloadRecords, mode })
-                      }
-                    );
-                    const retryResult = await retryRes.json();
-                    if (!retryRes.ok) throw new Error(retryResult.error || 'Retry fehlgeschlagen');
-
-                    if (retryStatus) {
-                      retryStatus.textContent = 'Neuimport abgeschlossen: ' + retryResult.recordsSucceeded + ' OK, ' + retryResult.recordsFailed + ' Fehler.';
-                    }
-
-                    if (retryResult.failedRecordsId) {
-                      btn.setAttribute('data-failed-records-id', retryResult.failedRecordsId);
-                      retryButtons.forEach((button) => {
-                        button.setAttribute('data-failed-records-id', retryResult.failedRecordsId);
-                      });
-                      btn.click();
-                    }
-                  } catch (err) {
-                    if (retryStatus) retryStatus.textContent = 'Fehler: ' + (err instanceof Error ? err.message : String(err));
-                  } finally {
-                    retryButtons.forEach((button) => { button.disabled = false; });
-                    if (saveCorrectionsBtn) saveCorrectionsBtn.disabled = false;
-                  }
-                };
-
-                if (saveCorrectionsBtn) {
-                  saveCorrectionsBtn.addEventListener('click', async () => {
-                    const payloadRecords = collectEditedRows().map((row) => ({ rowIndex: row.rowIndex, sourceRecord: row.sourceRecord }));
-                    retryButtons.forEach((button) => { button.disabled = true; });
-                    saveCorrectionsBtn.disabled = true;
-                    if (retryStatus) {
-                      retryStatus.textContent = 'Korrekturen werden ins SQLite-Staging übernommen...';
-                    }
-
-                    try {
-                      const saveRes = await fetch(
-                        '/api/migrations/' + encodeURIComponent(migId) + '/failed-records/' + encodeURIComponent(objectId) + '/' + encodeURIComponent(failedRecordsId) + '/retry',
-                        {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ records: payloadRecords, mode: 'stage' })
-                        }
-                      );
-                      const saveResult = await saveRes.json();
-                      if (!saveRes.ok) throw new Error(saveResult.error || 'Speichern ins Staging fehlgeschlagen');
-
-                      if (retryStatus) {
-                        retryStatus.textContent = (saveResult.updatedRows || 0) + ' Zeilen im Staging aktualisiert.';
-                      }
-
-                      if (migrationObject) {
-                        migrationObject.statusSummary = saveResult.statusSummary || migrationObject.statusSummary || {};
-                        await loadMigObjectPreview(migrationObject, migrationObject.previewOffset || 0, migrationObject.previewLimit || 10);
-                        renderMigMappingPanel();
-                      }
-                    } catch (err) {
-                      if (retryStatus) retryStatus.textContent = 'Fehler: ' + (err instanceof Error ? err.message : String(err));
-                    } finally {
-                      retryButtons.forEach((button) => { button.disabled = false; });
-                      saveCorrectionsBtn.disabled = false;
-                    }
-                  });
-                }
-
-                retryButtons.forEach((button) => {
-                  button.addEventListener('click', () => {
-                    const mode = button.getAttribute('data-mode') || 'all';
-                    runRetry(mode);
-                  });
-                });
-
-                btn.textContent = 'Details aktualisieren';
-              } catch (err) {
-                detailsDiv.innerHTML = '<div class="alert alert-danger">Fehler: ' + esc(err instanceof Error ? err.message : String(err)) + '</div>';
-                btn.textContent = 'Details laden';
-              } finally {
-                btn.disabled = false;
-              }
-            });
-          };
-
-          resultEl.querySelectorAll('[data-load-failed-records]').forEach((btn) => bindLoadFailedDetails(btn));
-        }
       }
 
       function renderMigRunProgress() {
@@ -8776,6 +8932,8 @@ function htmlShell(): string {
       }
 
 ${renderMigrationUiModule()}
+${renderMigrationFailedRecordsModule()}
+${renderMigrationRunResultModule()}
 
       document.getElementById('mig-wizard-prev')?.addEventListener('click', () => {
         if (migState.step <= 1) return;
