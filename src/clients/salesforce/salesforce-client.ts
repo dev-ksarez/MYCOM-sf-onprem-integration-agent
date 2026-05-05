@@ -526,8 +526,15 @@ export class SalesforceClient {
       throw new Error("SOQL query must not be empty");
     }
 
-    const result = await this.connection.query<Record<string, unknown>>(trimmedSoql);
-    return result.records.map((record) => ({ ...record }));
+    let result = await this.connection.query<Record<string, unknown>>(trimmedSoql);
+    const records = [...result.records];
+
+    while (!result.done && result.nextRecordsUrl) {
+      result = await this.connection.queryMore<Record<string, unknown>>(result.nextRecordsUrl);
+      records.push(...result.records);
+    }
+
+    return records.map((record) => ({ ...record }));
   }
 
   public async ensurePermissionSetAssigned(permissionSetName: string): Promise<{ assigned: boolean; alreadyExisted: boolean }> {
@@ -1666,6 +1673,27 @@ export class SalesforceClient {
     }
 
     return createResult.id;
+  }
+
+  public async pricebook2Exists(pricebook2Id: string): Promise<boolean> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedId = String(pricebook2Id || "").trim();
+    if (!normalizedId) {
+      return false;
+    }
+
+    const escapedPricebook2Id = normalizedId.replace(/'/g, "\\'");
+    const result = await this.connection.query<{ Id: string }>(`
+      SELECT Id
+      FROM Pricebook2
+      WHERE Id = '${escapedPricebook2Id}'
+      LIMIT 1
+    `);
+
+    return result.records.length > 0;
   }
 
   public async upsertProduct2ByProductCode(values: Record<string, unknown>): Promise<string> {

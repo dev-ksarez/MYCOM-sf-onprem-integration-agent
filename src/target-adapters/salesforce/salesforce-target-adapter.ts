@@ -44,6 +44,7 @@ interface SalesforceObjectTargetDefinition {
   objectApiName: string;
   operation: SalesforceOperation;
   externalIdField: string;
+  pricebook2Id?: string;
   picklists: SalesforcePicklistDefinition[];
 }
 
@@ -193,6 +194,7 @@ function parseTargetDefinition(rawDefinition: string): SalesforceTargetDefinitio
     const objectApiName = candidate.objectApiName;
     const operation = typeof candidate.operation === "string" ? candidate.operation.trim().toLowerCase() : candidate.operation;
     const externalIdField = candidate.externalIdField;
+    const pricebook2Id = candidate.pricebook2Id;
     const picklists = candidate.picklists;
 
     if (typeof objectApiName !== "string" || !objectApiName.trim()) {
@@ -220,6 +222,7 @@ function parseTargetDefinition(rawDefinition: string): SalesforceTargetDefinitio
       objectApiName: validateIdentifier(objectApiName.trim(), `${path}.objectApiName`),
       operation: resolvedOperation,
       externalIdField: resolvedExternalIdField,
+      pricebook2Id: typeof pricebook2Id === "string" && pricebook2Id.trim() ? pricebook2Id.trim() : undefined,
       picklists: parsePicklists(picklists, `${path}.picklists`)
     };
   };
@@ -537,7 +540,14 @@ export class SalesforceTargetAdapter implements TargetAdapter {
 
     for (const record of records) {
       const normalizedValues = await this.normalizePicklistValues(normalizeRecordValues(record.values));
-      const externalKeyValue = normalizedValues[target.externalIdField];
+      const valuesWithTargetDefaults =
+        target.objectApiName === "PricebookEntry" && target.pricebook2Id && normalizedValues.Pricebook2Id === undefined
+          ? {
+              ...normalizedValues,
+              Pricebook2Id: target.pricebook2Id
+            }
+          : normalizedValues;
+      const externalKeyValue = valuesWithTargetDefaults[target.externalIdField];
       const externalKey =
         typeof externalKeyValue === "string"
           ? externalKeyValue
@@ -554,8 +564,8 @@ export class SalesforceTargetAdapter implements TargetAdapter {
 
         const valuesToWrite =
           mode === "picklist"
-            ? this.filterPicklistValuesForWrite(normalizedValues)
-            : normalizedValues;
+            ? this.filterPicklistValuesForWrite(valuesWithTargetDefaults)
+            : valuesWithTargetDefaults;
 
         validateRequiredRelationshipLookups(target.objectApiName, valuesToWrite);
 
@@ -570,8 +580,8 @@ export class SalesforceTargetAdapter implements TargetAdapter {
           const shouldUsePricebookCompositeKey =
             target.objectApiName === "PricebookEntry" &&
             target.externalIdField === "ProductCode" &&
-            valuesToWrite.Product2Id !== undefined &&
-            valuesToWrite.Pricebook2Id !== undefined;
+            valuesToWrite.Pricebook2Id !== undefined &&
+            (valuesToWrite.Product2Id !== undefined || valuesToWrite.ProductCode !== undefined);
 
           const shouldUseProductCodeLookupForProduct2 =
             target.objectApiName === "Product2" && target.externalIdField === "ProductCode";

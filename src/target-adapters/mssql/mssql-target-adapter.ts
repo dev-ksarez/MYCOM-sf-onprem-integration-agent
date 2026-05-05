@@ -5,11 +5,40 @@ import { MappedRecord } from "../../types/mapped-record";
 import { TargetAdapter } from "../../types/target-adapter";
 import { TransferContext } from "../../types/transfer-context";
 
+interface MssqlTargetDefinition {
+  upsertKey?: string;
+}
+
+function parseMssqlTargetDefinition(rawDefinition?: string): MssqlTargetDefinition {
+  const raw = String(rawDefinition || "").trim();
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const parsedDefinition = parsed as MssqlTargetDefinition;
+    const upsertKey = typeof parsedDefinition.upsertKey === "string"
+      ? parsedDefinition.upsertKey.trim()
+      : "";
+
+    return upsertKey ? { upsertKey } : {};
+  } catch {
+    return {};
+  }
+}
+
 export class MssqlTargetAdapter implements TargetAdapter {
   private readonly connector: MssqlConnector;
+  private readonly targetDefinition: MssqlTargetDefinition;
 
-  public constructor(connector: MssqlConnector) {
+  public constructor(connector: MssqlConnector, targetDefinition?: string) {
     this.connector = connector;
+    this.targetDefinition = parseMssqlTargetDefinition(targetDefinition);
   }
 
   public async writeRecords(
@@ -27,6 +56,6 @@ export class MssqlTargetAdapter implements TargetAdapter {
       targetSystem: context.targetType,
       batchSize: context.batchSize,
       maxRetries: context.maxRetries
-    });
+    }, this.targetDefinition.upsertKey);
   }
 }

@@ -21,29 +21,33 @@ function escapeSoqlString(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
-function appendSoqlDelta(queryText: string, delta: DeltaConfig, checkpointValue: string, recordId?: string): string {
+function buildDeltaOrderedSoql(queryText: string, delta: DeltaConfig, checkpointValue?: string, recordId?: string): string {
   const baseQuery = queryText.replace(/;\s*$/, "").trim();
   const limitMatch = baseQuery.match(/\s+LIMIT\s+\d+\s*$/i);
   const limitClause = limitMatch ? limitMatch[0].trim() : "";
   const withoutLimit = limitMatch ? baseQuery.slice(0, limitMatch.index).trimEnd() : baseQuery;
   const orderMatch = withoutLimit.match(/\s+ORDER\s+BY\s+[\s\S]*$/i);
   const withoutOrder = orderMatch ? withoutLimit.slice(0, orderMatch.index).trimEnd() : withoutLimit;
-  const connector = /\bWHERE\b/i.test(withoutOrder) ? " AND " : " WHERE ";
+  let filteredQuery = withoutOrder;
 
-  let condition: string;
-  if (delta.strategy === "datetime") {
-    const formattedCheckpoint = formatSoqlDateTime(checkpointValue);
-    condition = recordId
-      ? `(${delta.field} > ${formattedCheckpoint} OR (${delta.field} = ${formattedCheckpoint} AND Id > '${escapeSoqlString(recordId)}'))`
-      : `${delta.field} > ${formattedCheckpoint}`;
-  } else {
-    condition = `${delta.field} > '${escapeSoqlString(checkpointValue)}'`;
+  if (checkpointValue) {
+    const connector = /\bWHERE\b/i.test(withoutOrder) ? " AND " : " WHERE ";
+    let condition: string;
+    if (delta.strategy === "datetime") {
+      const formattedCheckpoint = formatSoqlDateTime(checkpointValue);
+      condition = recordId
+        ? `(${delta.field} > ${formattedCheckpoint} OR (${delta.field} = ${formattedCheckpoint} AND Id > '${escapeSoqlString(recordId)}'))`
+        : `${delta.field} > ${formattedCheckpoint}`;
+    } else {
+      condition = `${delta.field} > '${escapeSoqlString(checkpointValue)}'`;
+    }
+    filteredQuery = `${withoutOrder}${connector}${condition}`;
   }
 
   const orderClause = delta.strategy === "datetime"
     ? `ORDER BY ${delta.field} ASC, Id ASC`
     : `ORDER BY ${delta.field} ASC`;
-  return `${withoutOrder}${connector}${condition} ${orderClause}${limitClause ? ` ${limitClause}` : ""}`.trim();
+  return `${filteredQuery} ${orderClause}${limitClause ? ` ${limitClause}` : ""}`.trim();
 }
 
 export class SalesforceSoqlSourceAdapter implements SourceAdapter {
@@ -61,8 +65,8 @@ export class SalesforceSoqlSourceAdapter implements SourceAdapter {
       ? context.checkpoint?.value
       : context.checkpoint?.recordId || context.checkpoint?.value;
     const checkpointRecordId = delta?.strategy === "datetime" ? context.checkpoint?.recordId : undefined;
-    const queryText = delta && checkpointCursor
-      ? appendSoqlDelta(this.definition.queryText, delta, checkpointCursor, checkpointRecordId)
+    const queryText = delta
+      ? buildDeltaOrderedSoql(this.definition.queryText, delta, checkpointCursor, checkpointRecordId)
       : this.definition.queryText;
     const queryResult = await this.salesforceClient.queryGeneric(queryText);
 

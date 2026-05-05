@@ -573,6 +573,74 @@ export interface ScheduleDryRunResult {
   message: string;
 }
 
+async function validatePricebookEntryDryRunConfiguration(
+  schedule: ScheduleListItem,
+  createClient: () => Promise<SalesforceClient>
+): Promise<string | undefined> {
+  const targetType = String(schedule.targetType || "").trim().toUpperCase();
+  const targetSystem = String(schedule.targetSystem || "").trim().toLowerCase();
+  const objectName = String(schedule.objectName || "").trim();
+  const operation = String(schedule.operation || "").trim().toLowerCase();
+
+  if (targetType !== "SALESFORCE" || targetSystem !== "salesforce" || objectName !== "PricebookEntry" || operation !== "upsert") {
+    return undefined;
+  }
+
+  let externalIdField = "";
+  let targetPricebook2Id = "";
+  try {
+    const parsedTargetDefinition = JSON.parse(String(schedule.targetDefinition || "{}"));
+    externalIdField = String(parsedTargetDefinition?.externalIdField || "").trim();
+    targetPricebook2Id = String(parsedTargetDefinition?.pricebook2Id || "").trim();
+  } catch {
+    return "Zielkonfiguration ungueltig: Target Definition ist kein valides JSON.";
+  }
+
+  if (externalIdField !== "ProductCode") {
+    return undefined;
+  }
+
+  let hasMappedPricebook2Id = false;
+  let mappedStaticPricebook2Id = "";
+  try {
+    const parsedMapping = JSON.parse(String(schedule.mappingDefinition || "[]"));
+    hasMappedPricebook2Id = Array.isArray(parsedMapping)
+      && parsedMapping.some((rule) => String((rule as { targetField?: unknown })?.targetField || "").trim() === "Pricebook2Id");
+    if (Array.isArray(parsedMapping)) {
+      const staticRule = parsedMapping.find((rule) => (
+        String((rule as { targetField?: unknown })?.targetField || "").trim() === "Pricebook2Id"
+        && String((rule as { transformFunction?: unknown })?.transformFunction || "").trim().toUpperCase() === "STATIC"
+        && String((rule as { transformExpression?: unknown })?.transformExpression || "").trim()
+      )) as { transformExpression?: unknown } | undefined;
+      mappedStaticPricebook2Id = String(staticRule?.transformExpression || "").trim();
+    }
+  } catch {
+    // mapping parser errors are handled elsewhere; keep the config check focused.
+  }
+
+  if (!targetPricebook2Id && !hasMappedPricebook2Id) {
+    return "Zielkonfiguration unvollstaendig: PricebookEntry mit Upsert-Feld ProductCode benoetigt Pricebook2Id als sichtbares Ziel-Feld oder als Mapping-Ziel.";
+  }
+
+  const fixedPricebook2Id = targetPricebook2Id || mappedStaticPricebook2Id;
+  if (!fixedPricebook2Id) {
+    return undefined;
+  }
+
+  try {
+    const client = await createClient();
+    const exists = await client.pricebook2Exists(fixedPricebook2Id);
+    if (!exists) {
+      return `Zielkonfiguration ungueltig: Pricebook2Id ${fixedPricebook2Id} wurde in Salesforce nicht gefunden.`;
+    }
+  } catch (error) {
+    const details = error instanceof Error ? error.message : String(error || "unbekannter Fehler");
+    return `Pricebook2Id-Pruefung fehlgeschlagen: ${details}`;
+  }
+
+  return undefined;
+}
+
 export interface ConnectorMutationInput {
   id?: string;
   name: string;
@@ -1683,6 +1751,20 @@ export class AdminDataService {
     const schedule = (await this.listSchedules(instanceId)).find((item) => item.id === scheduleId);
     if (!schedule) {
       throw new Error(`Schedule not found: ${scheduleId}`);
+    }
+
+    const targetConfigMessage = await validatePricebookEntryDryRunConfiguration(
+      schedule,
+      () => this.createClient(instanceId)
+    );
+    if (targetConfigMessage) {
+      return {
+        ok: false,
+        scheduleId,
+        scheduleName: schedule.name,
+        sourceType: schedule.sourceType,
+        message: targetConfigMessage
+      };
     }
 
     if (!schedule.sourceType || !schedule.sourceDefinition) {

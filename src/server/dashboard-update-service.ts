@@ -94,6 +94,10 @@ function isRunningProgressStale(progress: DashboardUpdateProgressState | null): 
   return ageMs > UPDATE_RUNNING_STALE_MS;
 }
 
+function isTerminalProgressState(progress: DashboardUpdateProgressState | null): boolean {
+  return progress?.state === "completed" || progress?.state === "failed";
+}
+
 function getHostPlatformLabel(): string {
   if (process.platform === "win32") {
     return "Windows";
@@ -169,6 +173,8 @@ export async function getDashboardUpdateStatus(): Promise<DashboardUpdateStatus>
     };
   }
 
+  const terminalProgress = isTerminalProgressState(progress) ? progress : null;
+
   try {
     const response = await fetch(DEFAULT_UPDATE_MANIFEST_URL, {
       headers: { Accept: "application/json" }
@@ -208,17 +214,13 @@ export async function getDashboardUpdateStatus(): Promise<DashboardUpdateStatus>
       supported,
       hostPlatform,
       manifestUrl: DEFAULT_UPDATE_MANIFEST_URL,
-      message: progress?.state === "completed"
-        ? progress.message
-        : progress?.state === "failed"
-          ? progress.message
-          : !supported
+      message: !supported
         ? `${baseMessage}. Der Direktstart richtet sich nach dem Agent-Host, nicht nach dem Browser-Client. Aktueller Agent-Host: ${hostPlatform}.`
         : baseMessage,
       inProgress: false,
-      progressPercent: normalizeProgressPercent(progress?.progressPercent),
-      stage: progress?.stage,
-      updatedAt: progress?.updatedAt
+      progressPercent: undefined,
+      stage: undefined,
+      updatedAt: terminalProgress?.updatedAt
     };
   } catch (error) {
     return {
@@ -227,7 +229,11 @@ export async function getDashboardUpdateStatus(): Promise<DashboardUpdateStatus>
       supported,
       hostPlatform,
       manifestUrl: DEFAULT_UPDATE_MANIFEST_URL,
-      message: error instanceof Error ? error.message : String(error)
+      message: terminalProgress?.message || (error instanceof Error ? error.message : String(error)),
+      inProgress: false,
+      progressPercent: undefined,
+      stage: undefined,
+      updatedAt: terminalProgress?.updatedAt
     };
   }
 }

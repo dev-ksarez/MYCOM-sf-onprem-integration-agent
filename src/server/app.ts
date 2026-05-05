@@ -1571,8 +1571,9 @@ function htmlShell(): string {
                   <div class="col-md-4"><label class="form-label">Operation</label><select id="sch-operation" class="form-select"><option value="">- Wählen -</option></select></div>
                   <div class="col-md-4"><label class="form-label">Target Type</label><select id="sch-target-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE">SALESFORCE</option><option value="SALESFORCE_GLOBAL_PICKLIST">SALESFORCE_GLOBAL_PICKLIST</option><option value="MSSQL">MSSQL</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
                   <div class="col-md-4"><label class="form-label">Direction</label><select id="sch-direction" class="form-select"><option value="">- Wählen -</option></select></div>
-                  <div id="sch-external-id-wrap" class="col-md-4 d-none"><label class="form-label">Upsert Feld</label><select id="sch-external-id-field" class="form-select"><option value="">- External ID wählen -</option></select><div id="sch-external-id-help" class="form-text">Nur echte Salesforce External-ID-Felder werden angeboten.</div></div>
-                  <div class="col-md-12"><label class="form-label">Target Definition (JSON)</label><textarea id="sch-target-definition" class="form-control" rows="4" placeholder='{"fields":[...]}'></textarea></div>
+                  <div id="sch-external-id-wrap" class="col-md-4 d-none"><label id="sch-external-id-label" class="form-label">Upsert Feld</label><select id="sch-external-id-field" class="form-select"><option value="">- Upsert Feld wählen -</option></select><div id="sch-external-id-help" class="form-text">Wählen Sie das Feld, das für Upsert verwendet werden soll.</div></div>
+                  <div id="sch-pricebook2id-wrap" class="col-md-4 d-none"><label class="form-label">Pricebook2Id</label><input id="sch-pricebook2id" class="form-control" placeholder="z. B. 01s..." /><div id="sch-pricebook2id-help" class="form-text">Optional als festes Ziel-Pricebook für PricebookEntry-Upserts.</div></div>
+                  <div class="col-md-12"><label class="form-label">Target Definition (JSON)</label><textarea id="sch-target-definition" class="form-control" rows="4" placeholder='{"fields":[...]}'></textarea><div id="sch-target-definition-help" class="form-text"></div></div>
                   <div id="sch-target-relative-directory-wrap" class="col-md-6 d-none"><label class="form-label">Target Unterverzeichnis relativ zum Connector-Exportpfad</label><input id="sch-target-relative-directory" class="form-control" placeholder="z. B. kunden/export" /></div>
                   <div id="sch-target-archive-relative-directory-wrap" class="col-md-6 d-none"><label class="form-label">Archiv-Unterverzeichnis relativ zum Connector-Archivpfad</label><input id="sch-target-archive-relative-directory" class="form-control" placeholder="optional, sonst gleiches Unterverzeichnis" /></div>
                   <div id="sch-target-path-summary-wrap" class="col-md-12 d-none"><div id="sch-target-path-summary" class="small text-secondary border rounded p-2 bg-light">Keine Agent-Pfade berechnet.</div></div>
@@ -4285,28 +4286,50 @@ function htmlShell(): string {
         renderLimitGauge('sf-license-gauge', 'sf-license-gauge-value', overview?.licenses);
       }
 
+      function isSchedulerMssqlUpsertSelection() {
+        const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
+        const operation = normalizeOperationValue(document.getElementById('sch-operation')?.value || '');
+        return targetType === 'MSSQL' && String(operation || '').toLowerCase() === 'upsert';
+      }
+
       function ensureSalesforceTargetDefinition() {
         const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
         const targetSystem = resolveEffectiveTargetSystem();
-        if (targetType !== 'SALESFORCE' || targetSystem !== 'Salesforce') {
+        const isSalesforce = targetType === 'SALESFORCE' && targetSystem === 'Salesforce';
+        const isMssql = isSchedulerMssqlUpsertSelection();
+        if (!isSalesforce && !isMssql) {
           return;
         }
 
         const objectApiName = String(document.getElementById('sch-object')?.value || '').trim();
-        if (!objectApiName) {
+        if (!objectApiName && isSalesforce) {
           return;
         }
 
         const targetDefinitionInput = document.getElementById('sch-target-definition');
         const raw = String(targetDefinitionInput?.value || '').trim();
-        const externalIdField = String(document.getElementById('sch-external-id-field')?.value || '').trim();
-        const nextDefinition = {
-          objectApiName,
-          operation: String(normalizeOperationValue(document.getElementById('sch-operation')?.value || 'Upsert') || 'Upsert').toLowerCase()
-        };
+        const upsertField = String(document.getElementById('sch-external-id-field')?.value || '').trim();
+        const pricebook2Id = String(document.getElementById('sch-pricebook2id')?.value || '').trim();
+        const operation = String(normalizeOperationValue(document.getElementById('sch-operation')?.value || 'Upsert') || 'Upsert').toLowerCase();
+        const nextDefinition = isSalesforce
+          ? {
+              objectApiName,
+              operation
+            }
+          : {
+              upsertKey: upsertField
+            };
 
-        if (nextDefinition.operation === 'upsert' && externalIdField) {
-          nextDefinition.externalIdField = externalIdField;
+        if (isSalesforce && operation === 'upsert' && upsertField) {
+          nextDefinition.externalIdField = upsertField;
+        }
+
+        if (isSalesforce && objectApiName === 'PricebookEntry' && pricebook2Id) {
+          nextDefinition.pricebook2Id = pricebook2Id;
+        }
+
+        if (isMssql && upsertField) {
+          nextDefinition.upsertKey = upsertField;
         }
 
         if (!raw) {
@@ -4316,14 +4339,28 @@ function htmlShell(): string {
 
         try {
           const parsed = JSON.parse(raw);
-          parsed.objectApiName = objectApiName;
-          parsed.operation = nextDefinition.operation;
-          if (nextDefinition.operation === 'upsert') {
-            if (externalIdField) {
-              parsed.externalIdField = externalIdField;
+          if (isSalesforce) {
+            parsed.objectApiName = objectApiName;
+            parsed.operation = operation;
+            if (operation === 'upsert') {
+              if (upsertField) {
+                parsed.externalIdField = upsertField;
+              }
+            } else if ('externalIdField' in parsed) {
+              delete parsed.externalIdField;
             }
-          } else if ('externalIdField' in parsed) {
-            delete parsed.externalIdField;
+            if (objectApiName === 'PricebookEntry' && pricebook2Id) {
+              parsed.pricebook2Id = pricebook2Id;
+            } else if ('pricebook2Id' in parsed) {
+              delete parsed.pricebook2Id;
+            }
+          }
+          if (isMssql) {
+            if (upsertField) {
+              parsed.upsertKey = upsertField;
+            } else if ('upsertKey' in parsed) {
+              delete parsed.upsertKey;
+            }
           }
           targetDefinitionInput.value = JSON.stringify(parsed, null, 2);
         } catch {
@@ -4338,7 +4375,7 @@ function htmlShell(): string {
         return targetType === 'SALESFORCE' && targetSystem === 'Salesforce' && String(operation || '').toLowerCase() === 'upsert';
       }
 
-      function getSchedulerTargetDefinitionExternalIdField() {
+      function getSchedulerTargetDefinitionUpsertFieldValue() {
         const raw = String(document.getElementById('sch-target-definition')?.value || '').trim();
         if (!raw) {
           return '';
@@ -4346,10 +4383,137 @@ function htmlShell(): string {
 
         try {
           const parsed = JSON.parse(raw);
-          return String(parsed?.externalIdField || '').trim();
+          if (isSchedulerSalesforceUpsertSelection()) {
+            return String(parsed?.externalIdField || '').trim();
+          }
+          if (isSchedulerMssqlUpsertSelection()) {
+            return String(parsed?.upsertKey || '').trim();
+          }
+          return '';
         } catch {
           return '';
         }
+      }
+
+      function getSchedulerMappingRules() {
+        const raw = String(document.getElementById('sch-mapping')?.value || '').trim();
+        if (!raw || !raw.startsWith('[')) {
+          return [];
+        }
+
+        try {
+          const parsed = JSON.parse(raw);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      }
+
+      function hasSchedulerPricebook2IdMapping() {
+        return getSchedulerMappingRules().some((rule) => String(rule?.targetField || '').trim() === 'Pricebook2Id');
+      }
+
+      function getSchedulerMappedStaticPricebook2IdValue() {
+        const match = getSchedulerMappingRules().find((rule) => (
+          String(rule?.targetField || '').trim() === 'Pricebook2Id'
+          && String(rule?.transformFunction || '').trim().toUpperCase() === 'STATIC'
+          && String(rule?.transformExpression || '').trim()
+        ));
+
+        return String(match?.transformExpression || '').trim();
+      }
+
+      function getSchedulerTargetDefinitionPricebook2IdValue() {
+        const raw = String(document.getElementById('sch-target-definition')?.value || '').trim();
+        if (!raw) {
+          return '';
+        }
+
+        try {
+          const parsed = JSON.parse(raw);
+          return String(parsed?.pricebook2Id || '').trim();
+        } catch {
+          return '';
+        }
+      }
+
+      function hasSchedulerPricebook2IdConfigured() {
+        return Boolean(
+          String(document.getElementById('sch-pricebook2id')?.value || '').trim()
+          || getSchedulerTargetDefinitionPricebook2IdValue()
+          || getSchedulerMappedStaticPricebook2IdValue()
+          || hasSchedulerPricebook2IdMapping()
+        );
+      }
+
+      function isSchedulerPricebookEntryProductCodeSelection() {
+        const objectApiName = String(document.getElementById('sch-object')?.value || '').trim();
+        const upsertField = String(document.getElementById('sch-external-id-field')?.value || getSchedulerTargetDefinitionUpsertFieldValue() || '').trim();
+        return isSchedulerSalesforceUpsertSelection() && objectApiName === 'PricebookEntry' && upsertField === 'ProductCode';
+      }
+
+      function syncSchedulerTargetDefinitionEditorState() {
+        const targetDefinitionInput = document.getElementById('sch-target-definition');
+        const targetDefinitionHelp = document.getElementById('sch-target-definition-help');
+        const shouldMirrorReadonly = isSchedulerSalesforceUpsertSelection()
+          && String(document.getElementById('sch-object')?.value || '').trim() === 'PricebookEntry';
+
+        if (targetDefinitionInput) {
+          targetDefinitionInput.readOnly = shouldMirrorReadonly;
+          targetDefinitionInput.classList.toggle('bg-light', shouldMirrorReadonly);
+        }
+
+        if (targetDefinitionHelp) {
+          targetDefinitionHelp.textContent = shouldMirrorReadonly
+            ? 'Wird aus Objekt, Operation, Upsert-Feld und Pricebook2Id gespiegelt. Fuer PricebookEntry bitte die sichtbaren Felder oberhalb verwenden.'
+            : '';
+        }
+      }
+
+      function getSchedulerSalesforceUpsertConstraintMessage() {
+        if (!isSchedulerSalesforceUpsertSelection()) {
+          return '';
+        }
+
+        const objectApiName = String(document.getElementById('sch-object')?.value || '').trim();
+        const upsertField = String(document.getElementById('sch-external-id-field')?.value || getSchedulerTargetDefinitionUpsertFieldValue() || '').trim();
+
+        if (objectApiName === 'PricebookEntry' && upsertField === 'ProductCode' && !hasSchedulerPricebook2IdConfigured()) {
+          return 'ProductCode ist für PricebookEntry nur zulässig, wenn Pricebook2Id als Ziel-Feld oder Mapping gesetzt ist.';
+        }
+
+        return '';
+      }
+
+      function updateSchedulerExternalIdValidationState() {
+        const select = document.getElementById('sch-external-id-field');
+        const help = document.getElementById('sch-external-id-help');
+        const pricebookInput = document.getElementById('sch-pricebook2id');
+        const pricebookHelp = document.getElementById('sch-pricebook2id-help');
+        const baseHelpText = String(help?.dataset.baseText || 'Wählen Sie das Feld, das für Upsert verwendet werden soll.');
+        const message = getSchedulerSalesforceUpsertConstraintMessage();
+        const requiresPricebook2Id = isSchedulerPricebookEntryProductCodeSelection();
+
+        if (select) {
+          select.classList.toggle('is-invalid', Boolean(message));
+        }
+
+        if (pricebookInput) {
+          pricebookInput.classList.toggle('is-invalid', Boolean(message) && requiresPricebook2Id && !String(pricebookInput.value || '').trim() && !hasSchedulerPricebook2IdMapping());
+        }
+
+        if (help) {
+          help.textContent = message || baseHelpText;
+          help.classList.toggle('text-danger', Boolean(message));
+        }
+
+        if (pricebookHelp) {
+          const basePricebookHelp = String(pricebookHelp.dataset.baseText || 'Optional als festes Ziel-Pricebook für PricebookEntry-Upserts.');
+          pricebookHelp.textContent = message && requiresPricebook2Id ? message : basePricebookHelp;
+          pricebookHelp.classList.toggle('text-danger', Boolean(message) && requiresPricebook2Id);
+        }
+
+        return message;
       }
 
       async function loadSchedulerExternalIdOptions(selectedValue) {
@@ -4360,7 +4524,7 @@ function htmlShell(): string {
 
         const objectApiName = String(document.getElementById('sch-object')?.value || '').trim();
         if (!objectApiName || !isSchedulerSalesforceUpsertSelection()) {
-          select.innerHTML = '<option value="">- External ID wählen -</option>';
+          select.innerHTML = '<option value="">- Upsert Feld wählen -</option>';
           select.value = '';
           return [];
         }
@@ -4368,28 +4532,38 @@ function htmlShell(): string {
         try {
           const res = await fetch('/api/salesforce/object-fields?object=' + encodeURIComponent(objectApiName) + '&instanceId=' + encodeURIComponent(state.instanceId || ''));
           if (!res.ok) {
-            select.innerHTML = '<option value="">- External ID wählen -</option>';
+            select.innerHTML = '<option value="">- Upsert Feld wählen -</option>';
             return [];
           }
 
           const fields = await res.json();
           const externalIdFields = (Array.isArray(fields) ? fields : []).filter((field) => field && field.isExternalId === true);
-          const currentValue = String(selectedValue || getSchedulerTargetDefinitionExternalIdField() || '').trim();
-          select.innerHTML = '<option value="">- External ID wählen -</option>' + externalIdFields.map((field) => {
+          const currentValue = String(selectedValue || getSchedulerTargetDefinitionUpsertFieldValue() || '').trim();
+          const allowPricebookProductCode = objectApiName === 'PricebookEntry' && hasSchedulerPricebook2IdConfigured();
+          select.innerHTML = '<option value="">- Upsert Feld wählen -</option>' + externalIdFields.map((field) => {
             const name = String(field?.name || '').trim();
             const label = String(field?.label || '').trim();
             const optionLabel = label && label !== name ? label + ' (' + name + ')' : name;
             return '<option value="' + esc(name) + '"' + (currentValue === name ? ' selected' : '') + '>' + esc(optionLabel) + '</option>';
           }).join('');
+          if (objectApiName === 'PricebookEntry') {
+            if (allowPricebookProductCode) {
+              select.innerHTML += '<option value="ProductCode"' + (currentValue === 'ProductCode' ? ' selected' : '') + '>ProductCode (Composite Key mit Pricebook2Id)</option>';
+            } else if (currentValue === 'ProductCode') {
+              select.innerHTML += '<option value="ProductCode" selected>ProductCode (Pricebook2Id-Mapping fehlt)</option>';
+            }
+          }
           if (currentValue && !externalIdFields.some((field) => String(field?.name || '').trim() === currentValue)) {
-            select.innerHTML += '<option value="' + esc(currentValue) + '" selected>' + esc(currentValue + ' (nicht mehr gefunden)') + '</option>';
+            if (!(objectApiName === 'PricebookEntry' && currentValue === 'ProductCode')) {
+              select.innerHTML += '<option value="' + esc(currentValue) + '" selected>' + esc(currentValue + ' (nicht mehr gefunden)') + '</option>';
+            }
           }
           if (currentValue) {
             select.value = currentValue;
           }
           return externalIdFields;
         } catch {
-          select.innerHTML = '<option value="">- External ID wählen -</option>';
+          select.innerHTML = '<option value="">- Upsert Feld wählen -</option>';
           return [];
         }
       }
@@ -4397,29 +4571,94 @@ function htmlShell(): string {
       async function syncSchedulerExternalIdUi(selectedValue) {
         const wrap = document.getElementById('sch-external-id-wrap');
         const help = document.getElementById('sch-external-id-help');
-        const show = isSchedulerSalesforceUpsertSelection();
+        const label = document.getElementById('sch-external-id-label');
+        const select = document.getElementById('sch-external-id-field');
+        const pricebookWrap = document.getElementById('sch-pricebook2id-wrap');
+        const pricebookInput = document.getElementById('sch-pricebook2id');
+        const pricebookHelp = document.getElementById('sch-pricebook2id-help');
+        const isSalesforce = isSchedulerSalesforceUpsertSelection();
+        const isMssql = isSchedulerMssqlUpsertSelection();
+        const objectApiName = String(document.getElementById('sch-object')?.value || '').trim();
+        const show = isSalesforce || isMssql;
         if (wrap) {
           wrap.classList.toggle('d-none', !show);
         }
 
         if (!show) {
-          const select = document.getElementById('sch-external-id-field');
+          syncSchedulerTargetDefinitionEditorState();
           if (select) {
-            select.innerHTML = '<option value="">- External ID wählen -</option>';
+            select.innerHTML = '<option value="">- Upsert Feld wählen -</option>';
             select.value = '';
           }
-          if (help) {
-            help.textContent = 'Nur echte Salesforce External-ID-Felder werden angeboten.';
+          if (label) {
+            label.textContent = 'Upsert Feld';
           }
+          if (help) {
+            help.textContent = 'Wählen Sie das Feld, das für Upsert verwendet werden soll.';
+          }
+          if (pricebookWrap) {
+            pricebookWrap.classList.add('d-none');
+          }
+          if (pricebookInput) {
+            pricebookInput.value = '';
+          }
+          return;
+        }
+
+        const showPricebook2Id = isSalesforce && objectApiName === 'PricebookEntry';
+        syncSchedulerTargetDefinitionEditorState();
+        if (pricebookWrap) {
+          pricebookWrap.classList.toggle('d-none', !showPricebook2Id);
+        }
+        if (pricebookInput) {
+          pricebookInput.value = String(
+            pricebookInput.value
+            || getSchedulerTargetDefinitionPricebook2IdValue()
+            || getSchedulerMappedStaticPricebook2IdValue()
+            || ''
+          ).trim();
+        }
+        if (pricebookHelp) {
+          pricebookHelp.dataset.baseText = showPricebook2Id
+            ? 'Festes Ziel-Pricebook für PricebookEntry-Upserts. Leer lassen, wenn Pricebook2Id aus dem Mapping kommt.'
+            : 'Optional als festes Ziel-Pricebook für PricebookEntry-Upserts.';
+          pricebookHelp.textContent = pricebookHelp.dataset.baseText;
+        }
+
+        if (isMssql) {
+          const currentValue = String(selectedValue || getSchedulerTargetDefinitionUpsertFieldValue() || '').trim();
+          const fields = Array.isArray(state.targetFields) ? state.targetFields : [];
+          if (select) {
+            select.innerHTML = '<option value="">- Upsert Feld wählen -</option>' + fields.map((field) => {
+              const name = String(field?.name || '').trim();
+              const optionLabel = String(field?.label || '').trim() || name;
+              return '<option value="' + esc(name) + '"' + (currentValue === name ? ' selected' : '') + '>' + esc(optionLabel) + '</option>';
+            }).join('');
+            if (currentValue && !fields.some((field) => String(field?.name || '').trim() === currentValue)) {
+              select.innerHTML += '<option value="' + esc(currentValue) + '" selected>' + esc(currentValue + ' (nicht mehr gefunden)') + '</option>';
+            }
+            if (currentValue) {
+              select.value = currentValue;
+            }
+          }
+          if (help) {
+            help.dataset.baseText = fields.length
+              ? 'Dieses Zieltabellen-Feld wird für Upsert als Match-Kriterium verwendet. Ohne Auswahl gilt der Connector-Default.'
+              : 'Zuerst Zielobjekt und Connector wählen, damit die MSSQL-Felder geladen werden können.';
+            help.textContent = help.dataset.baseText;
+          }
+          updateSchedulerExternalIdValidationState();
           return;
         }
 
         const options = await loadSchedulerExternalIdOptions(selectedValue);
         if (help) {
-          help.textContent = options.length
+          help.dataset.baseText = options.length
             ? 'Nur echte Salesforce External-ID-Felder werden angeboten.'
             : 'Für dieses Objekt wurden keine External-ID-Felder gefunden.';
+          help.textContent = help.dataset.baseText;
         }
+        updateSchedulerExternalIdValidationState();
       }
 
       function toggleCreateObjectFromSourceUi() {
@@ -7171,6 +7410,95 @@ function htmlShell(): string {
         }
       }
 
+      function getRunSortTime(run) {
+        return new Date(run?.startedAt || run?.finishedAt || 0).getTime();
+      }
+
+      function getLatestRunForSchedule(scheduleId) {
+        return (state.runs || [])
+          .filter((run) => String(run.scheduleId || '').trim() === String(scheduleId || '').trim())
+          .sort((left, right) => getRunSortTime(right) - getRunSortTime(left))[0] || null;
+      }
+
+      function getLatestFailedRunForSchedule(scheduleId) {
+        return (state.runs || [])
+          .filter((run) => String(run.scheduleId || '').trim() === String(scheduleId || '').trim() && normalizeRunStatus(run.status) === 'failed')
+          .sort((left, right) => getRunSortTime(right) - getRunSortTime(left))[0] || null;
+      }
+
+      function buildRunProgressMetrics(run) {
+        if (!run) {
+          return null;
+        }
+
+        const recordsRead = Math.max(0, Number(run.recordsRead ?? 0) || 0);
+        const recordsProcessed = Math.max(0, Number(run.recordsProcessed ?? 0) || 0);
+        const recordsSucceeded = Math.max(0, Number(run.recordsSucceeded ?? 0) || 0);
+        const recordsFailed = Math.max(0, Number(run.recordsFailed ?? 0) || 0);
+        const total = Math.max(recordsRead, recordsProcessed, recordsSucceeded + recordsFailed);
+        const completed = Math.max(recordsProcessed, recordsSucceeded + recordsFailed);
+        const pending = Math.max(0, total - recordsSucceeded - recordsFailed);
+        const completedPercent = total > 0 ? Math.max(0, Math.min(100, (completed / total) * 100)) : 0;
+        const successPercent = total > 0 ? Math.max(0, Math.min(100, (recordsSucceeded / total) * 100)) : 0;
+        const failedPercent = total > 0 ? Math.max(0, Math.min(100, (recordsFailed / total) * 100)) : 0;
+        const pendingPercent = total > 0 ? Math.max(0, Math.min(100, 100 - successPercent - failedPercent)) : 0;
+
+        return {
+          recordsRead,
+          recordsProcessed,
+          recordsSucceeded,
+          recordsFailed,
+          total,
+          completed,
+          pending,
+          completedPercent,
+          successPercent,
+          failedPercent,
+          pendingPercent,
+          normalizedStatus: normalizeRunStatus(run.status)
+        };
+      }
+
+      function renderRunProgressMarkup(run, options) {
+        const viewOptions = options || {};
+        const compact = Boolean(viewOptions.compact);
+        const metrics = buildRunProgressMetrics(run);
+
+        if (!metrics) {
+          return '<div class="run-mini-gauge-empty">Noch kein Lauf</div>';
+        }
+
+        const wrapperClassName = compact ? 'run-mini-gauge-wrap is-compact' : 'run-mini-gauge-wrap';
+        const metaPrefix = compact ? 'Letzter Lauf: ' : '';
+
+        if (metrics.total > 0) {
+          const title = metrics.recordsSucceeded + ' erfolgreich, ' + metrics.recordsFailed + ' fehlerhaft, ' + metrics.pending + ' offen von ' + metrics.total;
+          const summary = metrics.normalizedStatus === 'running'
+            ? Math.round(metrics.completedPercent) + '% • ' + metrics.completed + ' / ' + metrics.total + ' verarbeitet'
+            : metrics.recordsSucceeded + ' ok / ' + metrics.recordsFailed + ' fail / ' + metrics.total + ' gesamt';
+
+          return '<div class="' + wrapperClassName + '">' +
+            '<div class="run-mini-gauge" title="' + esc(title) + '">' +
+              '<span class="run-mini-gauge-segment is-success" style="width:' + metrics.successPercent.toFixed(2) + '%"></span>' +
+              '<span class="run-mini-gauge-segment is-failed" style="width:' + metrics.failedPercent.toFixed(2) + '%"></span>' +
+              '<span class="run-mini-gauge-segment is-pending" style="width:' + metrics.pendingPercent.toFixed(2) + '%"></span>' +
+            '</div>' +
+            '<div class="run-mini-gauge-meta">' + esc(metaPrefix + summary) + '</div>' +
+          '</div>';
+        }
+
+        if (metrics.normalizedStatus === 'running') {
+          return '<div class="' + wrapperClassName + '">' +
+            '<div class="run-mini-gauge run-mini-gauge-activity" title="Gesamtmenge aktuell noch unbekannt">' +
+              '<span class="run-mini-gauge-activity-indicator"></span>' +
+            '</div>' +
+            '<div class="run-mini-gauge-meta">' + esc(metaPrefix + 'läuft, Gesamtzahl noch unbekannt') + '</div>' +
+          '</div>';
+        }
+
+        return '<div class="' + wrapperClassName + '"><div class="run-mini-gauge-empty">' + esc(metaPrefix + metrics.recordsSucceeded + ' ok / ' + metrics.recordsFailed + ' fail') + '</div></div>';
+      }
+
       function renderSchedules() {
         const body = document.getElementById('schedules-body');
         const autoDisabledWarning = document.getElementById('schedulers-auto-disabled-warning');
@@ -7274,14 +7602,9 @@ function htmlShell(): string {
             const activeHint = item.autoDisabledDueToErrors
               ? '<span class="badge bg-warning-subtle text-warning border mt-1" title="Automatisch wegen Fehlern deaktiviert">auto deaktiviert</span>'
               : '<span class="small text-secondary">' + (item.active ? 'aktiv' : 'inaktiv') + '</span>';
-            const lastFailedRun = (state.runs || [])
-              .filter((run) => run.scheduleId === item.id && run.status === 'Failed')
-              .sort((a, b) => {
-                const timeA = new Date(a.finishedAt || 0).getTime();
-                const timeB = new Date(b.finishedAt || 0).getTime();
-                return timeB - timeA;
-              })
-              [0];
+            const latestRun = getLatestRunForSchedule(item.id);
+            const lastFailedRun = getLatestFailedRunForSchedule(item.id);
+            const progressMarkup = renderRunProgressMarkup(latestRun, { compact: true });
             const errorMarkup = lastFailedRun
               ? '<button class="btn btn-sm btn-outline-danger mt-2" title="Letzter Fehler: ' + esc(lastFailedRun.errorMessage || 'Unbekannter Fehler') + '" data-show-run-logs="' + esc(lastFailedRun.id) + '">Fehlerdetails</button>'
               : '<span class="small text-secondary d-block mt-2">keine offenen Fehler</span>';
@@ -7289,7 +7612,7 @@ function htmlShell(): string {
             return '<tr data-schedule-active="' + (item.active ? 'active' : 'inactive') + '">' +
               '<td><div style="padding-left:' + indent + 'px"><strong class="text-truncate d-block" title="' + esc(item.name) + '">' + esc(item.name) + hierarchyBadge + '</strong><div class="small text-secondary text-truncate" title="' + esc(item.objectName) + ' / ' + esc(item.operation) + '">' + objectIcon + ' ' + esc(item.objectName) + ' / ' + esc(item.operation) + '</div><div class="small text-secondary text-truncate mt-1" title="' + esc(parentName) + '">Parent: ' + esc(parentName) + (item.inheritTimingFromParent ? ' <span class="badge bg-primary-subtle text-primary border">inherits</span>' : '') + '</div></div></td>' +
               '<td><div class="form-check form-switch mb-1"><input class="form-check-input" type="checkbox" role="switch" data-toggle-schedule-active="' + esc(item.id) + '"' + (item.active ? ' checked' : '') + '></div>' + activeHint + '</td>' +
-              '<td>' + getStatusBadge(item.status) + errorMarkup + '</td>' +
+              '<td>' + getStatusBadge(item.status) + progressMarkup + errorMarkup + '</td>' +
               '<td><div class="fw-semibold text-truncate" title="' + esc(connectorName) + '">' + esc(connectorName) + '</div><div class="small text-secondary">' + esc(item.direction || '-') + '</div></td>' +
               '<td><div class="fw-semibold">' + esc(intervalLabel) + '</div><div class="small text-secondary">Nächster Lauf: ' + formatDate(item.nextRunAt, 'short') + '</div></td>' +
               '<td><div class="d-flex flex-wrap gap-1">' +
@@ -7410,7 +7733,7 @@ function htmlShell(): string {
               '<td>' + getStatusBadge(item.status) + '</td>' +
               '<td>' + esc(formatDate(item.startedAt || item.finishedAt, 'short')) + '</td>' +
               '<td>' + esc(formatDurationMinSec(durationMs)) + '</td>' +
-              '<td>' + esc((item.recordsSucceeded ?? 0) + ' ok / ' + (item.recordsFailed ?? 0) + ' fail') + '</td>' +
+              '<td>' + renderRunProgressMarkup(item) + '</td>' +
               '<td><button class="btn btn-sm btn-outline-primary" data-log-run="' + esc(item.id) + '">Logs</button></td>' +
               '<td>' + actionMarkup + '</td>' +
               '</tr>';
@@ -7686,98 +8009,149 @@ function htmlShell(): string {
           return { nodes, edges };
         }
 
-        const nodeIds = new Set(nodes.map((node) => String(node.id || '')));
-        const adjacency = new Map();
-        const indegree = new Map();
+        const baseX = 30;
+        const columnGap = 320;
+        const baseY = 26;
+        const rowGap = 18;
+        const nodeHeight = 82;
+        const rootGap = 36;
+        const connectors = nodes.filter((node) => node.kind === 'connector');
+        const schedulers = nodes.filter((node) => node.kind === 'scheduler');
+        const schedulerById = new Map(schedulers.map((node) => [String(node.id || ''), node]));
+        const childrenByParent = new Map();
+        const parentByChild = new Map();
+        const rootScheduleIds = [];
+        const schedulerIds = new Set(schedulers.map((node) => String(node.id || '')));
+        const connectorTargetsByConnector = new Map();
 
-        nodes.forEach((node) => {
-          const id = String(node.id || '');
-          adjacency.set(id, []);
-          indegree.set(id, 0);
+        schedulers.forEach((node) => {
+          childrenByParent.set(String(node.id || ''), []);
         });
 
         edges.forEach((edge) => {
           const from = String(edge.from || '');
           const to = String(edge.to || '');
-          if (!nodeIds.has(from) || !nodeIds.has(to)) {
+          if (schedulerIds.has(from) && schedulerIds.has(to)) {
+            if (!childrenByParent.has(from)) {
+              childrenByParent.set(from, []);
+            }
+            childrenByParent.get(from).push(to);
+            parentByChild.set(to, from);
             return;
           }
-          adjacency.get(from).push(to);
-          indegree.set(to, Number(indegree.get(to) || 0) + 1);
-        });
-
-        const levelByNode = new Map();
-        const queue = [];
-        const selectedConnectorId = String(state.overviewConnectorFilterId || '').trim();
-        const selectedConnectorNode = selectedConnectorId
-          ? nodes.find((node) => node.kind === 'connector' && String(node.refId || '').trim() === selectedConnectorId)
-          : null;
-
-        if (selectedConnectorNode) {
-          const selectedId = String(selectedConnectorNode.id || '');
-          levelByNode.set(selectedId, 0);
-          queue.push(selectedId);
-        } else {
-          nodes.forEach((node) => {
-            const id = String(node.id || '');
-            if ((indegree.get(id) || 0) === 0) {
-              levelByNode.set(id, 0);
-              queue.push(id);
+          const fromNode = nodes.find((node) => String(node.id || '') === from);
+          if (fromNode?.kind === 'connector' && schedulerIds.has(to)) {
+            if (!connectorTargetsByConnector.has(from)) {
+              connectorTargetsByConnector.set(from, []);
             }
-          });
-        }
-
-        while (queue.length) {
-          const current = String(queue.shift() || '');
-          const currentLevel = Number(levelByNode.get(current) || 0);
-          (adjacency.get(current) || []).forEach((nextId) => {
-            const candidateLevel = currentLevel + 1;
-            if (!levelByNode.has(nextId) || candidateLevel > Number(levelByNode.get(nextId) || 0)) {
-              levelByNode.set(nextId, candidateLevel);
-            }
-            queue.push(nextId);
-          });
-        }
-
-        nodes.forEach((node) => {
-          const id = String(node.id || '');
-          if (!levelByNode.has(id)) {
-            levelByNode.set(id, 0);
+            connectorTargetsByConnector.get(from).push(to);
           }
         });
 
-        const levels = new Map();
-        nodes.forEach((node) => {
+        schedulers.forEach((node) => {
           const id = String(node.id || '');
-          const level = Number(levelByNode.get(id) || 0);
-          if (!levels.has(level)) {
-            levels.set(level, []);
+          if (!parentByChild.has(id)) {
+            rootScheduleIds.push(id);
           }
-          levels.get(level).push(node);
         });
 
-        const sortedLevels = Array.from(levels.keys()).sort((a, b) => a - b);
-        const baseX = 30;
-        const columnGap = 320;
-        const baseY = 26;
-        const rowGap = 24;
-        const nodeHeight = 82;
+        rootScheduleIds.sort((leftId, rightId) =>
+          String(schedulerById.get(leftId)?.label || '').localeCompare(
+            String(schedulerById.get(rightId)?.label || ''),
+            'de',
+            { sensitivity: 'base' }
+          )
+        );
 
-        sortedLevels.forEach((level) => {
-          const levelNodes = levels.get(level) || [];
-          levelNodes.sort((a, b) => {
-            const kindA = String(a.kind || '');
-            const kindB = String(b.kind || '');
-            if (kindA !== kindB) {
-              return kindA.localeCompare(kindB);
-            }
-            return String(a.label || '').localeCompare(String(b.label || ''), 'de', { sensitivity: 'base' });
+        childrenByParent.forEach((childIds) => {
+          childIds.sort((leftId, rightId) =>
+            String(schedulerById.get(leftId)?.label || '').localeCompare(
+              String(schedulerById.get(rightId)?.label || ''),
+              'de',
+              { sensitivity: 'base' }
+            )
+          );
+        });
+
+        const subtreeHeightCache = new Map();
+        const computeSubtreeHeight = (scheduleId) => {
+          if (subtreeHeightCache.has(scheduleId)) {
+            return subtreeHeightCache.get(scheduleId);
+          }
+
+          const childIds = childrenByParent.get(scheduleId) || [];
+          if (!childIds.length) {
+            subtreeHeightCache.set(scheduleId, nodeHeight);
+            return nodeHeight;
+          }
+
+          const childrenHeight = childIds.reduce((sum, childId, index) => {
+            const nextSum = sum + computeSubtreeHeight(childId);
+            return index < childIds.length - 1 ? nextSum + rowGap : nextSum;
+          }, 0);
+          const height = Math.max(nodeHeight, childrenHeight);
+          subtreeHeightCache.set(scheduleId, height);
+          return height;
+        };
+
+        const placeSchedule = (scheduleId, depth, topY) => {
+          const node = schedulerById.get(scheduleId);
+          if (!node) {
+            return nodeHeight;
+          }
+
+          const childIds = childrenByParent.get(scheduleId) || [];
+          const childrenHeight = childIds.length
+            ? childIds.reduce((sum, childId, index) => {
+                const nextSum = sum + computeSubtreeHeight(childId);
+                return index < childIds.length - 1 ? nextSum + rowGap : nextSum;
+              }, 0)
+            : 0;
+          const subtreeHeight = Math.max(nodeHeight, childrenHeight || 0);
+          node.x = baseX + columnGap + depth * columnGap;
+          node.y = topY + Math.max(0, (subtreeHeight - nodeHeight) / 2);
+
+          if (childIds.length) {
+            let cursorY = topY;
+            childIds.forEach((childId) => {
+              const childHeight = computeSubtreeHeight(childId);
+              placeSchedule(childId, depth + 1, cursorY);
+              cursorY += childHeight + rowGap;
+            });
+          }
+
+          return subtreeHeight;
+        };
+
+        let cursorY = baseY;
+        rootScheduleIds.forEach((scheduleId, index) => {
+          const height = computeSubtreeHeight(scheduleId);
+          placeSchedule(scheduleId, 0, cursorY);
+          cursorY += height + (index < rootScheduleIds.length - 1 ? rootGap : 0);
+        });
+
+        const fallbackConnectorY = new Map();
+        connectors
+          .slice()
+          .sort((left, right) => String(left.label || '').localeCompare(String(right.label || ''), 'de', { sensitivity: 'base' }))
+          .forEach((node, index) => {
+            fallbackConnectorY.set(String(node.id || ''), baseY + index * (nodeHeight + rootGap));
           });
 
-          levelNodes.forEach((node, index) => {
-            node.x = baseX + level * columnGap;
-            node.y = baseY + index * (nodeHeight + rowGap);
-          });
+        connectors.forEach((node) => {
+          const connectorId = String(node.id || '');
+          const targetIds = (connectorTargetsByConnector.get(connectorId) || []).filter((targetId) => schedulerById.has(targetId));
+          node.x = baseX;
+          if (!targetIds.length) {
+            node.y = fallbackConnectorY.get(connectorId) || baseY;
+            return;
+          }
+
+          const averageY = targetIds.reduce((sum, targetId) => {
+            const targetNode = schedulerById.get(targetId);
+            return sum + Number(targetNode?.y || baseY);
+          }, 0) / targetIds.length;
+          node.y = Math.max(baseY, averageY);
         });
 
         return { nodes, edges };
@@ -8246,6 +8620,7 @@ function htmlShell(): string {
         document.getElementById('sch-source-delta-record-id').value = String(entry?.currentDeltaRecordId || '');
         const parsedTargetDefinition = parseScheduleTargetDefinition(entry?.targetType || '', entry?.targetDefinition || '');
         document.getElementById('sch-target-definition').value = parsedTargetDefinition.editorText || '';
+        document.getElementById('sch-pricebook2id').value = '';
         document.getElementById('sch-target-relative-directory').value = parsedTargetDefinition.relativeDirectory || '';
         document.getElementById('sch-target-archive-relative-directory').value = parsedTargetDefinition.archiveRelativeDirectory || '';
         document.getElementById('sch-mapping').value = entry?.mappingDefinition || '';
@@ -8727,6 +9102,10 @@ function htmlShell(): string {
             validateScheduleWizardStep(step);
           }
           ensureSalesforceTargetDefinition();
+          const targetConstraintMessage = updateSchedulerExternalIdValidationState();
+          if (targetConstraintMessage) {
+            throw new Error(targetConstraintMessage);
+          }
 
           const payload = collectScheduleFormPayload();
           const scheduleId = payload.id;
@@ -9145,10 +9524,18 @@ function htmlShell(): string {
       });
       bindEventListenerOnce('sch-external-id-field', 'change', () => {
         ensureSalesforceTargetDefinition();
+        updateSchedulerExternalIdValidationState();
+      });
+      bindEventListenerOnce('sch-pricebook2id', 'input', async () => {
+        ensureSalesforceTargetDefinition();
+        await syncSchedulerExternalIdUi();
       });
       bindEventListenerOnce('sch-target-definition', 'change', async () => {
         await syncSchedulerExternalIdUi();
         updateScheduleFilePathSummaries();
+      });
+      bindEventListenerOnce('sch-mapping', 'change', async () => {
+        await syncSchedulerExternalIdUi();
       });
       bindEventListenerOnce('sch-connector', 'change', async () => {
         await loadTargetObjects(document.getElementById('sch-object').value || '');
@@ -9414,8 +9801,16 @@ function htmlShell(): string {
       });
       bindEventListenerOnce('sch-external-id-field', 'change', () => {
         ensureSalesforceTargetDefinition();
+        updateSchedulerExternalIdValidationState();
+      });
+      bindEventListenerOnce('sch-pricebook2id', 'input', async () => {
+        ensureSalesforceTargetDefinition();
+        await syncSchedulerExternalIdUi();
       });
       bindEventListenerOnce('sch-target-definition', 'change', async () => {
+        await syncSchedulerExternalIdUi();
+      });
+      bindEventListenerOnce('sch-mapping', 'change', async () => {
         await syncSchedulerExternalIdUi();
       });
       document.getElementById('sch-create-custom-object').addEventListener('click', createSalesforceCustomObjectFromSource);

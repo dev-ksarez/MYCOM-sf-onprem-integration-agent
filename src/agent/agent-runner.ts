@@ -834,7 +834,7 @@ async function executeSchedule(
       const sourceAdapter = new SalesforceSoqlSourceAdapter(salesforceClient, schedule.sourceDefinition);
       const targetAdapter = isGenericSalesforceToFile
         ? new FileTargetAdapter(connectorConfig, schedule.targetDefinition || "")
-        : new MssqlTargetAdapter(connector as MssqlConnector);
+        : new MssqlTargetAdapter(connector as MssqlConnector, schedule.targetDefinition);
       const job = new DataTransferJob(logger, sourceAdapter, targetAdapter);
       result = await job.execute(transferContext, schedule.mappingDefinition);
     } else if (
@@ -895,7 +895,7 @@ async function executeSchedule(
       const targetAdapter = isGenericMssqlToFile
         ? new FileTargetAdapter(connectorConfig, schedule.targetDefinition)
         : isGenericFileToMssql
-          ? new MssqlTargetAdapter(connector as MssqlConnector)
+          ? new MssqlTargetAdapter(connector as MssqlConnector, schedule.targetDefinition)
           : isGenericMssqlToGlobalPicklist || isGenericFileToGlobalPicklist
             ? new SalesforceGlobalPicklistTargetAdapter(salesforceClient, schedule.targetDefinition)
             : new SalesforceTargetAdapter(salesforceClient, schedule.targetDefinition, connectorConfig);

@@ -27,6 +27,7 @@ interface StoredMappingRule {
   targetType?: unknown;
   sourceType?: unknown;
   transformFunction?: unknown;
+  transformExpression?: unknown;
   lookupEnabled?: unknown;
   lookupObject?: unknown;
   lookupField?: unknown;
@@ -155,9 +156,12 @@ function parseStoredRule(rule: StoredMappingRule, lineNumber: number): MappingDe
   const lookupObject = String(rule.lookupObject ?? "").trim();
   const lookupField = String(rule.lookupField ?? "").trim();
   const rawTransformFunction = String(rule.transformFunction ?? "NONE").trim() || "NONE";
+  const rawTransformExpression = String(rule.transformExpression ?? "");
   const rawTransform = lookupEnabled && lookupObject && lookupField
     ? `LOOKUP[${lookupObject}|${lookupField}]`
-    : rawTransformFunction;
+    : rawTransformFunction === "STATIC"
+      ? `STATIC[${rawTransformExpression}]`
+      : rawTransformFunction;
   const transform = parseTransform(rawTransform, lineNumber);
 
   return {
