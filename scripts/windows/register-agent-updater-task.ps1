@@ -10,6 +10,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:ScriptDirectory = Split-Path -Parent $PSCommandPath
 
 function Resolve-AppRoot {
   param([string]$InputPath)
@@ -18,7 +19,7 @@ function Resolve-AppRoot {
     return (Resolve-Path -Path $InputPath).Path
   }
 
-  $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+  $scriptDir = $script:ScriptDirectory
   return (Resolve-Path -Path (Join-Path $scriptDir "..\..\")).Path
 }
 
@@ -38,23 +39,39 @@ if (-not (Test-Path $scriptPath)) {
   throw "Updater script not found: $scriptPath"
 }
 
-$argument = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -ServiceName `"$ServiceName`" -UpdateManifestUrl `"$ManifestUrl`" -AppRoot `"$appRootResolved`""
+function Invoke-Schtasks {
+  param([string[]]$Arguments)
 
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argument
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1)
-$trigger.RepetitionInterval = (New-TimeSpan -Minutes $EveryMinutes)
-$trigger.RepetitionDuration = ([TimeSpan]::MaxValue)
+  $output = & schtasks.exe @Arguments 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    $message = ($output | Out-String).Trim()
+    throw "schtasks.exe failed (exit code $LASTEXITCODE): $message"
+  }
 
-$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+  return $output
+}
 
-Register-ScheduledTask \
-  -TaskName $TaskName \
-  -Action $action \
-  -Trigger $trigger \
-  -Principal $principal \
-  -Settings $settings \
-  -Force | Out-Null
+$wrapperPath = Join-Path $appRootResolved "run-agent-updater.cmd"
+$wrapperContent = @(
+  "@echo off",
+  "setlocal",
+  ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%%~dp0scripts\windows\update-agent.ps1" -ServiceName "{0}" -UpdateManifestUrl "{1}" -AppRoot "%%~dp0"' -f $ServiceName, $ManifestUrl),
+  "endlocal"
+)
+Set-Content -Path $wrapperPath -Value $wrapperContent -Encoding ASCII
+
+$taskCommand = ('"{0}"' -f $wrapperPath)
+
+[void](Invoke-Schtasks -Arguments @(
+  "/Create",
+  "/TN", $TaskName,
+  "/SC", "MINUTE",
+  "/MO", "$EveryMinutes",
+  "/TR", $taskCommand,
+  "/RU", "SYSTEM",
+  "/RL", "HIGHEST",
+  "/F"
+))
 
 Write-Host "Scheduled updater task '$TaskName' created." -ForegroundColor Green
 Write-Host "Runs every $EveryMinutes minute(s)."

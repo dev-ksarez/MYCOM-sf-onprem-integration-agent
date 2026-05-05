@@ -7,6 +7,7 @@ import {
   SalesforceInstanceMutationInput,
   ConnectorMutationInput,
   ScheduleMutationInput,
+  ScheduleCheckpointMutationInput,
   LogChartRange,
   SetupExportDocument,
   MigrationConfig,
@@ -19,7 +20,7 @@ const CHART_JS_FILE = path.resolve(process.cwd(), "node_modules/chart.js/dist/ch
 const APP_STYLE_CSS_FILE = path.resolve(process.cwd(), "src/css/style.css");
 const AGENT_UI_CSS_FILE = path.resolve(process.cwd(), "src/css/agent-ui.css");
 const TEMPLATE_STORE_CSS_FILE = path.resolve(process.cwd(), "src/css/template-store.css");
-const UI_ASSET_VERSION = "20260504-connector-ui-2";
+const UI_ASSET_VERSION = "20260504-connector-ui-3";
 const SETUP_EXAMPLE_JSON_FILE = path.resolve(
   process.cwd(),
   "artifacts/file-examples/setup-file-import-export.example.json"
@@ -684,6 +685,8 @@ function htmlShell(): string {
                       <div class="row g-2 align-items-end">
                         <div class="col-md-4"><label class="form-label">Delta Modus</label><select id="sch-source-delta-strategy" class="form-select"><option value="">Komplettlauf</option><option value="datetime">Datum / LastModified</option><option value="timestamp">Timestamp / RowVersion</option><option value="id">ID</option></select></div>
                         <div class="col-md-8"><label class="form-label">Delta Feld</label><input id="sch-source-delta-field" class="form-control" placeholder="z. B. LastModifiedDate / rowversion / Id" /></div>
+                        <div class="col-md-8"><label class="form-label">Aktueller Delta Wert</label><input id="sch-source-delta-current" class="form-control" placeholder="Wird aus dem letzten Checkpoint geladen" /></div>
+                        <div class="col-md-4"><label class="form-label">Aktuelle Delta Record-ID</label><input id="sch-source-delta-record-id" class="form-control" placeholder="Optional, v. a. für datetime" /></div>
                         <div class="col-md-12"><div id="sch-source-delta-help" class="small text-secondary">Der letzte Delta-Wert wird nach jedem Lauf automatisch gespeichert.</div></div>
                       </div>
                     </div>
@@ -726,6 +729,7 @@ function htmlShell(): string {
                   <div class="col-md-4"><label class="form-label">Operation</label><select id="sch-operation" class="form-select"><option value="">- Wählen -</option></select></div>
                   <div class="col-md-4"><label class="form-label">Target Type</label><select id="sch-target-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE">SALESFORCE</option><option value="SALESFORCE_GLOBAL_PICKLIST">SALESFORCE_GLOBAL_PICKLIST</option><option value="MSSQL">MSSQL</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
                   <div class="col-md-4"><label class="form-label">Direction</label><select id="sch-direction" class="form-select"><option value="">- Wählen -</option></select></div>
+                  <div id="sch-external-id-wrap" class="col-md-4 d-none"><label class="form-label">Upsert Feld</label><select id="sch-external-id-field" class="form-select"><option value="">- External ID wählen -</option></select><div id="sch-external-id-help" class="form-text">Nur echte Salesforce External-ID-Felder werden angeboten.</div></div>
                   <div class="col-md-12"><label class="form-label">Target Definition (JSON)</label><textarea id="sch-target-definition" class="form-control" rows="4" placeholder='{"fields":[...]}'></textarea></div>
                   <div id="sch-create-object-wrap" class="col-md-12 d-none">
                     <div class="border rounded p-2 bg-light">
@@ -3536,10 +3540,15 @@ function htmlShell(): string {
 
         const targetDefinitionInput = document.getElementById('sch-target-definition');
         const raw = String(targetDefinitionInput?.value || '').trim();
+        const externalIdField = String(document.getElementById('sch-external-id-field')?.value || '').trim();
         const nextDefinition = {
           objectApiName,
           operation: normalizeOperationValue(document.getElementById('sch-operation')?.value || 'Upsert') || 'Upsert'
         };
+
+        if (nextDefinition.operation === 'Upsert' && externalIdField) {
+          nextDefinition.externalIdField = externalIdField;
+        }
 
         if (!raw) {
           targetDefinitionInput.value = JSON.stringify(nextDefinition, null, 2);
@@ -3549,12 +3558,108 @@ function htmlShell(): string {
         try {
           const parsed = JSON.parse(raw);
           parsed.objectApiName = objectApiName;
-          if (!parsed.operation) {
-            parsed.operation = nextDefinition.operation;
+          parsed.operation = nextDefinition.operation;
+          if (nextDefinition.operation === 'Upsert') {
+            if (externalIdField) {
+              parsed.externalIdField = externalIdField;
+            }
+          } else if ('externalIdField' in parsed) {
+            delete parsed.externalIdField;
           }
           targetDefinitionInput.value = JSON.stringify(parsed, null, 2);
         } catch {
           targetDefinitionInput.value = JSON.stringify(nextDefinition, null, 2);
+        }
+      }
+
+      function isSchedulerSalesforceUpsertSelection() {
+        const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
+        const targetSystem = resolveEffectiveTargetSystem();
+        const operation = normalizeOperationValue(document.getElementById('sch-operation')?.value || '');
+        return targetType === 'SALESFORCE' && targetSystem === 'Salesforce' && operation === 'Upsert';
+      }
+
+      function getSchedulerTargetDefinitionExternalIdField() {
+        const raw = String(document.getElementById('sch-target-definition')?.value || '').trim();
+        if (!raw) {
+          return '';
+        }
+
+        try {
+          const parsed = JSON.parse(raw);
+          return String(parsed?.externalIdField || '').trim();
+        } catch {
+          return '';
+        }
+      }
+
+      async function loadSchedulerExternalIdOptions(selectedValue) {
+        const select = document.getElementById('sch-external-id-field');
+        if (!select) {
+          return [];
+        }
+
+        const objectApiName = String(document.getElementById('sch-object')?.value || '').trim();
+        if (!objectApiName || !isSchedulerSalesforceUpsertSelection()) {
+          select.innerHTML = '<option value="">- External ID wählen -</option>';
+          select.value = '';
+          return [];
+        }
+
+        try {
+          const res = await fetch('/api/salesforce/object-fields?object=' + encodeURIComponent(objectApiName) + '&instanceId=' + encodeURIComponent(state.instanceId || ''));
+          if (!res.ok) {
+            select.innerHTML = '<option value="">- External ID wählen -</option>';
+            return [];
+          }
+
+          const fields = await res.json();
+          const externalIdFields = (Array.isArray(fields) ? fields : []).filter((field) => field && field.isExternalId === true);
+          const currentValue = String(selectedValue || getSchedulerTargetDefinitionExternalIdField() || '').trim();
+          select.innerHTML = '<option value="">- External ID wählen -</option>' + externalIdFields.map((field) => {
+            const name = String(field?.name || '').trim();
+            const label = String(field?.label || '').trim();
+            const optionLabel = label && label !== name ? label + ' (' + name + ')' : name;
+            return '<option value="' + esc(name) + '"' + (currentValue === name ? ' selected' : '') + '>' + esc(optionLabel) + '</option>';
+          }).join('');
+          if (currentValue && !externalIdFields.some((field) => String(field?.name || '').trim() === currentValue)) {
+            select.innerHTML += '<option value="' + esc(currentValue) + '" selected>' + esc(currentValue + ' (nicht mehr gefunden)') + '</option>';
+          }
+          if (currentValue) {
+            select.value = currentValue;
+          }
+          return externalIdFields;
+        } catch {
+          select.innerHTML = '<option value="">- External ID wählen -</option>';
+          return [];
+        }
+      }
+
+      async function syncSchedulerExternalIdUi(selectedValue) {
+        const wrap = document.getElementById('sch-external-id-wrap');
+        const help = document.getElementById('sch-external-id-help');
+        const show = isSchedulerSalesforceUpsertSelection();
+        if (wrap) {
+          wrap.classList.toggle('d-none', !show);
+        }
+
+        if (!show) {
+          const select = document.getElementById('sch-external-id-field');
+          if (select) {
+            select.innerHTML = '<option value="">- External ID wählen -</option>';
+            select.value = '';
+          }
+          if (help) {
+            help.textContent = 'Nur echte Salesforce External-ID-Felder werden angeboten.';
+          }
+          return;
+        }
+
+        const options = await loadSchedulerExternalIdOptions(selectedValue);
+        if (help) {
+          help.textContent = options.length
+            ? 'Nur echte Salesforce External-ID-Felder werden angeboten.'
+            : 'Für dieses Objekt wurden keine External-ID-Felder gefunden.';
         }
       }
 
@@ -4411,6 +4516,8 @@ function htmlShell(): string {
         const deltaHelp = document.getElementById('sch-source-delta-help');
         const deltaStrategy = document.getElementById('sch-source-delta-strategy').value;
         const deltaField = document.getElementById('sch-source-delta-field').value;
+        const deltaCurrentInput = document.getElementById('sch-source-delta-current');
+        const deltaRecordIdInput = document.getElementById('sch-source-delta-record-id');
         const afterExportValue = String(document.getElementById('sch-source-after-export').value || '').trim();
         const afterExportWrap = document.getElementById('sch-source-after-export-wrap');
         const highlightWrap = document.getElementById('sch-source-sql-highlight-wrap');
@@ -4424,6 +4531,12 @@ function htmlShell(): string {
 
         deltaWrap.classList.toggle('d-none', !supportsDelta);
         afterExportWrap.classList.toggle('d-none', !supportsAfterExport);
+        if (deltaCurrentInput) {
+          deltaCurrentInput.disabled = !supportsDelta;
+        }
+        if (deltaRecordIdInput) {
+          deltaRecordIdInput.disabled = !supportsDelta || deltaStrategy !== 'datetime';
+        }
         if (supportsDelta) {
           const normalizedDeltaField = String(deltaField || '').trim().toLowerCase();
           const usesMutableSalesforceTimestamp = sourceType === 'SALESFORCE_SOQL'
@@ -4531,6 +4644,40 @@ function htmlShell(): string {
         }
 
         return JSON.stringify(definition, null, 2);
+      }
+
+      async function loadScheduleCheckpoint(scheduleId) {
+        if (!scheduleId) {
+          document.getElementById('sch-source-delta-current').value = '';
+          document.getElementById('sch-source-delta-record-id').value = '';
+          return;
+        }
+
+        try {
+          const checkpoint = await requestJson('/api/schedules/' + encodeURIComponent(scheduleId) + '/checkpoint');
+          document.getElementById('sch-source-delta-current').value = String(checkpoint?.lastCheckpoint || '');
+          document.getElementById('sch-source-delta-record-id').value = String(checkpoint?.lastRecordId || '');
+        } catch {
+          document.getElementById('sch-source-delta-current').value = '';
+          document.getElementById('sch-source-delta-record-id').value = '';
+        }
+      }
+
+      async function saveScheduleCheckpoint(scheduleId) {
+        const deltaStrategy = String(document.getElementById('sch-source-delta-strategy').value || '').trim().toLowerCase();
+        const deltaField = String(document.getElementById('sch-source-delta-field').value || '').trim();
+        if (!scheduleId || !deltaStrategy || !deltaField) {
+          return;
+        }
+
+        await requestJson('/api/schedules/' + encodeURIComponent(scheduleId) + '/checkpoint', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lastCheckpoint: String(document.getElementById('sch-source-delta-current').value || '').trim() || undefined,
+            lastRecordId: String(document.getElementById('sch-source-delta-record-id').value || '').trim() || undefined
+          })
+        });
       }
 
       async function safeRequest(path, fallback) {
@@ -6552,8 +6699,11 @@ function htmlShell(): string {
         document.getElementById('sch-source-delta-strategy').value = parsedSourceDefinition.deltaStrategy || '';
         document.getElementById('sch-source-delta-field').value = parsedSourceDefinition.deltaField || '';
         document.getElementById('sch-source-after-export').value = parsedSourceDefinition.afterExportText || '';
+        document.getElementById('sch-source-delta-current').value = String(entry?.currentDeltaCheckpoint || '');
+        document.getElementById('sch-source-delta-record-id').value = String(entry?.currentDeltaRecordId || '');
         document.getElementById('sch-target-definition').value = entry?.targetDefinition || '';
         document.getElementById('sch-mapping').value = entry?.mappingDefinition || '';
+        await syncSchedulerExternalIdUi();
         state.customObjectFieldOverrides = {};
         setCreateObjectStatus('Bereit.', 'neutral');
         document.getElementById('sch-timing-start').value = new Date().toISOString().slice(0, 10);
@@ -6592,6 +6742,7 @@ function htmlShell(): string {
         renderGenericPreviewTable('sch-source-preview-header', 'sch-source-preview-body', []);
         clearModalError();
         updateSourceQueryAssist();
+        await loadScheduleCheckpoint(entry?.id || '');
         setupMappingDropZone();
         hydrateMappingRulesFromDefinition();
         loadTransformFunctions();
@@ -7035,11 +7186,13 @@ function htmlShell(): string {
             delete payload.name;
           }
 
-          await requestJson('/api/schedules', {
+          const result = await requestJson('/api/schedules', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
           });
+
+          await saveScheduleCheckpoint(result?.id || scheduleId);
 
           scheduleModal.hide();
           await refresh();
@@ -7409,6 +7562,8 @@ function htmlShell(): string {
       document.getElementById('sch-source-definition').addEventListener('input', updateSourceQueryAssist);
       document.getElementById('sch-source-delta-strategy').addEventListener('change', updateSourceQueryAssist);
       document.getElementById('sch-source-delta-field').addEventListener('input', updateSourceQueryAssist);
+      document.getElementById('sch-source-delta-current').addEventListener('input', updateSourceQueryAssist);
+      document.getElementById('sch-source-delta-record-id').addEventListener('input', updateSourceQueryAssist);
       document.getElementById('sch-source-after-export').addEventListener('input', updateSourceQueryAssist);
       document.getElementById('sch-timing-apply').addEventListener('click', applyTimingHelper);
       document.getElementById('sch-timing-reset').addEventListener('click', () => {
@@ -7467,15 +7622,28 @@ function htmlShell(): string {
         await loadTargetFields();
         toggleCreateObjectFromSourceUi();
         ensureSalesforceTargetDefinition();
+        await syncSchedulerExternalIdUi();
       });
-      document.getElementById('sch-target-type').addEventListener('change', () => {
+      document.getElementById('sch-target-type').addEventListener('change', async () => {
         applyOperationOptions('');
         toggleCreateObjectFromSourceUi();
         ensureSalesforceTargetDefinition();
+        await syncSchedulerExternalIdUi();
       });
       document.getElementById('sch-object').addEventListener('change', async () => {
         await loadTargetFields();
         ensureSalesforceTargetDefinition();
+        await syncSchedulerExternalIdUi();
+      });
+      document.getElementById('sch-operation').addEventListener('change', async () => {
+        ensureSalesforceTargetDefinition();
+        await syncSchedulerExternalIdUi();
+      });
+      document.getElementById('sch-external-id-field').addEventListener('change', () => {
+        ensureSalesforceTargetDefinition();
+      });
+      document.getElementById('sch-target-definition').addEventListener('change', async () => {
+        await syncSchedulerExternalIdUi();
       });
       document.getElementById('sch-create-custom-object').addEventListener('click', createSalesforceCustomObjectFromSource);
       document.getElementById('sch-connector').addEventListener('change', async () => {
@@ -9671,6 +9839,21 @@ export function createAppServer(
       if (req.method === "POST" && requestUrl.pathname === "/api/schedules") {
         const body = (await readJsonBody(req)) as ScheduleMutationInput;
         const result = await adminDataService.saveSchedule(body, instanceId);
+        sendJson(200, result);
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/checkpoint$/)) {
+        const scheduleId = decodeURIComponent(requestUrl.pathname.replace(/^\/api\/schedules\/([^/]+)\/checkpoint$/, "$1"));
+        const result = await adminDataService.getScheduleCheckpoint(scheduleId, instanceId);
+        sendJson(200, result);
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/checkpoint$/)) {
+        const scheduleId = decodeURIComponent(requestUrl.pathname.replace(/^\/api\/schedules\/([^/]+)\/checkpoint$/, "$1"));
+        const body = (await readJsonBody(req)) as ScheduleCheckpointMutationInput;
+        const result = await adminDataService.updateScheduleCheckpoint(scheduleId, body, instanceId);
         sendJson(200, result);
         return;
       }

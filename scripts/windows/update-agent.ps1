@@ -9,6 +9,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:ScriptDirectory = Split-Path -Parent $PSCommandPath
 
 function Resolve-AppRoot {
   param([string]$InputPath)
@@ -17,7 +18,7 @@ function Resolve-AppRoot {
     return (Resolve-Path -Path $InputPath).Path
   }
 
-  $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+  $scriptDir = $script:ScriptDirectory
   return (Resolve-Path -Path (Join-Path $scriptDir "..\..\")).Path
 }
 

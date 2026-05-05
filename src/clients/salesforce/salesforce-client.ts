@@ -960,7 +960,7 @@ export class SalesforceClient {
       const updatePayload: {
         Id: string;
         MSD_LastCheckpoint__c?: string | null;
-        MSD_LastRecordId__c?: string;
+        MSD_LastRecordId__c?: string | null;
         MSD_Run__c: string;
       } = {
         Id: input.checkpointId,
@@ -973,6 +973,8 @@ export class SalesforceClient {
       }
       if (input.lastRecordId) {
         updatePayload.MSD_LastRecordId__c = input.lastRecordId;
+      } else {
+        updatePayload.MSD_LastRecordId__c = null;
       }
 
       const updateResult = await this.connection.sobject("MSD_Checkpoint__c").update(updatePayload);

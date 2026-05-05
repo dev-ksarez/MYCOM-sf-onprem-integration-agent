@@ -26,6 +26,17 @@ Dieses Runbook beschreibt die Kundeninstallation als Windows-Dienst inklusive Au
 
 Diese Variante ist robuster in abgeschotteten Netzen, da kein `npm install` beim Kunden notwendig ist.
 
+Das Kundenpaket enthaelt jetzt auch `nssm.exe`, damit die Dienstinstallation ohne separate NSSM-Vorinstallation laeuft.
+
+### One-Click Start aus dem Kundenpaket
+
+Das erzeugte Kundenpaket enthaelt im ZIP-Wurzelverzeichnis jetzt zusaetzlich:
+
+- `install-customer-package.cmd`
+- `install-customer-package.ps1`
+
+Nach dem Entpacken kann der Kunde direkt `install-customer-package.cmd` starten. Falls der Start nicht bereits mit Administratorrechten erfolgt, fordert das Skript diese automatisch per UAC an. Danach kopiert es die Anwendung nach `C:\apps\sf-onprem-integration-agent`, oeffnet auf Wunsch eine interaktive `.env`-Konfiguration und startet die eigentliche Dienstinstallation.
+
 ### 1) Release-Inhalt auf Zielserver kopieren
 
 Mindestens enthalten:
@@ -86,6 +97,57 @@ cd C:\apps\sf-onprem-integration-agent
 npm run win:install-service -- -AppRoot "C:\apps\sf-onprem-integration-agent"
 ```
 
+Oder als kompletter Installationslauf in einem Schritt:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:install -- -AppRoot "C:\apps\sf-onprem-integration-agent"
+```
+
+Das Skript prueft die wichtigsten Voraussetzungen, installiert bei Bedarf Abhaengigkeiten, legt optional eine `.env` aus `.env.example` an, installiert den Windows-Dienst und registriert den Auto-Updater.
+
+### 3.1) Schnelle Neuinstallation eines vorhandenen Dienstes
+
+Wenn ein bereits installierter Dienst mit aelteren Installer-Staenden angelegt wurde, ist die schnellste saubere Korrektur meist:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:uninstall-service
+npm run win:install-service -- -AppRoot "C:\apps\sf-onprem-integration-agent"
+```
+
+Danach optional den Updater erneut setzen:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:register-updater -- -EveryMinutes 15 -AppRoot "C:\apps\sf-onprem-integration-agent"
+```
+
+### 3.2) Direkte Reparatur eines bereits installierten NSSM-Dienstes
+
+Wenn nur die Umgebungsvariablen des Windows-Dienstes korrigiert werden sollen, ohne komplette Neuinstallation:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:repair-service-env -- -AppRoot "C:\apps\sf-onprem-integration-agent" -WebUiPort 8080 -SchedulerIntervalMs 60000 -RestartService
+```
+
+Dieses Skript setzt `WEB_UI_ENABLED=1`, `WEB_UI_PORT` und `SCHEDULER_INTERVAL_MS` direkt am vorhandenen NSSM-Dienst neu.
+
+Zusatz: Mit `-PromptForEnv` koennen die wichtigsten Betriebswerte direkt im Installer abgefragt werden, zum Beispiel:
+
+- `AGENT_ID`
+- `LOG_LEVEL`
+- `WEB_UI_PORT`
+- `SCHEDULER_INTERVAL_MS`
+- `SF_LOGIN_URL`, `SF_CLIENT_ID`, `SF_CLIENT_SECRET`
+- `SAGE100_SQL_SERVER`, `SAGE100_SQL_PORT`, `SAGE100_SQL_DATABASE`, `SAGE100_SQL_USER`, `SAGE100_SQL_PASSWORD`
+- `MSSQL_DEV_PASSWORD` fuer bestehende Connectoren mit Secret Key `MSSQL_DEV_PASSWORD`
+
+Die Abfragen sind jetzt fuer Endkunden in deutscher Sprache formuliert und enthalten kurze Erklaerungen sowie sinnvolle Defaults.
+
+Vor dem Start des Windows-Dienstes prueft der Installer ausserdem die Secret Keys der aktiven Salesforce-Connectoren. Fehlt z. B. ein benoetigter Wert wie `MSSQL_DEV_PASSWORD`, stoppt die Installation vor dem Dienststart mit einem klaren Hinweis im Installer-Log.
+
 ### 4) Auto-Updater als Scheduled Task registrieren
 
 ```powershell
@@ -122,6 +184,20 @@ npm ci --omit=dev
 Beispielbasis siehe `.env.example`.
 
 ### 4) Dienst installieren und Updater registrieren
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:install -- -AppRoot "C:\apps\sf-onprem-integration-agent" -InstallDependencies
+```
+
+Mit interaktiver `.env`-Erfassung:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:install -- -AppRoot "C:\apps\sf-onprem-integration-agent" -InstallDependencies -PromptForEnv
+```
+
+Alternativ weiterhin getrennt:
 
 ```powershell
 cd C:\apps\sf-onprem-integration-agent
@@ -195,6 +271,8 @@ npm run win:build-package
 Ausgabe:
 
 - `artifacts/sf-onprem-integration-agent-customer-installer-<version>.zip`
+
+Das ZIP enthaelt jetzt einen Startpunkt fuer Kundeninstallationen direkt im Wurzelverzeichnis.
 
 Optional mit bereits enthaltenen Abhaengigkeiten (groesseres Paket):
 

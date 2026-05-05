@@ -296,6 +296,14 @@ export interface ScheduleListItem {
   inheritTimingFromParent?: boolean;
   autoDisabledDueToErrors?: boolean;
   autoDisabledAt?: string;
+  currentDeltaCheckpoint?: string;
+  currentDeltaRecordId?: string;
+  currentDeltaRunId?: string;
+}
+
+export interface ScheduleCheckpointMutationInput {
+  lastCheckpoint?: string;
+  lastRecordId?: string;
 }
 
 export interface ConnectorListItem {
@@ -1182,6 +1190,17 @@ export class AdminDataService {
         .filter(Boolean)
     );
 
+    const checkpointEntries = await Promise.all(records.map(async (record) => {
+      const schedule = this.toIntegrationSchedule(record);
+      try {
+        const checkpoint = await client.getCheckpoint(schedule.id, schedule.objectName);
+        return [schedule.id, checkpoint] as const;
+      } catch {
+        return [schedule.id, null] as const;
+      }
+    }));
+    const checkpointsByScheduleId = new Map(checkpointEntries);
+
     return records.map((record) => {
       const schedule = this.toIntegrationSchedule(record);
       const persistedTimingDefinition = localTiming[schedule.id] || schedule.timingDefinition;
@@ -1189,6 +1208,7 @@ export class AdminDataService {
         ...schedule,
         timingDefinition: persistedTimingDefinition
       };
+      const checkpoint = checkpointsByScheduleId.get(schedule.id) || null;
 
       return {
         id: schedule.id,
@@ -1213,9 +1233,61 @@ export class AdminDataService {
         parentScheduleId: schedule.parentScheduleId,
         inheritTimingFromParent: schedule.inheritTimingFromParent,
         autoDisabledDueToErrors: localHealth[schedule.id]?.autoDisabled === true,
-        autoDisabledAt: localHealth[schedule.id]?.autoDisabledAt
+        autoDisabledAt: localHealth[schedule.id]?.autoDisabledAt,
+        currentDeltaCheckpoint: checkpoint?.lastCheckpoint,
+        currentDeltaRecordId: checkpoint?.lastRecordId,
+        currentDeltaRunId: checkpoint?.lastRunId
       };
     });
+  }
+
+  public async getScheduleCheckpoint(scheduleId: string, instanceId?: string) {
+    const resolvedInstance = this.resolveInstance(instanceId);
+    const client = await this.createClient(resolvedInstance.id);
+    const schedules = await this.listSchedules(resolvedInstance.id);
+    const schedule = schedules.find((item) => item.id === scheduleId);
+    if (!schedule) {
+      throw new Error(`Scheduler ${scheduleId} wurde nicht gefunden`);
+    }
+
+    return (await client.getCheckpoint(schedule.id, schedule.objectName)) || {
+      id: undefined,
+      scheduleId: schedule.id,
+      objectName: schedule.objectName,
+      lastCheckpoint: undefined,
+      lastRecordId: undefined,
+      lastRunId: undefined
+    };
+  }
+
+  public async updateScheduleCheckpoint(
+    scheduleId: string,
+    input: ScheduleCheckpointMutationInput,
+    instanceId?: string
+  ): Promise<{ id: string; action: "updated" }> {
+    const resolvedInstance = this.resolveInstance(instanceId);
+    const client = await this.createClient(resolvedInstance.id);
+    const schedules = await this.listSchedules(resolvedInstance.id);
+    const schedule = schedules.find((item) => item.id === scheduleId);
+    if (!schedule) {
+      throw new Error(`Scheduler ${scheduleId} wurde nicht gefunden`);
+    }
+
+    const checkpoint = await client.getCheckpoint(schedule.id, schedule.objectName);
+    if (!checkpoint?.id || !checkpoint.lastRunId) {
+      throw new Error("Für diesen Scheduler existiert noch kein Delta-Checkpoint. Bitte zuerst mindestens einen Lauf ausführen.");
+    }
+
+    const id = await client.upsertCheckpoint({
+      checkpointId: checkpoint.id,
+      scheduleId: schedule.id,
+      objectName: schedule.objectName,
+      lastCheckpoint: String(input.lastCheckpoint || "").trim() || undefined,
+      lastRecordId: String(input.lastRecordId || "").trim() || undefined,
+      lastRunId: checkpoint.lastRunId
+    });
+
+    return { id, action: "updated" };
   }
 
   public async getScheduleFormOptions(instanceId?: string): Promise<ScheduleFormOptions> {

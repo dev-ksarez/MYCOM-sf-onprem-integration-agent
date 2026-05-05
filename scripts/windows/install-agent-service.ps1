@@ -9,6 +9,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:ScriptDirectory = Split-Path -Parent $PSCommandPath
 
 function Resolve-AppRoot {
   param([string]$InputPath)
@@ -22,7 +23,7 @@ function Resolve-AppRoot {
     return (Resolve-Path -Path $candidate).Path
   }
 
-  $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+  $scriptDir = $script:ScriptDirectory
   return (Resolve-Path -Path (Join-Path $scriptDir "..\..\")).Path
 }
 
@@ -185,9 +186,7 @@ if ($LASTEXITCODE -ne 0) {
 & $nssmExe set $ServiceName DisplayName $DisplayName | Out-Null
 & $nssmExe set $ServiceName Description $Description | Out-Null
 & $nssmExe set $ServiceName AppDirectory $appRootResolved | Out-Null
-& $nssmExe set $ServiceName AppEnvironmentExtra WEB_UI_ENABLED=1 | Out-Null
-& $nssmExe set $ServiceName AppEnvironmentExtra WEB_UI_PORT=$WebUiPort | Out-Null
-& $nssmExe set $ServiceName AppEnvironmentExtra SCHEDULER_INTERVAL_MS=$SchedulerIntervalMs | Out-Null
+& $nssmExe set $ServiceName AppEnvironmentExtra WEB_UI_ENABLED=1 WEB_UI_PORT=$WebUiPort SCHEDULER_INTERVAL_MS=$SchedulerIntervalMs | Out-Null
 & $nssmExe set $ServiceName AppStdout $stdoutLog | Out-Null
 & $nssmExe set $ServiceName AppStderr $stderrLog | Out-Null
 & $nssmExe set $ServiceName AppRotateFiles 1 | Out-Null

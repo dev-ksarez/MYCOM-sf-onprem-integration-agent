@@ -41,11 +41,26 @@ Entwicklung mit ts-node:
 npm run dev
 ```
 
+## Spec-Driven Development
+
+Fuer nicht-triviale Aenderungen wird zuerst eine Spec unter `docs/specs/` angelegt und erst danach implementiert.
+
+Schnellstart:
+
+```bash
+npm run spec:new -- "Kurzer Feature-Titel"
+npm run spec:validate
+```
+
+Die ausfuehrliche Einfuehrung steht in [SPEC_DRIVEN_DEVELOPMENT.md](SPEC_DRIVEN_DEVELOPMENT.md), die laufenden Specs und die Vorlage in [docs/specs/README.md](docs/specs/README.md).
+
 ## Wichtige Skripte
 
 - `npm run build` - TypeScript Build
 - `npm run start` - Start aus `dist/main.js`
 - `npm run dev` - Start aus TypeScript-Quellen
+- `npm run spec:new -- "Titel"` - Neue Spec fuer nicht-triviale Aenderungen anlegen
+- `npm run spec:validate` - Spec-Struktur in `docs/specs/` pruefen
 - `npm run win:install-service` - Windows-Dienst installieren
 - `npm run win:uninstall-service` - Windows-Dienst deinstallieren
 - `npm run win:update-now` - Manuelles Update ausfuehren
