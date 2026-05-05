@@ -159,6 +159,42 @@ Die Standard-Manifest-URL ist bereits gesetzt auf:
 
 `https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json`
 
+## Dashboard-Update pruefen und ausloesen
+
+Der Dashboard-Bereich oben rechts unterstuetzt zwei getrennte Schritte:
+
+- `Update pruefen` lädt nur den Manifest-Status und zeigt die erkannte Zielversion an.
+- `Update starten` startet auf einem Windows-Agenten direkt `scripts/windows/update-agent.ps1`.
+
+### Erwartetes Verhalten
+
+- Auf Windows und bei verfuegbarem neuerem Release wird `Update starten` aktiv.
+- Auf Windows ohne neues Release bleibt `Update starten` deaktiviert und der Status meldet `Kein Update erforderlich`.
+- Auf macOS oder Linux bleibt `Update starten` deaktiviert, auch wenn das Dashboard in einem Browser auf einem anderen Client geoeffnet ist. Entscheidend ist immer der Host des Agenten.
+
+### Schnelltest auf einem Windows-Agenten
+
+1. Sicherstellen, dass der Agent als Dienst oder lokal mit Web UI laeuft.
+2. Im Dashboard `Update pruefen` klicken.
+3. Erwartung bei neuerer Release-Version: Meldung `Update verfuegbar: <aktuell> -> <ziel>`.
+4. Danach `Update starten` klicken.
+5. Erwartung: Das Skript `scripts/windows/update-agent.ps1` wird gestartet, der Dienst wird gestoppt, das Release entpackt, validiert und bei Erfolg wieder gestartet.
+
+### Technische Verifikation des Startpfads
+
+Der Backend-Pfad startet unter Windows denselben Befehl wie der manuelle Aufruf:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\update-agent.ps1 `
+	-ServiceName "SfOnpremIntegrationAgent" `
+	-AppRoot "C:\apps\sf-onprem-integration-agent" `
+	-UpdateManifestUrl "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json"
+```
+
+### Simulierter Verfuegbarkeits-Test
+
+Wenn der Agent aktuell bereits auf der neuesten Version ist, kann der Verfuegbarkeitsfall auf einem Testsystem simuliert werden, indem `UPDATE_MANIFEST_URL` temporaer auf ein Manifest mit hoeherer `version` zeigt. Dann muss `Update pruefen` eine verfuegbare Zielversion melden und `Update starten` aktiv werden.
+
 ## Variante B: Deployment ohne `node_modules`
 
 Diese Variante ist kleiner, benötigt aber einmalig Paketinstallation beim Kunden.
