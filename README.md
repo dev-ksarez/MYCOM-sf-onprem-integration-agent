@@ -54,6 +54,16 @@ npm run spec:validate
 
 Die ausfuehrliche Einfuehrung steht in [SPEC_DRIVEN_DEVELOPMENT.md](SPEC_DRIVEN_DEVELOPMENT.md), die laufenden Specs und die Vorlage in [docs/specs/README.md](docs/specs/README.md).
 
+## Modulgrenzen Web UI
+
+Die grosse Server- und UI-Datei wird inkrementell aufgeteilt.
+
+- Dashboard-Update-Logik: `src/server/dashboard-update-service.ts`
+- Migration Listen-/Import-UI: `src/server/migration-ui-module.ts`
+- Zentrale Aggregation und Mutationen: `src/server/admin-data-service.ts`
+
+Neue serverseitige und UI-nahe Logik sollte bevorzugt in diesen Modulen oder weiteren kleinen Nachfolgemodulen landen, statt `src/server/app.ts` weiter aufzublähen.
+
 ## Wichtige Skripte
 
 - `npm run build` - TypeScript Build
