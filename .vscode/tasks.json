@@ -1,0 +1,46 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "cleanup: stop running dev server",
+			"type": "shell",
+			"command": "pkill -f \"ts-node src/main.ts|npm run dev\" || true",
+			"problemMatcher": []
+		},
+		{
+			"label": "prepare: cleanup and build",
+			"type": "shell",
+			"command": "pkill -f \"ts-node src/main.ts|npm run dev\" || true && npm run build",
+			"problemMatcher": [
+				"$tsc"
+			]
+		},
+		{
+			"label": "run: web ui dev server",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"dev"
+			],
+			"isBackground": true,
+			"group": "build"
+		},
+		{
+			"label": "run: web ui dev server 9010",
+			"type": "shell",
+			"command": "env",
+			"args": [
+				"WEB_UI_ENABLED=1",
+				"WEB_UI_PORT=9010",
+				"SCHEDULER_INTERVAL_MS=300000",
+				"LOG_LEVEL=debug",
+				"npm",
+				"run",
+				"dev"
+			],
+			"isBackground": true,
+			"group": "build"
+		}
+	]
+}

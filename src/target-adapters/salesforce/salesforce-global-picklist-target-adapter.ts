@@ -1,10 +1,12 @@
+import {
+  isImportProfileSchedulerRuleDue,
+  type SchedulerDay
+} from "../../core/scheduler/import-profile-scheduler";
 import { ConnectorResult } from "../../types/connector-result";
 import { GenericRecord } from "../../types/generic-record";
 import { TargetAdapter } from "../../types/target-adapter";
 import { TransferContext } from "../../types/transfer-context";
 import { SalesforceClient } from "../../clients/salesforce/salesforce-client";
-
-type SchedulerDay = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 
 interface ImportProfileScheduleRule {
   days: SchedulerDay[];
@@ -229,9 +231,11 @@ export class SalesforceGlobalPicklistTargetAdapter implements TargetAdapter {
   private readonly salesforceClient: SalesforceClient;
   private readonly targetDefinition: GlobalPicklistTargetDefinition;
   private readonly activeProfile: GlobalPicklistImportProfile;
+  private readonly lastRunAt?: string;
 
-  public constructor(salesforceClient: SalesforceClient, targetDefinition: string) {
+  public constructor(salesforceClient: SalesforceClient, targetDefinition: string, lastRunAt?: string) {
     this.salesforceClient = salesforceClient;
+    this.lastRunAt = typeof lastRunAt === "string" && lastRunAt.trim() ? lastRunAt.trim() : undefined;
     this.targetDefinition = parseTargetDefinition(targetDefinition);
     this.activeProfile = this.resolveActiveImportProfile();
   }
@@ -246,7 +250,7 @@ export class SalesforceGlobalPicklistTargetAdapter implements TargetAdapter {
     }
 
     if (this.activeProfile.scheduler?.mode === "rules") {
-      return this.isRuleBasedSchedulerDue(new Date(now));
+      return isImportProfileSchedulerRuleDue(this.activeProfile.scheduler.rules, new Date(now), this.lastRunAt);
     }
 
     if (!this.activeProfile.nextRunAt) {

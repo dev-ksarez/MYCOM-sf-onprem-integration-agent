@@ -49,9 +49,9 @@ async function ensureDir(p) {
   await fsp.mkdir(p, { recursive: true });
 }
 
-async function copyIfExists(src, dst) {
+async function copyIfExists(src, dst, options = {}) {
   if (await exists(src)) {
-    await fsp.cp(src, dst, { recursive: true, force: true });
+    await fsp.cp(src, dst, { recursive: true, force: true, ...options });
   }
 }
 
@@ -99,10 +99,12 @@ async function main() {
   await ensureDir(outputDir);
 
   const stagingRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "sf-agent-customer-package-"));
-  const stagingAppRoot = path.join(stagingRoot, "sf-onprem-integration-agent");
+  const packageRoot = path.join(stagingRoot, `sf-onprem-integration-agent-customer-installer-${version}`);
+  const stagingAppRoot = path.join(packageRoot, "sf-onprem-integration-agent");
+  await ensureDir(packageRoot);
   await ensureDir(stagingAppRoot);
 
-  console.log(`Staging package at: ${stagingAppRoot}`);
+  console.log(`Staging package at: ${packageRoot}`);
 
   await fsp.cp(path.join(appRoot, "dist"), path.join(stagingAppRoot, "dist"), {
     recursive: true,
@@ -112,6 +114,36 @@ async function main() {
     recursive: true,
     force: true,
   });
+  await copyIfExists(path.join(appRoot, "src", "css"), path.join(stagingAppRoot, "src", "css"));
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "dev-sandbox-schedule-examples.json"),
+    path.join(stagingAppRoot, "artifacts", "dev-sandbox-schedule-examples.json")
+  );
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "migrations.json"),
+    path.join(stagingAppRoot, "artifacts", "migrations.json")
+  );
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "schedule-health.json"),
+    path.join(stagingAppRoot, "artifacts", "schedule-health.json")
+  );
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "schedule-timing.json"),
+    path.join(stagingAppRoot, "artifacts", "schedule-timing.json")
+  );
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "sf-instances.json"),
+    path.join(stagingAppRoot, "artifacts", "sf-instances.json")
+  );
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "file-examples"),
+    path.join(stagingAppRoot, "artifacts", "file-examples")
+  );
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "templates"),
+    path.join(stagingAppRoot, "artifacts", "templates")
+  );
+  await copyIfExists(path.join(appRoot, "migrations"), path.join(stagingAppRoot, "migrations"));
   await copyIfExists(path.join(appRoot, "salesforce"), path.join(stagingAppRoot, "salesforce"));
   await fsp.cp(path.join(appRoot, "package.json"), path.join(stagingAppRoot, "package.json"), {
     force: true,
@@ -134,6 +166,23 @@ async function main() {
     path.join(appRoot, "METADATA_DEPLOYMENT_TROUBLESHOOTING.md"),
     path.join(stagingAppRoot, "METADATA_DEPLOYMENT_TROUBLESHOOTING.md")
   );
+  await copyIfExists(path.join(appRoot, "nssm.exe"), path.join(stagingAppRoot, "nssm.exe"));
+  await copyIfExists(
+    path.join(appRoot, "scripts", "windows", "install-customer-package.ps1"),
+    path.join(packageRoot, "install-customer-package.ps1")
+  );
+  await copyIfExists(
+    path.join(appRoot, "scripts", "windows", "install-customer-package.cmd"),
+    path.join(packageRoot, "install-customer-package.cmd")
+  );
+  await copyIfExists(
+    path.join(appRoot, "scripts", "windows", "update-existing-installation.ps1"),
+    path.join(packageRoot, "update-existing-installation.ps1")
+  );
+  await copyIfExists(
+    path.join(appRoot, "scripts", "windows", "update-existing-installation.cmd"),
+    path.join(packageRoot, "update-existing-installation.cmd")
+  );
 
   if (args.includeNodeModules) {
     const nodeModulesPath = path.join(appRoot, "node_modules");
@@ -155,12 +204,15 @@ async function main() {
     await fsp.rm(zipPath, { force: true });
   }
 
-  await createZip(stagingAppRoot, zipPath);
+  await createZip(packageRoot, zipPath);
   console.log(`Package created: ${zipPath}`);
 
   if (!args.includeNodeModules) {
     console.log("Note: node_modules is not included. Customer must run 'npm ci --omit=dev'.");
   }
+  console.log("Bundled runtime helper included: nssm.exe");
+  console.log("Bootstrap launcher included: install-customer-package.cmd / .ps1");
+  console.log("Update launcher included for existing Windows installations: update-existing-installation.cmd / .ps1");
 
   await fsp.rm(stagingRoot, { recursive: true, force: true });
 }

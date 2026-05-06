@@ -1,5 +1,9 @@
 
 import { ConnectorConfig, SalesforceClient } from "../../clients/salesforce/salesforce-client";
+import {
+  isImportProfileSchedulerRuleDue,
+  type SchedulerDay
+} from "../../core/scheduler/import-profile-scheduler";
 import { MssqlDatabase } from "../../infrastructure/db/mssql";
 import { ConnectorResult } from "../../types/connector-result";
 import { GenericRecord } from "../../types/generic-record";
@@ -8,7 +12,6 @@ import { TransferContext } from "../../types/transfer-context";
 
 type PicklistSource = "global" | "object";
 type TargetMode = "object" | "picklist";
-type SchedulerDay = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 
 interface ImportProfileScheduleRule {
   days: SchedulerDay[];
@@ -35,10 +38,13 @@ interface SalesforcePicklistDefinition {
   sqlMapping?: SalesforcePicklistSqlMapping;
 }
 
+type SalesforceOperation = "upsert" | "insert" | "update";
+
 interface SalesforceObjectTargetDefinition {
   objectApiName: string;
-  operation: "upsert";
+  operation: SalesforceOperation;
   externalIdField: string;
+  pricebook2Id?: string;
   picklists: SalesforcePicklistDefinition[];
 }
 
@@ -55,6 +61,10 @@ interface SalesforceImportProfile {
 interface SalesforceTargetDefinition {
   selectedImportProfileName?: string;
   importProfiles: SalesforceImportProfile[];
+}
+
+function buildPricebookEntryCompositeKey(pricebook2Id: string, product2Id: string): string {
+  return `${pricebook2Id}::${product2Id}`;
 }
 
 function validateIdentifier(value: string, label: string): string {
@@ -186,26 +196,37 @@ function parseTargetDefinition(rawDefinition: string): SalesforceTargetDefinitio
     path: string
   ): SalesforceObjectTargetDefinition => {
     const objectApiName = candidate.objectApiName;
-    const operation = candidate.operation;
+    const operation = typeof candidate.operation === "string" ? candidate.operation.trim().toLowerCase() : candidate.operation;
     const externalIdField = candidate.externalIdField;
+    const pricebook2Id = candidate.pricebook2Id;
     const picklists = candidate.picklists;
 
     if (typeof objectApiName !== "string" || !objectApiName.trim()) {
       throw new Error(`${path}.objectApiName is required`);
     }
 
-    if (operation !== "upsert") {
-      throw new Error(`${path}.operation currently supports only 'upsert'`);
+    const validOperations: SalesforceOperation[] = ["upsert", "insert", "update"];
+    if (!validOperations.includes(operation as SalesforceOperation)) {
+      throw new Error(`${path}.operation must be one of: ${validOperations.join(", ")}. Got: '${String(operation)}'`);
     }
 
-    if (typeof externalIdField !== "string" || !externalIdField.trim()) {
-      throw new Error(`${path}.externalIdField is required`);
+    const resolvedOperation = operation as SalesforceOperation;
+    const needsExternalId = resolvedOperation === "upsert" || resolvedOperation === "update";
+
+    if (needsExternalId && (typeof externalIdField !== "string" || !externalIdField.trim())) {
+      throw new Error(`${path}.externalIdField is required for operation '${resolvedOperation}'`);
     }
+
+    const resolvedExternalIdField =
+      typeof externalIdField === "string" && externalIdField.trim()
+        ? validateIdentifier(externalIdField.trim(), `${path}.externalIdField`)
+        : "Id";
 
     return {
       objectApiName: validateIdentifier(objectApiName.trim(), `${path}.objectApiName`),
-      operation,
-      externalIdField: validateIdentifier(externalIdField.trim(), `${path}.externalIdField`),
+      operation: resolvedOperation,
+      externalIdField: resolvedExternalIdField,
+      pricebook2Id: typeof pricebook2Id === "string" && pricebook2Id.trim() ? pricebook2Id.trim() : undefined,
       picklists: parsePicklists(picklists, `${path}.picklists`)
     };
   };
@@ -224,6 +245,10 @@ function parseTargetDefinition(rawDefinition: string): SalesforceTargetDefinitio
       }
 
       const candidate = profile as Record<string, unknown>;
+      const targetCandidate =
+        candidate.target && typeof candidate.target === "object" && !Array.isArray(candidate.target)
+          ? candidate.target as Record<string, unknown>
+          : candidate;
       const name = candidate.name;
       const active = candidate.active;
       const schedulerEnabled = candidate.schedulerEnabled;
@@ -332,7 +357,7 @@ function parseTargetDefinition(rawDefinition: string): SalesforceTargetDefinitio
         nextRunAt: typeof nextRunAt === "string" ? nextRunAt.trim() : undefined,
         scheduler: parsedScheduler,
         mode: mode as TargetMode,
-        target: parseObjectTarget(candidate, `importProfiles[${index}]`)
+        target: parseObjectTarget(targetCandidate, `importProfiles[${index}].target`)
       };
     });
 
@@ -362,12 +387,111 @@ function parseTargetDefinition(rawDefinition: string): SalesforceTargetDefinitio
   };
 }
 
+// Pattern: JS Date toString / toLocaleString / toISOString values with timezone info
+const JS_DATE_STRING_RE = /^\w{3}\s+\w{3}\s+\d{2}\s+\d{4}|^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+
+function normalizeDateValue(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmed = value.trim();
+
+  // Already ISO date YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  // ISO datetime – strip to date only if it has timezone or T separator
+  if (/^\d{4}-\d{2}-\d{2}T/.test(trimmed)) {
+    return trimmed.slice(0, 10);
+  }
+
+  // JS Date.toString() e.g. "Tue May 12 2026 02:00:00 GMT+0200 (Central European Summer Time)"
+  if (/^\w{3}\s+\w{3}\s+\d{2}\s+\d{4}/.test(trimmed)) {
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString().slice(0, 10);
+    }
+  }
+
+  return value;
+}
+
 function normalizeRecordValues(values: Record<string, unknown>): Record<string, unknown> {
   const normalizedEntries = Object.entries(values)
     .filter(([, value]) => value !== undefined)
-    .map(([key, value]) => [validateIdentifier(key, `field ${key}`), value]);
+    .map(([key, value]) => [validateIdentifier(key, `field ${key}`), normalizeDateValue(value)]);
 
   return Object.fromEntries(normalizedEntries);
+}
+
+function validateRequiredRelationshipLookups(
+  objectApiName: string,
+  values: Record<string, unknown>
+): void {
+  if (
+    objectApiName === "Contact" &&
+    Object.prototype.hasOwnProperty.call(values, "AccountId") &&
+    (values.AccountId === null || values.AccountId === undefined || values.AccountId === "")
+  ) {
+    throw new Error("Missing required Account lookup for Contact.AccountId");
+  }
+}
+
+function isDuplicateSalesforceError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("duplicate_value") ||
+    normalized.includes("duplicates_detected") ||
+    normalized.includes("duplicate record") ||
+    normalized.includes("duplicate value") ||
+    normalized.includes("you're creating a duplicate record")
+  );
+}
+
+function isExternalIdConfigurationError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("provided external id field does not exist or is not accessible") ||
+    normalized.includes("missing external id value for field") ||
+    normalized.includes("externalidfield is required") ||
+    normalized.includes("pricebookentry upsert missing required key field") ||
+    normalized.includes("unable to create/update fields")
+  );
+}
+
+function formatUnknownError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "Unknown error";
+  }
+
+  const errorWithData = error as Error & {
+    data?: Array<Record<string, unknown>> | Record<string, unknown>;
+  };
+
+  const details = errorWithData.data;
+  if (!details) {
+    return error.message;
+  }
+
+  try {
+    if (Array.isArray(details)) {
+      const summarized = details
+        .map((entry) => {
+          const statusCode = typeof entry.statusCode === "string" ? entry.statusCode : undefined;
+          const message = typeof entry.message === "string" ? entry.message : JSON.stringify(entry);
+          return statusCode ? `${statusCode}: ${message}` : message;
+        })
+        .join(" | ");
+
+      return `${error.message} | Salesforce details: ${summarized}`;
+    }
+
+    return `${error.message} | Salesforce details: ${JSON.stringify(details)}`;
+  } catch {
+    return error.message;
+  }
 }
 
 export class SalesforceTargetAdapter implements TargetAdapter {
@@ -375,16 +499,73 @@ export class SalesforceTargetAdapter implements TargetAdapter {
   private readonly connectorConfig?: ConnectorConfig;
   private readonly targetDefinition: SalesforceTargetDefinition;
   private readonly activeProfile: SalesforceImportProfile;
+  private readonly lastRunAt?: string;
   private picklistSqlDatabase?: MssqlDatabase;
   private readonly sqlMappingCache: Map<string, Map<string, string>>;
+
+  private async preparePricebookEntryCompositeLookup(
+    records: GenericRecord[],
+    target: SalesforceObjectTargetDefinition
+  ): Promise<{ product2IdsByProductCode: Map<string, string>; existingEntryIdsByCompositeKey: Map<string, string> }> {
+    const productCodesMissingProduct2Id = new Set<string>();
+    const groupedProduct2IdsByPricebook2Id = new Map<string, Set<string>>();
+
+    for (const record of records) {
+      const normalizedValues = normalizeRecordValues(record.values);
+      const pricebook2Id = String(normalizedValues.Pricebook2Id ?? target.pricebook2Id ?? "").trim();
+      const product2Id = String(normalizedValues.Product2Id ?? "").trim();
+      const productCode = String(normalizedValues.ProductCode ?? "").trim();
+
+      if (!product2Id && productCode) {
+        productCodesMissingProduct2Id.add(productCode);
+      }
+
+      if (pricebook2Id && product2Id) {
+        const groupedProduct2Ids = groupedProduct2IdsByPricebook2Id.get(pricebook2Id) || new Set<string>();
+        groupedProduct2Ids.add(product2Id);
+        groupedProduct2IdsByPricebook2Id.set(pricebook2Id, groupedProduct2Ids);
+      }
+    }
+
+    const product2IdsByProductCode = await this.salesforceClient.resolveProduct2IdsByProductCodes(Array.from(productCodesMissingProduct2Id));
+
+    for (const record of records) {
+      const normalizedValues = normalizeRecordValues(record.values);
+      const pricebook2Id = String(normalizedValues.Pricebook2Id ?? target.pricebook2Id ?? "").trim();
+      const productCode = String(normalizedValues.ProductCode ?? "").trim();
+      const product2Id = String(normalizedValues.Product2Id ?? product2IdsByProductCode.get(productCode) ?? "").trim();
+      if (!pricebook2Id || !product2Id) {
+        continue;
+      }
+
+      const groupedProduct2Ids = groupedProduct2IdsByPricebook2Id.get(pricebook2Id) || new Set<string>();
+      groupedProduct2Ids.add(product2Id);
+      groupedProduct2IdsByPricebook2Id.set(pricebook2Id, groupedProduct2Ids);
+    }
+
+    const existingEntryIdsByCompositeKey = new Map<string, string>();
+    for (const [pricebook2Id, product2Ids] of groupedProduct2IdsByPricebook2Id.entries()) {
+      const existingEntries = await this.salesforceClient.listPricebookEntryIdsByProduct2Ids(pricebook2Id, Array.from(product2Ids));
+      for (const [product2Id, entryId] of existingEntries.entries()) {
+        existingEntryIdsByCompositeKey.set(buildPricebookEntryCompositeKey(pricebook2Id, product2Id), entryId);
+      }
+    }
+
+    return {
+      product2IdsByProductCode,
+      existingEntryIdsByCompositeKey
+    };
+  }
 
   public constructor(
     salesforceClient: SalesforceClient,
     targetDefinition: string,
-    connectorConfig?: ConnectorConfig
+    connectorConfig?: ConnectorConfig,
+    lastRunAt?: string
   ) {
     this.salesforceClient = salesforceClient;
     this.connectorConfig = connectorConfig;
+    this.lastRunAt = typeof lastRunAt === "string" && lastRunAt.trim() ? lastRunAt.trim() : undefined;
     this.targetDefinition = parseTargetDefinition(targetDefinition);
     this.activeProfile = this.resolveActiveImportProfile();
     this.sqlMappingCache = new Map();
@@ -400,7 +581,7 @@ export class SalesforceTargetAdapter implements TargetAdapter {
     }
 
     if (this.activeProfile.scheduler?.mode === "rules") {
-      return this.isRuleBasedSchedulerDue(new Date(now));
+      return isImportProfileSchedulerRuleDue(this.activeProfile.scheduler.rules, new Date(now), this.lastRunAt);
     }
 
     if (!this.activeProfile.nextRunAt) {
@@ -421,10 +602,23 @@ export class SalesforceTargetAdapter implements TargetAdapter {
     const results: ConnectorResult[] = [];
     const target = this.activeProfile.target;
     const mode = this.activeProfile.mode;
+    const shouldUsePricebookCompositeKey =
+      target.objectApiName === "PricebookEntry" &&
+      target.externalIdField === "ProductCode";
+    const preparedPricebookEntryLookup = shouldUsePricebookCompositeKey
+      ? await this.preparePricebookEntryCompositeLookup(records, target)
+      : undefined;
 
     for (const record of records) {
       const normalizedValues = await this.normalizePicklistValues(normalizeRecordValues(record.values));
-      const externalKeyValue = normalizedValues[target.externalIdField];
+      const valuesWithTargetDefaults =
+        target.objectApiName === "PricebookEntry" && target.pricebook2Id && normalizedValues.Pricebook2Id === undefined
+          ? {
+              ...normalizedValues,
+              Pricebook2Id: target.pricebook2Id
+            }
+          : normalizedValues;
+      const externalKeyValue = valuesWithTargetDefaults[target.externalIdField];
       const externalKey =
         typeof externalKeyValue === "string"
           ? externalKeyValue
@@ -432,39 +626,92 @@ export class SalesforceTargetAdapter implements TargetAdapter {
 
       try {
         if (externalKeyValue === undefined || externalKeyValue === null || externalKeyValue === "") {
-          throw new Error(
-            `Mapped record is missing required external id field: ${target.externalIdField}`
-          );
+          if (target.operation !== "insert") {
+            throw new Error(
+              `Mapped record is missing required external id field: ${target.externalIdField}`
+            );
+          }
         }
 
         const valuesToWrite =
           mode === "picklist"
-            ? this.filterPicklistValuesForWrite(normalizedValues)
-            : normalizedValues;
+            ? this.filterPicklistValuesForWrite(valuesWithTargetDefaults)
+            : valuesWithTargetDefaults;
 
-        const targetId = await this.salesforceClient.upsertGenericRecord({
-          objectApiName: target.objectApiName,
-          externalIdField: target.externalIdField,
-          values: valuesToWrite
-        });
+        validateRequiredRelationshipLookups(target.objectApiName, valuesToWrite);
+
+        let targetId: string;
+
+        if (target.operation === "insert") {
+          targetId = await this.salesforceClient.createGenericRecord(target.objectApiName, valuesToWrite);
+        } else if (target.operation === "update") {
+          targetId = await this.salesforceClient.updateGenericRecord(target.objectApiName, valuesToWrite);
+        } else {
+          // upsert (default)
+          const shouldUseProductCodeLookupForProduct2 =
+            target.objectApiName === "Product2" && target.externalIdField === "ProductCode";
+
+          const resolvedProduct2Id = shouldUsePricebookCompositeKey
+            ? String(
+                valuesToWrite.Product2Id
+                ?? preparedPricebookEntryLookup?.product2IdsByProductCode.get(String(valuesToWrite.ProductCode ?? "").trim())
+                ?? ""
+              ).trim()
+            : "";
+          const resolvedPricebook2Id = shouldUsePricebookCompositeKey
+            ? String(valuesToWrite.Pricebook2Id ?? target.pricebook2Id ?? "").trim()
+            : "";
+          const existingEntryId = shouldUsePricebookCompositeKey && resolvedPricebook2Id && resolvedProduct2Id
+            ? preparedPricebookEntryLookup?.existingEntryIdsByCompositeKey.get(
+                buildPricebookEntryCompositeKey(resolvedPricebook2Id, resolvedProduct2Id)
+              )
+            : undefined;
+
+          targetId = shouldUsePricebookCompositeKey
+            ? await this.salesforceClient.upsertPricebookEntryByCompositeKey(valuesToWrite, {
+                product2Id: resolvedProduct2Id || undefined,
+                existingEntryId
+              })
+            : shouldUseProductCodeLookupForProduct2
+              ? await this.salesforceClient.upsertProduct2ByProductCode(valuesToWrite)
+              : await this.salesforceClient.upsertGenericRecord({
+                  objectApiName: target.objectApiName,
+                  externalIdField: target.externalIdField,
+                  values: valuesToWrite
+                });
+        }
+
+        const statusLabel =
+          target.operation === "insert"
+            ? "INSERT_OK"
+            : target.operation === "update"
+              ? "UPDATE_OK"
+              : "UPSERT_OK";
 
         results.push({
           externalKey,
           success: true,
           targetId,
-          statusCode: "UPSERT_OK",
-          message: `Salesforce record upserted in run ${context.runId}`,
+          statusCode: statusLabel,
+          message: `Salesforce record ${target.operation}ed in run ${context.runId}`,
           retryable: false
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown error";
+        const message = formatUnknownError(error);
+        const isDuplicateError = isDuplicateSalesforceError(message);
+        const isExternalIdConfigError = isExternalIdConfigurationError(message);
+        const isNonRetryable = isDuplicateError || isExternalIdConfigError;
 
         results.push({
           externalKey,
           success: false,
-          statusCode: "TECHNICAL_ERROR",
+          statusCode: isDuplicateError
+            ? "DUPLICATE_ERROR"
+            : isExternalIdConfigError
+              ? "CONFIGURATION_ERROR"
+              : "TECHNICAL_ERROR",
           message,
-          retryable: true
+          retryable: !isNonRetryable
         });
       }
     }

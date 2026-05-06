@@ -83,10 +83,39 @@
     <fields>
         <fullName>MSD_TargetType__c</fullName>
         <label>Target Type</label>
-        <length>50</length>
         <required>false</required>
-        <type>Text</type>
-        <unique>false</unique>
+        <type>Picklist</type>
+        <valueSet>
+            <restricted>true</restricted>
+            <valueSetDefinition>
+                <sorted>false</sorted>
+                <value>
+                    <fullName>SALESFORCE</fullName>
+                    <default>false</default>
+                    <label>Salesforce</label>
+                </value>
+                <value>
+                    <fullName>MSSQL</fullName>
+                    <default>false</default>
+                    <label>MSSQL</label>
+                </value>
+                <value>
+                    <fullName>MOCK</fullName>
+                    <default>false</default>
+                    <label>Mock</label>
+                </value>
+                <value>
+                    <fullName>SAGE100</fullName>
+                    <default>false</default>
+                    <label>Sage100</label>
+                </value>
+                <value>
+                    <fullName>SALESFORCE_GLOBAL_PICKLIST</fullName>
+                    <default>false</default>
+                    <label>Salesforce Global Picklist</label>
+                </value>
+            </valueSetDefinition>
+        </valueSet>
     </fields>
     <fields>
         <fullName>MSD_SourceDefinition__c</fullName>

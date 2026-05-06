@@ -1,7 +1,7 @@
 
 
 import { Logger } from "pino";
-import { MappingDefinitionEngine } from "../mapping-dsl/mapping-definition-engine";
+import { MappingDefinitionEngine, LookupResolverFn } from "../mapping-dsl/mapping-definition-engine";
 import { MappingDefinitionParser } from "../mapping-dsl/mapping-definition-parser";
 import { ConnectorResult } from "../../types/connector-result";
 import { GenericRecord } from "../../types/generic-record";
@@ -29,12 +29,12 @@ export class DataTransferJob {
   private readonly mappingDefinitionParser: MappingDefinitionParser;
   private readonly mappingDefinitionEngine: MappingDefinitionEngine;
 
-  public constructor(logger: Logger, sourceAdapter: SourceAdapter, targetAdapter: TargetAdapter) {
+  public constructor(logger: Logger, sourceAdapter: SourceAdapter, targetAdapter: TargetAdapter, lookupResolver?: LookupResolverFn) {
     this.logger = logger;
     this.sourceAdapter = sourceAdapter;
     this.targetAdapter = targetAdapter;
     this.mappingDefinitionParser = new MappingDefinitionParser();
-    this.mappingDefinitionEngine = new MappingDefinitionEngine();
+    this.mappingDefinitionEngine = new MappingDefinitionEngine(lookupResolver);
   }
 
   public async execute(
@@ -52,6 +52,15 @@ export class DataTransferJob {
       "Starting data transfer job"
     );
 
+    this.logger.info(
+      {
+        runId: context.runId,
+        scheduleId: context.scheduleId,
+        phase: "source-read"
+      },
+      "Starting source read phase"
+    );
+
     const sourceRecords = await this.sourceAdapter.readRecords(context);
 
     this.logger.info(
@@ -62,18 +71,41 @@ export class DataTransferJob {
       "Source records loaded"
     );
 
+    this.logger.info(
+      {
+        runId: context.runId,
+        scheduleId: context.scheduleId,
+        phase: "mapping",
+        recordsRead: sourceRecords.length
+      },
+      "Starting record mapping phase"
+    );
+
     const parsedDefinition = this.mappingDefinitionParser.parse(mappingDefinition);
 
-    const mappedRecords: GenericRecord[] = sourceRecords.map((record) => {
-      const mapped = this.mappingDefinitionEngine.mapRecord(record.values, parsedDefinition.lines);
-      return { values: mapped.values };
-    });
+    const mappedRecords: GenericRecord[] = await Promise.all(
+      sourceRecords.map(async (record) => {
+        const mapped = await this.mappingDefinitionEngine.mapRecord(record.values, parsedDefinition.lines);
+        return { values: mapped.values };
+      })
+    );
+
+    this.logger.info(
+      {
+        runId: context.runId,
+        scheduleId: context.scheduleId,
+        phase: "target-write",
+        mappedRecords: mappedRecords.length
+      },
+      "Starting target write phase"
+    );
 
     const results: ConnectorResult[] = await this.targetAdapter.writeRecords(mappedRecords, context);
 
     const successCount = results.filter((result) => result.success).length;
     const errorCount = results.length - successCount;
     const status = resolveStatus(successCount, errorCount);
+    const successfulSourceRecords = sourceRecords.filter((_record, index) => results[index]?.success);
 
     this.logger.info(
       {
@@ -86,6 +118,10 @@ export class DataTransferJob {
       "Data transfer job finished"
     );
 
+    const lastCheckpointRecord = [...successfulSourceRecords]
+      .reverse()
+      .find((record) => record.checkpoint && record.checkpoint.value);
+
     return {
       recordsRead: sourceRecords.length,
       recordsProcessed: results.length,
@@ -93,7 +129,8 @@ export class DataTransferJob {
       recordsFailed: errorCount,
       status,
       connectorResults: results,
-      lastProcessedRecord: undefined
+      lastProcessedRecord: lastCheckpointRecord?.checkpoint,
+      successfulSourceRecords
     };
   }
 }

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Package xmlns="http://soap.sforce.com/2006/04/metadata">
     <types>
+        <members>EZB__c</members>
         <members>MSD_Connector__c</members>
         <members>MSD_Schedule__c</members>
         <members>MSD_Run__c</members>
@@ -15,6 +16,7 @@
         <name>PermissionSet</name>
     </types>
     <types>
+        <members>EZB__c</members>
         <members>MSD_Connector__c</members>
         <members>MSD_Schedule__c</members>
         <members>MSD_Run__c</members>

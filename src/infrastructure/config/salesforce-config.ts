@@ -1,7 +1,14 @@
 export interface SalesforceConfig {
   loginUrl: string;
-  clientId: string;
-  clientSecret: string;
+  authType: "client_credentials" | "password" | "oauth_refresh_token";
+  clientId?: string;
+  clientSecret?: string;
+  username?: string;
+  password?: string;
+  securityToken?: string;
+  refreshToken?: string;
+  accessToken?: string;
+  instanceUrl?: string;
   queryLimit: number;
 }
 
@@ -25,6 +32,7 @@ export function getSalesforceConfig(): SalesforceConfig {
 
   return {
     loginUrl,
+    authType: "client_credentials",
     clientId,
     clientSecret,
     queryLimit

@@ -62,6 +62,7 @@ export class AccountExportJob {
 
     const successCount = results.filter((result) => result.success).length;
     const errorCount = results.length - successCount;
+    const successfulAccounts = accounts.filter((_account, index) => results[index]?.success);
 
     const status =
       results.length === 0
@@ -91,10 +92,10 @@ export class AccountExportJob {
       status,
       connectorResults: results,
       lastProcessedRecord:
-        accounts.length > 0
+        successfulAccounts.length > 0
           ? {
-              lastModified: accounts[accounts.length - 1].lastModified,
-              sourceId: accounts[accounts.length - 1].sourceId
+              value: successfulAccounts[successfulAccounts.length - 1].lastModified,
+              recordId: successfulAccounts[successfulAccounts.length - 1].sourceId
             }
           : undefined
     };

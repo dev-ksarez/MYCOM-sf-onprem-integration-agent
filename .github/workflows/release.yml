@@ -35,23 +35,30 @@ jobs:
           VERSION="${TAG#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "zip_name=sf-onprem-integration-agent-${VERSION}.zip" >> "$GITHUB_OUTPUT"
+          echo "customer_zip_name=sf-onprem-integration-agent-customer-installer-${VERSION}.zip" >> "$GITHUB_OUTPUT"
+          echo "runtime_zip_name=sf-onprem-integration-agent-installer-runtime-assets.zip" >> "$GITHUB_OUTPUT"
+          echo "installer_zip_name=sf-onprem-integration-agent-installer.zip" >> "$GITHUB_OUTPUT"
 
-      - name: Create update package ZIP
-        id: zip
+      - name: Create customer installer ZIP
+        id: customer_zip
         run: |
-          STAGING="staging-package"
-          mkdir -p "$STAGING"
-          cp -r dist "$STAGING/"
-          cp package.json "$STAGING/"
-          # Exclude dev sources and secrets from the package
-          zip -r "${{ steps.version.outputs.zip_name }}" "$STAGING/" -x "*.env*"
-          echo "zip_path=${{ steps.version.outputs.zip_name }}" >> "$GITHUB_OUTPUT"
+          RELEASE_DIR="release-assets"
+          mkdir -p "$RELEASE_DIR"
+          node scripts/windows/build-customer-package.js --output-dir "$RELEASE_DIR"
+          echo "zip_path=$RELEASE_DIR/${{ steps.version.outputs.customer_zip_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Create runtime update package ZIP
+        id: runtime_zip
+        run: |
+          RELEASE_DIR="release-assets"
+          RUNTIME_ZIP_PATH="$RELEASE_DIR/${{ steps.version.outputs.runtime_zip_name }}"
+          cp "${{ steps.customer_zip.outputs.zip_path }}" "$RUNTIME_ZIP_PATH"
+          echo "zip_path=$RUNTIME_ZIP_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Compute SHA256 of package
         id: sha
         run: |
-          HASH=$(sha256sum "${{ steps.zip.outputs.zip_path }}" | awk '{print $1}')
+          HASH=$(sha256sum "${{ steps.runtime_zip.outputs.zip_path }}" | awk '{print $1}')
           echo "sha256=$HASH" >> "$GITHUB_OUTPUT"
 
       - name: Write update manifest
@@ -60,10 +67,12 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
-          ZIP_NAME: ${{ steps.version.outputs.zip_name }}
+          ZIP_NAME: ${{ steps.version.outputs.runtime_zip_name }}
           SHA256: ${{ steps.sha.outputs.sha256 }}
         run: |
-          MANIFEST_FILE="update-manifest.json"
+          RELEASE_DIR="release-assets"
+          mkdir -p "$RELEASE_DIR"
+          MANIFEST_FILE="$RELEASE_DIR/update-manifest.json"
           cat > "$MANIFEST_FILE" <<EOF
           {
             "version": "${VERSION}",
@@ -77,7 +86,8 @@ jobs:
       - name: Create initial installer ZIP
         id: installer_zip
         run: |
-          INSTALLER="sf-onprem-integration-agent-installer.zip"
+          RELEASE_DIR="release-assets"
+          INSTALLER="$RELEASE_DIR/${{ steps.version.outputs.installer_zip_name }}"
           zip -r "$INSTALLER" scripts/ .env.example
           echo "installer_path=$INSTALLER" >> "$GITHUB_OUTPUT"
 
@@ -90,7 +100,7 @@ jobs:
             ## Installation
 
             ### Erstinstallation (einmalig beim Kunden)
-            1. `${{ steps.installer_zip.outputs.installer_path }}` herunterladen und entpacken
+            1. `${{ steps.customer_zip.outputs.zip_path }}` herunterladen und entpacken
             2. `npm install` im App-Verzeichnis ausführen
             3. `.env` aus `.env.example` anlegen und befüllen
             4. `npm run build` ausführen
@@ -111,7 +121,8 @@ jobs:
               -UpdateManifestUrl "https://github.com/${{ github.repository }}/releases/latest/download/update-manifest.json"
             ```
           files: |
-            ${{ steps.zip.outputs.zip_path }}
+            ${{ steps.customer_zip.outputs.zip_path }}
+            ${{ steps.runtime_zip.outputs.zip_path }}
             ${{ steps.manifest.outputs.manifest_path }}
             ${{ steps.installer_zip.outputs.installer_path }}
           fail_on_unmatched_files: true

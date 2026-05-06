@@ -1,5 +1,6 @@
 import { Connection } from "jsforce";
 import { SalesforceConfig } from "../../infrastructure/config/salesforce-config";
+import { getStaleRunInactivityThresholdMinutesForSchedule } from "../../core/scheduler/stale-run-policy";
 
 export interface SalesforceAccountRecord {
   Id: string;
@@ -34,9 +35,45 @@ export interface SalesforceScheduleRecord {
   LastRunAt__c?: string;
 }
 
-interface SalesforceRunRecord {
+export interface SalesforceRunRecord {
   Id: string;
   MSD_Status__c?: string;
+  MSD_Schedule__c?: string;
+  MSD_Schedule__r?: {
+    Name?: string;
+    MSD_Connector__c?: string;
+    MSD_Connector__r?: {
+      Name?: string;
+    };
+  };
+  MSD_StartedAt__c?: string;
+  MSD_FinishedAt__c?: string;
+  MSD_RecordsRead__c?: number;
+  MSD_RecordsProcessed__c?: number;
+  MSD_RecordsSucceeded__c?: number;
+  MSD_RecordsFailed__c?: number;
+  MSD_ErrorMessage__c?: string;
+  MSD_CorrelationId__c?: string;
+  MSD_AgentId__c?: string;
+}
+
+export interface SalesforceLogRecord {
+  Id: string;
+  MSD_Run__c?: string;
+  MSD_Run__r?: {
+    MSD_Schedule__r?: {
+      Name?: string;
+      MSD_Connector__r?: {
+        Name?: string;
+      };
+    };
+  };
+  MSD_Level__c?: string;
+  MSD_Step__c?: string;
+  MSD_Message__c?: string;
+  MSD_RecordKey__c?: string;
+  MSD_CorrelationId__c?: string;
+  CreatedDate?: string;
 }
 
 export interface SalesforceCheckpointRecord {
@@ -106,6 +143,15 @@ export interface CreateLogInput {
   recordKey?: string;
 }
 
+export interface CreateTaskInput {
+  ownerId: string;
+  subject: string;
+  description: string;
+  priority?: "Normal" | "High";
+  status?: "Not Started" | "In Progress" | "Completed" | "Waiting on someone else" | "Deferred";
+  activityDate?: string;
+}
+
 export interface CheckpointData {
   id: string;
   scheduleId?: string;
@@ -139,8 +185,8 @@ export interface UpsertCheckpointInput {
   checkpointId?: string;
   scheduleId: string;
   objectName: string;
-  lastCheckpoint: string;
-  lastRecordId: string;
+  lastCheckpoint?: string;
+  lastRecordId?: string;
   lastRunId: string;
 }
 
@@ -166,6 +212,75 @@ export interface SalesforcePicklistValue {
   label: string;
 }
 
+export interface SalesforceObjectFieldMetadata {
+  name: string;
+  label: string;
+  type: string;
+  nillable: boolean;
+  isExternalId: boolean;
+  createable: boolean;
+  defaultedOnCreate: boolean;
+  calculated: boolean;
+  autoNumber: boolean;
+  requiredOnCreate: boolean;
+}
+
+export interface SalesforceObjectMetadata {
+  name: string;
+  label: string;
+}
+
+export interface SalesforcePricebookMetadata {
+  id: string;
+  name: string;
+  isActive: boolean;
+  isStandard: boolean;
+}
+
+export interface SalesforceUserMetadata {
+  id: string;
+  name: string;
+  username: string;
+  isActive: boolean;
+}
+
+export interface SalesforceOrgOverview {
+  domain: string;
+  instanceUrl?: string;
+  organizationId?: string;
+  organizationName?: string;
+  environment: "Sandbox" | "Production" | "Unknown";
+  apiUsage?: {
+    max: number;
+    used: number;
+    remaining: number;
+  };
+  dataStorageMb?: {
+    max: number;
+    used: number;
+    remaining: number;
+  };
+  fileStorageMb?: {
+    max: number;
+    used: number;
+    remaining: number;
+  };
+  licenses?: {
+    total: number;
+    used: number;
+    remaining: number;
+  };
+}
+
+export interface SalesforceMetadataDeployResult {
+  id?: string;
+  status?: string;
+  success: boolean;
+  numberComponentsDeployed?: number;
+  numberComponentErrors?: number;
+  details?: unknown;
+}
+
 export interface GlobalPicklistEntry {
   apiName: string;
   label: string;
@@ -175,7 +290,42 @@ interface OAuthTokenResponse {
   access_token: string;
   instance_url: string;
   token_type: string;
+  refresh_token?: string;
   scope?: string;
+}
+
+interface CachedSalesforceSession {
+  instanceUrl: string;
+  accessToken?: string;
+  username?: string;
+  password?: string;
+  expiresAt: number;
+}
+
+const TOKEN_CACHE_TTL_MS = Number(process.env.SF_TOKEN_CACHE_TTL_MS || 8 * 60 * 1000);
+
+function formatSalesforceTokenError(
+  prefix: string,
+  status: number,
+  errorText: string,
+  loginUrl: string,
+  clientId?: string
+): string {
+  const normalizedErrorText = String(errorText || "").trim();
+
+  if (/\"error\"\s*:\s*\"invalid_client_id\"/i.test(normalizedErrorText)) {
+    return [
+      `${prefix}: ${status}.`,
+      "Salesforce Client ID ist ungueltig.",
+      `Pruefe die Connected App fuer ${loginUrl}.`,
+      clientId ? `Verwendete Client ID beginnt mit ${String(clientId).slice(0, 6)}...` : "",
+      "Production- und Sandbox-Consumer-Keys sind nicht austauschbar."
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  return `${prefix}: ${status} ${normalizedErrorText}`;
 }
 
 function formatSoqlDateTime(value: string): string {
@@ -229,6 +379,43 @@ function buildSalesforceRecordPayload(values: Record<string, unknown>): Record<s
 }
 
 export class SalesforceClient {
+  private static readonly sessionCache = new Map<string, CachedSalesforceSession>();
+  private static readonly loginInFlight = new Map<string, Promise<CachedSalesforceSession>>();
+  private static readonly lastLogCleanupAt = new Map<string, number>();
+  private static readonly staleRunTimeoutMs = (() => {
+    const configuredMinutes = Number(process.env.SF_STALE_RUN_TIMEOUT_MINUTES?.trim() || "360");
+    if (!Number.isFinite(configuredMinutes) || configuredMinutes <= 0) {
+      return 0;
+    }
+
+    return configuredMinutes * 60 * 1000;
+  })();
+  private static readonly logRetentionDays = (() => {
+    const configuredDays = Number(process.env.SF_LOG_RETENTION_DAYS?.trim() || "30");
+    if (!Number.isFinite(configuredDays) || configuredDays <= 0) {
+      return 0;
+    }
+
+    return Math.max(1, Math.floor(configuredDays));
+  })();
+  private static readonly logCleanupIntervalMs = 24 * 60 * 60 * 1000;
+  private static readonly logCleanupBatchSize = (() => {
+    const configuredBatchSize = Number(process.env.SF_LOG_RETENTION_BATCH_SIZE?.trim() || "200");
+    if (!Number.isFinite(configuredBatchSize) || configuredBatchSize <= 0) {
+      return 200;
+    }
+
+    return Math.max(1, Math.min(Math.floor(configuredBatchSize), 200));
+  })();
+  private static readonly logCleanupMaxBatches = (() => {
+    const configuredMaxBatches = Number(process.env.SF_LOG_RETENTION_MAX_BATCHES?.trim() || "25");
+    if (!Number.isFinite(configuredMaxBatches) || configuredMaxBatches <= 0) {
+      return 25;
+    }
+
+    return Math.max(1, Math.min(Math.floor(configuredMaxBatches), 100));
+  })();
+
   private readonly config: SalesforceConfig;
   private connection?: Connection;
   private readonly objectPicklistCache: Map<string, SalesforcePicklistValue[]>;
@@ -240,38 +427,205 @@ export class SalesforceClient {
     this.globalPicklistCache = new Map();
   }
 
-  public async login(): Promise<void> {
-    const tokenUrl = `${this.config.loginUrl.replace(/\/$/, "")}/services/oauth2/token`;
-
-    const body = new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: this.config.clientId,
-      client_secret: this.config.clientSecret
-    });
-
-    const response = await fetch(tokenUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Salesforce token request failed: ${response.status} ${errorText}`);
+  private getCacheKey(): string {
+    if (this.config.authType === "password") {
+      return `${this.config.loginUrl}|password|${this.config.username || ""}`;
     }
 
-    const tokenData = (await response.json()) as OAuthTokenResponse;
+    if (this.config.authType === "oauth_refresh_token") {
+      return `${this.config.loginUrl}|oauth_refresh_token|${this.config.clientId || ""}|${this.config.refreshToken || ""}`;
+    }
 
-    if (!tokenData.access_token || !tokenData.instance_url) {
-      throw new Error("Salesforce token response is missing access_token or instance_url");
+    return `${this.config.loginUrl}|client_credentials|${this.config.clientId || ""}`;
+  }
+
+  public getLogRetentionDays(): number {
+    return SalesforceClient.logRetentionDays;
+  }
+
+  public shouldRunLogCleanup(now = Date.now()): boolean {
+    const retentionDays = this.getLogRetentionDays();
+    if (retentionDays <= 0) {
+      return false;
+    }
+
+    const lastCleanupAt = SalesforceClient.lastLogCleanupAt.get(this.getCacheKey()) || 0;
+    return now - lastCleanupAt >= SalesforceClient.logCleanupIntervalMs;
+  }
+
+  public markLogCleanupRun(at = Date.now()): void {
+    SalesforceClient.lastLogCleanupAt.set(this.getCacheKey(), at);
+  }
+
+  private applyConnection(session: CachedSalesforceSession): void {
+    if (session.accessToken) {
+      this.connection = new Connection({
+        instanceUrl: session.instanceUrl,
+        accessToken: session.accessToken
+      });
+      return;
     }
 
     this.connection = new Connection({
-      instanceUrl: tokenData.instance_url,
-      accessToken: tokenData.access_token
+      loginUrl: this.config.loginUrl,
+      instanceUrl: session.instanceUrl
     });
+  }
+
+  public async login(): Promise<void> {
+    if (this.connection) {
+      return;
+    }
+
+    const cacheKey = this.getCacheKey();
+    const now = Date.now();
+    const cachedSession = SalesforceClient.sessionCache.get(cacheKey);
+    if (cachedSession && cachedSession.expiresAt > now) {
+      this.applyConnection(cachedSession);
+      return;
+    }
+
+    const existingLogin = SalesforceClient.loginInFlight.get(cacheKey);
+    if (existingLogin) {
+      const session = await existingLogin;
+      this.applyConnection(session);
+      return;
+    }
+
+    const loginPromise = (async (): Promise<CachedSalesforceSession> => {
+      if (this.config.authType === "password") {
+        const username = String(this.config.username || "").trim();
+        const password = String(this.config.password || "");
+        const securityToken = String(this.config.securityToken || "");
+        if (!username || !password) {
+          throw new Error("Salesforce klassischer Login benoetigt username und password");
+        }
+
+        const connection = new Connection({ loginUrl: this.config.loginUrl });
+        await connection.login(username, password + securityToken);
+        return {
+          instanceUrl: String(connection.instanceUrl || "").trim(),
+          accessToken: String(connection.accessToken || "").trim() || undefined,
+          username,
+          password: securityToken ? `${password}${securityToken}` : password,
+          expiresAt: Date.now() + Math.max(60_000, TOKEN_CACHE_TTL_MS)
+        };
+      }
+
+      if (this.config.authType === "oauth_refresh_token") {
+        const clientId = String(this.config.clientId || "").trim();
+        const clientSecret = String(this.config.clientSecret || "").trim();
+        const refreshToken = String(this.config.refreshToken || "").trim();
+
+        if (!clientId || !clientSecret || !refreshToken) {
+          const accessToken = String(this.config.accessToken || "").trim();
+          const instanceUrl = String(this.config.instanceUrl || "").trim();
+          if (accessToken && instanceUrl) {
+            return {
+              instanceUrl,
+              accessToken,
+              expiresAt: Date.now() + Math.max(60_000, TOKEN_CACHE_TTL_MS)
+            };
+          }
+
+          throw new Error("Salesforce OAuth Login fuer Migrationen benoetigt clientId, clientSecret und refreshToken");
+        }
+
+        const tokenUrl = `${this.config.loginUrl.replace(/\/$/, "")}/services/oauth2/token`;
+        const body = new URLSearchParams({
+          grant_type: "refresh_token",
+          client_id: clientId,
+          client_secret: clientSecret,
+          refresh_token: refreshToken
+        });
+        const response = await fetch(tokenUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded"
+          },
+          body
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          if (cachedSession && /login rate exceeded/i.test(errorText)) {
+            return cachedSession;
+          }
+          throw new Error(
+            formatSalesforceTokenError(
+              "Salesforce refresh token request failed",
+              response.status,
+              errorText,
+              tokenUrl,
+              clientId
+            )
+          );
+        }
+
+        const tokenData = (await response.json()) as OAuthTokenResponse;
+        const instanceUrl = String(tokenData.instance_url || this.config.instanceUrl || "").trim();
+        if (!tokenData.access_token || !instanceUrl) {
+          throw new Error("Salesforce refresh token response is missing access_token or instance_url");
+        }
+
+        return {
+          instanceUrl,
+          accessToken: tokenData.access_token,
+          expiresAt: Date.now() + Math.max(60_000, TOKEN_CACHE_TTL_MS)
+        };
+      }
+
+      const tokenUrl = `${this.config.loginUrl.replace(/\/$/, "")}/services/oauth2/token`;
+      const body = new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: String(this.config.clientId || ""),
+        client_secret: String(this.config.clientSecret || "")
+      });
+      const response = await fetch(tokenUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        if (cachedSession && /login rate exceeded/i.test(errorText)) {
+          return cachedSession;
+        }
+        throw new Error(
+          formatSalesforceTokenError(
+            "Salesforce token request failed",
+            response.status,
+            errorText,
+            tokenUrl,
+            this.config.clientId
+          )
+        );
+      }
+
+      const tokenData = (await response.json()) as OAuthTokenResponse;
+
+      if (!tokenData.access_token || !tokenData.instance_url) {
+        throw new Error("Salesforce token response is missing access_token or instance_url");
+      }
+
+      return {
+        instanceUrl: tokenData.instance_url,
+        accessToken: tokenData.access_token,
+        expiresAt: Date.now() + Math.max(60_000, TOKEN_CACHE_TTL_MS)
+      };
+    })();
+
+    SalesforceClient.loginInFlight.set(cacheKey, loginPromise);
+    try {
+      const session = await loginPromise;
+      SalesforceClient.sessionCache.set(cacheKey, session);
+      this.applyConnection(session);
+    } finally {
+      SalesforceClient.loginInFlight.delete(cacheKey);
+    }
   }
 
   public async queryAccounts(
@@ -322,14 +676,122 @@ export class SalesforceClient {
       throw new Error("SOQL query must not be empty");
     }
 
-    const result = await this.connection.query<Record<string, unknown>>(trimmedSoql);
-    return result.records.map((record) => ({ ...record }));
+    let result = await this.connection.query<Record<string, unknown>>(trimmedSoql);
+    const records = [...result.records];
+
+    while (!result.done && result.nextRecordsUrl) {
+      result = await this.connection.queryMore<Record<string, unknown>>(result.nextRecordsUrl);
+      records.push(...result.records);
+    }
+
+    return records.map((record) => ({ ...record }));
   }
 
-  public async querySchedules(): Promise<SalesforceScheduleRecord[]> {
+  public async ensurePermissionSetAssigned(permissionSetName: string): Promise<{ assigned: boolean; alreadyExisted: boolean }> {
     if (!this.connection) {
       throw new Error("Salesforce connection not initialized. Call login() first.");
     }
+
+    const identity = await this.connection.identity();
+    const userId = (identity as unknown as { user_id?: string }).user_id;
+    if (!userId) {
+      throw new Error("Could not determine current Salesforce user ID from identity endpoint.");
+    }
+
+    const psResult = await this.connection.query<{ Id: string }>(
+      `SELECT Id FROM PermissionSet WHERE Name = '${permissionSetName}' LIMIT 1`
+    );
+    if (!psResult.records.length) {
+      throw new Error(`PermissionSet '${permissionSetName}' not found in Salesforce.`);
+    }
+    const permissionSetId = psResult.records[0].Id;
+
+    const assignResult = await this.connection.query<{ Id: string }>(
+      `SELECT Id FROM PermissionSetAssignment WHERE AssigneeId = '${userId}' AND PermissionSetId = '${permissionSetId}' LIMIT 1`
+    );
+    if (assignResult.records.length > 0) {
+      return { assigned: true, alreadyExisted: true };
+    }
+
+    const createResult = await this.connection.sobject("PermissionSetAssignment").create({
+      AssigneeId: userId,
+      PermissionSetId: permissionSetId
+    });
+    if (!createResult.success) {
+      const errors = "errors" in createResult ? JSON.stringify(createResult.errors) : "unknown error";
+      throw new Error(`Failed to assign PermissionSet '${permissionSetName}': ${errors}`);
+    }
+    return { assigned: true, alreadyExisted: false };
+  }
+
+  public async ensurePermissionSetFieldAccess(
+    permissionSetName: string,
+    objectApiName: string,
+    fieldApiName: string
+  ): Promise<{ granted: boolean; alreadyExisted: boolean }> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    await this.ensurePermissionSetAssigned(permissionSetName);
+
+    const psResult = await this.connection.query<{ Id: string }>(
+      `SELECT Id FROM PermissionSet WHERE Name = '${permissionSetName}' LIMIT 1`
+    );
+    if (!psResult.records.length) {
+      throw new Error(`PermissionSet '${permissionSetName}' not found in Salesforce.`);
+    }
+
+    const permissionSetId = psResult.records[0].Id;
+    const qualifiedFieldName = `${objectApiName}.${fieldApiName}`;
+    const fieldPermissionResult = await this.connection.query<{
+      Id: string;
+      PermissionsRead?: boolean;
+      PermissionsEdit?: boolean;
+    }>(
+      `SELECT Id, PermissionsRead, PermissionsEdit FROM FieldPermissions WHERE ParentId = '${permissionSetId}' AND SobjectType = '${objectApiName}' AND Field = '${qualifiedFieldName}' LIMIT 1`
+    );
+
+    if (fieldPermissionResult.records.length > 0) {
+      const existing = fieldPermissionResult.records[0];
+      if (existing.PermissionsRead === true && existing.PermissionsEdit === true) {
+        return { granted: true, alreadyExisted: true };
+      }
+
+      const updateResult = await this.connection.sobject("FieldPermissions").update({
+        Id: existing.Id,
+        PermissionsRead: true,
+        PermissionsEdit: true
+      });
+      if (!updateResult.success) {
+        const errors = "errors" in updateResult ? JSON.stringify(updateResult.errors) : "unknown error";
+        throw new Error(`Failed to update field access for ${qualifiedFieldName}: ${errors}`);
+      }
+
+      return { granted: true, alreadyExisted: false };
+    }
+
+    const createResult = await this.connection.sobject("FieldPermissions").create({
+      ParentId: permissionSetId,
+      SobjectType: objectApiName,
+      Field: qualifiedFieldName,
+      PermissionsRead: true,
+      PermissionsEdit: true
+    });
+    if (!createResult.success) {
+      const errors = "errors" in createResult ? JSON.stringify(createResult.errors) : "unknown error";
+      throw new Error(`Failed to create field access for ${qualifiedFieldName}: ${errors}`);
+    }
+
+    return { granted: true, alreadyExisted: false };
+  }
+
+  public async querySchedules(activeOnly = true): Promise<SalesforceScheduleRecord[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const whereClause = activeOnly ? "WHERE Active__c = true" : "";
 
     const soql = `
       SELECT
@@ -351,13 +813,121 @@ export class SalesforceClient {
         NextRunAt__c,
         LastRunAt__c
       FROM MSD_Schedule__c
-      WHERE Active__c = true
+      ${whereClause}
       ORDER BY NextRunAt__c ASC
-      LIMIT 20
+      LIMIT 100
     `;
 
     const result = await this.connection.query<SalesforceScheduleRecord>(soql);
     return result.records;
+  }
+
+  public async queryScheduleById(scheduleId: string): Promise<SalesforceScheduleRecord> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const escapedScheduleId = scheduleId.replace(/'/g, "\\'");
+
+    const soql = `
+      SELECT
+        Id,
+        Name,
+        Active__c,
+        SourceSystem__c,
+        TargetSystem__c,
+        ObjectName__c,
+        Operation__c,
+        MSD_Connector__c,
+        MSD_MappingDefinition__c,
+        MSD_Direction__c,
+        MSD_SourceType__c,
+        MSD_TargetType__c,
+        MSD_SourceDefinition__c,
+        MSD_TargetDefinition__c,
+        BatchSize__c,
+        NextRunAt__c,
+        LastRunAt__c
+      FROM MSD_Schedule__c
+      WHERE Id = '${escapedScheduleId}'
+      LIMIT 1
+    `;
+
+    const result = await this.connection.query<SalesforceScheduleRecord>(soql);
+    if (result.records.length === 0) {
+      throw new Error(`Schedule not found: ${scheduleId}`);
+    }
+
+    return result.records[0];
+  }
+
+  public async createScheduleRecord(fields: Record<string, unknown>): Promise<string> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const result = await this.connection.sobject("MSD_Schedule__c").create(fields);
+    if (!result.success || !result.id) {
+      const details = "errors" in result ? JSON.stringify(result.errors) : "unknown create error";
+      throw new Error(`Failed to create MSD_Schedule__c record - ${details}`);
+    }
+
+    return result.id;
+  }
+
+  public async updateScheduleRecord(scheduleId: string, fields: Record<string, unknown>): Promise<void> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const result = await this.connection.sobject("MSD_Schedule__c").update({
+      Id: scheduleId,
+      ...fields
+    });
+
+    if (!result.success) {
+      const details = "errors" in result ? JSON.stringify(result.errors) : "unknown update error";
+      throw new Error(`Failed to update MSD_Schedule__c record: ${scheduleId} - ${details}`);
+    }
+  }
+
+  public async deleteScheduleRecord(scheduleId: string): Promise<void> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const result = await this.connection.sobject("MSD_Schedule__c").destroy(scheduleId);
+    if (!result.success) {
+      const details = "errors" in result ? JSON.stringify(result.errors) : "unknown delete error";
+      throw new Error(`Failed to delete MSD_Schedule__c record: ${scheduleId} - ${details}`);
+    }
+  }
+
+  public async queryConnectors(): Promise<ConnectorConfig[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const soql = `
+      SELECT
+        Id,
+        Name,
+        MSD_Active__c,
+        MSD_ConnectorType__c,
+        MSD_TargetSystem__c,
+        MSD_Direction__c,
+        MSD_SecretKey__c,
+        MSD_TimeoutMs__c,
+        MSD_MaxRetries__c,
+        MSD_Parameters__c,
+        MSD_Description__c
+      FROM MSD_Connector__c
+      ORDER BY Name ASC
+      LIMIT 100
+    `;
+
+    const result = await this.connection.query<SalesforceConnectorRecord>(soql);
+    return result.records.map((record) => this.toConnectorConfig(record));
   }
 
   public async queryConnector(connectorId: string): Promise<ConnectorConfig> {
@@ -392,6 +962,52 @@ export class SalesforceClient {
     }
 
     const record = result.records[0];
+    return this.toConnectorConfig(record);
+  }
+
+  public async createConnectorRecord(fields: Record<string, unknown>): Promise<string> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const result = await this.connection.sobject("MSD_Connector__c").create(fields);
+    if (!result.success || !result.id) {
+      const details = "errors" in result ? JSON.stringify(result.errors) : "unknown create error";
+      throw new Error(`Failed to create MSD_Connector__c record - ${details}`);
+    }
+
+    return result.id;
+  }
+
+  public async updateConnectorRecord(connectorId: string, fields: Record<string, unknown>): Promise<void> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const result = await this.connection.sobject("MSD_Connector__c").update({
+      Id: connectorId,
+      ...fields
+    });
+
+    if (!result.success) {
+      const details = "errors" in result ? JSON.stringify(result.errors) : "unknown update error";
+      throw new Error(`Failed to update MSD_Connector__c record: ${connectorId} - ${details}`);
+    }
+  }
+
+  public async deleteConnectorRecord(connectorId: string): Promise<void> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const result = await this.connection.sobject("MSD_Connector__c").destroy(connectorId);
+    if (!result.success) {
+      const details = "errors" in result ? JSON.stringify(result.errors) : "unknown delete error";
+      throw new Error(`Failed to delete MSD_Connector__c record: ${connectorId} - ${details}`);
+    }
+  }
+
+  private toConnectorConfig(record: SalesforceConnectorRecord): ConnectorConfig {
     const rawParameters = record.MSD_Parameters__c?.trim();
 
     let parameters: Record<string, unknown> = {};
@@ -555,12 +1171,27 @@ export class SalesforceClient {
     }
 
     if (input.checkpointId) {
-      const updateResult = await this.connection.sobject("MSD_Checkpoint__c").update({
+      const updatePayload: {
+        Id: string;
+        MSD_LastCheckpoint__c?: string | null;
+        MSD_LastRecordId__c?: string | null;
+        MSD_Run__c: string;
+      } = {
         Id: input.checkpointId,
-        MSD_LastCheckpoint__c: input.lastCheckpoint,
-        MSD_LastRecordId__c: input.lastRecordId,
         MSD_Run__c: input.lastRunId
-      });
+      };
+      if (input.lastCheckpoint) {
+        updatePayload.MSD_LastCheckpoint__c = input.lastCheckpoint;
+      } else {
+        updatePayload.MSD_LastCheckpoint__c = null;
+      }
+      if (input.lastRecordId) {
+        updatePayload.MSD_LastRecordId__c = input.lastRecordId;
+      } else {
+        updatePayload.MSD_LastRecordId__c = null;
+      }
+
+      const updateResult = await this.connection.sobject("MSD_Checkpoint__c").update(updatePayload);
 
       if (!updateResult.success) {
         const details = "errors" in updateResult ? JSON.stringify(updateResult.errors) : "unknown update error";
@@ -570,13 +1201,25 @@ export class SalesforceClient {
       return input.checkpointId;
     }
 
-    const createResult = await this.connection.sobject("MSD_Checkpoint__c").create({
+    const createPayload: {
+      MSD_Schedule__c: string;
+      MSD_ObjectName__c: string;
+      MSD_LastCheckpoint__c?: string | null;
+      MSD_LastRecordId__c?: string;
+      MSD_Run__c: string;
+    } = {
       MSD_Schedule__c: input.scheduleId,
       MSD_ObjectName__c: input.objectName,
-      MSD_LastCheckpoint__c: input.lastCheckpoint,
-      MSD_LastRecordId__c: input.lastRecordId,
       MSD_Run__c: input.lastRunId
-    });
+    };
+    if (input.lastCheckpoint) {
+      createPayload.MSD_LastCheckpoint__c = input.lastCheckpoint;
+    }
+    if (input.lastRecordId) {
+      createPayload.MSD_LastRecordId__c = input.lastRecordId;
+    }
+
+    const createResult = await this.connection.sobject("MSD_Checkpoint__c").create(createPayload);
 
     if (!createResult.success || !createResult.id) {
       const details = "errors" in createResult ? JSON.stringify(createResult.errors) : "unknown create error";
@@ -616,7 +1259,8 @@ export class SalesforceClient {
     const soql = `
       SELECT
         Id,
-        MSD_Status__c
+        MSD_Status__c,
+        MSD_StartedAt__c
       FROM MSD_Run__c
       WHERE MSD_Schedule__c = '${escapedScheduleId}'
         AND MSD_Status__c = 'Running'
@@ -625,7 +1269,280 @@ export class SalesforceClient {
     `;
 
     const result = await this.connection.query<SalesforceRunRecord>(soql);
-    return result.records.length > 0;
+    if (result.records.length === 0) {
+      return false;
+    }
+
+    const run = result.records[0];
+    const staleRunTimeoutMs = SalesforceClient.staleRunTimeoutMs;
+    const staleRunInactivityTimeoutMs = getStaleRunInactivityThresholdMinutesForSchedule(
+      run.MSD_Schedule__c,
+      run.MSD_Schedule__r?.Name
+    ) * 60 * 1000;
+    const startedAt = run.MSD_StartedAt__c ? new Date(run.MSD_StartedAt__c).getTime() : Number.NaN;
+    const latestLogs = await this.queryLogsByRunId(run.Id, 1);
+    const latestLogCreatedAt = latestLogs[0]?.CreatedDate ? new Date(latestLogs[0].CreatedDate).getTime() : Number.NaN;
+    const activityReferenceAt = !Number.isNaN(latestLogCreatedAt) ? latestLogCreatedAt : startedAt;
+
+    if (
+      staleRunTimeoutMs > 0 &&
+      !Number.isNaN(startedAt) &&
+      Date.now() - startedAt >= staleRunTimeoutMs
+    ) {
+      await this.updateRun(run.Id, {
+        status: "Failed",
+        finishedAt: new Date().toISOString(),
+        errorMessage: `Auto-closed stale run after ${Math.round(staleRunTimeoutMs / 60000)} minutes without completion`
+      });
+      return false;
+    }
+
+    if (
+      staleRunInactivityTimeoutMs > 0 &&
+      !Number.isNaN(activityReferenceAt) &&
+      Date.now() - activityReferenceAt >= staleRunInactivityTimeoutMs
+    ) {
+      await this.updateRun(run.Id, {
+        status: "Failed",
+        finishedAt: new Date().toISOString(),
+        errorMessage: `Auto-closed inactive run after ${Math.round(staleRunInactivityTimeoutMs / 60000)} minutes without activity`
+      });
+      return false;
+    }
+
+    return true;
+  }
+
+  public async queryRuns(limit = 50): Promise<SalesforceRunRecord[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedLimit = Math.max(1, Math.min(limit, 200));
+    const soql = `
+      SELECT
+        Id,
+        MSD_Status__c,
+        MSD_Schedule__c,
+        MSD_Schedule__r.Name,
+        MSD_Schedule__r.MSD_Connector__c,
+        MSD_Schedule__r.MSD_Connector__r.Name,
+        MSD_StartedAt__c,
+        MSD_FinishedAt__c,
+        MSD_RecordsRead__c,
+        MSD_RecordsProcessed__c,
+        MSD_RecordsSucceeded__c,
+        MSD_RecordsFailed__c,
+        MSD_ErrorMessage__c,
+        MSD_CorrelationId__c,
+        MSD_AgentId__c
+      FROM MSD_Run__c
+      ORDER BY CreatedDate DESC
+      LIMIT ${normalizedLimit}
+    `;
+
+    const result = await this.connection.query<SalesforceRunRecord>(soql);
+    return result.records;
+  }
+
+  public async queryRunsByDateRange(startIso: string, endIso: string, limit = 5000): Promise<SalesforceRunRecord[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedLimit = Math.max(1, Math.min(limit, 5000));
+    const soql = `
+      SELECT
+        Id,
+        MSD_Status__c,
+        MSD_Schedule__c,
+        MSD_Schedule__r.Name,
+        MSD_Schedule__r.MSD_Connector__c,
+        MSD_Schedule__r.MSD_Connector__r.Name,
+        MSD_StartedAt__c,
+        MSD_FinishedAt__c,
+        MSD_RecordsRead__c,
+        MSD_RecordsProcessed__c,
+        MSD_RecordsSucceeded__c,
+        MSD_RecordsFailed__c,
+        MSD_ErrorMessage__c,
+        MSD_CorrelationId__c,
+        MSD_AgentId__c
+      FROM MSD_Run__c
+      WHERE MSD_StartedAt__c >= ${formatSoqlDateTime(startIso)}
+        AND MSD_StartedAt__c < ${formatSoqlDateTime(endIso)}
+      ORDER BY MSD_StartedAt__c ASC
+      LIMIT ${normalizedLimit}
+    `;
+
+    const result = await this.connection.query<SalesforceRunRecord>(soql);
+    return result.records;
+  }
+
+  public async queryRunningRuns(limit = 50): Promise<SalesforceRunRecord[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedLimit = Math.max(1, Math.min(limit, 200));
+    const soql = `
+      SELECT
+        Id,
+        MSD_Status__c,
+        MSD_Schedule__c,
+        MSD_Schedule__r.Name,
+        MSD_Schedule__r.MSD_Connector__c,
+        MSD_Schedule__r.MSD_Connector__r.Name,
+        MSD_StartedAt__c,
+        MSD_FinishedAt__c,
+        MSD_RecordsRead__c,
+        MSD_RecordsProcessed__c,
+        MSD_RecordsSucceeded__c,
+        MSD_RecordsFailed__c,
+        MSD_ErrorMessage__c,
+        MSD_CorrelationId__c,
+        MSD_AgentId__c
+      FROM MSD_Run__c
+      WHERE MSD_Status__c = 'Running'
+      ORDER BY MSD_StartedAt__c DESC, CreatedDate DESC
+      LIMIT ${normalizedLimit}
+    `;
+
+    const result = await this.connection.query<SalesforceRunRecord>(soql);
+    return result.records;
+  }
+
+  public async queryRunById(runId: string): Promise<SalesforceRunRecord | null> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const escapedRunId = runId.replace(/'/g, "\\'");
+    const soql = `
+      SELECT
+        Id,
+        MSD_Status__c,
+        MSD_Schedule__c,
+        MSD_Schedule__r.Name,
+        MSD_StartedAt__c,
+        MSD_FinishedAt__c,
+        MSD_RecordsRead__c,
+        MSD_RecordsProcessed__c,
+        MSD_RecordsSucceeded__c,
+        MSD_RecordsFailed__c,
+        MSD_ErrorMessage__c,
+        MSD_CorrelationId__c,
+        MSD_AgentId__c
+      FROM MSD_Run__c
+      WHERE Id = '${escapedRunId}'
+      LIMIT 1
+    `;
+
+    const result = await this.connection.query<SalesforceRunRecord>(soql);
+    return result.records[0] || null;
+  }
+
+  public async queryLogsByRunId(runId: string, limit = 200): Promise<SalesforceLogRecord[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const escapedRunId = runId.replace(/'/g, "\\'");
+    const normalizedLimit = Math.max(1, Math.min(limit, 500));
+    const soql = `
+      SELECT
+        Id,
+        MSD_Run__c,
+        MSD_Level__c,
+        MSD_Step__c,
+        MSD_Message__c,
+        MSD_RecordKey__c,
+        MSD_CorrelationId__c,
+        CreatedDate
+      FROM MSD_Log__c
+      WHERE MSD_Run__c = '${escapedRunId}'
+      ORDER BY CreatedDate DESC
+      LIMIT ${normalizedLimit}
+    `;
+
+    const result = await this.connection.query<SalesforceLogRecord>(soql);
+    return result.records;
+  }
+
+  public async queryLogsByDateRange(startIso: string, endIso: string, limit = 2000): Promise<SalesforceLogRecord[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedLimit = Math.max(1, Math.min(limit, 5000));
+    const soql = `
+      SELECT
+        Id,
+        MSD_Run__c,
+        MSD_Run__r.MSD_Schedule__r.Name,
+        MSD_Run__r.MSD_Schedule__r.MSD_Connector__r.Name,
+        MSD_Level__c,
+        MSD_Step__c,
+        MSD_Message__c,
+        MSD_RecordKey__c,
+        MSD_CorrelationId__c,
+        CreatedDate
+      FROM MSD_Log__c
+      WHERE CreatedDate >= ${formatSoqlDateTime(startIso)}
+        AND CreatedDate < ${formatSoqlDateTime(endIso)}
+      ORDER BY CreatedDate DESC
+      LIMIT ${normalizedLimit}
+    `;
+
+    const result = await this.connection.query<SalesforceLogRecord>(soql);
+    return result.records;
+  }
+
+  public async deleteLogsOlderThan(cutoffIso: string): Promise<{ deletedCount: number; batches: number }> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const deletedIds = new Set<string>();
+    let batches = 0;
+
+    while (batches < SalesforceClient.logCleanupMaxBatches) {
+      const soql = `
+        SELECT Id
+        FROM MSD_Log__c
+        WHERE CreatedDate < ${formatSoqlDateTime(cutoffIso)}
+        ORDER BY CreatedDate ASC
+        LIMIT ${SalesforceClient.logCleanupBatchSize}
+      `;
+
+      const result = await this.connection.query<{ Id: string }>(soql);
+      const ids = result.records
+        .map((record) => String(record.Id || "").trim())
+        .filter(Boolean);
+
+      if (!ids.length) {
+        break;
+      }
+
+      const deleteResult = await this.connection.sobject("MSD_Log__c").destroy(ids);
+      const deleteResults = Array.isArray(deleteResult) ? deleteResult : [deleteResult];
+      deleteResults.forEach((entry, index) => {
+        if (entry && entry.success) {
+          deletedIds.add(ids[index]);
+        }
+      });
+
+      batches += 1;
+
+      if (ids.length < SalesforceClient.logCleanupBatchSize) {
+        break;
+      }
+    }
+
+    return {
+      deletedCount: deletedIds.size,
+      batches
+    };
   }
 
   public async updateRun(runId: string, input: UpdateRunInput): Promise<void> {
@@ -665,6 +1582,27 @@ export class SalesforceClient {
 
     if (!result.success || !result.id) {
       throw new Error("Failed to create MSD_Log__c record");
+    }
+
+    return result.id;
+  }
+
+  public async createTask(input: CreateTaskInput): Promise<string> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const result = await this.connection.sobject("Task").create({
+      OwnerId: input.ownerId,
+      Subject: input.subject,
+      Description: input.description,
+      Priority: input.priority || "High",
+      Status: input.status || "Not Started",
+      ActivityDate: input.activityDate || new Date().toISOString().slice(0, 10)
+    });
+
+    if (!result.success || !result.id) {
+      throw new Error("Failed to create Salesforce Task record");
     }
 
     return result.id;
@@ -717,6 +1655,362 @@ export class SalesforceClient {
     return result.id;
   }
 
+  public async createGenericRecord(
+    objectApiName: string,
+    values: Record<string, unknown>
+  ): Promise<string> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const apiName = objectApiName.trim();
+    if (!apiName) {
+      throw new Error("objectApiName must not be empty");
+    }
+
+    const recordPayload = buildSalesforceRecordPayload(values);
+    const result = await this.connection.sobject(apiName).create(recordPayload);
+
+    if (!result.success) {
+      const details = "errors" in result ? JSON.stringify(result.errors) : "unknown create error";
+      throw new Error(`Failed to create ${apiName} - ${details}`);
+    }
+
+    if (!result.id) {
+      throw new Error(`Salesforce create succeeded for ${apiName} but no record id was returned`);
+    }
+
+    return result.id;
+  }
+
+  public async updateGenericRecord(
+    objectApiName: string,
+    values: Record<string, unknown>
+  ): Promise<string> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const apiName = objectApiName.trim();
+    if (!apiName) {
+      throw new Error("objectApiName must not be empty");
+    }
+
+    const idValue = values["Id"];
+    if (!idValue || typeof idValue !== "string" || !idValue.trim()) {
+      throw new Error(`Update requires 'Id' field in mapped values for object ${apiName}`);
+    }
+
+    const recordPayload = buildSalesforceRecordPayload(values) as { Id: string } & Record<string, unknown>;
+    const result = await this.connection.sobject(apiName).update(recordPayload);
+
+    if (!result.success) {
+      const details = "errors" in result ? JSON.stringify(result.errors) : "unknown update error";
+      throw new Error(`Failed to update ${apiName} Id=${idValue} - ${details}`);
+    }
+
+    return idValue.trim();
+  }
+
+  public async updateGenericRecords(
+    objectApiName: string,
+    valuesList: Record<string, unknown>[]
+  ): Promise<string[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const apiName = objectApiName.trim();
+    if (!apiName) {
+      throw new Error("objectApiName must not be empty");
+    }
+
+    const payloads = valuesList.map((values) => {
+      const idValue = values["Id"];
+      if (!idValue || typeof idValue !== "string" || !idValue.trim()) {
+        throw new Error(`Update requires 'Id' field in mapped values for object ${apiName}`);
+      }
+      return buildSalesforceRecordPayload(values) as { Id: string } & Record<string, unknown>;
+    });
+
+    if (!payloads.length) {
+      return [];
+    }
+
+    const results = await this.connection.sobject(apiName).update(payloads);
+    const saveResults = Array.isArray(results) ? results : [results];
+
+    saveResults.forEach((result, index) => {
+      if (!result.success) {
+        const details = "errors" in result ? JSON.stringify(result.errors) : "unknown update error";
+        throw new Error(`Failed to update ${apiName} Id=${payloads[index]?.Id || "unknown"} - ${details}`);
+      }
+    });
+
+    return payloads.map((payload) => String(payload.Id).trim());
+  }
+
+  public async resolveProduct2IdsByProductCodes(productCodes: string[]): Promise<Map<string, string>> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedCodes = Array.from(new Set(productCodes.map((value) => String(value || "").trim()).filter(Boolean)));
+    const resolved = new Map<string, string>();
+    if (!normalizedCodes.length) {
+      return resolved;
+    }
+
+    const chunkSize = 100;
+    for (let index = 0; index < normalizedCodes.length; index += chunkSize) {
+      const chunk = normalizedCodes.slice(index, index + chunkSize);
+      const inClause = chunk.map((value) => `'${value.replace(/'/g, "\\'")}'`).join(", ");
+      const result = await this.connection.query<{ Id?: string; ProductCode?: string }>(`
+        SELECT Id, ProductCode
+        FROM Product2
+        WHERE ProductCode IN (${inClause})
+      `);
+
+      for (const record of result.records || []) {
+        const productCode = String(record.ProductCode || "").trim();
+        const product2Id = String(record.Id || "").trim();
+        if (productCode && product2Id) {
+          resolved.set(productCode, product2Id);
+        }
+      }
+    }
+
+    return resolved;
+  }
+
+  public async listPricebookEntryIdsByProduct2Ids(pricebook2Id: string, product2Ids: string[]): Promise<Map<string, string>> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedPricebook2Id = String(pricebook2Id || "").trim();
+    const normalizedProduct2Ids = Array.from(new Set(product2Ids.map((value) => String(value || "").trim()).filter(Boolean)));
+    const resolved = new Map<string, string>();
+    if (!normalizedPricebook2Id || !normalizedProduct2Ids.length) {
+      return resolved;
+    }
+
+    const escapedPricebook2Id = normalizedPricebook2Id.replace(/'/g, "\\'");
+    const chunkSize = 100;
+    for (let index = 0; index < normalizedProduct2Ids.length; index += chunkSize) {
+      const chunk = normalizedProduct2Ids.slice(index, index + chunkSize);
+      const inClause = chunk.map((value) => `'${value.replace(/'/g, "\\'")}'`).join(", ");
+      const result = await this.connection.query<{ Id?: string; Product2Id?: string }>(`
+        SELECT Id, Product2Id
+        FROM PricebookEntry
+        WHERE Pricebook2Id = '${escapedPricebook2Id}'
+          AND Product2Id IN (${inClause})
+      `);
+
+      for (const record of result.records || []) {
+        const product2Id = String(record.Product2Id || "").trim();
+        const pricebookEntryId = String(record.Id || "").trim();
+        if (product2Id && pricebookEntryId) {
+          resolved.set(product2Id, pricebookEntryId);
+        }
+      }
+    }
+
+    return resolved;
+  }
+
+  public async upsertPricebookEntryByCompositeKey(
+    values: Record<string, unknown>,
+    options?: { product2Id?: string; existingEntryId?: string }
+  ): Promise<string> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const pricebook2Id = String(values.Pricebook2Id ?? "").trim();
+    let product2Id = String(values.Product2Id ?? options?.product2Id ?? "").trim();
+    const productCode = String(values.ProductCode ?? "").trim();
+
+    if (!product2Id && productCode) {
+      const escapedProductCode = productCode.replace(/'/g, "\\'");
+      const productLookup = await this.connection.query<{ Id: string }>(`
+        SELECT Id
+        FROM Product2
+        WHERE ProductCode = '${escapedProductCode}'
+        LIMIT 1
+      `);
+
+      if (productLookup.records.length > 0) {
+        product2Id = productLookup.records[0].Id;
+      }
+    }
+
+    if (!pricebook2Id || !product2Id) {
+      const missing = [
+        !pricebook2Id ? "Pricebook2Id" : null,
+        !product2Id ? "Product2Id" : null
+      ].filter(Boolean);
+      throw new Error(`PricebookEntry upsert missing required key field(s): ${missing.join(", ")}`);
+    }
+
+    let existingEntryId = String(options?.existingEntryId || "").trim();
+    if (!existingEntryId) {
+      const escapedPricebook2Id = pricebook2Id.replace(/'/g, "\\'");
+      const escapedProduct2Id = product2Id.replace(/'/g, "\\'");
+
+      const existing = await this.connection.query<{ Id: string }>(`
+        SELECT Id
+        FROM PricebookEntry
+        WHERE Pricebook2Id = '${escapedPricebook2Id}'
+          AND Product2Id = '${escapedProduct2Id}'
+        LIMIT 1
+      `);
+      existingEntryId = String(existing.records[0]?.Id || "").trim();
+    }
+
+    const recordPayload = buildSalesforceRecordPayload({
+      ...values,
+      Product2Id: product2Id
+    });
+    delete recordPayload.ProductCode;
+
+    if (existingEntryId) {
+      // Product2Id/Pricebook2Id are immutable after creation; keep only updateable payload.
+      delete recordPayload.Pricebook2Id;
+      delete recordPayload.Product2Id;
+
+      const updateResult = await this.connection.sobject("PricebookEntry").update({
+        Id: existingEntryId,
+        ...recordPayload
+      });
+
+      if (!updateResult.success) {
+        const details = "errors" in updateResult ? JSON.stringify(updateResult.errors) : "unknown update error";
+        throw new Error(`Failed to update PricebookEntry by composite key - ${details}`);
+      }
+
+      return existingEntryId;
+    }
+
+    const createResult = await this.connection.sobject("PricebookEntry").create(recordPayload);
+    if (!createResult.success || !createResult.id) {
+      const details = "errors" in createResult ? JSON.stringify(createResult.errors) : "unknown create error";
+      throw new Error(`Failed to create PricebookEntry by composite key - ${details}`);
+    }
+
+    return createResult.id;
+  }
+
+  public async pricebook2Exists(pricebook2Id: string): Promise<boolean> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedId = String(pricebook2Id || "").trim();
+    if (!normalizedId) {
+      return false;
+    }
+
+    const escapedPricebook2Id = normalizedId.replace(/'/g, "\\'");
+    const result = await this.connection.query<{ Id: string }>(`
+      SELECT Id
+      FROM Pricebook2
+      WHERE Id = '${escapedPricebook2Id}'
+      LIMIT 1
+    `);
+
+    return result.records.length > 0;
+  }
+
+  public async listPricebooks(): Promise<SalesforcePricebookMetadata[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const result = await this.connection.query<{ Id?: string; Name?: string; IsActive?: boolean; IsStandard?: boolean }>(`
+      SELECT Id, Name, IsActive, IsStandard
+      FROM Pricebook2
+      WHERE IsActive = true OR IsStandard = true
+      ORDER BY IsStandard DESC, Name ASC
+      LIMIT 500
+    `);
+
+    return (result.records || [])
+      .map((record) => ({
+        id: String(record.Id || "").trim(),
+        name: String(record.Name || record.Id || "").trim(),
+        isActive: record.IsActive === true,
+        isStandard: record.IsStandard === true
+      }))
+      .filter((record) => record.id);
+  }
+
+  public async listUsers(): Promise<SalesforceUserMetadata[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const result = await this.connection.query<{ Id?: string; Name?: string; Username?: string; IsActive?: boolean }>(`
+      SELECT Id, Name, Username, IsActive
+      FROM User
+      WHERE IsActive = true
+      ORDER BY Name ASC, Username ASC
+      LIMIT 500
+    `);
+
+    return (result.records || [])
+      .map((record) => ({
+        id: String(record.Id || "").trim(),
+        name: String(record.Name || "").trim(),
+        username: String(record.Username || "").trim(),
+        isActive: record.IsActive === true
+      }))
+      .filter((record) => record.id);
+  }
+
+  public async upsertProduct2ByProductCode(values: Record<string, unknown>): Promise<string> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const productCode = String(values.ProductCode ?? "").trim();
+    if (!productCode) {
+      throw new Error("Product2 upsert requires ProductCode");
+    }
+
+    const escapedProductCode = productCode.replace(/'/g, "\\'");
+    const existing = await this.connection.query<{ Id: string }>(`
+      SELECT Id
+      FROM Product2
+      WHERE ProductCode = '${escapedProductCode}'
+      LIMIT 1
+    `);
+
+    const recordPayload = buildSalesforceRecordPayload(values);
+
+    if (existing.records.length > 0) {
+      const updateResult = await this.connection.sobject("Product2").update({
+        Id: existing.records[0].Id,
+        ...recordPayload
+      });
+
+      if (!updateResult.success) {
+        const details = "errors" in updateResult ? JSON.stringify(updateResult.errors) : "unknown update error";
+        throw new Error(`Failed to update Product2 by ProductCode - ${details}`);
+      }
+
+      return existing.records[0].Id;
+    }
+
+    const createResult = await this.connection.sobject("Product2").create(recordPayload);
+    if (!createResult.success || !createResult.id) {
+      const details = "errors" in createResult ? JSON.stringify(createResult.errors) : "unknown create error";
+      throw new Error(`Failed to create Product2 by ProductCode - ${details}`);
+    }
+
+    return createResult.id;
+  }
+
   public async getObjectPicklistValues(
     objectApiName: string,
     fieldApiName: string
@@ -756,6 +2050,177 @@ export class SalesforceClient {
 
     this.objectPicklistCache.set(cacheKey, values);
     return values;
+  }
+
+  public async describeObjectFields(objectApiName: string): Promise<SalesforceObjectFieldMetadata[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const describeResult = await this.connection.sobject(objectApiName).describe();
+    return (describeResult.fields || [])
+      .map((field) => ({
+        name: String(field.name ?? "").trim(),
+        label: String(field.label ?? field.name ?? "").trim(),
+        type: String(field.type ?? "unknown").trim(),
+        nillable: Boolean(field.nillable),
+        isExternalId: Boolean((field as { externalId?: boolean }).externalId),
+        createable: Boolean((field as { createable?: boolean }).createable),
+        defaultedOnCreate: Boolean((field as { defaultedOnCreate?: boolean }).defaultedOnCreate),
+        calculated: Boolean((field as { calculated?: boolean }).calculated),
+        autoNumber: Boolean((field as { autoNumber?: boolean }).autoNumber),
+        requiredOnCreate: Boolean(
+          (field as { createable?: boolean }).createable
+          && !(field as { nillable?: boolean }).nillable
+          && !(field as { defaultedOnCreate?: boolean }).defaultedOnCreate
+          && !(field as { calculated?: boolean }).calculated
+          && !(field as { autoNumber?: boolean }).autoNumber
+        )
+      }))
+      .filter((field) => field.name);
+  }
+
+  public async waitForObjectFieldVisibility(
+    objectApiName: string,
+    fieldApiName: string,
+    maxAttempts = 20,
+    delayMs = 1000
+  ): Promise<boolean> {
+    const normalizedFieldName = String(fieldApiName || "").trim().toLowerCase();
+    if (!normalizedFieldName) {
+      return false;
+    }
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const fields = await this.describeObjectFields(objectApiName);
+      if (fields.some((field) => field.name.toLowerCase() === normalizedFieldName)) {
+        return true;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    return false;
+  }
+
+  public async listObjectMetadata(): Promise<SalesforceObjectMetadata[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const describeGlobalResult = await (this.connection as any).describeGlobal();
+    const sobjects = Array.isArray(describeGlobalResult?.sobjects)
+      ? describeGlobalResult.sobjects
+      : [];
+
+    return sobjects
+      .filter((entry: any) => Boolean(entry?.name) && entry.queryable !== false)
+      .map((entry: any) => ({
+        name: String(entry.name || "").trim(),
+        label: String(entry.label || entry.name || "").trim()
+      }))
+      .filter((entry: SalesforceObjectMetadata) => entry.name)
+      .sort((a: SalesforceObjectMetadata, b: SalesforceObjectMetadata) => a.name.localeCompare(b.name));
+  }
+
+  public async getOrgOverview(): Promise<SalesforceOrgOverview> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const domain = this.config.loginUrl.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+    const instanceUrl = String((this.connection as unknown as { instanceUrl?: string }).instanceUrl || "").trim();
+
+    const overview: SalesforceOrgOverview = {
+      domain,
+      instanceUrl,
+      environment: "Unknown"
+    };
+
+    try {
+      const orgResult = await this.connection.query<{
+        Id?: string;
+        Name?: string;
+        IsSandbox?: boolean;
+      }>("SELECT Id, Name, IsSandbox FROM Organization LIMIT 1");
+
+      const org = orgResult.records[0] || {};
+      overview.organizationId = org.Id;
+      overview.organizationName = org.Name;
+      overview.environment = org.IsSandbox === true ? "Sandbox" : "Production";
+    } catch {
+      // Keep partial overview if org query is not accessible.
+    }
+
+    try {
+      const limitsApi = this.connection as unknown as {
+        limits: () => Promise<Record<string, { Max?: number; Remaining?: number }>>;
+      };
+      const limits = await limitsApi.limits();
+
+      const apiLimit = limits?.DailyApiRequests;
+      if (apiLimit && Number.isFinite(apiLimit.Max) && Number.isFinite(apiLimit.Remaining)) {
+        const max = Number(apiLimit.Max);
+        const remaining = Number(apiLimit.Remaining);
+        overview.apiUsage = {
+          max,
+          remaining,
+          used: Math.max(0, max - remaining)
+        };
+      }
+
+      const dataStorageLimit = limits?.DataStorageMB;
+      if (dataStorageLimit && Number.isFinite(dataStorageLimit.Max) && Number.isFinite(dataStorageLimit.Remaining)) {
+        const max = Number(dataStorageLimit.Max);
+        const remaining = Number(dataStorageLimit.Remaining);
+        overview.dataStorageMb = {
+          max,
+          remaining,
+          used: Math.max(0, max - remaining)
+        };
+      }
+
+      const fileStorageLimit = limits?.FileStorageMB;
+      if (fileStorageLimit && Number.isFinite(fileStorageLimit.Max) && Number.isFinite(fileStorageLimit.Remaining)) {
+        const max = Number(fileStorageLimit.Max);
+        const remaining = Number(fileStorageLimit.Remaining);
+        overview.fileStorageMb = {
+          max,
+          remaining,
+          used: Math.max(0, max - remaining)
+        };
+      }
+    } catch {
+      // Limits are optional in the dashboard panel.
+    }
+
+    try {
+      const licensesResult = await this.connection.query<{
+        TotalLicenses?: number;
+        UsedLicenses?: number;
+      }>("SELECT TotalLicenses, UsedLicenses FROM UserLicense");
+
+      const totals = licensesResult.records.reduce(
+        (acc, item) => {
+          acc.total += Number(item.TotalLicenses || 0);
+          acc.used += Number(item.UsedLicenses || 0);
+          return acc;
+        },
+        { total: 0, used: 0 }
+      );
+
+      if (totals.total > 0) {
+        overview.licenses = {
+          total: totals.total,
+          used: totals.used,
+          remaining: Math.max(0, totals.total - totals.used)
+        };
+      }
+    } catch {
+      // License visibility can depend on org permissions.
+    }
+
+    return overview;
   }
 
   public async getGlobalPicklistValues(
@@ -933,5 +2398,323 @@ export class SalesforceClient {
 
     this.globalPicklistCache.delete(globalValueSetApiName);
     return { added, updated, total: normalizedEntries.length };
+  }
+
+  public async syncCustomFieldPicklistValues(input: {
+    objectApiName: string;
+    fieldApiName: string;
+    values: string[];
+  }): Promise<{ added: number; updated: number; total: number }> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const objectApiName = String(input.objectApiName || "").trim();
+    const fieldApiName = String(input.fieldApiName || "").trim();
+    const normalizedValues = Array.from(new Set((Array.isArray(input.values) ? input.values : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)));
+
+    if (!objectApiName || !fieldApiName) {
+      throw new Error("objectApiName and fieldApiName must not be empty");
+    }
+
+    if (normalizedValues.length === 0) {
+      return { added: 0, updated: 0, total: 0 };
+    }
+
+    const fullName = `${objectApiName}.${fieldApiName}`;
+    const metadataApi = this.connection.metadata as unknown as {
+      read: (type: string, fullName: string) => Promise<unknown>;
+      update: (type: string, metadata: unknown) => Promise<unknown>;
+    };
+
+    const readResult = await metadataApi.read("CustomField", fullName);
+    const metadataEntry = Array.isArray(readResult) ? readResult[0] : readResult;
+    if (!metadataEntry || typeof metadataEntry !== "object") {
+      throw new Error(`CustomField metadata not found: ${fullName}`);
+    }
+
+    const existing = metadataEntry as Record<string, unknown>;
+    if (String(existing.type || "").trim().toLowerCase() !== "picklist") {
+      return { added: 0, updated: 0, total: normalizedValues.length };
+    }
+
+    const valueSet = existing.valueSet && typeof existing.valueSet === "object"
+      ? { ...(existing.valueSet as Record<string, unknown>) }
+      : {};
+    const valueSetDefinition: Record<string, unknown> = valueSet.valueSetDefinition && typeof valueSet.valueSetDefinition === "object"
+      ? { ...(valueSet.valueSetDefinition as Record<string, unknown>) }
+      : { sorted: false };
+    const currentValues = Array.isArray(valueSetDefinition.value)
+      ? [...(valueSetDefinition.value as Array<Record<string, unknown>>)]
+      : [];
+
+    const byApiName = new Map<string, Record<string, unknown>>();
+    for (const entry of currentValues) {
+      if (!entry || typeof entry !== "object") {
+        continue;
+      }
+
+      const apiName = String(entry.fullName ?? "").trim();
+      if (!apiName) {
+        continue;
+      }
+
+      byApiName.set(apiName, { ...entry });
+    }
+
+    let added = 0;
+    let updated = 0;
+    for (const value of normalizedValues) {
+      const existingValue = byApiName.get(value);
+      if (!existingValue) {
+        byApiName.set(value, {
+          fullName: value,
+          default: false,
+          label: value,
+          isActive: true
+        });
+        added += 1;
+        continue;
+      }
+
+      const previousLabel = String(existingValue.label ?? existingValue.fullName ?? "").trim();
+      if (previousLabel !== value || existingValue.isActive === false) {
+        existingValue.label = value;
+        existingValue.isActive = true;
+        updated += 1;
+      }
+    }
+
+    if (added === 0 && updated === 0) {
+      return { added: 0, updated: 0, total: normalizedValues.length };
+    }
+
+    valueSet.valueSetDefinition = {
+      ...valueSetDefinition,
+      value: Array.from(byApiName.values())
+    };
+
+    const payload: Record<string, unknown> = {
+      fullName,
+      label: existing.label,
+      type: existing.type,
+      description: existing.description,
+      required: existing.required,
+      trackFeedHistory: existing.trackFeedHistory,
+      externalId: existing.externalId,
+      valueSet
+    };
+
+    const updateResult = await metadataApi.update("CustomField", payload);
+    const resultArray = Array.isArray(updateResult) ? updateResult : [updateResult];
+    const failed = resultArray.find(
+      (entry) => entry && typeof entry === "object" && "success" in (entry as Record<string, unknown>) && (entry as Record<string, unknown>).success === false
+    ) as Record<string, unknown> | undefined;
+
+    if (failed) {
+      const errors = failed.errors ? JSON.stringify(failed.errors) : "unknown metadata error";
+      throw new Error(`Failed to sync picklist values for ${fullName}: ${errors}`);
+    }
+
+    this.objectPicklistCache.delete(`${objectApiName}.${fieldApiName}`);
+    return { added, updated, total: normalizedValues.length };
+  }
+
+  public async createOrUpdateMetadata(
+    metadataType: string,
+    fullName: string,
+    metadata: Record<string, unknown>
+  ): Promise<unknown> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const metadataApi = this.connection.metadata as unknown as {
+      read: (type: string, fullName: string) => Promise<unknown>;
+      update: (type: string, metadata: unknown) => Promise<unknown>;
+      create: (type: string, metadata: unknown) => Promise<unknown>;
+    };
+
+    const payload: Record<string, unknown> = {
+      ...metadata,
+      fullName
+    };
+
+    const customFieldTarget = (() => {
+      if (metadataType !== "CustomField") {
+        return null;
+      }
+
+      const dotIndex = fullName.indexOf(".");
+      if (dotIndex <= 0 || dotIndex >= fullName.length - 1) {
+        return null;
+      }
+
+      return {
+        objectApiName: fullName.slice(0, dotIndex),
+        fieldApiName: fullName.slice(dotIndex + 1)
+      };
+    })();
+
+    const customFieldExists = async (): Promise<boolean> => {
+      if (!customFieldTarget) {
+        return false;
+      }
+
+      return await this.waitForObjectFieldVisibility(customFieldTarget.objectApiName, customFieldTarget.fieldApiName, 1, 0);
+    };
+
+    let exists = false;
+    if (metadataType === "CustomObject") {
+      try {
+        const objects = await this.listObjectMetadata();
+        exists = objects.some((entry) => String(entry.name || "").toLowerCase() === fullName.toLowerCase());
+      } catch {
+        exists = false;
+      }
+    } else if (customFieldTarget) {
+      try {
+        exists = await customFieldExists();
+      } catch {
+        exists = false;
+      }
+    } else {
+      try {
+        const readResult = await metadataApi.read(metadataType, fullName);
+        const metadataEntry = Array.isArray(readResult) ? readResult[0] : readResult;
+        if (metadataEntry && typeof metadataEntry === "object") {
+          const entryFullName = String((metadataEntry as Record<string, unknown>).fullName || "").trim();
+          exists = entryFullName
+            ? entryFullName.toLowerCase() === fullName.toLowerCase()
+            : true;
+        } else {
+          exists = false;
+        }
+      } catch {
+        exists = false;
+      }
+    }
+
+    if (exists) {
+      return {
+        success: true,
+        action: "exists",
+        type: metadataType,
+        fullName
+      };
+    }
+
+    const writeResult = await metadataApi.create(metadataType, payload);
+
+    const resultArray = Array.isArray(writeResult) ? writeResult : [writeResult];
+    const failed = resultArray.find(
+      (entry) => entry && typeof entry === "object" && "success" in (entry as Record<string, unknown>) && (entry as Record<string, unknown>).success === false
+    ) as Record<string, unknown> | undefined;
+
+    if (failed) {
+      const errors = failed.errors ? JSON.stringify(failed.errors) : "unknown metadata error";
+
+      if (metadataType === "CustomObject") {
+        try {
+          const objects = await this.listObjectMetadata();
+          const present = objects.some((entry) => String(entry.name || "").toLowerCase() === fullName.toLowerCase());
+          if (present) {
+            return {
+              success: true,
+              action: "exists",
+              type: metadataType,
+              fullName
+            };
+          }
+        } catch {
+          // Keep original error if fallback object lookup fails.
+        }
+      }
+
+      if (customFieldTarget) {
+        try {
+          const present = await customFieldExists();
+          if (present) {
+            return {
+              success: true,
+              action: "exists",
+              type: metadataType,
+              fullName
+            };
+          }
+        } catch {
+          // Keep original error if fallback field lookup fails.
+        }
+      }
+
+      throw new Error(`Failed to create ${metadataType} ${fullName}: ${errors}`);
+    }
+
+    if (customFieldTarget) {
+      if (await this.waitForObjectFieldVisibility(customFieldTarget.objectApiName, customFieldTarget.fieldApiName)) {
+        return {
+          success: true,
+          action: "created",
+          type: metadataType,
+          fullName
+        };
+      }
+
+      let readbackSummary = "unavailable";
+      try {
+        const readback = await metadataApi.read(metadataType, fullName);
+        readbackSummary = JSON.stringify(readback);
+      } catch (error) {
+        readbackSummary = error instanceof Error ? error.message : String(error);
+      }
+
+      throw new Error(
+        `CustomField ${fullName} was created via metadata API but is not yet visible on the object describe result. `
+        + `createResult=${JSON.stringify(writeResult)} readback=${readbackSummary}`
+      );
+    }
+
+    return writeResult;
+  }
+
+  public async deployMetadataZip(zipBase64: string): Promise<SalesforceMetadataDeployResult> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const metadataApi = this.connection.metadata as unknown as {
+      deploy: (zipContent: string, options: { rollbackOnError: boolean; singlePackage: boolean }) => Promise<{ id?: string; status?: string }>;
+      checkDeployStatus: (id: string, includeDetails?: boolean) => Promise<Record<string, unknown>>;
+    };
+
+    const deployResult = await metadataApi.deploy(zipBase64, {
+      rollbackOnError: true,
+      singlePackage: true
+    });
+
+    const deployId = String(deployResult?.id || "").trim();
+    if (!deployId) {
+      throw new Error("Metadata deploy did not return a deployment id");
+    }
+
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      const status = await metadataApi.checkDeployStatus(deployId, true);
+      if (status.done === true) {
+        return {
+          id: deployId,
+          status: String(status.status || "").trim() || undefined,
+          success: status.success === true,
+          numberComponentsDeployed: Number(status.numberComponentsDeployed || 0),
+          numberComponentErrors: Number(status.numberComponentErrors || 0),
+          details: status.details
+        };
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    throw new Error(`Metadata deploy timed out: ${deployId}`);
   }
 }

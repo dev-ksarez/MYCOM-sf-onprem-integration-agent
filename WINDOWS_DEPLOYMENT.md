@@ -26,6 +26,17 @@ Dieses Runbook beschreibt die Kundeninstallation als Windows-Dienst inklusive Au
 
 Diese Variante ist robuster in abgeschotteten Netzen, da kein `npm install` beim Kunden notwendig ist.
 
+Das Kundenpaket enthaelt jetzt auch `nssm.exe`, damit die Dienstinstallation ohne separate NSSM-Vorinstallation laeuft.
+
+### One-Click Start aus dem Kundenpaket
+
+Das erzeugte Kundenpaket enthaelt im ZIP-Wurzelverzeichnis jetzt zusaetzlich:
+
+- `install-customer-package.cmd`
+- `install-customer-package.ps1`
+
+Nach dem Entpacken kann der Kunde direkt `install-customer-package.cmd` starten. Falls der Start nicht bereits mit Administratorrechten erfolgt, fordert das Skript diese automatisch per UAC an. Danach kopiert es die Anwendung nach `C:\apps\sf-onprem-integration-agent`, oeffnet auf Wunsch eine interaktive `.env`-Konfiguration und startet die eigentliche Dienstinstallation.
+
 ### 1) Release-Inhalt auf Zielserver kopieren
 
 Mindestens enthalten:
@@ -86,6 +97,57 @@ cd C:\apps\sf-onprem-integration-agent
 npm run win:install-service -- -AppRoot "C:\apps\sf-onprem-integration-agent"
 ```
 
+Oder als kompletter Installationslauf in einem Schritt:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:install -- -AppRoot "C:\apps\sf-onprem-integration-agent"
+```
+
+Das Skript prueft die wichtigsten Voraussetzungen, installiert bei Bedarf Abhaengigkeiten, legt optional eine `.env` aus `.env.example` an, installiert den Windows-Dienst und registriert den Auto-Updater.
+
+### 3.1) Schnelle Neuinstallation eines vorhandenen Dienstes
+
+Wenn ein bereits installierter Dienst mit aelteren Installer-Staenden angelegt wurde, ist die schnellste saubere Korrektur meist:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:uninstall-service
+npm run win:install-service -- -AppRoot "C:\apps\sf-onprem-integration-agent"
+```
+
+Danach optional den Updater erneut setzen:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:register-updater -- -EveryMinutes 15 -AppRoot "C:\apps\sf-onprem-integration-agent"
+```
+
+### 3.2) Direkte Reparatur eines bereits installierten NSSM-Dienstes
+
+Wenn nur die Umgebungsvariablen des Windows-Dienstes korrigiert werden sollen, ohne komplette Neuinstallation:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:repair-service-env -- -AppRoot "C:\apps\sf-onprem-integration-agent" -WebUiPort 8080 -SchedulerIntervalMs 60000 -RestartService
+```
+
+Dieses Skript setzt `WEB_UI_ENABLED=1`, `WEB_UI_PORT` und `SCHEDULER_INTERVAL_MS` direkt am vorhandenen NSSM-Dienst neu.
+
+Zusatz: Mit `-PromptForEnv` koennen die wichtigsten Betriebswerte direkt im Installer abgefragt werden, zum Beispiel:
+
+- `AGENT_ID`
+- `LOG_LEVEL`
+- `WEB_UI_PORT`
+- `SCHEDULER_INTERVAL_MS`
+- `SF_LOGIN_URL`, `SF_CLIENT_ID`, `SF_CLIENT_SECRET`
+- `SAGE100_SQL_SERVER`, `SAGE100_SQL_PORT`, `SAGE100_SQL_DATABASE`, `SAGE100_SQL_USER`, `SAGE100_SQL_PASSWORD`
+- `MSSQL_DEV_PASSWORD` fuer bestehende Connectoren mit Secret Key `MSSQL_DEV_PASSWORD`
+
+Die Abfragen sind jetzt fuer Endkunden in deutscher Sprache formuliert und enthalten kurze Erklaerungen sowie sinnvolle Defaults.
+
+Vor dem Start des Windows-Dienstes prueft der Installer ausserdem die Secret Keys der aktiven Salesforce-Connectoren. Fehlt z. B. ein benoetigter Wert wie `MSSQL_DEV_PASSWORD`, stoppt die Installation vor dem Dienststart mit einem klaren Hinweis im Installer-Log.
+
 ### 4) Auto-Updater als Scheduled Task registrieren
 
 ```powershell
@@ -96,6 +158,42 @@ npm run win:register-updater -- -EveryMinutes 15 -AppRoot "C:\apps\sf-onprem-int
 Die Standard-Manifest-URL ist bereits gesetzt auf:
 
 `https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json`
+
+## Dashboard-Update pruefen und ausloesen
+
+Der Dashboard-Bereich oben rechts unterstuetzt zwei getrennte Schritte:
+
+- `Update pruefen` lädt nur den Manifest-Status und zeigt die erkannte Zielversion an.
+- `Update starten` startet auf einem Windows-Agenten direkt `scripts/windows/update-agent.ps1`.
+
+### Erwartetes Verhalten
+
+- Auf Windows und bei verfuegbarem neuerem Release wird `Update starten` aktiv.
+- Auf Windows ohne neues Release bleibt `Update starten` deaktiviert und der Status meldet `Kein Update erforderlich`.
+- Auf macOS oder Linux bleibt `Update starten` deaktiviert, auch wenn das Dashboard in einem Browser auf einem anderen Client geoeffnet ist. Entscheidend ist immer der Host des Agenten.
+
+### Schnelltest auf einem Windows-Agenten
+
+1. Sicherstellen, dass der Agent als Dienst oder lokal mit Web UI laeuft.
+2. Im Dashboard `Update pruefen` klicken.
+3. Erwartung bei neuerer Release-Version: Meldung `Update verfuegbar: <aktuell> -> <ziel>`.
+4. Danach `Update starten` klicken.
+5. Erwartung: Das Skript `scripts/windows/update-agent.ps1` wird gestartet, der Dienst wird gestoppt, das Release entpackt, validiert und bei Erfolg wieder gestartet.
+
+### Technische Verifikation des Startpfads
+
+Der Backend-Pfad startet unter Windows denselben Befehl wie der manuelle Aufruf:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\update-agent.ps1 `
+	-ServiceName "SfOnpremIntegrationAgent" `
+	-AppRoot "C:\apps\sf-onprem-integration-agent" `
+	-UpdateManifestUrl "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json"
+```
+
+### Simulierter Verfuegbarkeits-Test
+
+Wenn der Agent aktuell bereits auf der neuesten Version ist, kann der Verfuegbarkeitsfall auf einem Testsystem simuliert werden, indem `UPDATE_MANIFEST_URL` temporaer auf ein Manifest mit hoeherer `version` zeigt. Dann muss `Update pruefen` eine verfuegbare Zielversion melden und `Update starten` aktiv werden.
 
 ## Variante B: Deployment ohne `node_modules`
 
@@ -125,6 +223,20 @@ Beispielbasis siehe `.env.example`.
 
 ```powershell
 cd C:\apps\sf-onprem-integration-agent
+npm run win:install -- -AppRoot "C:\apps\sf-onprem-integration-agent" -InstallDependencies
+```
+
+Mit interaktiver `.env`-Erfassung:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:install -- -AppRoot "C:\apps\sf-onprem-integration-agent" -InstallDependencies -PromptForEnv
+```
+
+Alternativ weiterhin getrennt:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
 npm run win:install-service -- -AppRoot "C:\apps\sf-onprem-integration-agent"
 npm run win:register-updater -- -EveryMinutes 15 -AppRoot "C:\apps\sf-onprem-integration-agent"
 ```
@@ -134,6 +246,49 @@ npm run win:register-updater -- -EveryMinutes 15 -AppRoot "C:\apps\sf-onprem-int
 ```powershell
 cd C:\apps\sf-onprem-integration-agent
 npm run win:update-now -- -ServiceName "SfOnpremIntegrationAgent" -UpdateManifestUrl "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json" -AppRoot "C:\apps\sf-onprem-integration-agent"
+```
+
+## Update einer bereits vorhandenen Windows-Installation
+
+Fuer eine bestehende Kundeninstallation gibt es jetzt einen vereinfachten Wrapper, der standardmaessig auf das neueste GitHub Release zeigt:
+
+Wichtig fuer bestehende Installationen vor Version 0.2.2:
+
+- der Befehl `npm run win:update-existing` ist dort noch nicht im bereits installierten `package.json` vorhanden
+- deshalb das aktuelle Release-ZIP herunterladen und den enthaltenen Launcher aus dem ZIP-Wurzelverzeichnis starten
+
+Direkt aus dem entpackten Release-Paket:
+
+```powershell
+cd <entpacktes-release-verzeichnis>
+.\update-existing-installation.ps1 -AppRoot "C:\apps\sf-onprem-integration-agent" -ReleaseVersion "0.2.2"
+```
+
+Oder per CMD-Launcher:
+
+```cmd
+update-existing-installation.cmd -AppRoot "C:\apps\sf-onprem-integration-agent" -ReleaseVersion "0.2.2"
+```
+
+Sobald die Installation auf 0.2.2 oder neuer ist, funktioniert auch der npm-Aufruf direkt aus dem installierten Verzeichnis:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:update-existing -- -AppRoot "C:\apps\sf-onprem-integration-agent"
+```
+
+Gezielt auf eine bestimmte Release-Version aktualisieren:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:update-existing -- -AppRoot "C:\apps\sf-onprem-integration-agent" -ReleaseVersion "0.2.2"
+```
+
+Wenn nach dem Update auch der geplante Auto-Updater auf dieselbe Manifest-URL umgestellt werden soll:
+
+```powershell
+cd C:\apps\sf-onprem-integration-agent
+npm run win:update-existing -- -AppRoot "C:\apps\sf-onprem-integration-agent" -ReleaseVersion "0.2.2" -ReRegisterUpdaterTask
 ```
 
 ## Was beim Update automatisch passiert
@@ -195,6 +350,8 @@ npm run win:build-package
 Ausgabe:
 
 - `artifacts/sf-onprem-integration-agent-customer-installer-<version>.zip`
+
+Das ZIP enthaelt jetzt einen Startpunkt fuer Kundeninstallationen direkt im Wurzelverzeichnis.
 
 Optional mit bereits enthaltenen Abhaengigkeiten (groesseres Paket):
 

@@ -1,4 +1,6 @@
 import { ConnectorResult } from "./connector-result";
+import { GenericRecord } from "./generic-record";
+import { SourceRecordCheckpoint } from "../utils/query-source-definition";
 
 export type JobExecutionStatus = "Success" | "Partial Success" | "Failed";
 
@@ -9,8 +11,6 @@ export interface JobExecutionResult {
   recordsFailed: number;
   status: JobExecutionStatus;
   connectorResults: ConnectorResult[];
-  lastProcessedRecord?: {
-    lastModified: string;
-    sourceId: string;
-  };
+  lastProcessedRecord?: SourceRecordCheckpoint;
+  successfulSourceRecords?: GenericRecord[];
 }

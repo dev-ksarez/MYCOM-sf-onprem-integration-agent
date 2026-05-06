@@ -6,6 +6,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:ScriptDirectory = Split-Path -Parent $PSCommandPath
 
 function Resolve-AppRoot {
   param([string]$InputPath)
@@ -14,7 +15,7 @@ function Resolve-AppRoot {
     return (Resolve-Path -Path $InputPath).Path
   }
 
-  $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+  $scriptDir = $script:ScriptDirectory
   return (Resolve-Path -Path (Join-Path $scriptDir "..\..\")).Path
 }
 
@@ -51,13 +52,24 @@ if (-not $version) {
 }
 
 $stagingRoot = Join-Path $env:TEMP ("sf-agent-customer-package-" + [guid]::NewGuid().ToString("N"))
-$stagingAppRoot = Join-Path $stagingRoot "sf-onprem-integration-agent"
+$packageRoot = Join-Path $stagingRoot ("sf-onprem-integration-agent-customer-installer-" + $version)
+$stagingAppRoot = Join-Path $packageRoot "sf-onprem-integration-agent"
+Ensure-Directory -Path $packageRoot
 Ensure-Directory -Path $stagingAppRoot
 
-Write-Host "Staging package at: $stagingAppRoot" -ForegroundColor Cyan
+Write-Host "Staging package at: $packageRoot" -ForegroundColor Cyan
 
 Copy-Item -Path (Join-Path $appRootResolved "dist") -Destination (Join-Path $stagingAppRoot "dist") -Recurse -Force
 Copy-Item -Path (Join-Path $appRootResolved "scripts") -Destination (Join-Path $stagingAppRoot "scripts") -Recurse -Force
+if (Test-Path (Join-Path $appRootResolved "src\css")) {
+  Copy-Item -Path (Join-Path $appRootResolved "src\css") -Destination (Join-Path $stagingAppRoot "src\css") -Recurse -Force
+}
+if (Test-Path (Join-Path $appRootResolved "artifacts")) {
+  Copy-Item -Path (Join-Path $appRootResolved "artifacts") -Destination (Join-Path $stagingAppRoot "artifacts") -Recurse -Force
+}
+if (Test-Path (Join-Path $appRootResolved "migrations")) {
+  Copy-Item -Path (Join-Path $appRootResolved "migrations") -Destination (Join-Path $stagingAppRoot "migrations") -Recurse -Force
+}
 Copy-Item -Path (Join-Path $appRootResolved "salesforce") -Destination (Join-Path $stagingAppRoot "salesforce") -Recurse -Force
 Copy-Item -Path (Join-Path $appRootResolved "package.json") -Destination (Join-Path $stagingAppRoot "package.json") -Force
 
@@ -76,6 +88,21 @@ if (Test-Path $deploymentGuidePath) {
   Copy-Item -Path $deploymentGuidePath -Destination (Join-Path $stagingAppRoot "WINDOWS_DEPLOYMENT.md") -Force
 }
 
+$nssmPath = Join-Path $appRootResolved "nssm.exe"
+if (Test-Path $nssmPath) {
+  Copy-Item -Path $nssmPath -Destination (Join-Path $stagingAppRoot "nssm.exe") -Force
+}
+
+$bootstrapPs1Path = Join-Path $appRootResolved "scripts\windows\install-customer-package.ps1"
+if (Test-Path $bootstrapPs1Path) {
+  Copy-Item -Path $bootstrapPs1Path -Destination (Join-Path $packageRoot "install-customer-package.ps1") -Force
+}
+
+$bootstrapCmdPath = Join-Path $appRootResolved "scripts\windows\install-customer-package.cmd"
+if (Test-Path $bootstrapCmdPath) {
+  Copy-Item -Path $bootstrapCmdPath -Destination (Join-Path $packageRoot "install-customer-package.cmd") -Force
+}
+
 if ($IncludeNodeModules) {
   $nodeModulesPath = Join-Path $appRootResolved "node_modules"
   if (-not (Test-Path $nodeModulesPath)) {
@@ -92,11 +119,13 @@ if (Test-Path $zipPath) {
   Remove-Item -Path $zipPath -Force
 }
 
-Compress-Archive -Path $stagingAppRoot -DestinationPath $zipPath -CompressionLevel Optimal
+Compress-Archive -Path $packageRoot -DestinationPath $zipPath -CompressionLevel Optimal
 
 Write-Host "Package created: $zipPath" -ForegroundColor Green
 if (-not $IncludeNodeModules) {
   Write-Host "Note: node_modules is not included. Customer must run 'npm ci --omit=dev'." -ForegroundColor Yellow
 }
+Write-Host "Bundled runtime helper included: nssm.exe" -ForegroundColor Cyan
+Write-Host "Bootstrap launcher included: install-customer-package.cmd / .ps1" -ForegroundColor Cyan
 
 Remove-Item -Path $stagingRoot -Recurse -Force

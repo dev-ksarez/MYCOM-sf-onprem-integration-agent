@@ -31,18 +31,20 @@ export class SalesforceAccountSource {
     if (mappingDefinition?.trim()) {
       const parsedDefinition = this.mappingDefinitionParser.parse(mappingDefinition);
 
-      return records.map((record) => {
-        const mapped = this.mappingDefinitionEngine.mapRecord(
-          record as unknown as Record<string, unknown>,
-          parsedDefinition.lines
-        );
+      return await Promise.all(
+        records.map(async (record) => {
+          const mapped = await this.mappingDefinitionEngine.mapRecord(
+            record as unknown as Record<string, unknown>,
+            parsedDefinition.lines
+          );
 
-        return {
-          sourceSystem: "salesforce",
-          targetSystem,
-          ...mapped.values
-        } as CanonicalAccount;
-      });
+          return {
+            sourceSystem: "salesforce",
+            targetSystem,
+            ...mapped.values
+          } as CanonicalAccount;
+        })
+      );
     }
 
     const loadedMapping = await this.mappingSource.loadAccountMapping(targetSystem, "Upsert");

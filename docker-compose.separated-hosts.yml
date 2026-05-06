@@ -1,0 +1,58 @@
+services:
+  agent-host:
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+    env_file:
+      - .env
+    container_name: sf-agent-host
+    command: ["npm", "run", "start:agent"]
+    environment:
+      LOG_LEVEL: info
+      AGENT_ID: docker-agent-host
+      AGENT_SCHEDULER_ENABLED: "0"
+      SCHEDULER_INTERVAL_MS: 60000
+      SF_LOG_RETENTION_DAYS: 30
+      AGENT_API_ENABLED: "1"
+      AGENT_API_PORT: 8090
+      AGENT_API_TOKEN: test-shared-agent-token
+      UPDATE_MANIFEST_URL: http://example.invalid/update-manifest.json
+      AUTO_UPDATER_ENABLED: "0"
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/api/agent/health',{headers:{Authorization:'Bearer test-shared-agent-token'}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  web-host:
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+    env_file:
+      - .env
+    container_name: sf-web-host
+    depends_on:
+      agent-host:
+        condition: service_healthy
+    command:
+      - sh
+      - -lc
+      - "npm run start:web & npm run start:updater & wait"
+    environment:
+      LOG_LEVEL: info
+      WEB_UI_PORT: 8080
+      AGENT_REMOTE_BASE_URL: http://agent-host:8090
+      AGENT_REMOTE_TOKEN: test-shared-agent-token
+      ADMIN_AUTH_MODE: local
+      ADMIN_UI_USERS_JSON: '[{"id":"docker-admin","username":"admin","password":"admin123!","roles":["admin"]},{"id":"docker-viewer","username":"viewer","password":"viewer123!","roles":["viewer"]}]'
+      UPDATE_MANIFEST_URL: http://example.invalid/update-manifest.json
+      AUTO_UPDATER_ENABLED: "0"
+    ports:
+      - "18080:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/system/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10

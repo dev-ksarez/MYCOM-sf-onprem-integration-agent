@@ -41,6 +41,58 @@ function normalizeParameterValue(value: unknown): unknown {
   return value;
 }
 
+function normalizeFieldKey(value: string): string {
+  return String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function hasMappedValue(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== "";
+}
+
+function normalizeMappedInputValues(
+  inputValues: Record<string, unknown>,
+  requiredKey: string
+): Record<string, unknown> {
+  const normalizedRequiredKey = normalizeFieldKey(requiredKey);
+  if (!normalizedRequiredKey) {
+    return inputValues;
+  }
+
+  const normalizedValues: Record<string, unknown> = {};
+  let exactValue: unknown;
+  let exactKeyPresent = false;
+  let fallbackValue: unknown;
+  let foundEquivalentKey = false;
+
+  for (const [key, value] of Object.entries(inputValues)) {
+    if (key === requiredKey) {
+      exactValue = value;
+      exactKeyPresent = true;
+      continue;
+    }
+
+    if (normalizeFieldKey(key) === normalizedRequiredKey) {
+      foundEquivalentKey = true;
+      if (!hasMappedValue(fallbackValue) && hasMappedValue(value)) {
+        fallbackValue = value;
+      }
+      continue;
+    }
+
+    normalizedValues[key] = value;
+  }
+
+  if (!exactKeyPresent && !foundEquivalentKey) {
+    return inputValues;
+  }
+
+  normalizedValues[requiredKey] = hasMappedValue(exactValue) ? exactValue : fallbackValue ?? exactValue;
+  return normalizedValues;
+}
+
 export class MssqlRepository {
   private readonly database: MssqlDatabase;
   private readonly schemaName: string;
@@ -231,7 +283,7 @@ export class MssqlRepository {
   ): Promise<"INSERTED" | "UPDATED"> {
     const validatedUpsertKey = validateIdentifier(upsertKey, "upsertKey");
     const qualifiedTableName = `${quoteIdentifier(this.schemaName)}.${quoteIdentifier(this.tableName)}`;
-    const inputValues = record.values;
+    const inputValues = normalizeMappedInputValues(record.values, validatedUpsertKey);
     const upsertValue = inputValues[validatedUpsertKey];
 
     if (upsertValue === undefined || upsertValue === null || upsertValue === "") {

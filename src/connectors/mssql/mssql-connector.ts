@@ -72,7 +72,49 @@ function getRequiredUpsertKey(config: ConnectorConfig): string {
   return upsertKey.trim();
 }
 
+function normalizeFieldKey(value: string): string {
+  return String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function getMappedValueByEquivalentKey(values: Record<string, unknown>, key: string): unknown {
+  if (Object.prototype.hasOwnProperty.call(values, key)) {
+    return values[key];
+  }
+
+  const normalizedKey = normalizeFieldKey(key);
+  if (!normalizedKey) {
+    return undefined;
+  }
+
+  for (const [candidateKey, candidateValue] of Object.entries(values)) {
+    if (normalizeFieldKey(candidateKey) === normalizedKey) {
+      return candidateValue;
+    }
+  }
+
+  return undefined;
+}
+
+function isMappedRecordConfigurationError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("missing required upsert key") ||
+    normalized.includes("does not contain any writable fields") ||
+    normalized.includes("invalid mssql identifier") ||
+    normalized.includes("invalid column name") ||
+    normalized.includes("invalid object name")
+  );
+}
+
 function resolvePassword(config: ConnectorConfig): string {
+  const inlinePassword = config.parameters.password;
+  if (typeof inlinePassword === "string" && inlinePassword.trim() !== "") {
+    return inlinePassword;
+  }
+
   if (!config.secretKey) {
     throw new Error(`MSSQL connector ${config.name} is missing MSD_SecretKey__c`);
   }
@@ -221,18 +263,22 @@ export class MssqlConnector implements TargetConnector {
   }
   public async upsertMappedRecords(
     records: MappedRecord[],
-    context: JobContext
+    context: JobContext,
+    upsertKeyOverride?: string
   ): Promise<ConnectorResult[]> {
     await this.initialize();
 
     const results: ConnectorResult[] = [];
+    const upsertKey = typeof upsertKeyOverride === "string" && upsertKeyOverride.trim()
+      ? upsertKeyOverride.trim()
+      : this.upsertKey;
 
     for (const record of records) {
-      const externalKeyValue = record.values[this.upsertKey];
+      const externalKeyValue = getMappedValueByEquivalentKey(record.values, upsertKey);
       const externalKey = typeof externalKeyValue === "string" ? externalKeyValue : String(externalKeyValue ?? "UNKNOWN");
 
       try {
-        const operation = await this.repository.upsertMappedRecord(record, this.upsertKey);
+        const operation = await this.repository.upsertMappedRecord(record, upsertKey);
         const statusCode = operation === "INSERTED" ? "UPSERT_INSERTED" : "UPSERT_UPDATED";
         const targetId = `MSSQL-${randomUUID()}`;
         const message = `Mapped record ${operation.toLowerCase()} in run ${context.runId}`;
@@ -255,22 +301,27 @@ export class MssqlConnector implements TargetConnector {
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
+        const isConfigurationError = isMappedRecordConfigurationError(message);
 
         await this.repository.writeOperationLog(
           context,
           externalKey,
           "EXCEPTION",
-          "TECHNICAL_ERROR",
+          isConfigurationError ? "CONFIGURATION_ERROR" : "TECHNICAL_ERROR",
           message
         );
 
         results.push({
           externalKey,
           success: false,
-          statusCode: "TECHNICAL_ERROR",
+          statusCode: isConfigurationError ? "CONFIGURATION_ERROR" : "TECHNICAL_ERROR",
           message,
-          retryable: true
+          retryable: !isConfigurationError
         });
+
+        if (isConfigurationError) {
+          return results;
+        }
       }
     }
 

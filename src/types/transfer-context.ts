@@ -1,3 +1,5 @@
+import { DeltaCheckpoint } from "../utils/query-source-definition";
+
 export interface TransferContext {
   runId: string;
   correlationId: string;
@@ -7,4 +9,5 @@ export interface TransferContext {
   targetType: string;
   batchSize: number;
   maxRetries: number;
+  checkpoint?: DeltaCheckpoint;
 }
