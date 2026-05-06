@@ -7,6 +7,15 @@ export interface ImportProfileScheduleRuleLike {
   intervalMinutes: number;
 }
 
+function parseTimestamp(value?: string): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? undefined : timestamp;
+}
+
 function parseTimeOfDayToMinutes(value: string, label: string): number {
   if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(value)) {
     throw new Error(`Invalid time format for ${label}: ${value}. Expected HH:mm`);
@@ -64,11 +73,13 @@ function getPreviousDayName(day: SchedulerDay): SchedulerDay {
 
 export function isImportProfileSchedulerRuleDue(
   rules: ImportProfileScheduleRuleLike[],
-  now = new Date()
+  now = new Date(),
+  lastRunAt?: string
 ): boolean {
   const currentDay = getDayName(now.getDay());
   const previousDay = getPreviousDayName(currentDay);
   const currentMinutesOfDay = now.getHours() * 60 + now.getMinutes();
+  const lastRunTimestamp = parseTimestamp(lastRunAt);
 
   return rules.some((rule, ruleIndex) => {
     const startMinutes = parseTimeOfDayToMinutes(
@@ -81,6 +92,7 @@ export function isImportProfileSchedulerRuleDue(
     );
     const isOvernight = endMinutes < startMinutes;
     let minutesSinceStart: number | undefined;
+    let windowStart = new Date(now);
 
     if (!isOvernight) {
       if (!rule.days.includes(currentDay)) {
@@ -92,6 +104,7 @@ export function isImportProfileSchedulerRuleDue(
       }
 
       minutesSinceStart = currentMinutesOfDay - startMinutes;
+      windowStart.setHours(0, startMinutes, 0, 0);
     } else {
       const inLateWindow = currentMinutesOfDay >= startMinutes;
       const inEarlyWindow = currentMinutesOfDay <= endMinutes;
@@ -111,12 +124,26 @@ export function isImportProfileSchedulerRuleDue(
       minutesSinceStart = inLateWindow
         ? currentMinutesOfDay - startMinutes
         : 1440 - startMinutes + currentMinutesOfDay;
+
+      if (inEarlyWindow) {
+        windowStart.setDate(windowStart.getDate() - 1);
+      }
+
+      windowStart.setHours(0, startMinutes, 0, 0);
     }
 
     if (minutesSinceStart < 0 || !Number.isInteger(rule.intervalMinutes) || rule.intervalMinutes <= 0) {
       return false;
     }
 
-    return minutesSinceStart % rule.intervalMinutes === 0;
+    const slotOffsetMinutes = Math.floor(minutesSinceStart / rule.intervalMinutes) * rule.intervalMinutes;
+    const slotStart = new Date(windowStart);
+    slotStart.setMinutes(slotStart.getMinutes() + slotOffsetMinutes);
+
+    if (lastRunTimestamp === undefined) {
+      return true;
+    }
+
+    return lastRunTimestamp < slotStart.getTime();
   });
 }

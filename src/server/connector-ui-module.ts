@@ -94,6 +94,30 @@ export function renderConnectorUiModule(): string {
           '</div>';
         }
 
+        function buildConnectorNotificationMarkup(item) {
+          const parameters = item && typeof item.parameters === 'object' && !Array.isArray(item.parameters) ? item.parameters : {};
+          const ownerId = String(parameters.notificationTaskOwnerId || '').trim();
+          const ownerUsername = String(parameters.notificationTaskOwnerUsername || '').trim();
+          const enabled = parameters.notificationTaskEnabled === true && !!ownerId;
+          const errorClasses = Array.isArray(parameters.notificationTaskErrorClasses)
+            ? parameters.notificationTaskErrorClasses
+            : String(parameters.notificationTaskErrorClasses || '')
+                .split(',')
+                .map((value) => value.trim())
+                .filter(Boolean);
+
+          if (!enabled) {
+            return '<div class="small text-secondary">Fehlerbenachrichtigung: nicht aktiv</div>';
+          }
+
+          const normalizedClasses = errorClasses.length ? errorClasses : ['CONNECTION', 'AUTH', 'DATA', 'VALIDATION', 'UNKNOWN'];
+          return '<div class="alert alert-warning-subtle border py-2 mb-0 small">' +
+            '<div class="fw-semibold mb-1">Fehlerbenachrichtigung aktiv</div>' +
+            '<div><strong>Empfänger:</strong> ' + esc(ownerUsername || ownerId) + '</div>' +
+            '<div><strong>Klassen:</strong> ' + esc(normalizedClasses.join(', ')) + '</div>' +
+          '</div>';
+        }
+
         panels.innerHTML = orderedConnectors.map((item) =>
           '<div class="col-12 col-xl-6" data-connector-panel>' +
             '<div class="card h-100 border-0 shadow-sm bg-body-tertiary">' +
@@ -113,6 +137,7 @@ export function renderConnectorUiModule(): string {
                   '</div>' +
                 '</div>' +
                 '<div class="small d-grid gap-1">' + buildConnectorFacts(item).map((line) => '<div>' + line + '</div>').join('') + '</div>' +
+                '<div>' + buildConnectorNotificationMarkup(item) + '</div>' +
                 '<div>' + buildConnectorTestMarkup(item) + '</div>' +
               '</div>' +
             '</div>' +

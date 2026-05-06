@@ -897,8 +897,8 @@ async function executeSchedule(
         : isGenericFileToMssql
           ? new MssqlTargetAdapter(connector as MssqlConnector, schedule.targetDefinition)
           : isGenericMssqlToGlobalPicklist || isGenericFileToGlobalPicklist
-            ? new SalesforceGlobalPicklistTargetAdapter(salesforceClient, schedule.targetDefinition)
-            : new SalesforceTargetAdapter(salesforceClient, schedule.targetDefinition, connectorConfig);
+            ? new SalesforceGlobalPicklistTargetAdapter(salesforceClient, schedule.targetDefinition, schedule.lastRunAt)
+            : new SalesforceTargetAdapter(salesforceClient, schedule.targetDefinition, connectorConfig, schedule.lastRunAt);
 
       const salesforceLookupResolver: LookupResolverFn = async (objectName, field, value) => {
         const escapedValue = String(value).replace(/'/g, "\\'");

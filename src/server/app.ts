@@ -1573,7 +1573,7 @@ function htmlShell(): string {
                   <div class="col-md-4"><label class="form-label">Target Type</label><select id="sch-target-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE">SALESFORCE</option><option value="SALESFORCE_GLOBAL_PICKLIST">SALESFORCE_GLOBAL_PICKLIST</option><option value="MSSQL">MSSQL</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
                   <div class="col-md-4"><label class="form-label">Direction</label><select id="sch-direction" class="form-select"><option value="">- Wählen -</option></select></div>
                   <div id="sch-external-id-wrap" class="col-md-4 d-none"><label id="sch-external-id-label" class="form-label">Upsert Feld</label><select id="sch-external-id-field" class="form-select"><option value="">- Upsert Feld wählen -</option></select><div id="sch-external-id-help" class="form-text">Wählen Sie das Feld, das für Upsert verwendet werden soll.</div></div>
-                  <div id="sch-pricebook2id-wrap" class="col-md-4 d-none"><label class="form-label">Pricebook2Id</label><input id="sch-pricebook2id" class="form-control" placeholder="z. B. 01s..." /><div id="sch-pricebook2id-help" class="form-text">Optional als festes Ziel-Pricebook für PricebookEntry-Upserts.</div></div>
+                  <div id="sch-pricebook2id-wrap" class="col-md-4 d-none"><label class="form-label">Pricebook</label><select id="sch-pricebook2id" class="form-select"><option value="">- Pricebook wählen -</option></select><div id="sch-pricebook2id-help" class="form-text">Optional als festes Ziel-Pricebook für PricebookEntry-Upserts.</div></div>
                   <div class="col-md-12"><label class="form-label">Target Definition (JSON)</label><textarea id="sch-target-definition" class="form-control" rows="4" placeholder='{"fields":[...]}'></textarea><div id="sch-target-definition-help" class="form-text"></div></div>
                   <div id="sch-target-relative-directory-wrap" class="col-md-6 d-none"><label class="form-label">Target Unterverzeichnis relativ zum Connector-Exportpfad</label><input id="sch-target-relative-directory" class="form-control" placeholder="z. B. kunden/export" /></div>
                   <div id="sch-target-archive-relative-directory-wrap" class="col-md-6 d-none"><label class="form-label">Archiv-Unterverzeichnis relativ zum Connector-Archivpfad</label><input id="sch-target-archive-relative-directory" class="form-control" placeholder="optional, sonst gleiches Unterverzeichnis" /></div>
@@ -1662,6 +1662,7 @@ function htmlShell(): string {
                         </table>
                       </div>
                       <div class="small text-secondary mt-2">Quellfelder per DragDrop in diese Tabelle ziehen. Klick auf eine Zeile öffnet die Bearbeitung.</div>
+                      <div id="sch-mapping-required-status" class="small mt-2 text-secondary">Pflichtfelder fuer Salesforce Insert/Upsert werden geladen, sobald ein Zielobjekt gewaehlt ist.</div>
                     </div>
                   </div>
                   <div class="col-md-12">
@@ -1817,9 +1818,9 @@ function htmlShell(): string {
                     <div class="fw-semibold mb-2">Salesforce Task-Benachrichtigung</div>
                     <div class="row g-2">
                       <div class="col-md-3 d-flex align-items-end"><div class="form-check"><input id="con-task-notify-enabled" class="form-check-input" type="checkbox" /><label class="form-check-label">Aktiv</label></div></div>
-                      <div class="col-md-4"><label class="form-label">Owner / User Id</label><input id="con-task-owner-id" class="form-control" placeholder="005..." /></div>
-                      <div class="col-md-5"><label class="form-label">Fehlerklassen</label><input id="con-task-error-classes" class="form-control" placeholder="CONNECTION,AUTH,DATA,VALIDATION,UNKNOWN" /></div>
-                      <div class="col-md-12"><div class="small text-secondary">Erzeugt bei passenden Connector-Fehlern automatisch einen Salesforce-Task mit Connector-, Scheduler- und Fehlerdetails.</div></div>
+                      <div class="col-md-4"><label class="form-label">Task-Benutzer</label><select id="con-task-owner-id" class="form-select"><option value="">- Benutzer wählen -</option></select></div>
+                      <div class="col-md-5"><label class="form-label">Fehlerklassen</label><select id="con-task-error-classes" class="form-select" multiple size="5"><option value="CONNECTION">Connection</option><option value="AUTH">Auth</option><option value="DATA">Data</option><option value="VALIDATION">Validation</option><option value="UNKNOWN">Unknown</option></select></div>
+                      <div class="col-md-12"><div class="small text-secondary">Erzeugt bei passenden Connector-Fehlern automatisch einen Salesforce-Task mit Connector-, Scheduler- und Fehlerdetails. Mehrfachauswahl mit Cmd oder Strg.</div></div>
                     </div>
                   </div>
                 </div>
@@ -3158,6 +3159,7 @@ function htmlShell(): string {
       const instanceModal = createModalController('instance-modal');
       const logsModal = createModalController('logs-modal');
       const recordsSchedulerModal = createModalController('records-scheduler-modal');
+      const connectorNotificationErrorClassOptions = ['CONNECTION', 'AUTH', 'DATA', 'VALIDATION', 'UNKNOWN'];
 
       function esc(value) {
         return String(value ?? '-')
@@ -4341,27 +4343,28 @@ function htmlShell(): string {
 
         try {
           const parsed = JSON.parse(raw);
+          const targetDefinition = getSchedulerSelectedTargetDefinitionWritableContainer(parsed) || parsed;
           if (isSalesforce) {
-            parsed.objectApiName = objectApiName;
-            parsed.operation = operation;
+            targetDefinition.objectApiName = objectApiName;
+            targetDefinition.operation = operation;
             if (operation === 'upsert') {
               if (upsertField) {
-                parsed.externalIdField = upsertField;
+                targetDefinition.externalIdField = upsertField;
               }
-            } else if ('externalIdField' in parsed) {
-              delete parsed.externalIdField;
+            } else if ('externalIdField' in targetDefinition) {
+              delete targetDefinition.externalIdField;
             }
             if (objectApiName === 'PricebookEntry' && pricebook2Id) {
-              parsed.pricebook2Id = pricebook2Id;
-            } else if ('pricebook2Id' in parsed) {
-              delete parsed.pricebook2Id;
+              targetDefinition.pricebook2Id = pricebook2Id;
+            } else if ('pricebook2Id' in targetDefinition) {
+              delete targetDefinition.pricebook2Id;
             }
           }
           if (isMssql) {
             if (upsertField) {
-              parsed.upsertKey = upsertField;
-            } else if ('upsertKey' in parsed) {
-              delete parsed.upsertKey;
+              targetDefinition.upsertKey = upsertField;
+            } else if ('upsertKey' in targetDefinition) {
+              delete targetDefinition.upsertKey;
             }
           }
           targetDefinitionInput.value = JSON.stringify(parsed, null, 2);
@@ -4377,6 +4380,64 @@ function htmlShell(): string {
         return targetType === 'SALESFORCE' && targetSystem === 'Salesforce' && String(operation || '').toLowerCase() === 'upsert';
       }
 
+      function getSchedulerSelectedTargetDefinitionContainer(parsed) {
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return null;
+        }
+
+        const baseTargetDefinition = parsed;
+
+        if (!Array.isArray(parsed.importProfiles) || !parsed.importProfiles.length) {
+          return parsed;
+        }
+
+        const selectedName = String(parsed.selectedImportProfileName || '').trim();
+        const selectedProfile = (selectedName
+          ? parsed.importProfiles.find((profile) => String(profile?.name || '').trim() === selectedName)
+          : parsed.importProfiles[0]) || parsed.importProfiles[0];
+
+        if (!selectedProfile || typeof selectedProfile !== 'object' || Array.isArray(selectedProfile)) {
+          return parsed;
+        }
+
+        if (selectedProfile.target && typeof selectedProfile.target === 'object' && !Array.isArray(selectedProfile.target)) {
+          return {
+            ...baseTargetDefinition,
+            ...selectedProfile.target
+          };
+        }
+
+        return {
+          ...baseTargetDefinition,
+          ...selectedProfile
+        };
+      }
+
+      function getSchedulerSelectedTargetDefinitionWritableContainer(parsed) {
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return null;
+        }
+
+        if (!Array.isArray(parsed.importProfiles) || !parsed.importProfiles.length) {
+          return parsed;
+        }
+
+        const selectedName = String(parsed.selectedImportProfileName || '').trim();
+        const selectedProfile = (selectedName
+          ? parsed.importProfiles.find((profile) => String(profile?.name || '').trim() === selectedName)
+          : parsed.importProfiles[0]) || parsed.importProfiles[0];
+
+        if (!selectedProfile || typeof selectedProfile !== 'object' || Array.isArray(selectedProfile)) {
+          return parsed;
+        }
+
+        if (selectedProfile.target && typeof selectedProfile.target === 'object' && !Array.isArray(selectedProfile.target)) {
+          return selectedProfile.target;
+        }
+
+        return selectedProfile;
+      }
+
       function getSchedulerTargetDefinitionUpsertFieldValue() {
         const raw = String(document.getElementById('sch-target-definition')?.value || '').trim();
         if (!raw) {
@@ -4385,11 +4446,12 @@ function htmlShell(): string {
 
         try {
           const parsed = JSON.parse(raw);
+          const targetDefinition = getSchedulerSelectedTargetDefinitionContainer(parsed) || parsed;
           if (isSchedulerSalesforceUpsertSelection()) {
-            return String(parsed?.externalIdField || '').trim();
+            return String(targetDefinition?.externalIdField || '').trim();
           }
           if (isSchedulerMssqlUpsertSelection()) {
-            return String(parsed?.upsertKey || '').trim();
+            return String(targetDefinition?.upsertKey || '').trim();
           }
           return '';
         } catch {
@@ -4433,7 +4495,8 @@ function htmlShell(): string {
 
         try {
           const parsed = JSON.parse(raw);
-          return String(parsed?.pricebook2Id || '').trim();
+          const targetDefinition = getSchedulerSelectedTargetDefinitionContainer(parsed) || parsed;
+          return String(targetDefinition?.pricebook2Id || '').trim();
         } catch {
           return '';
         }
@@ -4516,6 +4579,101 @@ function htmlShell(): string {
         }
 
         return message;
+      }
+
+      async function loadSchedulerPricebookOptions(preferredValue) {
+        const pricebookSelect = document.getElementById('sch-pricebook2id');
+        if (!pricebookSelect) {
+          return [];
+        }
+
+        if (!isSchedulerSalesforceUpsertSelection() || String(document.getElementById('sch-object')?.value || '').trim() !== 'PricebookEntry') {
+          pricebookSelect.innerHTML = '<option value="">- Pricebook wählen -</option>';
+          pricebookSelect.value = '';
+          return [];
+        }
+
+        const currentValue = String(preferredValue || getSchedulerTargetDefinitionPricebook2IdValue() || getSchedulerMappedStaticPricebook2IdValue() || '').trim();
+
+        try {
+          const res = await fetch('/api/salesforce/pricebooks?instanceId=' + encodeURIComponent(state.instanceId || ''));
+          if (!res.ok) {
+            pricebookSelect.innerHTML = '<option value="">Pricebooks konnten nicht geladen werden</option>';
+            return [];
+          }
+
+          const payload = await res.json();
+          const normalizedPricebooks = Array.isArray(payload) ? payload : [];
+          pricebookSelect.innerHTML = '<option value="">- Pricebook wählen -</option>' + normalizedPricebooks.map((pricebook) => {
+            const id = String(pricebook?.id || '').trim();
+            const name = String(pricebook?.name || id).trim();
+            const suffix = pricebook?.isStandard === true
+              ? 'Standard'
+              : pricebook?.isActive === true
+                ? 'Aktiv'
+                : 'Inaktiv';
+            const label = name && name !== id ? name + ' (' + suffix + ')' : id;
+            return '<option value="' + esc(id) + '"' + (currentValue === id ? ' selected' : '') + '>' + esc(label) + '</option>';
+          }).join('');
+          if (currentValue && !normalizedPricebooks.some((pricebook) => String(pricebook?.id || '').trim() === currentValue)) {
+            pricebookSelect.innerHTML += '<option value="' + esc(currentValue) + '" selected>' + esc(currentValue + ' (nicht mehr gefunden)') + '</option>';
+          }
+          if (currentValue) {
+            pricebookSelect.value = currentValue;
+          }
+          return normalizedPricebooks;
+        } catch {
+          pricebookSelect.innerHTML = '<option value="">Pricebooks konnten nicht geladen werden</option>';
+          return [];
+        }
+      }
+
+      async function loadConnectorTaskOwnerOptions(preferredValue) {
+        const ownerSelect = document.getElementById('con-task-owner-id');
+        if (!ownerSelect) {
+          return [];
+        }
+
+        const currentValue = String(preferredValue || ownerSelect.value || '').trim();
+        ownerSelect.innerHTML = '<option value="">- Benutzer wählen -</option>';
+
+        try {
+          const res = await fetch('/api/salesforce/users?instanceId=' + encodeURIComponent(state.instanceId || ''));
+          if (!res.ok) {
+            ownerSelect.innerHTML = '<option value="">Benutzer konnten nicht geladen werden</option>';
+            if (currentValue) {
+              ownerSelect.innerHTML += '<option value="' + esc(currentValue) + '" selected>' + esc(currentValue + ' (gespeichert)') + '</option>';
+            }
+            return [];
+          }
+
+          const payload = await res.json();
+          const normalizedUsers = Array.isArray(payload) ? payload : [];
+          ownerSelect.innerHTML = '<option value="">- Benutzer wählen -</option>' + normalizedUsers.map((user) => {
+            const id = String(user?.id || '').trim();
+            const name = String(user?.name || '').trim();
+            const username = String(user?.username || '').trim();
+            const labelBase = name && username && name !== username
+              ? name + ' (' + username + ')'
+              : (name || username || id);
+            const label = user?.isActive === true ? labelBase : labelBase + ' (inaktiv)';
+            return '<option value="' + esc(id) + '" data-username="' + esc(username) + '"' + (currentValue === id ? ' selected' : '') + '>' + esc(label) + '</option>';
+          }).join('');
+          if (currentValue && !normalizedUsers.some((user) => String(user?.id || '').trim() === currentValue)) {
+            ownerSelect.innerHTML += '<option value="' + esc(currentValue) + '" selected>' + esc(currentValue + ' (nicht mehr gefunden)') + '</option>';
+          }
+          if (currentValue) {
+            ownerSelect.value = currentValue;
+          }
+          return normalizedUsers;
+        } catch {
+          ownerSelect.innerHTML = '<option value="">Benutzer konnten nicht geladen werden</option>';
+          if (currentValue) {
+            ownerSelect.innerHTML += '<option value="' + esc(currentValue) + '" selected>' + esc(currentValue + ' (gespeichert)') + '</option>';
+            ownerSelect.value = currentValue;
+          }
+          return [];
+        }
       }
 
       async function loadSchedulerExternalIdOptions(selectedValue) {
@@ -4612,17 +4770,21 @@ function htmlShell(): string {
         if (pricebookWrap) {
           pricebookWrap.classList.toggle('d-none', !showPricebook2Id);
         }
-        if (pricebookInput) {
-          pricebookInput.value = String(
-            pricebookInput.value
-            || getSchedulerTargetDefinitionPricebook2IdValue()
-            || getSchedulerMappedStaticPricebook2IdValue()
-            || ''
-          ).trim();
+        if (pricebookInput && showPricebook2Id) {
+          await loadSchedulerPricebookOptions(
+            String(
+              pricebookInput.value
+              || getSchedulerTargetDefinitionPricebook2IdValue()
+              || getSchedulerMappedStaticPricebook2IdValue()
+              || ''
+            ).trim()
+          );
+        } else if (pricebookInput) {
+          pricebookInput.value = '';
         }
         if (pricebookHelp) {
           pricebookHelp.dataset.baseText = showPricebook2Id
-            ? 'Festes Ziel-Pricebook für PricebookEntry-Upserts. Leer lassen, wenn Pricebook2Id aus dem Mapping kommt.'
+            ? 'Festes Ziel-Pricebook für PricebookEntry-Upserts auswählen. Leer lassen, wenn Pricebook2Id aus dem Mapping kommt.'
             : 'Optional als festes Ziel-Pricebook für PricebookEntry-Upserts.';
           pricebookHelp.textContent = pricebookHelp.dataset.baseText;
         }
@@ -4888,7 +5050,8 @@ function htmlShell(): string {
               return '';
             }
             const parsed = JSON.parse(targetDefinitionRaw);
-            return String(parsed?.externalIdField || '').trim();
+            const targetDefinition = getSchedulerSelectedTargetDefinitionContainer(parsed) || parsed;
+            return String(targetDefinition?.externalIdField || '').trim();
           } catch {
             return '';
           }
@@ -4971,6 +5134,125 @@ function htmlShell(): string {
 
         mappingInput.value = JSON.stringify(state.mappingRules.map(toStoredMappingRule), null, 2);
         state.rawMappingEditorDirty = false;
+      }
+
+      function isSchedulerSalesforceInsertOrUpsertSelection() {
+        const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
+        const targetSystem = resolveEffectiveTargetSystem();
+        const operation = String(normalizeOperationValue(document.getElementById('sch-operation')?.value || '') || '').trim().toLowerCase();
+        return targetType === 'SALESFORCE' && targetSystem === 'Salesforce' && (operation === 'insert' || operation === 'upsert');
+      }
+
+      function getRequiredSalesforceTargetFields() {
+        if (!isSchedulerSalesforceInsertOrUpsertSelection()) {
+          return [];
+        }
+
+        return (Array.isArray(state.targetFields) ? state.targetFields : []).filter((field) => field && field.requiredOnCreate === true);
+      }
+
+      function getProvidedSchedulerTargetFieldKeys() {
+        const provided = new Set(
+          (Array.isArray(state.mappingRules) ? state.mappingRules : [])
+            .map((rule) => normalizeFieldKey(rule?.targetField))
+            .filter(Boolean)
+        );
+
+        const rawTargetDefinition = String(document.getElementById('sch-target-definition')?.value || '').trim();
+        if (!rawTargetDefinition) {
+          return provided;
+        }
+
+        try {
+          const parsed = JSON.parse(rawTargetDefinition);
+          const targetDefinition = getSchedulerSelectedTargetDefinitionContainer(parsed) || parsed;
+          const knownFieldKeys = new Set(
+            (Array.isArray(state.targetFields) ? state.targetFields : [])
+              .map((field) => normalizeFieldKey(field?.name))
+              .filter(Boolean)
+          );
+
+          Object.entries(targetDefinition || {}).forEach(([key, value]) => {
+            const normalizedKey = normalizeFieldKey(key);
+            if (!normalizedKey || !knownFieldKeys.has(normalizedKey)) {
+              return;
+            }
+            if (typeof value === 'string') {
+              if (value.trim()) {
+                provided.add(normalizedKey);
+              }
+              return;
+            }
+            if (typeof value === 'number' || typeof value === 'boolean') {
+              provided.add(normalizedKey);
+            }
+          });
+        } catch {
+          return provided;
+        }
+
+        return provided;
+      }
+
+      function getMissingRequiredSchedulerTargetFields() {
+        const requiredFields = getRequiredSalesforceTargetFields();
+        if (!requiredFields.length) {
+          return [];
+        }
+
+        const providedTargetFieldKeys = getProvidedSchedulerTargetFieldKeys();
+        return requiredFields.filter((field) => !providedTargetFieldKeys.has(normalizeFieldKey(field?.name)));
+      }
+
+      function getRequiredSalesforceFieldSaveMessage() {
+        if (!document.getElementById('sch-active')?.checked) {
+          return '';
+        }
+
+        const missingRequiredFields = getMissingRequiredSchedulerTargetFields();
+        if (!missingRequiredFields.length) {
+          return '';
+        }
+
+        const objectName = String(document.getElementById('sch-object')?.value || '').trim() || 'das Zielobjekt';
+        return 'Aktivierung nicht moeglich: Fuer ' + objectName + ' fehlen erforderliche Zielfelder im Mapping oder in der Zielkonfiguration: '
+          + missingRequiredFields.map((field) => String(field?.name || '').trim()).filter(Boolean).join(', ') + '.';
+      }
+
+      function renderRequiredSchedulerFieldStatus() {
+        const status = document.getElementById('sch-mapping-required-status');
+        if (!status) {
+          return;
+        }
+
+        if (!isSchedulerSalesforceInsertOrUpsertSelection()) {
+          status.className = 'small mt-2 text-secondary';
+          status.textContent = 'Pflichtfelder werden fuer Salesforce Insert/Upsert je Zielobjekt gekennzeichnet.';
+          return;
+        }
+
+        const requiredFields = getRequiredSalesforceTargetFields();
+        if (!requiredFields.length) {
+          status.className = 'small mt-2 text-secondary';
+          status.textContent = 'Keine Pflichtfelder aus den aktuellen Salesforce-Metadaten erkannt.';
+          return;
+        }
+
+        const missingRequiredFields = getMissingRequiredSchedulerTargetFields();
+        const requiredLabels = requiredFields.map((field) => {
+          const name = String(field?.name || '').trim();
+          return name ? (name + ' *') : '';
+        }).filter(Boolean).join(', ');
+
+        if (missingRequiredFields.length) {
+          const missingLabels = missingRequiredFields.map((field) => String(field?.name || '').trim()).filter(Boolean).join(', ');
+          status.className = 'small mt-2 text-danger';
+          status.textContent = 'Pflichtfelder: ' + requiredLabels + '. Noch offen: ' + missingLabels + '. Aktive Speicherung ist erst danach moeglich.';
+          return;
+        }
+
+        status.className = 'small mt-2 text-success';
+        status.textContent = 'Pflichtfelder gesetzt: ' + requiredLabels + '.';
       }
 
       function updateMappingDetailEditorState() {
@@ -5210,6 +5492,7 @@ function htmlShell(): string {
         if (!select || !targetSystem) {
           state.targetFields = [];
           select.innerHTML = '<option value="">- Wählen -</option>';
+          renderRequiredSchedulerFieldStatus();
           return;
         }
 
@@ -5221,6 +5504,7 @@ function htmlShell(): string {
         if (!targetObject) {
           state.targetFields = [];
           select.innerHTML = '<option value="">Zielobjekt wählen</option>';
+          renderRequiredSchedulerFieldStatus();
           return;
         }
 
@@ -5239,7 +5523,7 @@ function htmlShell(): string {
           state.targetFields = fields;
           const currentValue = preferredField || select.value;
           select.innerHTML = '<option value="">- Wählen -</option>' + fields.map((field) =>
-            '<option value="' + esc(field.name) + '">' + esc(field.label ? field.label : field.name) + '</option>'
+            '<option value="' + esc(field.name) + '">' + esc((field.label ? field.label : field.name) + (field.requiredOnCreate === true ? ' *' : '')) + '</option>'
           ).join('');
           if (currentValue && !fields.some((f) => f.name === currentValue)) {
             select.innerHTML += '<option value="' + esc(currentValue) + '">' + esc(currentValue) + '</option>';
@@ -5251,9 +5535,11 @@ function htmlShell(): string {
           }
 
           resetIncompatibleScheduleMappingsIfNeeded();
+          renderRequiredSchedulerFieldStatus();
         } catch (error) {
           state.targetFields = [];
           select.innerHTML = '<option value="">Fehler beim Laden</option>';
+          renderRequiredSchedulerFieldStatus();
           console.error('Error loading target fields:', error);
         }
       }
@@ -5268,6 +5554,7 @@ function htmlShell(): string {
           rulesBody.innerHTML = '<tr><td colspan="6" class="text-secondary">Noch keine Mapping-Regeln. Ziehen Sie Quellfelder in diese Tabelle.</td></tr>';
           updateMappingDetailEditorState();
           syncMappingDefinitionFromRules();
+          renderRequiredSchedulerFieldStatus();
           return;
         }
 
@@ -5275,6 +5562,12 @@ function htmlShell(): string {
           const isSelected = rule.id === state.selectedMappingRuleId;
           const source = esc(rule.sourceField || '-');
           const target = esc(rule.targetField || '-');
+          const targetMeta = (Array.isArray(state.targetFields) ? state.targetFields : []).find((field) =>
+            normalizeFieldKey(field?.name) === normalizeFieldKey(rule?.targetField)
+          );
+          const targetDisplay = targetMeta?.requiredOnCreate === true && target !== '-'
+            ? target + ' <span class="badge bg-warning-subtle text-dark border">Pflicht</span>'
+            : target;
           const lookup = rule.lookupEnabled
             ? esc((rule.lookupObject || '-') + '.' + (rule.lookupField || '-'))
             : '-';
@@ -5285,7 +5578,7 @@ function htmlShell(): string {
           return (
             '<tr class="' + (isSelected ? 'mapping-rule-selected' : '') + '" data-rule-id="' + esc(rule.id) + '">' +
               '<td>' + source + '</td>' +
-              '<td>' + target + '</td>' +
+              '<td>' + targetDisplay + '</td>' +
               '<td>' + lookup + '</td>' +
               '<td>' + transform + '</td>' +
               '<td>' + esc(picklist) + '</td>' +
@@ -5316,6 +5609,7 @@ function htmlShell(): string {
 
         updateMappingDetailEditorState();
         syncMappingDefinitionFromRules();
+        renderRequiredSchedulerFieldStatus();
       }
 
       function setupMappingDropZone() {
@@ -6767,28 +7061,38 @@ function htmlShell(): string {
         const params = parameters || {};
         document.getElementById('con-task-notify-enabled').checked = params.notificationTaskEnabled === true;
         document.getElementById('con-task-owner-id').value = String(params.notificationTaskOwnerId || '');
-        const errorClasses = Array.isArray(params.notificationTaskErrorClasses)
-          ? params.notificationTaskErrorClasses.join(',')
-          : String(params.notificationTaskErrorClasses || '');
-        document.getElementById('con-task-error-classes').value = errorClasses;
+        const errorClassSelect = document.getElementById('con-task-error-classes');
+        const selectedClasses = Array.isArray(params.notificationTaskErrorClasses)
+          ? params.notificationTaskErrorClasses
+          : String(params.notificationTaskErrorClasses || '')
+              .split(',')
+              .map((value) => value.trim().toUpperCase())
+              .filter(Boolean);
+        Array.from(errorClassSelect?.options || []).forEach((option) => {
+          option.selected = selectedClasses.includes(String(option.value || '').trim().toUpperCase());
+        });
       }
 
       function mergeConnectorNotificationSettingsIntoParameters(parameters) {
         const merged = { ...(parameters || {}) };
         const enabled = !!document.getElementById('con-task-notify-enabled').checked;
-        const ownerId = String(document.getElementById('con-task-owner-id').value || '').trim();
-        const errorClasses = String(document.getElementById('con-task-error-classes').value || '')
-          .split(',')
-          .map((value) => value.trim().toUpperCase())
+        const ownerSelect = document.getElementById('con-task-owner-id');
+        const ownerId = String(ownerSelect?.value || '').trim();
+        const ownerUsername = String(ownerSelect?.selectedOptions?.[0]?.getAttribute('data-username') || '').trim();
+        const errorClassSelect = document.getElementById('con-task-error-classes');
+        const errorClasses = Array.from(errorClassSelect?.selectedOptions || [])
+          .map((option) => String(option.value || '').trim().toUpperCase())
           .filter(Boolean);
 
         if (enabled && ownerId) {
           merged.notificationTaskEnabled = true;
           merged.notificationTaskOwnerId = ownerId;
-          merged.notificationTaskErrorClasses = errorClasses.length ? errorClasses : ['CONNECTION', 'AUTH', 'DATA', 'VALIDATION', 'UNKNOWN'];
+          merged.notificationTaskOwnerUsername = ownerUsername;
+          merged.notificationTaskErrorClasses = errorClasses.length ? errorClasses : connectorNotificationErrorClassOptions.slice();
         } else {
           delete merged.notificationTaskEnabled;
           delete merged.notificationTaskOwnerId;
+          delete merged.notificationTaskOwnerUsername;
           delete merged.notificationTaskErrorClasses;
         }
 
@@ -9103,6 +9407,7 @@ function htmlShell(): string {
         const parameters = entry?.parameters || {};
         document.getElementById('con-parameters').value = JSON.stringify(parameters, null, 2);
         fillConnectorNotificationSettingsFromParameters(parameters);
+        void loadConnectorTaskOwnerOptions(parameters.notificationTaskOwnerId);
         fillMssqlConnectorSettingsFromParameters(parameters);
         fillFileConnectorSettingsFromParameters(parameters);
         fillRestConnectorSettingsFromParameters(parameters);
@@ -9117,6 +9422,7 @@ function htmlShell(): string {
 
       async function saveSchedule() {
         clearError();
+        clearModalError();
         const saveButton = document.getElementById('save-schedule');
         saveButton.disabled = true;
 
@@ -9129,6 +9435,10 @@ function htmlShell(): string {
           const targetConstraintMessage = updateSchedulerExternalIdValidationState();
           if (targetConstraintMessage) {
             throw new Error(targetConstraintMessage);
+          }
+          const requiredFieldMessage = getRequiredSalesforceFieldSaveMessage();
+          if (requiredFieldMessage) {
+            throw new Error(requiredFieldMessage);
           }
 
           const payload = collectScheduleFormPayload();
@@ -9151,7 +9461,7 @@ function htmlShell(): string {
           await saveScheduleCheckpoint(result?.id || scheduleId);
           await refresh();
         } catch (error) {
-          showError(error.message || 'Scheduler konnte nicht gespeichert werden');
+          showModalError(error.message || 'Scheduler konnte nicht gespeichert werden');
         } finally {
           saveButton.disabled = false;
         }
@@ -9550,7 +9860,7 @@ function htmlShell(): string {
         ensureSalesforceTargetDefinition();
         updateSchedulerExternalIdValidationState();
       });
-      bindEventListenerOnce('sch-pricebook2id', 'input', async () => {
+      bindEventListenerOnce('sch-pricebook2id', 'change', async () => {
         ensureSalesforceTargetDefinition();
         await syncSchedulerExternalIdUi();
       });
@@ -9726,6 +10036,7 @@ function htmlShell(): string {
         }
       });
       document.getElementById('sch-test-source').addEventListener('click', testScheduleSource);
+      bindEventListenerOnce('sch-active', 'change', renderRequiredSchedulerFieldStatus);
       document.getElementById('sch-source-type').addEventListener('change', () => {
         updateSourceQueryAssist();
         const srcType = document.getElementById('sch-source-type').value;
@@ -9831,7 +10142,7 @@ function htmlShell(): string {
         ensureSalesforceTargetDefinition();
         updateSchedulerExternalIdValidationState();
       });
-      bindEventListenerOnce('sch-pricebook2id', 'input', async () => {
+      bindEventListenerOnce('sch-pricebook2id', 'change', async () => {
         ensureSalesforceTargetDefinition();
         await syncSchedulerExternalIdUi();
       });
@@ -11986,6 +12297,18 @@ export function createAppServer(
       if (req.method === "GET" && requestUrl.pathname === "/api/salesforce/objects") {
         const objects = await adminDataService.listSalesforceObjects(instanceId);
         sendJson(200, objects);
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/salesforce/pricebooks") {
+        const pricebooks = await adminDataService.listSalesforcePricebooks(instanceId);
+        sendJson(200, pricebooks);
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/salesforce/users") {
+        const users = await adminDataService.listSalesforceUsers(instanceId);
+        sendJson(200, users);
         return;
       }
 

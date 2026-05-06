@@ -231,9 +231,11 @@ export class SalesforceGlobalPicklistTargetAdapter implements TargetAdapter {
   private readonly salesforceClient: SalesforceClient;
   private readonly targetDefinition: GlobalPicklistTargetDefinition;
   private readonly activeProfile: GlobalPicklistImportProfile;
+  private readonly lastRunAt?: string;
 
-  public constructor(salesforceClient: SalesforceClient, targetDefinition: string) {
+  public constructor(salesforceClient: SalesforceClient, targetDefinition: string, lastRunAt?: string) {
     this.salesforceClient = salesforceClient;
+    this.lastRunAt = typeof lastRunAt === "string" && lastRunAt.trim() ? lastRunAt.trim() : undefined;
     this.targetDefinition = parseTargetDefinition(targetDefinition);
     this.activeProfile = this.resolveActiveImportProfile();
   }
@@ -248,7 +250,7 @@ export class SalesforceGlobalPicklistTargetAdapter implements TargetAdapter {
     }
 
     if (this.activeProfile.scheduler?.mode === "rules") {
-      return isImportProfileSchedulerRuleDue(this.activeProfile.scheduler.rules, new Date(now));
+      return isImportProfileSchedulerRuleDue(this.activeProfile.scheduler.rules, new Date(now), this.lastRunAt);
     }
 
     if (!this.activeProfile.nextRunAt) {

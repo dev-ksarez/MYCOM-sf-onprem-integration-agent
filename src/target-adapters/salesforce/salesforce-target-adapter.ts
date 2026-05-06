@@ -241,6 +241,10 @@ function parseTargetDefinition(rawDefinition: string): SalesforceTargetDefinitio
       }
 
       const candidate = profile as Record<string, unknown>;
+      const targetCandidate =
+        candidate.target && typeof candidate.target === "object" && !Array.isArray(candidate.target)
+          ? candidate.target as Record<string, unknown>
+          : candidate;
       const name = candidate.name;
       const active = candidate.active;
       const schedulerEnabled = candidate.schedulerEnabled;
@@ -349,7 +353,7 @@ function parseTargetDefinition(rawDefinition: string): SalesforceTargetDefinitio
         nextRunAt: typeof nextRunAt === "string" ? nextRunAt.trim() : undefined,
         scheduler: parsedScheduler,
         mode: mode as TargetMode,
-        target: parseObjectTarget(candidate, `importProfiles[${index}]`)
+        target: parseObjectTarget(targetCandidate, `importProfiles[${index}].target`)
       };
     });
 
@@ -491,16 +495,19 @@ export class SalesforceTargetAdapter implements TargetAdapter {
   private readonly connectorConfig?: ConnectorConfig;
   private readonly targetDefinition: SalesforceTargetDefinition;
   private readonly activeProfile: SalesforceImportProfile;
+  private readonly lastRunAt?: string;
   private picklistSqlDatabase?: MssqlDatabase;
   private readonly sqlMappingCache: Map<string, Map<string, string>>;
 
   public constructor(
     salesforceClient: SalesforceClient,
     targetDefinition: string,
-    connectorConfig?: ConnectorConfig
+    connectorConfig?: ConnectorConfig,
+    lastRunAt?: string
   ) {
     this.salesforceClient = salesforceClient;
     this.connectorConfig = connectorConfig;
+    this.lastRunAt = typeof lastRunAt === "string" && lastRunAt.trim() ? lastRunAt.trim() : undefined;
     this.targetDefinition = parseTargetDefinition(targetDefinition);
     this.activeProfile = this.resolveActiveImportProfile();
     this.sqlMappingCache = new Map();
@@ -516,7 +523,7 @@ export class SalesforceTargetAdapter implements TargetAdapter {
     }
 
     if (this.activeProfile.scheduler?.mode === "rules") {
-      return isImportProfileSchedulerRuleDue(this.activeProfile.scheduler.rules, new Date(now));
+      return isImportProfileSchedulerRuleDue(this.activeProfile.scheduler.rules, new Date(now), this.lastRunAt);
     }
 
     if (!this.activeProfile.nextRunAt) {
@@ -579,9 +586,7 @@ export class SalesforceTargetAdapter implements TargetAdapter {
           // upsert (default)
           const shouldUsePricebookCompositeKey =
             target.objectApiName === "PricebookEntry" &&
-            target.externalIdField === "ProductCode" &&
-            valuesToWrite.Pricebook2Id !== undefined &&
-            (valuesToWrite.Product2Id !== undefined || valuesToWrite.ProductCode !== undefined);
+            target.externalIdField === "ProductCode";
 
           const shouldUseProductCodeLookupForProduct2 =
             target.objectApiName === "Product2" && target.externalIdField === "ProductCode";

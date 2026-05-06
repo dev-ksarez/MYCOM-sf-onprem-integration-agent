@@ -589,9 +589,13 @@ async function validatePricebookEntryDryRunConfiguration(
   let externalIdField = "";
   let targetPricebook2Id = "";
   try {
-    const parsedTargetDefinition = JSON.parse(String(schedule.targetDefinition || "{}"));
-    externalIdField = String(parsedTargetDefinition?.externalIdField || "").trim();
-    targetPricebook2Id = String(parsedTargetDefinition?.pricebook2Id || "").trim();
+    const resolvedTargetDefinition = resolveSelectedSalesforceTargetDefinition(String(schedule.targetDefinition || "{}")) as {
+      externalIdField?: unknown;
+      pricebook2Id?: unknown;
+    };
+
+    externalIdField = String(resolvedTargetDefinition?.externalIdField || "").trim();
+    targetPricebook2Id = String(resolvedTargetDefinition?.pricebook2Id || "").trim();
   } catch {
     return "Zielkonfiguration ungueltig: Target Definition ist kein valides JSON.";
   }
@@ -622,6 +626,11 @@ async function validatePricebookEntryDryRunConfiguration(
     return "Zielkonfiguration unvollstaendig: PricebookEntry mit Upsert-Feld ProductCode benoetigt Pricebook2Id als sichtbares Ziel-Feld oder als Mapping-Ziel.";
   }
 
+  const mappingMessage = validatePricebookEntryMappingDefinition(schedule);
+  if (mappingMessage) {
+    return mappingMessage;
+  }
+
   const fixedPricebook2Id = targetPricebook2Id || mappedStaticPricebook2Id;
   if (!fixedPricebook2Id) {
     return undefined;
@@ -636,6 +645,196 @@ async function validatePricebookEntryDryRunConfiguration(
   } catch (error) {
     const details = error instanceof Error ? error.message : String(error || "unbekannter Fehler");
     return `Pricebook2Id-Pruefung fehlgeschlagen: ${details}`;
+  }
+
+  return undefined;
+}
+
+async function validateRequiredSalesforceFieldMappings(
+  input: {
+    active?: boolean;
+    targetType?: string;
+    targetSystem?: string;
+    objectName?: string;
+    operation?: string;
+    targetDefinition?: string;
+    mappingDefinition?: string;
+  },
+  createClient: () => Promise<SalesforceClient>,
+  options?: { enforceOnlyWhenActive?: boolean }
+): Promise<string | undefined> {
+  const enforceOnlyWhenActive = options?.enforceOnlyWhenActive !== false;
+  if (enforceOnlyWhenActive && input.active === false) {
+    return undefined;
+  }
+
+  const targetType = String(input.targetType || "").trim().toUpperCase();
+  const targetSystem = String(input.targetSystem || "").trim().toLowerCase();
+  const objectName = String(input.objectName || "").trim();
+  const operation = String(input.operation || "").trim().toLowerCase();
+
+  if (targetType !== "SALESFORCE" || targetSystem !== "salesforce" || !objectName || (operation !== "insert" && operation !== "upsert")) {
+    return undefined;
+  }
+
+  const client = await createClient();
+  const objectFields = await client.describeObjectFields(objectName);
+  const knownTargetFieldNames = new Set(
+    objectFields
+      .map((field) => String(field?.name || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const providedTargetFields = new Set<string>();
+
+  try {
+    const mappingLines = new MappingDefinitionParser().parse(String(input.mappingDefinition || "")).lines;
+    for (const line of mappingLines) {
+      const targetField = String(line.targetField || "").trim();
+      if (targetField) {
+        providedTargetFields.add(targetField.toLowerCase());
+      }
+    }
+  } catch {
+    // mapping syntax is validated elsewhere; missing required fields are only checked for parsable mappings.
+  }
+
+  try {
+    const resolvedTargetDefinition = resolveSelectedSalesforceTargetDefinition(String(input.targetDefinition || "{}"));
+    for (const [key, value] of Object.entries(resolvedTargetDefinition)) {
+      const normalizedKey = String(key || "").trim().toLowerCase();
+      if (!normalizedKey || !knownTargetFieldNames.has(normalizedKey)) {
+        continue;
+      }
+      if (typeof value === "string") {
+        if (value.trim()) {
+          providedTargetFields.add(normalizedKey.toLowerCase());
+        }
+        continue;
+      }
+      if (typeof value === "number" || typeof value === "boolean") {
+        providedTargetFields.add(normalizedKey.toLowerCase());
+      }
+    }
+  } catch {
+    // targetDefinition syntax is validated elsewhere.
+  }
+
+  const missingRequiredFields = objectFields
+    .filter((field) => field.requiredOnCreate)
+    .map((field) => String(field.name || "").trim())
+    .filter((fieldName) => fieldName && !providedTargetFields.has(fieldName.toLowerCase()));
+
+  if (!missingRequiredFields.length) {
+    return undefined;
+  }
+
+  const actionLabel = input.active === false
+    ? "Pflichtfelder fehlen"
+    : "Aktivierung nicht moeglich";
+  return `${actionLabel}: Fuer ${objectName} fehlen erforderliche Zielfelder im Mapping oder in der Zielkonfiguration: ${missingRequiredFields.join(", ")}.`;
+}
+
+const PRICEBOOK_ENTRY_DISALLOWED_PRODUCT_FIELDS = new Set([
+  "Name",
+  "Description",
+  "StockKeepingUnit",
+  "Family"
+]);
+
+function resolveSelectedSalesforceTargetDefinition(rawTargetDefinition: string): Record<string, unknown> {
+  const parsedTargetDefinition = JSON.parse(rawTargetDefinition) as unknown;
+  if (!parsedTargetDefinition || typeof parsedTargetDefinition !== "object" || Array.isArray(parsedTargetDefinition)) {
+    return {};
+  }
+
+  const baseTargetDefinition = parsedTargetDefinition as Record<string, unknown>;
+
+  const typedDefinition = parsedTargetDefinition as {
+    selectedImportProfileName?: unknown;
+    importProfiles?: Array<{ name?: unknown; target?: unknown }>;
+  };
+
+  if (!Array.isArray(typedDefinition.importProfiles) || !typedDefinition.importProfiles.length) {
+    return baseTargetDefinition;
+  }
+
+  const selectedName = String(typedDefinition.selectedImportProfileName || "").trim();
+  const selectedProfile = (selectedName
+    ? typedDefinition.importProfiles.find((profile) => String(profile?.name || "").trim() === selectedName)
+    : typedDefinition.importProfiles[0]) || typedDefinition.importProfiles[0];
+
+  if (!selectedProfile || typeof selectedProfile !== "object" || Array.isArray(selectedProfile)) {
+    return baseTargetDefinition;
+  }
+
+  if (selectedProfile.target && typeof selectedProfile.target === "object" && !Array.isArray(selectedProfile.target)) {
+    return {
+      ...baseTargetDefinition,
+      ...(selectedProfile.target as Record<string, unknown>)
+    };
+  }
+
+  return {
+    ...baseTargetDefinition,
+    ...(selectedProfile as Record<string, unknown>)
+  };
+}
+
+function validatePricebookEntryMappingDefinition(input: {
+  targetType?: string;
+  targetSystem?: string;
+  objectName?: string;
+  operation?: string;
+  targetDefinition?: string;
+  mappingDefinition?: string;
+}): string | undefined {
+  const targetType = String(input.targetType || "").trim().toUpperCase();
+  const targetSystem = String(input.targetSystem || "").trim().toLowerCase();
+  const objectName = String(input.objectName || "").trim();
+  const operation = String(input.operation || "").trim().toLowerCase();
+
+  if (targetType !== "SALESFORCE" || targetSystem !== "salesforce" || objectName !== "PricebookEntry" || operation !== "upsert") {
+    return undefined;
+  }
+
+  let externalIdField = "";
+  try {
+    const resolvedTargetDefinition = resolveSelectedSalesforceTargetDefinition(String(input.targetDefinition || "{}"));
+    externalIdField = String(resolvedTargetDefinition.externalIdField || "").trim();
+  } catch {
+    return undefined;
+  }
+
+  if (externalIdField !== "ProductCode") {
+    return undefined;
+  }
+
+  let mappingLines: MappingDefinitionLine[] = [];
+  try {
+    mappingLines = new MappingDefinitionParser().parse(String(input.mappingDefinition || "")).lines;
+  } catch {
+    return undefined;
+  }
+
+  const mappedTargetFields = new Set(
+    mappingLines
+      .map((line) => String(line.targetField || "").trim())
+      .filter(Boolean)
+  );
+
+  const invalidTargetFields = Array.from(mappedTargetFields).filter((field) =>
+    PRICEBOOK_ENTRY_DISALLOWED_PRODUCT_FIELDS.has(field)
+  );
+  if (invalidTargetFields.length > 0) {
+    return `Zielkonfiguration ungueltig: PricebookEntry unterstuetzt diese Produkt-Felder nicht: ${invalidTargetFields.join(", ")}. Verwende stattdessen ProductCode, UnitPrice, IsActive, Product2Id oder Pricebook2Id.`;
+  }
+
+  if (!mappedTargetFields.has("ProductCode")) {
+    return "Zielkonfiguration unvollstaendig: PricebookEntry mit Upsert-Feld ProductCode benoetigt ein Mapping auf ProductCode.";
+  }
+
+  if (!mappedTargetFields.has("UnitPrice")) {
+    return "Zielkonfiguration unvollstaendig: Der Produktpreise-Scheduler benoetigt ein Mapping auf UnitPrice.";
   }
 
   return undefined;
@@ -1753,6 +1952,21 @@ export class AdminDataService {
       throw new Error(`Schedule not found: ${scheduleId}`);
     }
 
+    const requiredFieldsMessage = await validateRequiredSalesforceFieldMappings(
+      schedule,
+      () => this.createClient(instanceId),
+      { enforceOnlyWhenActive: false }
+    );
+    if (requiredFieldsMessage) {
+      return {
+        ok: false,
+        scheduleId,
+        scheduleName: schedule.name,
+        sourceType: schedule.sourceType,
+        message: requiredFieldsMessage
+      };
+    }
+
     const targetConfigMessage = await validatePricebookEntryDryRunConfiguration(
       schedule,
       () => this.createClient(instanceId)
@@ -2436,6 +2650,19 @@ export class AdminDataService {
       if (!this.isFileConnectorType(connector.connectorType)) {
         throw new Error(`Ausgewaehlter Connector ${connector.name} ist kein Datei-Connector`);
       }
+    }
+
+    const pricebookEntryMappingMessage = validatePricebookEntryMappingDefinition(input);
+    if (pricebookEntryMappingMessage) {
+      throw new Error(pricebookEntryMappingMessage);
+    }
+
+    const requiredFieldsMessage = await validateRequiredSalesforceFieldMappings(
+      input,
+      () => this.createClient(instanceId)
+    );
+    if (requiredFieldsMessage) {
+      throw new Error(requiredFieldsMessage);
     }
 
     const normalizedParentScheduleId =
@@ -3992,7 +4219,7 @@ export class AdminDataService {
       return "inactive";
     }
 
-    const profileSchedulerDue = this.isSelectedImportProfileSchedulerDue(schedule.targetDefinition);
+    const profileSchedulerDue = this.isSelectedImportProfileSchedulerDue(schedule.targetDefinition, schedule.lastRunAt);
     if (profileSchedulerDue === false) {
       return "scheduled";
     }
@@ -4011,7 +4238,7 @@ export class AdminDataService {
     return "due";
   }
 
-  private isSelectedImportProfileSchedulerDue(targetDefinition?: string): boolean | undefined {
+  private isSelectedImportProfileSchedulerDue(targetDefinition?: string, lastRunAt?: string): boolean | undefined {
     const raw = String(targetDefinition || "").trim();
     if (!raw || !raw.startsWith("{")) {
       return undefined;
@@ -4079,7 +4306,7 @@ export class AdminDataService {
         intervalMinutes: Number(rule?.intervalMinutes)
       }));
 
-      return isImportProfileSchedulerRuleDue(normalizedRules, new Date());
+      return isImportProfileSchedulerRuleDue(normalizedRules, new Date(), lastRunAt);
     } catch {
       return undefined;
     }
@@ -4343,7 +4570,7 @@ export class AdminDataService {
     targetObject?: string,
     connectorId?: string,
     instanceId?: string
-  ): Promise<{ fields: Array<{ name: string; type: string; label?: string }> }> {
+  ): Promise<{ fields: Array<{ name: string; type: string; label?: string; requiredOnCreate?: boolean; nillable?: boolean; isExternalId?: boolean }> }> {
     const normalizedTargetSystem = this.normalizeTargetSystem(targetSystem);
 
     if (!normalizedTargetSystem) {
@@ -4357,7 +4584,10 @@ export class AdminDataService {
         fields: (fields || []).map((field: any) => ({
           name: field.name || '',
           type: field.type || 'string',
-          label: field.label
+          label: field.label,
+          requiredOnCreate: field.requiredOnCreate === true,
+          nillable: field.nillable === true,
+          isExternalId: field.isExternalId === true
         }))
       };
     }
@@ -4416,7 +4646,17 @@ export class AdminDataService {
     return await client.listObjectMetadata();
   }
 
-  public async describeSalesforceObjectFields(objectApiName: string, instanceId?: string): Promise<{ name: string; label: string; type: string; nillable: boolean; isExternalId: boolean }[]> {
+  public async listSalesforcePricebooks(instanceId?: string): Promise<Array<{ id: string; name: string; isActive: boolean; isStandard: boolean }>> {
+    const client = await this.createClient(instanceId);
+    return await client.listPricebooks();
+  }
+
+  public async listSalesforceUsers(instanceId?: string): Promise<Array<{ id: string; name: string; username: string; isActive: boolean }>> {
+    const client = await this.createClient(instanceId);
+    return await client.listUsers();
+  }
+
+  public async describeSalesforceObjectFields(objectApiName: string, instanceId?: string): Promise<{ name: string; label: string; type: string; nillable: boolean; isExternalId: boolean; createable: boolean; defaultedOnCreate: boolean; calculated: boolean; autoNumber: boolean; requiredOnCreate: boolean }[]> {
     const client = await this.createClient(instanceId);
     return await client.describeObjectFields(objectApiName);
   }

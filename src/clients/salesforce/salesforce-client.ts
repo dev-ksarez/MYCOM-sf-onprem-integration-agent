@@ -218,11 +218,30 @@ export interface SalesforceObjectFieldMetadata {
   type: string;
   nillable: boolean;
   isExternalId: boolean;
+  createable: boolean;
+  defaultedOnCreate: boolean;
+  calculated: boolean;
+  autoNumber: boolean;
+  requiredOnCreate: boolean;
 }
 
 export interface SalesforceObjectMetadata {
   name: string;
   label: string;
+}
+
+export interface SalesforcePricebookMetadata {
+  id: string;
+  name: string;
+  isActive: boolean;
+  isStandard: boolean;
+}
+
+export interface SalesforceUserMetadata {
+  id: string;
+  name: string;
+  username: string;
+  isActive: boolean;
 }
 
 export interface SalesforceOrgOverview {
@@ -1696,6 +1715,52 @@ export class SalesforceClient {
     return result.records.length > 0;
   }
 
+  public async listPricebooks(): Promise<SalesforcePricebookMetadata[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const result = await this.connection.query<{ Id?: string; Name?: string; IsActive?: boolean; IsStandard?: boolean }>(`
+      SELECT Id, Name, IsActive, IsStandard
+      FROM Pricebook2
+      WHERE IsActive = true OR IsStandard = true
+      ORDER BY IsStandard DESC, Name ASC
+      LIMIT 500
+    `);
+
+    return (result.records || [])
+      .map((record) => ({
+        id: String(record.Id || "").trim(),
+        name: String(record.Name || record.Id || "").trim(),
+        isActive: record.IsActive === true,
+        isStandard: record.IsStandard === true
+      }))
+      .filter((record) => record.id);
+  }
+
+  public async listUsers(): Promise<SalesforceUserMetadata[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const result = await this.connection.query<{ Id?: string; Name?: string; Username?: string; IsActive?: boolean }>(`
+      SELECT Id, Name, Username, IsActive
+      FROM User
+      WHERE IsActive = true
+      ORDER BY Name ASC, Username ASC
+      LIMIT 500
+    `);
+
+    return (result.records || [])
+      .map((record) => ({
+        id: String(record.Id || "").trim(),
+        name: String(record.Name || "").trim(),
+        username: String(record.Username || "").trim(),
+        isActive: record.IsActive === true
+      }))
+      .filter((record) => record.id);
+  }
+
   public async upsertProduct2ByProductCode(values: Record<string, unknown>): Promise<string> {
     if (!this.connection) {
       throw new Error("Salesforce connection not initialized. Call login() first.");
@@ -1792,7 +1857,18 @@ export class SalesforceClient {
         label: String(field.label ?? field.name ?? "").trim(),
         type: String(field.type ?? "unknown").trim(),
         nillable: Boolean(field.nillable),
-        isExternalId: Boolean((field as { externalId?: boolean }).externalId)
+        isExternalId: Boolean((field as { externalId?: boolean }).externalId),
+        createable: Boolean((field as { createable?: boolean }).createable),
+        defaultedOnCreate: Boolean((field as { defaultedOnCreate?: boolean }).defaultedOnCreate),
+        calculated: Boolean((field as { calculated?: boolean }).calculated),
+        autoNumber: Boolean((field as { autoNumber?: boolean }).autoNumber),
+        requiredOnCreate: Boolean(
+          (field as { createable?: boolean }).createable
+          && !(field as { nillable?: boolean }).nillable
+          && !(field as { defaultedOnCreate?: boolean }).defaultedOnCreate
+          && !(field as { calculated?: boolean }).calculated
+          && !(field as { autoNumber?: boolean }).autoNumber
+        )
       }))
       .filter((field) => field.name);
   }
