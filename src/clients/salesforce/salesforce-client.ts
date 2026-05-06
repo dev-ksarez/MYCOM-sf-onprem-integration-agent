@@ -1619,13 +1619,85 @@ export class SalesforceClient {
     return payloads.map((payload) => String(payload.Id).trim());
   }
 
-  public async upsertPricebookEntryByCompositeKey(values: Record<string, unknown>): Promise<string> {
+  public async resolveProduct2IdsByProductCodes(productCodes: string[]): Promise<Map<string, string>> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedCodes = Array.from(new Set(productCodes.map((value) => String(value || "").trim()).filter(Boolean)));
+    const resolved = new Map<string, string>();
+    if (!normalizedCodes.length) {
+      return resolved;
+    }
+
+    const chunkSize = 100;
+    for (let index = 0; index < normalizedCodes.length; index += chunkSize) {
+      const chunk = normalizedCodes.slice(index, index + chunkSize);
+      const inClause = chunk.map((value) => `'${value.replace(/'/g, "\\'")}'`).join(", ");
+      const result = await this.connection.query<{ Id?: string; ProductCode?: string }>(`
+        SELECT Id, ProductCode
+        FROM Product2
+        WHERE ProductCode IN (${inClause})
+      `);
+
+      for (const record of result.records || []) {
+        const productCode = String(record.ProductCode || "").trim();
+        const product2Id = String(record.Id || "").trim();
+        if (productCode && product2Id) {
+          resolved.set(productCode, product2Id);
+        }
+      }
+    }
+
+    return resolved;
+  }
+
+  public async listPricebookEntryIdsByProduct2Ids(pricebook2Id: string, product2Ids: string[]): Promise<Map<string, string>> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedPricebook2Id = String(pricebook2Id || "").trim();
+    const normalizedProduct2Ids = Array.from(new Set(product2Ids.map((value) => String(value || "").trim()).filter(Boolean)));
+    const resolved = new Map<string, string>();
+    if (!normalizedPricebook2Id || !normalizedProduct2Ids.length) {
+      return resolved;
+    }
+
+    const escapedPricebook2Id = normalizedPricebook2Id.replace(/'/g, "\\'");
+    const chunkSize = 100;
+    for (let index = 0; index < normalizedProduct2Ids.length; index += chunkSize) {
+      const chunk = normalizedProduct2Ids.slice(index, index + chunkSize);
+      const inClause = chunk.map((value) => `'${value.replace(/'/g, "\\'")}'`).join(", ");
+      const result = await this.connection.query<{ Id?: string; Product2Id?: string }>(`
+        SELECT Id, Product2Id
+        FROM PricebookEntry
+        WHERE Pricebook2Id = '${escapedPricebook2Id}'
+          AND Product2Id IN (${inClause})
+      `);
+
+      for (const record of result.records || []) {
+        const product2Id = String(record.Product2Id || "").trim();
+        const pricebookEntryId = String(record.Id || "").trim();
+        if (product2Id && pricebookEntryId) {
+          resolved.set(product2Id, pricebookEntryId);
+        }
+      }
+    }
+
+    return resolved;
+  }
+
+  public async upsertPricebookEntryByCompositeKey(
+    values: Record<string, unknown>,
+    options?: { product2Id?: string; existingEntryId?: string }
+  ): Promise<string> {
     if (!this.connection) {
       throw new Error("Salesforce connection not initialized. Call login() first.");
     }
 
     const pricebook2Id = String(values.Pricebook2Id ?? "").trim();
-    let product2Id = String(values.Product2Id ?? "").trim();
+    let product2Id = String(values.Product2Id ?? options?.product2Id ?? "").trim();
     const productCode = String(values.ProductCode ?? "").trim();
 
     if (!product2Id && productCode) {
@@ -1650,16 +1722,20 @@ export class SalesforceClient {
       throw new Error(`PricebookEntry upsert missing required key field(s): ${missing.join(", ")}`);
     }
 
-    const escapedPricebook2Id = pricebook2Id.replace(/'/g, "\\'");
-    const escapedProduct2Id = product2Id.replace(/'/g, "\\'");
+    let existingEntryId = String(options?.existingEntryId || "").trim();
+    if (!existingEntryId) {
+      const escapedPricebook2Id = pricebook2Id.replace(/'/g, "\\'");
+      const escapedProduct2Id = product2Id.replace(/'/g, "\\'");
 
-    const existing = await this.connection.query<{ Id: string }>(`
-      SELECT Id
-      FROM PricebookEntry
-      WHERE Pricebook2Id = '${escapedPricebook2Id}'
-        AND Product2Id = '${escapedProduct2Id}'
-      LIMIT 1
-    `);
+      const existing = await this.connection.query<{ Id: string }>(`
+        SELECT Id
+        FROM PricebookEntry
+        WHERE Pricebook2Id = '${escapedPricebook2Id}'
+          AND Product2Id = '${escapedProduct2Id}'
+        LIMIT 1
+      `);
+      existingEntryId = String(existing.records[0]?.Id || "").trim();
+    }
 
     const recordPayload = buildSalesforceRecordPayload({
       ...values,
@@ -1667,13 +1743,13 @@ export class SalesforceClient {
     });
     delete recordPayload.ProductCode;
 
-    if (existing.records.length > 0) {
+    if (existingEntryId) {
       // Product2Id/Pricebook2Id are immutable after creation; keep only updateable payload.
       delete recordPayload.Pricebook2Id;
       delete recordPayload.Product2Id;
 
       const updateResult = await this.connection.sobject("PricebookEntry").update({
-        Id: existing.records[0].Id,
+        Id: existingEntryId,
         ...recordPayload
       });
 
@@ -1682,7 +1758,7 @@ export class SalesforceClient {
         throw new Error(`Failed to update PricebookEntry by composite key - ${details}`);
       }
 
-      return existing.records[0].Id;
+      return existingEntryId;
     }
 
     const createResult = await this.connection.sobject("PricebookEntry").create(recordPayload);

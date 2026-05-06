@@ -63,6 +63,10 @@ interface SalesforceTargetDefinition {
   importProfiles: SalesforceImportProfile[];
 }
 
+function buildPricebookEntryCompositeKey(pricebook2Id: string, product2Id: string): string {
+  return `${pricebook2Id}::${product2Id}`;
+}
+
 function validateIdentifier(value: string, label: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(value)) {
     throw new Error(`Invalid Salesforce identifier for ${label}: ${value}`);
@@ -499,6 +503,60 @@ export class SalesforceTargetAdapter implements TargetAdapter {
   private picklistSqlDatabase?: MssqlDatabase;
   private readonly sqlMappingCache: Map<string, Map<string, string>>;
 
+  private async preparePricebookEntryCompositeLookup(
+    records: GenericRecord[],
+    target: SalesforceObjectTargetDefinition
+  ): Promise<{ product2IdsByProductCode: Map<string, string>; existingEntryIdsByCompositeKey: Map<string, string> }> {
+    const productCodesMissingProduct2Id = new Set<string>();
+    const groupedProduct2IdsByPricebook2Id = new Map<string, Set<string>>();
+
+    for (const record of records) {
+      const normalizedValues = normalizeRecordValues(record.values);
+      const pricebook2Id = String(normalizedValues.Pricebook2Id ?? target.pricebook2Id ?? "").trim();
+      const product2Id = String(normalizedValues.Product2Id ?? "").trim();
+      const productCode = String(normalizedValues.ProductCode ?? "").trim();
+
+      if (!product2Id && productCode) {
+        productCodesMissingProduct2Id.add(productCode);
+      }
+
+      if (pricebook2Id && product2Id) {
+        const groupedProduct2Ids = groupedProduct2IdsByPricebook2Id.get(pricebook2Id) || new Set<string>();
+        groupedProduct2Ids.add(product2Id);
+        groupedProduct2IdsByPricebook2Id.set(pricebook2Id, groupedProduct2Ids);
+      }
+    }
+
+    const product2IdsByProductCode = await this.salesforceClient.resolveProduct2IdsByProductCodes(Array.from(productCodesMissingProduct2Id));
+
+    for (const record of records) {
+      const normalizedValues = normalizeRecordValues(record.values);
+      const pricebook2Id = String(normalizedValues.Pricebook2Id ?? target.pricebook2Id ?? "").trim();
+      const productCode = String(normalizedValues.ProductCode ?? "").trim();
+      const product2Id = String(normalizedValues.Product2Id ?? product2IdsByProductCode.get(productCode) ?? "").trim();
+      if (!pricebook2Id || !product2Id) {
+        continue;
+      }
+
+      const groupedProduct2Ids = groupedProduct2IdsByPricebook2Id.get(pricebook2Id) || new Set<string>();
+      groupedProduct2Ids.add(product2Id);
+      groupedProduct2IdsByPricebook2Id.set(pricebook2Id, groupedProduct2Ids);
+    }
+
+    const existingEntryIdsByCompositeKey = new Map<string, string>();
+    for (const [pricebook2Id, product2Ids] of groupedProduct2IdsByPricebook2Id.entries()) {
+      const existingEntries = await this.salesforceClient.listPricebookEntryIdsByProduct2Ids(pricebook2Id, Array.from(product2Ids));
+      for (const [product2Id, entryId] of existingEntries.entries()) {
+        existingEntryIdsByCompositeKey.set(buildPricebookEntryCompositeKey(pricebook2Id, product2Id), entryId);
+      }
+    }
+
+    return {
+      product2IdsByProductCode,
+      existingEntryIdsByCompositeKey
+    };
+  }
+
   public constructor(
     salesforceClient: SalesforceClient,
     targetDefinition: string,
@@ -544,6 +602,12 @@ export class SalesforceTargetAdapter implements TargetAdapter {
     const results: ConnectorResult[] = [];
     const target = this.activeProfile.target;
     const mode = this.activeProfile.mode;
+    const shouldUsePricebookCompositeKey =
+      target.objectApiName === "PricebookEntry" &&
+      target.externalIdField === "ProductCode";
+    const preparedPricebookEntryLookup = shouldUsePricebookCompositeKey
+      ? await this.preparePricebookEntryCompositeLookup(records, target)
+      : undefined;
 
     for (const record of records) {
       const normalizedValues = await this.normalizePicklistValues(normalizeRecordValues(record.values));
@@ -584,15 +648,30 @@ export class SalesforceTargetAdapter implements TargetAdapter {
           targetId = await this.salesforceClient.updateGenericRecord(target.objectApiName, valuesToWrite);
         } else {
           // upsert (default)
-          const shouldUsePricebookCompositeKey =
-            target.objectApiName === "PricebookEntry" &&
-            target.externalIdField === "ProductCode";
-
           const shouldUseProductCodeLookupForProduct2 =
             target.objectApiName === "Product2" && target.externalIdField === "ProductCode";
 
+          const resolvedProduct2Id = shouldUsePricebookCompositeKey
+            ? String(
+                valuesToWrite.Product2Id
+                ?? preparedPricebookEntryLookup?.product2IdsByProductCode.get(String(valuesToWrite.ProductCode ?? "").trim())
+                ?? ""
+              ).trim()
+            : "";
+          const resolvedPricebook2Id = shouldUsePricebookCompositeKey
+            ? String(valuesToWrite.Pricebook2Id ?? target.pricebook2Id ?? "").trim()
+            : "";
+          const existingEntryId = shouldUsePricebookCompositeKey && resolvedPricebook2Id && resolvedProduct2Id
+            ? preparedPricebookEntryLookup?.existingEntryIdsByCompositeKey.get(
+                buildPricebookEntryCompositeKey(resolvedPricebook2Id, resolvedProduct2Id)
+              )
+            : undefined;
+
           targetId = shouldUsePricebookCompositeKey
-            ? await this.salesforceClient.upsertPricebookEntryByCompositeKey(valuesToWrite)
+            ? await this.salesforceClient.upsertPricebookEntryByCompositeKey(valuesToWrite, {
+                product2Id: resolvedProduct2Id || undefined,
+                existingEntryId
+              })
             : shouldUseProductCodeLookupForProduct2
               ? await this.salesforceClient.upsertProduct2ByProductCode(valuesToWrite)
               : await this.salesforceClient.upsertGenericRecord({
