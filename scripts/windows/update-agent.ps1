@@ -1,5 +1,7 @@
 param(
   [string]$ServiceName = "SfOnpremIntegrationAgent",
+  [string]$WebServiceName = "SfOnpremIntegrationWeb",
+  [string]$UpdaterServiceName = "SfOnpremIntegrationUpdater",
   [string]$AppRoot,
   [string]$UpdateManifestUrl,
   [string]$StatusFilePath,
@@ -270,6 +272,83 @@ function Invoke-MaintenanceCleanup {
 $appRootResolved = Resolve-AppRoot -InputPath $AppRoot
 $script:StatusFilePathResolved = if ($StatusFilePath -and $StatusFilePath.Trim()) { $StatusFilePath } else { Join-Path $appRootResolved "logs\dashboard-update-status.json" }
 $currentVersion = Get-CurrentVersion -Root $appRootResolved
+function Read-InstallProfile {
+  $profilePath = Join-Path $appRootResolved "artifacts\runtime\install-profile.json"
+  if (-not (Test-Path $profilePath)) {
+    return @{
+      roles = @("agent", "web", "updater")
+    }
+  }
+
+  try {
+    $parsed = Get-Content -Path $profilePath -Raw | ConvertFrom-Json
+    $roles = @()
+    if ($parsed.roles) {
+      $roles = @($parsed.roles | ForEach-Object { [string]$_ } | Where-Object { $_ })
+    }
+    if (-not $roles.Count) {
+      $roles = @("agent", "web", "updater")
+    }
+    return @{
+      roles = $roles
+    }
+  } catch {
+    return @{
+      roles = @("agent", "web", "updater")
+    }
+  }
+}
+
+$installProfile = Read-InstallProfile
+function Get-ManagedServices {
+  $services = @()
+  if ($installProfile.roles -contains "agent") {
+    $services += $ServiceName
+  }
+  if ($installProfile.roles -contains "web") {
+    $services += $WebServiceName
+  }
+  return @($services | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique)
+}
+
+function Stop-ManagedServices {
+  param([string]$TargetVersion)
+
+  foreach ($name in Get-ManagedServices) {
+    $service = Get-Service -Name $name -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -ne "Stopped") {
+      Write-UpdateProgress -State "running" -Message "Dienst '$name' wird gestoppt." -ProgressPercent 60 -Stage "stop-service" -TargetVersion $TargetVersion
+      Stop-Service -Name $name -Force
+      if (-not (Wait-ServiceState -Name $name -ExpectedState "Stopped" -TimeoutSeconds 60)) {
+        throw "Service $name did not stop in time."
+      }
+    }
+  }
+}
+
+function Reconfigure-ManagedServices {
+  param([string]$TargetVersion)
+
+  $installerScript = Join-Path $appRootResolved "scripts\windows\install-agent-service.ps1"
+  if (-not (Test-Path $installerScript)) {
+    throw "Service installer script not found: $installerScript"
+  }
+
+  Write-UpdateProgress -State "running" -Message "Dienste werden auf die neue Struktur migriert." -ProgressPercent 90 -Stage "start-service" -TargetVersion $TargetVersion
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installerScript `
+    -AppRoot $appRootResolved `
+    -ServiceName $ServiceName `
+    -WebServiceName $WebServiceName `
+    -UpdaterServiceName $UpdaterServiceName `
+    -InstallRoles ($installProfile.roles -join ",") `
+    -NonInteractive `
+    -ForceRecreate
+
+  if ($LASTEXITCODE -ne 0) {
+    throw "Service reconfiguration failed (exit code $LASTEXITCODE)."
+  }
+}
+
 Write-UpdateProgress -State "running" -Message "Update wird initialisiert." -ProgressPercent 5 -Stage "init"
 
 if (-not $UpdateManifestUrl) {
@@ -344,14 +423,7 @@ foreach ($item in $restorePlan) {
   Backup-Path -Source $item.Source -Backup $item.Backup
 }
 
-$service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-if ($service -and $service.Status -ne "Stopped") {
-  Write-UpdateProgress -State "running" -Message "Agent-Dienst wird gestoppt." -ProgressPercent 60 -Stage "stop-service" -TargetVersion $targetVersion
-  Stop-Service -Name $ServiceName -Force
-  if (-not (Wait-ServiceState -Name $ServiceName -ExpectedState "Stopped" -TimeoutSeconds 60)) {
-    throw "Service $ServiceName did not stop in time."
-  }
-}
+Stop-ManagedServices -TargetVersion $targetVersion
 
 $updateSucceeded = $false
 
@@ -373,13 +445,7 @@ try {
     }
   }
 
-  if ($service) {
-    Write-UpdateProgress -State "running" -Message "Agent-Dienst wird neu gestartet." -ProgressPercent 90 -Stage "start-service" -TargetVersion $targetVersion
-    Start-Service -Name $ServiceName
-    if (-not (Wait-ServiceState -Name $ServiceName -ExpectedState "Running" -TimeoutSeconds $StartTimeoutSeconds)) {
-      throw "Service $ServiceName did not return to Running state after update."
-    }
-  }
+  Reconfigure-ManagedServices -TargetVersion $targetVersion
 
   $updateSucceeded = $true
   Write-UpdateProgress -State "completed" -Message "Update auf Version $targetVersion abgeschlossen." -ProgressPercent 100 -Stage "completed" -TargetVersion $targetVersion
@@ -389,18 +455,19 @@ try {
     Write-UpdateProgress -State "failed" -Message "Update fehlgeschlagen. Rollback wird gestartet." -ProgressPercent 95 -Stage "rollback" -TargetVersion $targetVersion
     Write-Warning "Update failed. Starting rollback."
 
-    if ($service) {
-      Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-      [void](Wait-ServiceState -Name $ServiceName -ExpectedState "Stopped" -TimeoutSeconds 30)
+    foreach ($name in Get-ManagedServices) {
+      Stop-Service -Name $name -Force -ErrorAction SilentlyContinue
+      [void](Wait-ServiceState -Name $name -ExpectedState "Stopped" -TimeoutSeconds 30)
     }
 
     foreach ($item in $restorePlan) {
       Restore-Path -Backup $item.Backup -Target $item.Target
     }
 
-    if ($service) {
-      Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
-      [void](Wait-ServiceState -Name $ServiceName -ExpectedState "Running" -TimeoutSeconds $StartTimeoutSeconds)
+    try {
+      Reconfigure-ManagedServices -TargetVersion $targetVersion
+    } catch {
+      Write-Warning "Service rollback configuration failed: $($_.Exception.Message)"
     }
 
     Write-UpdateProgress -State "failed" -Message "Update fehlgeschlagen. Der vorherige Stand wurde wiederhergestellt." -ProgressPercent 100 -Stage "failed" -TargetVersion $targetVersion

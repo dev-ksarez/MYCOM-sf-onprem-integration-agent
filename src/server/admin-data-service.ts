@@ -41,7 +41,7 @@ import { analyzeUploadedFile, decodeTextBuffer, parseDelimitedRows, parseFileFro
 import { parseQuerySourceDefinition } from "../utils/query-source-definition";
 import { fetchRestRows, testRestConnection } from "../source-adapters/rest/rest-api-source-adapter";
 
-interface SalesforceInstanceEnvConfig {
+export interface SalesforceInstanceEnvConfig {
   id: string;
   name?: string;
   loginUrl: string;
@@ -108,6 +108,24 @@ interface MigrationOAuthTokenResponse {
   scope?: string;
   error?: string;
   error_description?: string;
+}
+
+function formatSalesforceOauthError(error?: string, description?: string, loginUrl?: string): string {
+  const normalizedError = String(error || "").trim();
+  const normalizedDescription = String(description || "").trim();
+  const normalizedLoginUrl = String(loginUrl || "").trim();
+
+  if (normalizedError === "invalid_client_id") {
+    return [
+      "Salesforce Client ID ist ungueltig.",
+      normalizedLoginUrl ? `Pruefe, ob die Connected App in ${normalizedLoginUrl} angelegt ist.` : "",
+      "Pruefe ausserdem, ob Consumer Key und Umgebung (Production oder Sandbox) zusammenpassen."
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  return normalizedDescription || normalizedError;
 }
 
 export interface MigrationSalesforceInstanceSummary {
@@ -308,6 +326,14 @@ function writeLocalInstances(instances: SalesforceInstanceEnvConfig[]): void {
   const directory = path.dirname(LOCAL_INSTANCES_FILE);
   fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(LOCAL_INSTANCES_FILE, JSON.stringify(instances, null, 2), "utf8");
+}
+
+export function readConfiguredSalesforceInstances(): SalesforceInstanceEnvConfig[] {
+  return readLocalInstances();
+}
+
+export function writeConfiguredSalesforceInstances(instances: SalesforceInstanceEnvConfig[]): void {
+  writeLocalInstances(instances);
 }
 
 function readLocalMigrationInstances(): MigrationSalesforceInstanceConfig[] {
@@ -1806,6 +1832,10 @@ export class AdminDataService {
     }));
   }
 
+  public listConfiguredInstanceConfigs(): SalesforceInstanceEnvConfig[] {
+    return readConfiguredSalesforceInstances();
+  }
+
   public saveInstance(input: SalesforceInstanceMutationInput): SalesforceInstanceOption {
     const id = input.id.trim();
     const loginUrl = input.loginUrl.trim();
@@ -1962,7 +1992,13 @@ export class AdminDataService {
       }
 
       if (!response.ok) {
-        throw new Error(tokenData.error_description || tokenData.error || rawText || `Salesforce OAuth Callback fehlgeschlagen (${response.status})`);
+        throw new Error(
+          formatSalesforceOauthError(
+            tokenData.error,
+            tokenData.error_description,
+            migration.salesforceLogin.loginUrl
+          ) || rawText || `Salesforce OAuth Callback fehlgeschlagen (${response.status})`
+        );
       }
 
       const accessToken = String(tokenData.access_token || "").trim();

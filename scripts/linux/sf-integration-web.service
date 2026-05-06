@@ -1,5 +1,5 @@
 [Unit]
-Description=SF On-Prem Integration Agent
+Description=SF On-Prem Integration Web Dashboard
 After=network.target
 
 [Service]
@@ -8,11 +8,11 @@ User=__SERVICE_USER__
 Group=__SERVICE_GROUP__
 WorkingDirectory=__APP_DIR__
 EnvironmentFile=__ENV_FILE__
-ExecStart=/usr/bin/env node dist/agent-main.js
+ExecStart=/usr/bin/env node dist/web-main.js
 Restart=always
 RestartSec=10
-StandardOutput=append:__LOG_DIR__/agent.log
-StandardError=append:__LOG_DIR__/agent-error.log
+StandardOutput=append:__LOG_DIR__/web.log
+StandardError=append:__LOG_DIR__/web-error.log
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

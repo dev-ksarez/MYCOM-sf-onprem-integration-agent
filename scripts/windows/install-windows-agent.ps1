@@ -6,6 +6,8 @@ param(
   [string]$Description = "Runs the Salesforce On-Prem Integration Agent",
   [string]$TaskName = "SfOnpremIntegrationAgent-Updater",
   [string]$ManifestUrl = "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json",
+  [ValidateSet("all", "agent-host", "web-host", "agent-only", "web-only", "updater-only")]
+  [string]$InstallProfile = "all",
   [int]$WebUiPort = 8080,
   [int]$SchedulerIntervalMs = 60000,
   [int]$EveryMinutes = 15,
@@ -388,6 +390,29 @@ function Show-ConfigSection {
   Write-Host $Description -ForegroundColor DarkGray
 }
 
+function Resolve-InstallRolesFromProfile {
+  param(
+    [string]$Profile,
+    [bool]$SkipUpdaterRole
+  )
+
+  $roles = switch ($Profile) {
+    "all" { @("agent", "web", "updater") }
+    "agent-host" { @("agent", "updater") }
+    "web-host" { @("web") }
+    "agent-only" { @("agent") }
+    "web-only" { @("web") }
+    "updater-only" { @("updater") }
+    default { @("agent", "web", "updater") }
+  }
+
+  if ($SkipUpdaterRole) {
+    $roles = @($roles | Where-Object { $_ -ne "updater" })
+  }
+
+  return ($roles | Select-Object -Unique) -join ","
+}
+
 function Configure-EnvInteractively {
   param(
     [string]$EnvPath,
@@ -515,25 +540,14 @@ try {
   }
   Write-InstallerLog -Message ("Using node executable: " + $nodeExe)
 
-  if (-not $SkipUpdater) {
-    $UpdaterTaskUser = if ($UpdaterTaskUser -and $UpdaterTaskUser.Trim()) { $UpdaterTaskUser.Trim() } else { "SYSTEM" }
-    if (-not $PSBoundParameters.ContainsKey('UpdaterTaskUser')) {
-      Write-Host "Konfiguration Auto-Updater:" -ForegroundColor Cyan
-      $UpdaterTaskUser = Read-ConfigValue -Prompt 'Benutzer fuer Updater-Task (SYSTEM oder DOMAIN\Benutzer)' -DefaultValue $UpdaterTaskUser -Required -HelpText 'SYSTEM benoetigt kein Passwort. Fuer einen eigenen Benutzer DOMAIN\Benutzer oder COMPUTER\Benutzer eingeben.'
-    }
-
-    if (-not (Test-IsBuiltInTaskAccount -AccountName $UpdaterTaskUser) -and -not $PSBoundParameters.ContainsKey('UpdaterTaskPassword')) {
-      $UpdaterTaskPassword = Read-ConfigValue -Prompt 'Passwort fuer Updater-Task' -DefaultValue $UpdaterTaskPassword -Required -Secret -HelpText 'Erforderlich, wenn der Auto-Updater nicht als SYSTEM oder Dienstkonto laufen soll.'
-    }
-  }
-
   Write-Host "Installationskonfiguration:" -ForegroundColor Cyan
   Write-Host "  Zielordner           : $appRootResolved"
-  Write-Host "  Dienstname           : $ServiceName"
-  Write-Host "  Updater-Task         : $TaskName"
+  Write-Host "  Installationsprofil  : $InstallProfile"
+  Write-Host "  Agent-Dienst         : $ServiceName"
+  Write-Host "  Web-Dienst           : SfOnpremIntegrationWeb"
+  Write-Host "  Updater-Dienst       : SfOnpremIntegrationUpdater"
   if (-not $SkipUpdater) {
-    Write-Host "  Updater-Task-User    : $UpdaterTaskUser"
-    Write-Host "  Log-Bereinigung      : $UpdateLogRetentionDays Tage"
+    Write-Host "  Update-Intervall     : $EveryMinutes Minute(n)"
   }
   Write-Host "  Node.exe             : $nodeExe"
   Write-Host "  Einstiegspunkt       : $entryPoint"
@@ -670,13 +684,16 @@ try {
 
   Write-Host "Installiere den Windows-Dienst ..." -ForegroundColor Cyan
   Write-InstallerLog -Message "Invoking Windows service installer script."
+  $effectiveInstallRoles = Resolve-InstallRolesFromProfile -Profile $InstallProfile -SkipUpdaterRole ([bool]$SkipUpdater)
   & $installServiceScript `
     -ServiceName $ServiceName `
     -DisplayName $DisplayName `
     -Description $Description `
     -AppRoot $appRootResolved `
+    -InstallRoles $effectiveInstallRoles `
     -WebUiPort $effectiveWebUiPort `
-    -SchedulerIntervalMs $effectiveSchedulerIntervalMs
+    -SchedulerIntervalMs $effectiveSchedulerIntervalMs `
+    -UpdateCheckIntervalMs ($EveryMinutes * 60 * 1000)
 
   if ($LASTEXITCODE -ne 0) {
     Write-InstallerLog -Level ERROR -Message ("Service installer exited with code " + $LASTEXITCODE)
@@ -684,30 +701,12 @@ try {
   }
 
   if (-not $SkipUpdater) {
-  Write-Host "Registriere den Auto-Updater als geplante Aufgabe ..." -ForegroundColor Cyan
-  Write-InstallerLog -Message "Invoking updater registration script."
-  $updaterRegistrationParameters = @{
-    TaskName = $TaskName
-    ServiceName = $ServiceName
-    ManifestUrl = $ManifestUrl
-    EveryMinutes = $EveryMinutes
-    UpdaterTaskUser = $UpdaterTaskUser
-    LogRetentionDays = $UpdateLogRetentionDays
-    AppRoot = $appRootResolved
-  }
-  if ($UpdaterTaskPassword) {
-    $updaterRegistrationParameters['UpdaterTaskPassword'] = $UpdaterTaskPassword
-  }
-  & $registerUpdaterScript @updaterRegistrationParameters
-
-    if ($LASTEXITCODE -ne 0) {
-      Write-InstallerLog -Level ERROR -Message ("Updater registration exited with code " + $LASTEXITCODE)
-      throw "Updater registration failed (exit code $LASTEXITCODE)."
-    }
+    Write-Host "Der AutoUpdater wird als eigener Windows-Dienst installiert." -ForegroundColor Cyan
+    Write-InstallerLog -Message "AutoUpdater is configured as a dedicated Windows service."
   }
   else {
-  Write-Host "Die Registrierung des Auto-Updaters wurde uebersprungen." -ForegroundColor Yellow
-    Write-InstallerLog -Message "Updater registration was skipped by request." -Level WARN
+    Write-Host "Der AutoUpdater-Dienst wurde bei der Installation uebersprungen." -ForegroundColor Yellow
+    Write-InstallerLog -Message "Updater service was skipped by request." -Level WARN
   }
 
   Write-InstallerLog -Message "Windows agent installer completed successfully."
@@ -715,8 +714,9 @@ try {
   Write-Host "Empfohlene Pruefungen:" -ForegroundColor Cyan
   Write-Host "  Get-Service $ServiceName"
   if (-not $SkipUpdater) {
-    Write-Host "  Get-ScheduledTask -TaskName '$TaskName'"
+    Write-Host "  Get-Service SfOnpremIntegrationUpdater"
   }
+  Write-Host "  Get-Service SfOnpremIntegrationWeb"
   Write-Host "  Web UI: http://localhost:$effectiveWebUiPort" -ForegroundColor Cyan
   Write-Host "  Log-Datei: $script:InstallerLogFile" -ForegroundColor Cyan
 }

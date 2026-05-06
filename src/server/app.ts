@@ -1,10 +1,6 @@
 import http from "node:http";
-import crypto from "node:crypto";
-import { createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import archiver from "archiver";
 import {
   AdminDataService,
   SalesforceInstanceMutationInput,
@@ -17,8 +13,36 @@ import {
   MigrationConfig,
   ScheduleFormOptions
 } from "./admin-data-service";
+import { isRemoteAgentConfigured, syncRemoteAgentInstances } from "../runtime/remote-agent-client";
+import {
+  appendSetCookie,
+  authenticateLocalAdminUser,
+  buildAdminSalesforceOidcRedirectUri,
+  buildSalesforceLoginAuthorizationUrl,
+  buildCsrfCookie,
+  buildExpiredSessionCookie,
+  buildMigrationOauthRedirectUri,
+  buildSessionCookie,
+  clearAdminSession,
+  completeSalesforceLogin,
+  constantTimeEquals,
+  consumeMigrationOauthState,
+  createAdminSession,
+  createMigrationOauthState,
+  createSalesforceLoginState,
+  getAdminSession,
+  getAdminAuthConfig,
+  getOrCreateCsrfToken,
+  hasPermission,
+  hasAllowedRequestOrigin,
+  hasValidAdminSession,
+  hasValidCsrfToken,
+  isMutatingMethod
+} from "./admin-auth";
 import { renderConnectorUiModule } from "./connector-ui-module";
 import { getDashboardUpdateStatus, triggerDashboardUpdate } from "./dashboard-update-service";
+import { HealthSnapshot } from "./health-snapshot";
+import { generateInstallerFiles, getInstallerSummary, INSTALLER_OUTPUT_DIR, InstallerGenerationInput } from "./installer-generator";
 import { renderMigrationFailedRecordsModule, renderMigrationPlanningModule, renderMigrationPreflightModule, renderMigrationProgressModule, renderMigrationRunResultModule, renderMigrationUiModule } from "./migration-ui-module";
 import { renderSchedulerUiModule } from "./scheduler-ui-module";
 
@@ -29,43 +53,10 @@ const APP_STYLE_CSS_FILE = path.resolve(process.cwd(), "src/css/style.css");
 const AGENT_UI_CSS_FILE = path.resolve(process.cwd(), "src/css/agent-ui.css");
 const TEMPLATE_STORE_CSS_FILE = path.resolve(process.cwd(), "src/css/template-store.css");
 const UI_ASSET_VERSION = "20260506-dashboard-chart-range-1";
-const ADMIN_SESSION_COOKIE_NAME = "sf_agent_session";
-const ADMIN_CSRF_COOKIE_NAME = "sf_agent_csrf";
-const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
-const MIGRATION_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
-const INSTALLER_OUTPUT_DIR = path.resolve(process.cwd(), "artifacts/installer/generated");
-const adminSessions = new Map<string, number>();
-const migrationOauthStates = new Map<string, { migrationId: string; redirectUri: string; expiresAt: number }>();
 const SETUP_EXAMPLE_JSON_FILE = path.resolve(
   process.cwd(),
   "artifacts/file-examples/setup-file-import-export.example.json"
 );
-
-export interface HealthSnapshot {
-  service: "ok" | "degraded";
-  scheduler: "running" | "idle" | "error";
-  startedAt: string;
-  uptimeSeconds: number;
-  cpuLoadPercent?: number;
-  operatingSystem?: string;
-  memoryUsedBytes?: number;
-  memoryTotalBytes?: number;
-  diskUsedBytes?: number;
-  diskTotalBytes?: number;
-  lastRunStartedAt?: string;
-  lastRunFinishedAt?: string;
-  lastRunStatus?: "success" | "error";
-  lastRunError?: string;
-  schedulesFound?: number;
-  dueSchedules?: number;
-  processedSchedules?: number;
-  logRetentionDays?: number;
-}
-
-interface CpuSample {
-  idle: number;
-  total: number;
-}
 
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -81,459 +72,6 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   return raw ? (JSON.parse(raw) as unknown) : {};
 }
 
-function getCpuLoadPercent(): number | undefined {
-  const cpus = os.cpus();
-  if (!cpus.length) {
-    return undefined;
-  }
-
-  const currentSample = cpus.reduce<CpuSample>(
-    (sample, cpu) => {
-      const cpuTimes = cpu.times;
-      const total = cpuTimes.user + cpuTimes.nice + cpuTimes.sys + cpuTimes.idle + cpuTimes.irq;
-      sample.idle += cpuTimes.idle;
-      sample.total += total;
-      return sample;
-    },
-    { idle: 0, total: 0 }
-  );
-
-  const previousSample = getCpuLoadPercent.previousSample;
-  getCpuLoadPercent.previousSample = currentSample;
-  if (!previousSample) {
-    return undefined;
-  }
-
-  const idleDelta = currentSample.idle - previousSample.idle;
-  const totalDelta = currentSample.total - previousSample.total;
-  if (!Number.isFinite(idleDelta) || !Number.isFinite(totalDelta) || totalDelta <= 0) {
-    return undefined;
-  }
-
-  const loadPercent = (1 - idleDelta / totalDelta) * 100;
-  return Math.max(0, Math.min(100, Math.round(loadPercent)));
-}
-
-getCpuLoadPercent.previousSample = undefined as CpuSample | undefined;
-
-function getOperatingSystemLabel(): string | undefined {
-  if (process.platform === "win32") {
-    return `Windows ${os.release()}`;
-  }
-
-  if (process.platform === "linux") {
-    return `Linux ${os.release()}`;
-  }
-
-  if (process.platform === "darwin") {
-    return `macOS ${os.release()}`;
-  }
-
-  return undefined;
-}
-
-async function getDiskUsage(): Promise<{ usedBytes?: number; totalBytes?: number }> {
-  if (process.platform !== "win32" && process.platform !== "linux" && process.platform !== "darwin") {
-    return {};
-  }
-
-  try {
-    const stats = await fs.statfs(process.cwd());
-    const blockSize = Number(stats.bsize);
-    const totalBlocks = Number(stats.blocks);
-    const freeBlocks = Number(stats.bavail || stats.bfree);
-    if (!Number.isFinite(blockSize) || !Number.isFinite(totalBlocks) || !Number.isFinite(freeBlocks)) {
-      return {};
-    }
-
-    const totalBytes = Math.max(0, Math.round(totalBlocks * blockSize));
-    const freeBytes = Math.max(0, Math.round(freeBlocks * blockSize));
-    return {
-      totalBytes,
-      usedBytes: Math.max(0, totalBytes - freeBytes)
-    };
-  } catch {
-    return {};
-  }
-}
-
-async function buildSystemHealthSnapshot(baseSnapshot: HealthSnapshot): Promise<HealthSnapshot> {
-  const totalMemoryBytes = os.totalmem();
-  const freeMemoryBytes = os.freemem();
-  const diskUsage = await getDiskUsage();
-
-  return {
-    ...baseSnapshot,
-    cpuLoadPercent: getCpuLoadPercent(),
-    operatingSystem: getOperatingSystemLabel(),
-    memoryTotalBytes: Number.isFinite(totalMemoryBytes) ? totalMemoryBytes : undefined,
-    memoryUsedBytes:
-      Number.isFinite(totalMemoryBytes) && Number.isFinite(freeMemoryBytes)
-        ? Math.max(0, totalMemoryBytes - freeMemoryBytes)
-        : undefined,
-    diskTotalBytes: diskUsage.totalBytes,
-    diskUsedBytes: diskUsage.usedBytes
-  };
-}
-
-function getAdminAuthConfig(): { username: string; password: string; enabled: boolean } {
-  const username = String(process.env.ADMIN_UI_USERNAME || "").trim();
-  const password = String(process.env.ADMIN_UI_PASSWORD || "");
-  return {
-    username,
-    password,
-    enabled: Boolean(username && password)
-  };
-}
-
-type InstallerScenarioId = "windows-service-local" | "linux-ubuntu-local" | "linux-public-secure";
-
-interface InstallerScenarioSummary {
-  id: InstallerScenarioId;
-  label: string;
-  networkScope: string;
-  description: string;
-  generatedFilesLabel: string;
-  generatorMode: "windows" | "linux-local" | "linux-public";
-  defaults: {
-    appDir: string;
-    serviceUser: string;
-    serviceGroup: string;
-    publicHost: string;
-    port: number;
-    adminUsername: string;
-  };
-  paths: Record<string, string>;
-  commands: string[];
-  checks: Array<{ label: string; status: "ready" | "in-progress" | "missing"; detail: string }>;
-  envTemplate: string;
-}
-
-function buildInstallerEnvTemplate(options: {
-  nodeEnv?: string;
-  webUiHost: string;
-  webUiPort: number;
-  logLevel?: string;
-  adminUsername: string;
-  schedulerIntervalMs?: number;
-}): string {
-  return [
-    `NODE_ENV=${options.nodeEnv || "production"}`,
-    "WEB_UI_ENABLED=1",
-    `WEB_UI_HOST=${options.webUiHost}`,
-    `WEB_UI_PORT=${options.webUiPort}`,
-    `LOG_LEVEL=${options.logLevel || "info"}`,
-    `ADMIN_UI_USERNAME=${options.adminUsername}`,
-    "ADMIN_UI_PASSWORD=<starkes-passwort>",
-    `SCHEDULER_INTERVAL_MS=${options.schedulerIntervalMs || 60000}`
-  ].join("\n");
-}
-
-function getInstallerScenarios(adminAuth: { username: string; password: string; enabled: boolean }): InstallerScenarioSummary[] {
-  return [
-    {
-      id: "windows-service-local",
-      label: "Windows Server / Dienst",
-      networkScope: "Lokales Netz",
-      description: "Windows-Server im internen Netz. Der Agent läuft als Windows-Dienst, die Web UI ist nur im LAN oder über VPN vorgesehen.",
-      generatedFilesLabel: "Windows-Installationshinweise und .env-Vorlage",
-      generatorMode: "windows",
-      defaults: {
-        appDir: "C:\\apps\\sf-onprem-integration-agent",
-        serviceUser: "SfOnpremIntegrationAgent",
-        serviceGroup: "SfOnpremIntegrationAgent",
-        publicHost: "windows-agent.intern.local",
-        port: 9010,
-        adminUsername: adminAuth.username || "admin"
-      },
-      paths: {
-        appDir: "C:\\apps\\sf-onprem-integration-agent",
-        envFile: "C:\\apps\\sf-onprem-integration-agent\\.env",
-        logDir: "C:\\apps\\sf-onprem-integration-agent\\logs",
-        dataDir: "C:\\apps\\sf-onprem-integration-agent\\artifacts",
-        fileDrop: "C:\\apps\\sf-onprem-integration-agent\\artifacts\\files"
-      },
-      commands: [
-        "npm run build",
-        "npm run win:install-service -- -AppRoot \"C:\\apps\\sf-onprem-integration-agent\"",
-        "npm run win:register-updater -- -EveryMinutes 15 -AppRoot \"C:\\apps\\sf-onprem-integration-agent\"",
-        "Get-Service SfOnpremIntegrationAgent"
-      ],
-      checks: [
-        { label: "Bereitstellung", status: "ready", detail: "Runbook und Dienstskripte für Windows sind vorhanden." },
-        { label: "Netzwerkgrenze", status: "ready", detail: "Szenario ist für internes LAN oder VPN gedacht, nicht für direkte Internet-Exponierung." },
-        { label: "Admin-Login", status: adminAuth.enabled ? "ready" : "missing", detail: adminAuth.enabled ? "ADMIN_UI_USERNAME und ADMIN_UI_PASSWORD gesetzt" : "Admin-Credentials für die Web UI fehlen noch" },
-        { label: "Updates", status: "ready", detail: "Windows-Updater und Rollback-Pfad sind dokumentiert." }
-      ],
-      envTemplate: buildInstallerEnvTemplate({ webUiHost: "0.0.0.0", webUiPort: 9010, adminUsername: adminAuth.username || "admin" })
-    },
-    {
-      id: "linux-ubuntu-local",
-      label: "Linux (Ubuntu)",
-      networkScope: "Lokales Netz",
-      description: "Ubuntu-Server im lokalen Netz. systemd wird genutzt, die Web UI kann intern direkt oder über internen Reverse Proxy bereitgestellt werden.",
-      generatedFilesLabel: "Ubuntu-LAN-Dateien für systemd und .env",
-      generatorMode: "linux-local",
-      defaults: {
-        appDir: "/opt/sf-integration-agent",
-        serviceUser: "sfagent",
-        serviceGroup: "sfagent",
-        publicHost: "ubuntu-agent.intern.local",
-        port: 9010,
-        adminUsername: adminAuth.username || "admin"
-      },
-      paths: {
-        appDir: "/opt/sf-integration-agent",
-        envFile: "/etc/sf-integration-agent/agent.env",
-        logDir: "/var/log/sf-integration-agent",
-        dataDir: "/var/lib/sf-integration-agent",
-        fileDrop: "/opt/sf-integration-agent/artifacts/files"
-      },
-      commands: [
-        "sudo bash scripts/linux/install-linux-agent.sh --app-dir /opt/sf-integration-agent --service-user sfagent --service-group sfagent --port 9010 --public-host ubuntu-agent.intern.local",
-        "sudo systemctl enable --now sf-integration-agent.service",
-        "sudo bash scripts/linux/setup-sftp-user.sh --app-dir /opt/sf-integration-agent --service-user sfagent --sftp-user sfagentdrop",
-        "sudo systemctl status sf-integration-agent.service"
-      ],
-      checks: [
-        { label: "Bereitstellung", status: "ready", detail: "Ubuntu-Setup nutzt systemd und lokale Dateipfade." },
-        { label: "Netzwerkgrenze", status: "ready", detail: "Szenario ist für internes LAN oder VPN ausgelegt; HTTPS ist optional über internen Proxy." },
-        { label: "Datei-Connectoren", status: "ready", detail: "Optionaler SFTP-Drop für inbound, outbound und archive ist vorgesehen." },
-        { label: "Admin-Login", status: adminAuth.enabled ? "ready" : "missing", detail: adminAuth.enabled ? "ADMIN_UI_USERNAME und ADMIN_UI_PASSWORD gesetzt" : "Admin-Credentials für die Web UI fehlen noch" }
-      ],
-      envTemplate: buildInstallerEnvTemplate({ webUiHost: "0.0.0.0", webUiPort: 9010, adminUsername: adminAuth.username || "admin" })
-    },
-    {
-      id: "linux-public-secure",
-      label: "Öffentlicher Linux Server",
-      networkScope: "Öffentlich erreichbar",
-      description: "Öffentliche Linux-VM mit Reverse Proxy, TLS, Login-Schutz und abgesichertem SFTP-Zugang. Der Node-Prozess bleibt auf localhost gebunden.",
-      generatedFilesLabel: "Harte Linux-Internet-Dateien für systemd, nginx und .env",
-      generatorMode: "linux-public",
-      defaults: {
-        appDir: "/opt/sf-integration-agent",
-        serviceUser: "sfagent",
-        serviceGroup: "sfagent",
-        publicHost: "agent.example.com",
-        port: 9010,
-        adminUsername: adminAuth.username || "admin"
-      },
-      paths: {
-        appDir: "/opt/sf-integration-agent",
-        envFile: "/etc/sf-integration-agent/agent.env",
-        logDir: "/var/log/sf-integration-agent",
-        dataDir: "/var/lib/sf-integration-agent",
-        sftpDropRoot: "/var/lib/sf-integration-agent/sftp/<user>/drop"
-      },
-      commands: [
-        "sudo bash scripts/linux/install-linux-agent.sh --app-dir /opt/sf-integration-agent --service-user sfagent --service-group sfagent --port 9010 --public-host agent.example.com",
-        "sudo bash scripts/linux/setup-sftp-user.sh --app-dir /opt/sf-integration-agent --service-user sfagent --sftp-user sfagentdrop",
-        "sudo systemctl enable --now sf-integration-agent.service",
-        "sudo nginx -t && sudo systemctl reload nginx"
-      ],
-      checks: [
-        { label: "Admin-Login", status: adminAuth.enabled ? "ready" : "missing", detail: adminAuth.enabled ? "ADMIN_UI_USERNAME und ADMIN_UI_PASSWORD gesetzt" : "Vor öffentlichem Betrieb müssen Admin-Credentials gesetzt werden" },
-        { label: "CSRF/Origin Schutz", status: "ready", detail: "Mutierende Requests verlangen X-CSRF-Token und prüfen die Request-Origin." },
-        { label: "Reverse Proxy + TLS", status: "ready", detail: "nginx- und systemd-Artefakte liegen im Repo; TLS wird am Proxy terminiert." },
-        { label: "Datei-Connector SFTP", status: "ready", detail: "SFTP-Drop für inbound, outbound und archive ist vorgesehen." }
-      ],
-      envTemplate: buildInstallerEnvTemplate({ webUiHost: "127.0.0.1", webUiPort: 9010, adminUsername: adminAuth.username || "admin" })
-    }
-  ];
-}
-
-function getInstallerScenarioById(id: string | undefined, scenarios: InstallerScenarioSummary[]): InstallerScenarioSummary {
-  return scenarios.find((scenario) => scenario.id === id) || scenarios[0];
-}
-
-function getInstallerSummary() {
-  const adminAuth = getAdminAuthConfig();
-  const scenarios = getInstallerScenarios(adminAuth);
-
-  return {
-    mode: adminAuth.enabled ? "secured" : "needs-admin-auth",
-    authConfigured: adminAuth.enabled,
-    csrfProtectionEnabled: true,
-    originProtectionEnabled: true,
-    nodeEnv: String(process.env.NODE_ENV || "development"),
-    defaultScenarioId: "windows-service-local" as InstallerScenarioId,
-    scenarios,
-    fileConnectorDefaults: {
-      basePath: "artifacts/files",
-      importPath: "inbound",
-      exportPath: "outbound",
-      archivePath: "archive"
-    },
-    checks: [
-      { label: "Windows Szenario", status: "ready", detail: "Windows Server als Dienst im lokalen Netz ist abgedeckt." },
-      { label: "Ubuntu Szenario", status: "ready", detail: "Ubuntu im lokalen Netz ist als separater Setup-Pfad abgedeckt." },
-      { label: "Öffentlicher Linux Server", status: "ready", detail: "Öffentliche Linux-VM mit Reverse Proxy und TLS ist als eigener Pfad abgedeckt." },
-      { label: "Webbasierter Installer", status: "in-progress", detail: "Der Installer kann jetzt zwischen drei Setup-Szenarien umschalten und passende Artefakte erzeugen." }
-    ],
-    dockerTest: {
-      image: "sf-agent-ubuntu-test",
-      dockerfile: "Dockerfile.ubuntu-test",
-      verifyCommand: "docker build -f Dockerfile.ubuntu-test -t sf-agent-ubuntu-test . && docker run --rm sf-agent-ubuntu-test"
-    }
-  };
-}
-
-interface InstallerGenerationInput {
-  scenarioId?: InstallerScenarioId;
-  appDir?: string;
-  serviceUser?: string;
-  serviceGroup?: string;
-  publicHost?: string;
-  port?: number;
-  adminUsername?: string;
-}
-
-async function createInstallerArchive(outputDir: string, archiveBaseName: string): Promise<{ archivePath: string; archiveFileName: string }> {
-  const archiveFileName = `${archiveBaseName}.zip`;
-  const archivePath = path.join(outputDir, archiveFileName);
-
-  await new Promise<void>((resolve, reject) => {
-    const output = createWriteStream(archivePath);
-    const archive = archiver("zip", { zlib: { level: 9 } });
-
-    output.on("close", () => resolve());
-    output.on("error", reject);
-    archive.on("error", reject);
-
-    archive.pipe(output);
-    archive.directory(outputDir, false, (entry) => (entry.name === archiveFileName ? false : entry));
-    void archive.finalize();
-  });
-
-  return { archivePath, archiveFileName };
-}
-
-function sanitizeInstallerGenerationInput(input: InstallerGenerationInput | undefined): Required<InstallerGenerationInput> {
-  const scenarioId = (String(input?.scenarioId || "windows-service-local").trim() || "windows-service-local") as InstallerScenarioId;
-  const scenarios = getInstallerScenarios(getAdminAuthConfig());
-  const scenario = getInstallerScenarioById(scenarioId, scenarios);
-  const appDir = String(input?.appDir || scenario.defaults.appDir).trim() || scenario.defaults.appDir;
-  const serviceUser = String(input?.serviceUser || scenario.defaults.serviceUser).trim() || scenario.defaults.serviceUser;
-  const serviceGroup = String(input?.serviceGroup || scenario.defaults.serviceGroup).trim() || scenario.defaults.serviceGroup;
-  const publicHost = String(input?.publicHost || scenario.defaults.publicHost).trim() || scenario.defaults.publicHost;
-  const adminUsername = String(input?.adminUsername || scenario.defaults.adminUsername).trim() || scenario.defaults.adminUsername;
-  const parsedPort = Number(input?.port);
-  const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : scenario.defaults.port;
-  return { scenarioId: scenario.id, appDir, serviceUser, serviceGroup, publicHost, port, adminUsername };
-}
-
-async function generateInstallerFiles(input: InstallerGenerationInput | undefined): Promise<{ outputDir: string; files: string[]; installCommand: string; archiveFileName: string; downloadUrl: string }> {
-  const sanitized = sanitizeInstallerGenerationInput(input);
-  const scenarios = getInstallerScenarios(getAdminAuthConfig());
-  const scenario = getInstallerScenarioById(sanitized.scenarioId, scenarios);
-  const outputDir = path.join(INSTALLER_OUTPUT_DIR, new Date().toISOString().replace(/[:.]/g, "-"));
-  const envFile = "/etc/sf-integration-agent/agent.env";
-  const logDir = "/var/log/sf-integration-agent";
-  const envTemplate = buildInstallerEnvTemplate({
-    webUiHost: scenario.generatorMode === "linux-public" ? "127.0.0.1" : "0.0.0.0",
-    webUiPort: sanitized.port,
-    adminUsername: sanitized.adminUsername
-  }) + "\n";
-
-  await fs.mkdir(outputDir, { recursive: true });
-  let files: string[] = [];
-  let installCommand = "";
-
-  if (scenario.generatorMode === "windows") {
-    const installNotes = [
-      "# Windows Server / Dienst Installer Preview",
-      "",
-      `Szenario: ${scenario.label}`,
-      `Netzwerk: ${scenario.networkScope}`,
-      `App Dir: ${sanitized.appDir}`,
-      `Web UI Port: ${sanitized.port}`,
-      `Admin Username: ${sanitized.adminUsername}`,
-      "",
-      "Next steps:",
-      `1. Copy .env.example to ${path.join(sanitized.appDir, ".env")}`,
-      `2. Run: npm run win:install-service -- -AppRoot \"${sanitized.appDir}\"`,
-      `3. Run: npm run win:register-updater -- -EveryMinutes 15 -AppRoot \"${sanitized.appDir}\"`,
-      "4. Verify the service with Get-Service SfOnpremIntegrationAgent"
-    ].join("\n") + "\n";
-    const commandNotes = [
-      `npm run win:install-service -- -AppRoot \"${sanitized.appDir}\"`,
-      `npm run win:register-updater -- -EveryMinutes 15 -AppRoot \"${sanitized.appDir}\"`,
-      "Get-Service SfOnpremIntegrationAgent"
-    ].join("\n") + "\n";
-    files = [
-      path.join(outputDir, ".env.example"),
-      path.join(outputDir, "WINDOWS-INSTALL-README.txt"),
-      path.join(outputDir, "WINDOWS-INSTALL-COMMANDS.txt")
-    ];
-    await Promise.all([
-      fs.writeFile(files[0], envTemplate, "utf-8"),
-      fs.writeFile(files[1], installNotes, "utf-8"),
-      fs.writeFile(files[2], commandNotes, "utf-8")
-    ]);
-    installCommand = `npm run win:install-service -- -AppRoot \"${sanitized.appDir}\"`;
-  } else {
-    const serviceTemplate = await fs.readFile(path.resolve(process.cwd(), "scripts/linux/sf-integration-agent.service"), "utf-8");
-    const renderedService = serviceTemplate
-      .replaceAll("__APP_DIR__", sanitized.appDir)
-      .replaceAll("__SERVICE_USER__", sanitized.serviceUser)
-      .replaceAll("__SERVICE_GROUP__", sanitized.serviceGroup)
-      .replaceAll("__ENV_FILE__", envFile)
-      .replaceAll("__LOG_DIR__", logDir);
-    installCommand = `sudo bash scripts/linux/install-linux-agent.sh --app-dir ${sanitized.appDir} --service-user ${sanitized.serviceUser} --service-group ${sanitized.serviceGroup} --port ${sanitized.port} --public-host ${sanitized.publicHost}`;
-    const installNotes = [
-      scenario.generatorMode === "linux-public" ? "# Öffentlicher Linux Installer Preview" : "# Ubuntu LAN Installer Preview",
-      "",
-      `Szenario: ${scenario.label}`,
-      `Netzwerk: ${scenario.networkScope}`,
-      `App Dir: ${sanitized.appDir}`,
-      `Service User: ${sanitized.serviceUser}`,
-      `Service Group: ${sanitized.serviceGroup}`,
-      `Host: ${sanitized.publicHost}`,
-      `Port: ${sanitized.port}`,
-      "",
-      "Next steps:",
-      `1. Copy agent.env.example to ${envFile}`,
-      "2. Review the generated systemd file",
-      `3. Run: ${installCommand}`,
-      `4. Optional SFTP: sudo bash scripts/linux/setup-sftp-user.sh --app-dir ${sanitized.appDir} --service-user ${sanitized.serviceUser} --sftp-user ${sanitized.serviceUser}drop`
-    ];
-
-    files = [
-      path.join(outputDir, "agent.env.example"),
-      path.join(outputDir, "sf-integration-agent.service")
-    ];
-    const writes: Array<Promise<void>> = [
-      fs.writeFile(files[0], envTemplate, "utf-8"),
-      fs.writeFile(files[1], renderedService, "utf-8")
-    ];
-
-    if (scenario.generatorMode === "linux-public") {
-      const nginxTemplate = await fs.readFile(path.resolve(process.cwd(), "scripts/linux/nginx-sf-integration-agent.conf"), "utf-8");
-      const renderedNginx = nginxTemplate
-        .replaceAll("__PUBLIC_HOST__", sanitized.publicHost)
-        .replaceAll("__APP_PORT__", String(sanitized.port));
-      files.push(path.join(outputDir, "nginx-sf-integration-agent.conf"));
-      writes.push(fs.writeFile(files[2], renderedNginx, "utf-8"));
-      installNotes.splice(10, 0, "TLS/Reverse Proxy: nginx-Konfiguration liegt für das öffentliche Szenario bei.");
-    }
-
-    files.push(path.join(outputDir, scenario.generatorMode === "linux-public" ? "PUBLIC-LINUX-README.txt" : "UBUNTU-LAN-README.txt"));
-    writes.push(fs.writeFile(files[files.length - 1], installNotes.join("\n") + "\n", "utf-8"));
-    await Promise.all(writes);
-  }
-
-  const archiveBaseName = `installer-${scenario.id}-${path.basename(outputDir)}`;
-  const { archiveFileName } = await createInstallerArchive(outputDir, archiveBaseName);
-
-  return {
-    outputDir,
-    files,
-    installCommand,
-    archiveFileName,
-    downloadUrl: `/api/installer/archive?dir=${encodeURIComponent(path.basename(outputDir))}&file=${encodeURIComponent(archiveFileName)}`
-  };
-}
-
 function escapeHtml(value: string): string {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -543,206 +81,10 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function parseCookies(headerValue: string | undefined): Record<string, string> {
-  return String(headerValue || "")
-    .split(";")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .reduce<Record<string, string>>((cookies, part) => {
-      const separatorIndex = part.indexOf("=");
-      if (separatorIndex <= 0) {
-        return cookies;
-      }
-
-      const key = part.slice(0, separatorIndex).trim();
-      const value = part.slice(separatorIndex + 1).trim();
-      cookies[key] = decodeURIComponent(value);
-      return cookies;
-    }, {});
-}
-
-function appendSetCookie(existing: string | string[] | undefined, cookie: string): string[] {
-  const values = Array.isArray(existing) ? existing.slice() : existing ? [existing] : [];
-  values.push(cookie);
-  return values;
-}
-
-function pruneExpiredAdminSessions(now = Date.now()): void {
-  for (const [token, expiresAt] of adminSessions.entries()) {
-    if (expiresAt <= now) {
-      adminSessions.delete(token);
-    }
-  }
-}
-
-function createAdminSession(): string {
-  pruneExpiredAdminSessions();
-  const token = crypto.randomBytes(32).toString("hex");
-  adminSessions.set(token, Date.now() + ADMIN_SESSION_TTL_MS);
-  return token;
-}
-
-function createCsrfToken(): string {
-  return crypto.randomBytes(24).toString("hex");
-}
-
-function pruneExpiredMigrationOauthStates(now = Date.now()): void {
-  for (const [state, entry] of migrationOauthStates.entries()) {
-    if (entry.expiresAt <= now) {
-      migrationOauthStates.delete(state);
-    }
-  }
-}
-
-function createMigrationOauthState(migrationId: string, redirectUri: string): string {
-  pruneExpiredMigrationOauthStates();
-  const state = crypto.randomBytes(32).toString("hex");
-  migrationOauthStates.set(state, {
-    migrationId,
-    redirectUri,
-    expiresAt: Date.now() + MIGRATION_OAUTH_STATE_TTL_MS
-  });
-  return state;
-}
-
-function consumeMigrationOauthState(state: string): { migrationId: string; redirectUri: string } | null {
-  pruneExpiredMigrationOauthStates();
-  const entry = migrationOauthStates.get(state);
-  if (!entry) {
-    return null;
-  }
-
-  migrationOauthStates.delete(state);
-  return {
-    migrationId: entry.migrationId,
-    redirectUri: entry.redirectUri
-  };
-}
-
-function isSecureRequest(req: http.IncomingMessage): boolean {
-  const forwardedProto = req.headers["x-forwarded-proto"];
-  const value = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
-  return String(value || "").toLowerCase() === "https";
-}
-
-function buildSessionCookie(req: http.IncomingMessage, token: string): string {
-  const securePart = isSecureRequest(req) ? "; Secure" : "";
-  return `${ADMIN_SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(ADMIN_SESSION_TTL_MS / 1000)}${securePart}`;
-}
-
-function buildCsrfCookie(req: http.IncomingMessage, token: string): string {
-  const securePart = isSecureRequest(req) ? "; Secure" : "";
-  return `${ADMIN_CSRF_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; SameSite=Strict; Max-Age=${Math.floor(ADMIN_SESSION_TTL_MS / 1000)}${securePart}`;
-}
-
-function buildExpiredSessionCookie(req: http.IncomingMessage): string {
-  const securePart = isSecureRequest(req) ? "; Secure" : "";
-  return `${ADMIN_SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${securePart}`;
-}
-
-function getOrCreateCsrfToken(req: http.IncomingMessage): string {
-  const token = parseCookies(req.headers.cookie)[ADMIN_CSRF_COOKIE_NAME];
-  return token || createCsrfToken();
-}
-
-function constantTimeEquals(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(String(left || ""), "utf8");
-  const rightBuffer = Buffer.from(String(right || ""), "utf8");
-  if (leftBuffer.length !== rightBuffer.length) {
-    return false;
-  }
-
-  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
-}
-
-function isMutatingMethod(method: string | undefined): boolean {
-  const normalized = String(method || "GET").toUpperCase();
-  return normalized === "POST" || normalized === "PUT" || normalized === "PATCH" || normalized === "DELETE";
-}
-
-function hasAllowedRequestOrigin(req: http.IncomingMessage): boolean {
-  const originHeader = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
-  const refererHeader = Array.isArray(req.headers.referer) ? req.headers.referer[0] : req.headers.referer;
-  const source = String(originHeader || refererHeader || "").trim();
-  if (!source) {
-    return true;
-  }
-
-  try {
-    const parsed = new URL(source);
-    const forwardedHost = Array.isArray(req.headers["x-forwarded-host"]) ? req.headers["x-forwarded-host"][0] : req.headers["x-forwarded-host"];
-    const host = String(forwardedHost || req.headers.host || "").split(",")[0].trim().toLowerCase();
-    return Boolean(host) && parsed.host.toLowerCase() === host;
-  } catch {
-    return false;
-  }
-}
-
-function buildRequestOrigin(req: http.IncomingMessage): string {
-  const forwardedProto = Array.isArray(req.headers["x-forwarded-proto"]) ? req.headers["x-forwarded-proto"][0] : req.headers["x-forwarded-proto"];
-  const forwardedHost = Array.isArray(req.headers["x-forwarded-host"]) ? req.headers["x-forwarded-host"][0] : req.headers["x-forwarded-host"];
-  const protocol = String(forwardedProto || (isSecureRequest(req) ? "https" : "http")).split(",")[0].trim().toLowerCase() || "http";
-  const host = String(forwardedHost || req.headers.host || "").split(",")[0].trim();
-  if (!host) {
-    throw new Error("Host Header fehlt fuer Salesforce OAuth Redirect");
-  }
-
-  return `${protocol}://${host}`;
-}
-
-function buildMigrationOauthRedirectUri(req: http.IncomingMessage): string {
-  const configuredRedirectUri = String(process.env.SF_MIGRATION_OAUTH_REDIRECT_URI || "").trim();
-  if (configuredRedirectUri) {
-    return configuredRedirectUri;
-  }
-
-  const origin = new URL(buildRequestOrigin(req));
-  if (origin.hostname === "127.0.0.1" || origin.hostname === "::1") {
-    origin.hostname = "localhost";
-  }
-
-  origin.pathname = "/auth/migration-salesforce/callback";
-  origin.search = "";
-  origin.hash = "";
-  return origin.toString();
-}
-
-function hasValidCsrfToken(req: http.IncomingMessage): boolean {
-  const cookieToken = parseCookies(req.headers.cookie)[ADMIN_CSRF_COOKIE_NAME];
-  const headerValue = Array.isArray(req.headers["x-csrf-token"]) ? req.headers["x-csrf-token"][0] : req.headers["x-csrf-token"];
-  const headerToken = String(headerValue || "").trim();
-  if (!cookieToken || !headerToken) {
-    return false;
-  }
-
-  return constantTimeEquals(cookieToken, headerToken);
-}
-
-function hasValidAdminSession(req: http.IncomingMessage): boolean {
-  pruneExpiredAdminSessions();
-  const token = parseCookies(req.headers.cookie)[ADMIN_SESSION_COOKIE_NAME];
-  if (!token) {
-    return false;
-  }
-
-  const expiresAt = adminSessions.get(token);
-  if (!expiresAt || expiresAt <= Date.now()) {
-    adminSessions.delete(token);
-    return false;
-  }
-
-  adminSessions.set(token, Date.now() + ADMIN_SESSION_TTL_MS);
-  return true;
-}
-
-function clearAdminSession(req: http.IncomingMessage): void {
-  const token = parseCookies(req.headers.cookie)[ADMIN_SESSION_COOKIE_NAME];
-  if (token) {
-    adminSessions.delete(token);
-  }
-}
-
-function renderLoginShell(errorMessage = "", csrfToken = ""): string {
+function renderLoginShell(options: { errorMessage?: string; csrfToken?: string; authMode?: "local" | "salesforce_oidc" } = {}): string {
+  const errorMessage = options.errorMessage || "";
+  const csrfToken = options.csrfToken || "";
+  const authMode = options.authMode || "local";
   const safeErrorMessage = escapeHtml(errorMessage);
   return `<!doctype html>
 <html lang="de">
@@ -766,10 +108,10 @@ function renderLoginShell(errorMessage = "", csrfToken = ""): string {
           <div class="mb-4">
             <div class="text-uppercase text-secondary small fw-semibold">Geschützter Bereich</div>
             <h1 class="h3 mb-2">SF Integration Agent</h1>
-            <p class="text-secondary mb-0">Bitte mit Admin-Benutzer und Passwort anmelden.</p>
+            <p class="text-secondary mb-0">${authMode === "salesforce_oidc" ? "Bitte mit Salesforce anmelden." : "Bitte mit Admin-Benutzer und Passwort anmelden."}</p>
           </div>
           <div id="login-error" class="alert alert-danger ${safeErrorMessage ? "" : "d-none"}" role="alert">${safeErrorMessage || "Anmeldung fehlgeschlagen"}</div>
-          <form id="login-form" class="d-grid gap-3">
+          ${authMode === "local" ? `<form id="login-form" class="d-grid gap-3">
             <div>
               <label for="login-username" class="form-label">Benutzername</label>
               <input id="login-username" name="username" class="form-control" autocomplete="username" required />
@@ -779,12 +121,14 @@ function renderLoginShell(errorMessage = "", csrfToken = ""): string {
               <input id="login-password" name="password" type="password" class="form-control" autocomplete="current-password" required />
             </div>
             <button type="submit" class="btn btn-primary">Anmelden</button>
-          </form>
+          </form>` : `<div class="d-grid gap-3"><a class="btn btn-primary" href="/auth/salesforce/login">Mit Salesforce anmelden</a></div>`}
         </div>
       </div>
     </main>
     <script>
-      document.getElementById('login-form').addEventListener('submit', async (event) => {
+      var loginForm = document.getElementById('login-form');
+      if (loginForm) {
+      loginForm.addEventListener('submit', async (event) => {
         event.preventDefault();
         const username = String(document.getElementById('login-username').value || '').trim();
         const password = String(document.getElementById('login-password').value || '');
@@ -807,6 +151,7 @@ function renderLoginShell(errorMessage = "", csrfToken = ""): string {
           errorBox.classList.remove('d-none');
         }
       });
+      }
     </script>
   </body>
 </html>`;
@@ -10187,6 +9532,7 @@ function htmlShell(): string {
         const select = document.getElementById('instance-select');
         const response = await safeRequest('/api/instances', { items: [] });
         const items = response.items || [];
+        const defaultInstance = items.find((item) => item.isDefault);
 
         if (!items.length) {
           select.innerHTML = '<option value="">Keine Instanzen konfiguriert</option>';
@@ -10194,10 +9540,16 @@ function htmlShell(): string {
           return;
         }
 
-        select.innerHTML = items.map((item) => '<option value="' + esc(item.id) + '">' + esc(item.name) + '</option>').join('');
+        select.innerHTML = items.map((item) => {
+          const label = item.isDefault ? (String(item.name || item.id) + ' (Default aus .env)') : String(item.name || item.id);
+          return '<option value="' + esc(item.id) + '">' + esc(label) + '</option>';
+        }).join('');
+
         const hasCurrent = items.some((item) => item.id === state.instanceId);
-        if (!state.instanceId || !hasCurrent) {
-          state.instanceId = items.find((item) => item.isDefault)?.id || items[0].id;
+        if (defaultInstance) {
+          state.instanceId = String(defaultInstance.id || '').trim();
+        } else if (!state.instanceId || !hasCurrent) {
+          state.instanceId = items[0].id;
         }
         select.value = state.instanceId;
       }
@@ -12391,7 +11743,7 @@ ${renderMigrationRunResultModule()}
 }
 
 export function createAppServer(
-  getHealthSnapshot: () => HealthSnapshot,
+  getHealthSnapshot: () => Promise<HealthSnapshot> | HealthSnapshot,
   adminDataService = new AdminDataService()
 ): http.Server {
   return http.createServer((req, res) => {
@@ -12444,14 +11796,35 @@ export function createAppServer(
         });
         res.end(file);
       };
-      const isAuthenticated = !adminAuthRequired || hasValidAdminSession(req);
+      const session = getAdminSession(req);
+      const isAuthenticated = !adminAuthRequired || Boolean(session);
       const isAssetRequest = requestUrl.pathname.startsWith("/assets/");
       const isPublicRequest =
         requestUrl.pathname === "/api/system/health" ||
         requestUrl.pathname === "/auth/login" ||
         requestUrl.pathname === "/auth/logout" ||
-        requestUrl.pathname === "/auth/migration-salesforce/callback";
+        requestUrl.pathname === "/auth/migration-salesforce/callback" ||
+        requestUrl.pathname === "/auth/salesforce/login" ||
+        requestUrl.pathname === "/auth/salesforce/callback";
       const requiresMutationProtection = isMutatingMethod(req.method) && (requestUrl.pathname.startsWith("/api/") || requestUrl.pathname.startsWith("/auth/"));
+      const requiredPermission = (() => {
+        if (requestUrl.pathname === "/auth/logout") {
+          return null;
+        }
+        if (requestUrl.pathname === "/auth/login" || requestUrl.pathname === "/auth/salesforce/login" || requestUrl.pathname === "/auth/salesforce/callback") {
+          return null;
+        }
+        if (requestUrl.pathname === "/api/system/health" || isAssetRequest) {
+          return null;
+        }
+        if (req.method === "DELETE") {
+          return "delete" as const;
+        }
+        if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
+          return "write" as const;
+        }
+        return "read" as const;
+      })();
 
       if (requiresMutationProtection && !hasAllowedRequestOrigin(req)) {
         sendJson(403, { error: "Origin nicht erlaubt" });
@@ -12480,20 +11853,80 @@ export function createAppServer(
           sendJson(adminAuthMisconfigured ? 503 : 200, { ok: !adminAuthMisconfigured, authEnabled: false, error: adminAuthMisconfigured ? "Admin-Zugang ist nicht konfiguriert" : undefined });
           return;
         }
+        if (adminAuth.mode !== "local") {
+          sendJson(400, { error: "Lokaler Login ist nicht aktiviert." });
+          return;
+        }
 
         const body = (await readJsonBody(req)) as { username?: string; password?: string };
         const username = String(body.username || "").trim();
         const password = String(body.password || "");
-        const valid = constantTimeEquals(username, adminAuth.username) && constantTimeEquals(password, adminAuth.password);
-        if (!valid) {
+        const user = authenticateLocalAdminUser(username, password, adminAuth);
+        if (!user) {
           res.setHeader("Set-Cookie", buildExpiredSessionCookie(req));
           sendJson(401, { error: "Ungültige Zugangsdaten" });
           return;
         }
 
-        const sessionToken = createAdminSession();
+        const sessionToken = createAdminSession({
+          userId: user.id,
+          username: user.username,
+          displayName: user.displayName,
+          roles: user.roles,
+          permissions: user.permissions,
+          authProvider: "local"
+        });
         res.setHeader("Set-Cookie", buildSessionCookie(req, sessionToken));
-        sendJson(200, { ok: true });
+        sendJson(200, { ok: true, permissions: user.permissions, roles: user.roles });
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/auth/salesforce/login") {
+        if (!adminAuthRequired || adminAuth.mode !== "salesforce_oidc") {
+          sendHtml(400, renderLoginShell({ errorMessage: "Salesforce-Login ist nicht aktiviert.", csrfToken, authMode: adminAuth.mode }));
+          return;
+        }
+
+        try {
+          const redirectUri = buildAdminSalesforceOidcRedirectUri(req);
+          const state = createSalesforceLoginState(redirectUri);
+          sendRedirect(buildSalesforceLoginAuthorizationUrl(state, redirectUri, adminAuth));
+        } catch (error) {
+          sendHtml(500, renderLoginShell({ errorMessage: error instanceof Error ? error.message : String(error), csrfToken, authMode: adminAuth.mode }));
+        }
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/auth/salesforce/callback") {
+        const state = String(requestUrl.searchParams.get("state") || "").trim();
+        const code = String(requestUrl.searchParams.get("code") || "").trim();
+        const oauthError = String(requestUrl.searchParams.get("error") || "").trim();
+        const oauthErrorDescription = String(requestUrl.searchParams.get("error_description") || "").trim();
+        if (oauthError) {
+          sendHtml(401, renderLoginShell({ errorMessage: oauthErrorDescription || oauthError, csrfToken, authMode: "salesforce_oidc" }));
+          return;
+        }
+
+        if (!code || !state) {
+          sendHtml(400, renderLoginShell({ errorMessage: "Salesforce hat keinen gueltigen Login-Callback geliefert.", csrfToken, authMode: "salesforce_oidc" }));
+          return;
+        }
+
+        try {
+          const user = await completeSalesforceLogin(code, state, adminAuth);
+          const sessionToken = createAdminSession({
+            userId: user.id,
+            username: user.username,
+            displayName: user.displayName,
+            roles: user.roles,
+            permissions: user.permissions,
+            authProvider: "salesforce_oidc"
+          });
+          res.setHeader("Set-Cookie", buildSessionCookie(req, sessionToken));
+          sendRedirect("/");
+        } catch (error) {
+          sendHtml(401, renderLoginShell({ errorMessage: error instanceof Error ? error.message : String(error), csrfToken, authMode: "salesforce_oidc" }));
+        }
         return;
       }
 
@@ -12506,7 +11939,7 @@ export function createAppServer(
 
       if (adminAuthRequired && !isAuthenticated && !isAssetRequest && !isPublicRequest) {
         if (requestUrl.pathname === "/") {
-          sendHtml(401, renderLoginShell());
+          sendHtml(401, renderLoginShell({ csrfToken, authMode: adminAuth.mode }));
           return;
         }
 
@@ -12514,6 +11947,16 @@ export function createAppServer(
           sendJson(401, { error: "Authentifizierung erforderlich" });
           return;
         }
+      }
+
+      if (adminAuthRequired && requiredPermission && !hasPermission(session, requiredPermission)) {
+        if (requestUrl.pathname.startsWith("/api/")) {
+          sendJson(403, { error: `Berechtigung '${requiredPermission}' fehlt` });
+          return;
+        }
+
+        sendHtml(403, renderLoginShell({ errorMessage: `Berechtigung '${requiredPermission}' fehlt`, csrfToken, authMode: adminAuth.mode }));
+        return;
       }
 
       const instanceId = requestUrl.searchParams.get("instanceId") || undefined;
@@ -12608,7 +12051,7 @@ export function createAppServer(
       }
 
       if (req.method === "GET" && requestUrl.pathname === "/api/system/health") {
-        sendJson(200, await buildSystemHealthSnapshot(getHealthSnapshot()));
+        sendJson(200, await getHealthSnapshot());
         return;
       }
 
@@ -12704,6 +12147,9 @@ export function createAppServer(
       if (req.method === "POST" && requestUrl.pathname === "/api/instances") {
         const body = (await readJsonBody(req)) as SalesforceInstanceMutationInput;
         const item = adminDataService.saveInstance(body);
+        if (isRemoteAgentConfigured()) {
+          await syncRemoteAgentInstances(adminDataService.listConfiguredInstanceConfigs());
+        }
         sendJson(200, item);
         return;
       }

@@ -304,6 +304,30 @@ interface CachedSalesforceSession {
 
 const TOKEN_CACHE_TTL_MS = Number(process.env.SF_TOKEN_CACHE_TTL_MS || 8 * 60 * 1000);
 
+function formatSalesforceTokenError(
+  prefix: string,
+  status: number,
+  errorText: string,
+  loginUrl: string,
+  clientId?: string
+): string {
+  const normalizedErrorText = String(errorText || "").trim();
+
+  if (/\"error\"\s*:\s*\"invalid_client_id\"/i.test(normalizedErrorText)) {
+    return [
+      `${prefix}: ${status}.`,
+      "Salesforce Client ID ist ungueltig.",
+      `Pruefe die Connected App fuer ${loginUrl}.`,
+      clientId ? `Verwendete Client ID beginnt mit ${String(clientId).slice(0, 6)}...` : "",
+      "Production- und Sandbox-Consumer-Keys sind nicht austauschbar."
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  return `${prefix}: ${status} ${normalizedErrorText}`;
+}
+
 function formatSoqlDateTime(value: string): string {
   const date = new Date(value);
 
@@ -527,7 +551,15 @@ export class SalesforceClient {
           if (cachedSession && /login rate exceeded/i.test(errorText)) {
             return cachedSession;
           }
-          throw new Error(`Salesforce refresh token request failed: ${response.status} ${errorText}`);
+          throw new Error(
+            formatSalesforceTokenError(
+              "Salesforce refresh token request failed",
+              response.status,
+              errorText,
+              tokenUrl,
+              clientId
+            )
+          );
         }
 
         const tokenData = (await response.json()) as OAuthTokenResponse;
@@ -562,7 +594,15 @@ export class SalesforceClient {
         if (cachedSession && /login rate exceeded/i.test(errorText)) {
           return cachedSession;
         }
-        throw new Error(`Salesforce token request failed: ${response.status} ${errorText}`);
+        throw new Error(
+          formatSalesforceTokenError(
+            "Salesforce token request failed",
+            response.status,
+            errorText,
+            tokenUrl,
+            this.config.clientId
+          )
+        );
       }
 
       const tokenData = (await response.json()) as OAuthTokenResponse;

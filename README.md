@@ -32,12 +32,23 @@ Fuer geschuetzte Admin-Zugaenge der Web UI:
 - ADMIN_UI_USERNAME
 - ADMIN_UI_PASSWORD
 
+Optional fuer Rollenmodell und Salesforce-Login:
+
+- `ADMIN_AUTH_MODE=local|salesforce_oidc`
+- `ADMIN_UI_USERS_JSON` oder `ADMIN_UI_USERS_FILE`
+- `SF_IDP_LOGIN_URL`
+- `SF_IDP_CLIENT_ID`
+- `SF_IDP_CLIENT_SECRET`
+- `SF_IDP_REDIRECT_URI`
+
 ## Lokale Entwicklung
 
 ```bash
 npm ci
 npm run build
-npm start
+npm run dev:agent
+npm run dev:web
+npm run dev:updater
 ```
 
 Entwicklung mit ts-node:
@@ -45,6 +56,17 @@ Entwicklung mit ts-node:
 ```bash
 npm run dev
 ```
+
+Hinweis:
+
+- `npm run dev` bzw. `npm run start` starten aus Rueckwaertskompatibilitaetsgruenden weiter den Legacy-Kombiprozess.
+- Fuer die Zielarchitektur mit getrennten Diensten stehen bereit:
+  - `npm run start:agent`
+  - `npm run start:web`
+  - `npm run start:updater`
+  - `npm run dev:agent`
+  - `npm run dev:web`
+  - `npm run dev:updater`
 
 ## Spec-Driven Development
 
@@ -69,11 +91,135 @@ Die grosse Server- und UI-Datei wird inkrementell aufgeteilt.
 
 Neue serverseitige und UI-nahe Logik sollte bevorzugt in diesen Modulen oder weiteren kleinen Nachfolgemodulen landen, statt `src/server/app.ts` weiter aufzublähen.
 
+## Zielarchitektur Dienste
+
+Das Projekt wird kuenftig entlang von drei fachlichen und betrieblichen Rollen geschnitten:
+
+1. `Agent-Dienst`
+   Fuehrt Scheduler, Datenimporte, Exporte, Mapping und Connector-Ausfuehrung aus.
+2. `WebServer-Dienst`
+   Stellt Web UI, Admin-API, Dashboard, Installer-UI und Betriebsansichten bereit.
+3. `AutoUpdater-Dienst`
+   Prueft Releases, migriert Bestandsinstallationen und fuehrt Updates kontrolliert mit Backup und Rollback aus.
+
+Wichtig:
+
+- Die Dreiteilung soll nicht nur im Code sichtbar sein, sondern auch in Installer, Release-Paket und Upgrade-Workflow.
+- Bestehende Installationen muessen per Updater von der heutigen kombinierten Struktur auf die Zielstruktur migriert werden.
+- Die laufende Spezifikation dazu steht unter [docs/specs/2026-05-06-drei-dienste-release-und-updater-zielarchitektur/spec.md](docs/specs/2026-05-06-drei-dienste-release-und-updater-zielarchitektur/spec.md).
+- Agent und Web koennen jetzt auch auf unterschiedlichen Hosts laufen, wenn der Web-Host gegen die Agent-API konfiguriert wird.
+
+## Rollen und Berechtigungen
+
+Die Web-Authentifizierung unterstuetzt jetzt serverseitig durchgesetzte Rechte:
+
+- `read`
+- `write`
+- `delete`
+- `admin`
+
+Standardzuordnung:
+
+- `viewer` -> `read`
+- `editor` -> `read`, `write`
+- `admin` -> `read`, `write`, `delete`, `admin`
+
+Beispiel fuer `ADMIN_UI_USERS_JSON`:
+
+```json
+[
+  {
+    "id": "ops-admin",
+    "username": "admin@example.com",
+    "password": "starkes-passwort",
+    "roles": ["admin"]
+  },
+  {
+    "id": "ops-viewer",
+    "username": "viewer@example.com",
+    "roles": ["viewer"],
+    "permissions": ["read"]
+  }
+]
+```
+
+Im Modus `salesforce_oidc` wird das Passwort lokal nicht verwendet. Die lokale Benutzerliste dient dann als Rollen- und Berechtigungszuordnung fuer Salesforce-Benutzer.
+
+## Salesforce als Identitätsprovider
+
+Ja, Salesforce kann hier als Identitätsprovider genutzt werden.
+
+Aktuell umgesetzt ist eine OIDC-basierte Admin-Anmeldung fuer die Web UI:
+
+- `ADMIN_AUTH_MODE=salesforce_oidc`
+- `SF_IDP_LOGIN_URL=https://login.salesforce.com` oder Sandbox-Login-URL
+- `SF_IDP_CLIENT_ID`
+- `SF_IDP_CLIENT_SECRET`
+- optional `SF_IDP_REDIRECT_URI`
+
+Wichtig:
+
+- Der Benutzer muss in `ADMIN_UI_USERS_JSON` oder `ADMIN_UI_USERS_FILE` hinterlegt sein.
+- Die lokale Benutzerdefinition mappt Salesforce-Benutzer auf Rollen und Rechte.
+- Ohne lokale Freigabe wird ein erfolgreicher Salesforce-Login trotzdem nicht autorisiert.
+
+## Agent und Web auf getrennten Servern
+
+Fuer getrennte Hosts gibt es jetzt eine vorbereitete Agent-API.
+
+Auf dem Agent-Host:
+
+- `AGENT_API_ENABLED=1`
+- `AGENT_API_PORT=8090`
+- `AGENT_API_TOKEN=<shared-secret>`
+
+Auf dem Web-Host:
+
+- `AGENT_REMOTE_BASE_URL=http://agent-host:8090`
+- `AGENT_REMOTE_TOKEN=<shared-secret>`
+
+Darueber laufen:
+
+- Health-Abfrage des Agenten
+- Update-Status
+- Update-Anforderung an den Agent-/Updater-Host
+
+## Installationsprofile fuer getrennte Hosts
+
+Windows:
+
+- Vollinstallation:
+  - `powershell -File scripts/windows/install-windows-agent.ps1 -InstallProfile all`
+- Agent-Host:
+  - `powershell -File scripts/windows/install-windows-agent.ps1 -InstallProfile agent-host`
+- Web-Host:
+  - `powershell -File scripts/windows/install-windows-agent.ps1 -InstallProfile web-host`
+
+Linux:
+
+- Vollinstallation:
+  - `sudo bash scripts/linux/install-linux-agent.sh --roles agent,web,updater`
+- Agent-Host:
+  - `sudo bash scripts/linux/install-linux-agent.sh --roles agent,updater`
+- Web-Host:
+  - `sudo bash scripts/linux/install-linux-agent.sh --roles web`
+
+Persistenz:
+
+- Das gewaehlte Rollenprofil wird lokal unter `artifacts/runtime/install-profile.json` gespeichert.
+- Der Updater verwendet dieses Profil spaeter fuer die erneute Dienstkonfiguration.
+
 ## Wichtige Skripte
 
 - `npm run build` - TypeScript Build
-- `npm run start` - Start aus `dist/main.js`
-- `npm run dev` - Start aus TypeScript-Quellen
+- `npm run start` - Legacy-Kombistart aus `dist/main.js`
+- `npm run start:agent` - Getrennter Start des Agent-Dienstes
+- `npm run start:web` - Getrennter Start des WebServer-Dienstes
+- `npm run start:updater` - Getrennter Start des AutoUpdater-Dienstes
+- `npm run dev` - Legacy-Kombistart aus TypeScript-Quellen
+- `npm run dev:agent` - Agent-Dienst aus TypeScript-Quellen
+- `npm run dev:web` - WebServer-Dienst aus TypeScript-Quellen
+- `npm run dev:updater` - AutoUpdater-Dienst aus TypeScript-Quellen
 - `npm run spec:new -- "Titel"` - Neue Spec fuer nicht-triviale Aenderungen anlegen
 - `npm run spec:validate` - Spec-Struktur in `docs/specs/` pruefen
 - `npm run docker:test:ubuntu` - Ubuntu-basierter Docker-Verifikationstest fuer Build + Specs
@@ -81,7 +227,7 @@ Neue serverseitige und UI-nahe Logik sollte bevorzugt in diesen Modulen oder wei
 - `npm run win:uninstall-service` - Windows-Dienst deinstallieren
 - `npm run win:update-now` - Manuelles Update ausfuehren
 - `npm run win:update-existing` - Bestehende Windows-Installation auf Latest oder Ziel-Release aktualisieren
-- `npm run win:register-updater` - Scheduled Task fuer Auto-Update registrieren
+- `npm run win:register-updater` - Rueckwaertskompatibler Alias, konfiguriert jetzt den AutoUpdater-Dienst
 - `npm run win:build-package` - Kunden-ZIP erzeugen
 - `npm run win:build-package:with-node-modules` - Kunden-ZIP inkl. `node_modules`
 - `npm run init:installation -- --mode SAGE100` - Interaktive Erstinstallation (Salesforce + SAGE100 SQL + Basis-Importprofile)
@@ -106,8 +252,8 @@ Kurzablauf:
 1. Release-Paket auf Zielserver entpacken
 2. `.env` konfigurieren
 3. Optional: `npm run init:installation -- --mode SAGE100` (fragt Salesforce URL/Client und SQL Server fuer SAGE100 ab)
-4. Dienst installieren
-5. Auto-Updater registrieren
+4. Dienste installieren
+5. Agent-, Web- und AutoUpdater-Dienst pruefen
 
 Fuer spaetere Bestandsupdates:
 
@@ -132,7 +278,7 @@ Kurzablauf:
 
 1. App unter einem dedizierten Service-User nach `/opt/sf-integration-agent` bereitstellen
 2. Environment-Datei unter `/etc/sf-integration-agent/agent.env` pflegen
-3. systemd-Service und nginx-Reverse-Proxy aus [scripts/linux](scripts/linux) aktivieren
+3. systemd-Dienste fuer Agent, Web und Updater sowie den nginx-Reverse-Proxy aus [scripts/linux](scripts/linux) aktivieren
 4. TLS am Reverse Proxy terminieren und nur HTTPS oeffentlich exponieren
 5. Optional: abgesicherten SFTP-Drop-User fuer Datei-Connectoren mit `npm run linux:setup-sftp -- --sftp-user <name>` einrichten
 
@@ -156,6 +302,36 @@ Ubuntu-Docker-Verifikation:
 ```bash
 npm run docker:test:ubuntu
 ```
+
+Getrennte Host-Verifikation per Docker:
+
+```bash
+npm run docker:test:separated-hosts
+```
+
+Das Compose-Szenario laedt dabei bewusst auch die lokale `.env`, damit die bisherige Default-Salesforce-Konfiguration im Docker-Test identisch zum bestehenden Einzel-Setup verfuegbar ist.
+
+Dabei werden zwei Container gestartet:
+
+- `agent-host`
+  - startet `npm run start:agent`
+  - laeuft im Test ohne Scheduler (`AGENT_SCHEDULER_ENABLED=0`), damit keine echte Salesforce-Konfiguration noetig ist
+  - exponiert die Agent-API auf Port `8090`
+- `web-host`
+  - startet `npm run start:web` und `npm run start:updater`
+  - nutzt den Agenten remote ueber `AGENT_REMOTE_BASE_URL`
+  - laeuft mit deaktivierter automatischer Update-Pruefung (`AUTO_UPDATER_ENABLED=0`)
+  - exponiert die Web UI auf Host-Port `18080`
+
+Test-Login im Docker-Szenario:
+
+- Benutzer: `admin`
+- Passwort: `admin123!`
+
+Viewer-Test:
+
+- Benutzer: `viewer`
+- Passwort: `viewer123!`
 
 Hinweis fuer Datei-Connectoren:
 

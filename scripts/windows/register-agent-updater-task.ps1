@@ -1,15 +1,11 @@
 param(
   [string]$TaskName = "SfOnpremIntegrationAgent-Updater",
   [string]$ServiceName = "SfOnpremIntegrationAgent",
-  [string]$ManifestUrl = "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/latest/download/update-manifest.json",
+  [string]$WebServiceName = "SfOnpremIntegrationWeb",
+  [string]$UpdaterServiceName = "SfOnpremIntegrationUpdater",
   [int]$EveryMinutes = 15,
-  [string]$UpdaterTaskUser = "SYSTEM",
-  [string]$UpdaterTaskPassword,
-  [int]$LogRetentionDays = 30,
   [string]$AppRoot
 )
-
-# The CI pipeline automatically publishes update-manifest.json on every release tag.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -22,89 +18,30 @@ function Resolve-AppRoot {
     return (Resolve-Path -Path $InputPath).Path
   }
 
-  $scriptDir = $script:ScriptDirectory
-  return (Resolve-Path -Path (Join-Path $scriptDir "..\..\")).Path
-}
-
-function Test-IsBuiltInTaskAccount {
-  param([string]$AccountName)
-
-  if (-not $AccountName) {
-    return $true
-  }
-
-  $normalized = $AccountName.Trim().ToUpperInvariant()
-  return $normalized -in @(
-    "SYSTEM",
-    "NT AUTHORITY\SYSTEM",
-    "LOCAL SERVICE",
-    "NT AUTHORITY\LOCAL SERVICE",
-    "NETWORK SERVICE",
-    "NT AUTHORITY\NETWORK SERVICE"
-  )
-}
-
-Write-Host "Manifest URL: $ManifestUrl" -ForegroundColor Cyan
-if (-not $ManifestUrl -or -not $ManifestUrl.Trim()) {
-  throw "ManifestUrl is required."
-}
-
-if ($EveryMinutes -lt 1) {
-  throw "EveryMinutes must be >= 1"
+  return (Resolve-Path -Path (Join-Path $script:ScriptDirectory "..\..\")).Path
 }
 
 $appRootResolved = Resolve-AppRoot -InputPath $AppRoot
-$scriptPath = Join-Path $appRootResolved "scripts\windows\update-agent.ps1"
-$taskUser = if ($UpdaterTaskUser -and $UpdaterTaskUser.Trim()) { $UpdaterTaskUser.Trim() } else { "SYSTEM" }
-
-if (-not (Test-Path $scriptPath)) {
-  throw "Updater script not found: $scriptPath"
+$installerScript = Join-Path $appRootResolved "scripts\windows\install-agent-service.ps1"
+if (-not (Test-Path $installerScript)) {
+  throw "Service installer script not found: $installerScript"
 }
 
-if (-not (Test-IsBuiltInTaskAccount -AccountName $taskUser) -and (-not $UpdaterTaskPassword -or -not $UpdaterTaskPassword.Trim())) {
-  throw "UpdaterTaskPassword is required when UpdaterTaskUser is not a built-in service account."
+Write-Host "Der fruehere Scheduled-Task-Updater wurde durch einen eigenen Windows-Dienst ersetzt." -ForegroundColor Yellow
+Write-Host "Konfiguriere stattdessen den AutoUpdater-Dienst '$UpdaterServiceName'..." -ForegroundColor Cyan
+
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installerScript `
+  -AppRoot $appRootResolved `
+  -ServiceName $ServiceName `
+  -WebServiceName $WebServiceName `
+  -UpdaterServiceName $UpdaterServiceName `
+  -UpdateCheckIntervalMs ($EveryMinutes * 60 * 1000) `
+  -NonInteractive `
+  -ForceRecreate
+
+if ($LASTEXITCODE -ne 0) {
+  throw "AutoUpdater service configuration failed (exit code $LASTEXITCODE)."
 }
 
-function Invoke-Schtasks {
-  param([string[]]$Arguments)
-
-  $output = & schtasks.exe @Arguments 2>&1
-  if ($LASTEXITCODE -ne 0) {
-    $message = ($output | Out-String).Trim()
-    throw "schtasks.exe failed (exit code $LASTEXITCODE): $message"
-  }
-
-  return $output
-}
-
-$wrapperPath = Join-Path $appRootResolved "run-agent-updater.cmd"
-$wrapperContent = @(
-  "@echo off",
-  "setlocal",
-  ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%%~dp0scripts\windows\update-agent.ps1" -ServiceName "{0}" -UpdateManifestUrl "{1}" -LogRetentionDays {2} -AppRoot "%%~dp0"' -f $ServiceName, $ManifestUrl, $LogRetentionDays),
-  "endlocal"
-)
-Set-Content -Path $wrapperPath -Value $wrapperContent -Encoding ASCII
-
-$taskCommand = ('"{0}"' -f $wrapperPath)
-
-$taskArguments = @(
-  "/Create",
-  "/TN", $TaskName,
-  "/SC", "MINUTE",
-  "/MO", "$EveryMinutes",
-  "/TR", $taskCommand,
-  "/RU", $taskUser,
-  "/RL", "HIGHEST",
-  "/F"
-)
-
-if (-not (Test-IsBuiltInTaskAccount -AccountName $taskUser)) {
-  $taskArguments += @("/RP", $UpdaterTaskPassword)
-}
-
-[void](Invoke-Schtasks -Arguments $taskArguments)
-
-Write-Host "Scheduled updater task '$TaskName' created." -ForegroundColor Green
-Write-Host "Runs every $EveryMinutes minute(s)."
-Write-Host "Runs as $taskUser."
+Write-Host "AutoUpdater-Dienst '$UpdaterServiceName' konfiguriert." -ForegroundColor Green
+Write-Host "Hinweis: Der Parameter TaskName ('$TaskName') wird aus Rueckwaertskompatibilitaetsgruenden ignoriert."

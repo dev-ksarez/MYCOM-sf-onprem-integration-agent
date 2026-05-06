@@ -1,85 +1,33 @@
 import "dotenv/config";
 import pino from "pino";
-import { runDueSchedulesOnce } from "./agent/agent-runner";
-import { createAppServer, HealthSnapshot } from "./server/app";
+import { createAgentServiceRuntime } from "./agent/agent-service-runtime";
+import { buildSystemHealthSnapshot } from "./server/health-snapshot";
+import { createAppServer } from "./server/app";
+import { HealthSnapshot } from "./server/health-snapshot";
 
 const logger = pino({
   level: process.env.LOG_LEVEL || "info"
 });
 
-const agentId = process.env.AGENT_ID || "local-agent-01";
-const startedAt = new Date();
-const schedulerIntervalMs = Number(process.env.SCHEDULER_INTERVAL_MS || 60_000);
 const webUiEnabled = process.env.WEB_UI_ENABLED === "1" || process.env.WEB_UI_ENABLED === "true";
 const webUiPort = Number(process.env.WEB_UI_PORT || 8080);
-const logRetentionDays = (() => {
-  const configured = Number(process.env.SF_LOG_RETENTION_DAYS?.trim() || "30");
-  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 0;
-})();
-
-let schedulerTimer: NodeJS.Timeout | undefined;
-let isSchedulerRunning = false;
-let lastRunStartedAt: string | undefined;
-let lastRunFinishedAt: string | undefined;
-let lastRunStatus: "success" | "error" | undefined;
-let lastRunError: string | undefined;
-let schedulesFound: number | undefined;
-let dueSchedules: number | undefined;
-let processedSchedules: number | undefined;
-
-function getHealthSnapshot(): HealthSnapshot {
-  const service = lastRunStatus === "error" ? "degraded" : "ok";
-  const scheduler = isSchedulerRunning
-    ? "running"
-    : lastRunStatus === "error"
-      ? "error"
-      : "idle";
-
-  return {
-    service,
-    scheduler,
-    startedAt: startedAt.toISOString(),
-    uptimeSeconds: (Date.now() - startedAt.getTime()) / 1000,
-    lastRunStartedAt,
-    lastRunFinishedAt,
-    lastRunStatus,
-    lastRunError,
-    schedulesFound,
-    dueSchedules,
-    processedSchedules,
-    logRetentionDays
-  };
-}
-
-async function runSchedulerCycle(): Promise<void> {
-  if (isSchedulerRunning) {
-    logger.warn("Scheduler cycle already running, skipping overlapping trigger");
-    return;
-  }
-
-  isSchedulerRunning = true;
-  lastRunStartedAt = new Date().toISOString();
-  lastRunError = undefined;
-
-  try {
-    const summary = await runDueSchedulesOnce(logger, agentId);
-    schedulesFound = summary.schedulesFound;
-    dueSchedules = summary.dueSchedules;
-    processedSchedules = summary.processedSchedules;
-    lastRunStatus = "success";
-  } catch (error) {
-    lastRunStatus = "error";
-    lastRunError = error instanceof Error ? error.message : "Unknown error";
-    logger.error({ err: error }, "Scheduler cycle failed");
-  } finally {
-    lastRunFinishedAt = new Date().toISOString();
-    isSchedulerRunning = false;
-  }
-}
+const agentRuntime = createAgentServiceRuntime({
+  logger,
+  agentId: process.env.AGENT_ID || "local-agent-01",
+  schedulerIntervalMs: Number(process.env.SCHEDULER_INTERVAL_MS || 60_000),
+  schedulerEnabled: (() => {
+    const configured = String(process.env.AGENT_SCHEDULER_ENABLED || "1").trim().toLowerCase();
+    return configured !== "0" && configured !== "false" && configured !== "off";
+  })(),
+  logRetentionDays: (() => {
+    const configured = Number(process.env.SF_LOG_RETENTION_DAYS?.trim() || "30");
+    return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 0;
+  })()
+});
 
 async function main(): Promise<void> {
   if (webUiEnabled) {
-    const server = createAppServer(getHealthSnapshot);
+    const server = createAppServer(async (): Promise<HealthSnapshot> => await buildSystemHealthSnapshot(agentRuntime.getHealthSnapshot()));
     await new Promise<void>((resolve, reject) => {
       server.once("error", (error: NodeJS.ErrnoException) => {
         if (error.code === "EADDRINUSE") {
@@ -101,19 +49,13 @@ async function main(): Promise<void> {
     });
   }
 
-  await runSchedulerCycle();
-  schedulerTimer = setInterval(() => {
-    void runSchedulerCycle();
-  }, schedulerIntervalMs);
-
-  logger.info({ schedulerIntervalMs, webUiEnabled }, "Agent service started");
+  await agentRuntime.start();
+  logger.info({ webUiEnabled }, "Legacy combined service started");
 }
 
 function shutdown(signal: string): void {
   logger.info({ signal }, "Shutdown requested");
-  if (schedulerTimer) {
-    clearInterval(schedulerTimer);
-  }
+  agentRuntime.stop();
   process.exit(0);
 }
 
