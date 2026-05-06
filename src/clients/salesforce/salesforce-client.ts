@@ -290,12 +290,15 @@ interface OAuthTokenResponse {
   access_token: string;
   instance_url: string;
   token_type: string;
+  refresh_token?: string;
   scope?: string;
 }
 
 interface CachedSalesforceSession {
   instanceUrl: string;
-  accessToken: string;
+  accessToken?: string;
+  username?: string;
+  password?: string;
   expiresAt: number;
 }
 
@@ -401,7 +404,15 @@ export class SalesforceClient {
   }
 
   private getCacheKey(): string {
-    return `${this.config.loginUrl}|${this.config.clientId}`;
+    if (this.config.authType === "password") {
+      return `${this.config.loginUrl}|password|${this.config.username || ""}`;
+    }
+
+    if (this.config.authType === "oauth_refresh_token") {
+      return `${this.config.loginUrl}|oauth_refresh_token|${this.config.clientId || ""}|${this.config.refreshToken || ""}`;
+    }
+
+    return `${this.config.loginUrl}|client_credentials|${this.config.clientId || ""}`;
   }
 
   public getLogRetentionDays(): number {
@@ -423,9 +434,17 @@ export class SalesforceClient {
   }
 
   private applyConnection(session: CachedSalesforceSession): void {
+    if (session.accessToken) {
+      this.connection = new Connection({
+        instanceUrl: session.instanceUrl,
+        accessToken: session.accessToken
+      });
+      return;
+    }
+
     this.connection = new Connection({
-      instanceUrl: session.instanceUrl,
-      accessToken: session.accessToken
+      loginUrl: this.config.loginUrl,
+      instanceUrl: session.instanceUrl
     });
   }
 
@@ -449,15 +468,87 @@ export class SalesforceClient {
       return;
     }
 
-    const tokenUrl = `${this.config.loginUrl.replace(/\/$/, "")}/services/oauth2/token`;
-
-    const body = new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: this.config.clientId,
-      client_secret: this.config.clientSecret
-    });
-
     const loginPromise = (async (): Promise<CachedSalesforceSession> => {
+      if (this.config.authType === "password") {
+        const username = String(this.config.username || "").trim();
+        const password = String(this.config.password || "");
+        const securityToken = String(this.config.securityToken || "");
+        if (!username || !password) {
+          throw new Error("Salesforce klassischer Login benoetigt username und password");
+        }
+
+        const connection = new Connection({ loginUrl: this.config.loginUrl });
+        await connection.login(username, password + securityToken);
+        return {
+          instanceUrl: String(connection.instanceUrl || "").trim(),
+          accessToken: String(connection.accessToken || "").trim() || undefined,
+          username,
+          password: securityToken ? `${password}${securityToken}` : password,
+          expiresAt: Date.now() + Math.max(60_000, TOKEN_CACHE_TTL_MS)
+        };
+      }
+
+      if (this.config.authType === "oauth_refresh_token") {
+        const clientId = String(this.config.clientId || "").trim();
+        const clientSecret = String(this.config.clientSecret || "").trim();
+        const refreshToken = String(this.config.refreshToken || "").trim();
+
+        if (!clientId || !clientSecret || !refreshToken) {
+          const accessToken = String(this.config.accessToken || "").trim();
+          const instanceUrl = String(this.config.instanceUrl || "").trim();
+          if (accessToken && instanceUrl) {
+            return {
+              instanceUrl,
+              accessToken,
+              expiresAt: Date.now() + Math.max(60_000, TOKEN_CACHE_TTL_MS)
+            };
+          }
+
+          throw new Error("Salesforce OAuth Login fuer Migrationen benoetigt clientId, clientSecret und refreshToken");
+        }
+
+        const tokenUrl = `${this.config.loginUrl.replace(/\/$/, "")}/services/oauth2/token`;
+        const body = new URLSearchParams({
+          grant_type: "refresh_token",
+          client_id: clientId,
+          client_secret: clientSecret,
+          refresh_token: refreshToken
+        });
+        const response = await fetch(tokenUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded"
+          },
+          body
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          if (cachedSession && /login rate exceeded/i.test(errorText)) {
+            return cachedSession;
+          }
+          throw new Error(`Salesforce refresh token request failed: ${response.status} ${errorText}`);
+        }
+
+        const tokenData = (await response.json()) as OAuthTokenResponse;
+        const instanceUrl = String(tokenData.instance_url || this.config.instanceUrl || "").trim();
+        if (!tokenData.access_token || !instanceUrl) {
+          throw new Error("Salesforce refresh token response is missing access_token or instance_url");
+        }
+
+        return {
+          instanceUrl,
+          accessToken: tokenData.access_token,
+          expiresAt: Date.now() + Math.max(60_000, TOKEN_CACHE_TTL_MS)
+        };
+      }
+
+      const tokenUrl = `${this.config.loginUrl.replace(/\/$/, "")}/services/oauth2/token`;
+      const body = new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: String(this.config.clientId || ""),
+        client_secret: String(this.config.clientSecret || "")
+      });
       const response = await fetch(tokenUrl, {
         method: "POST",
         headers: {

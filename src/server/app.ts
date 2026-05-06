@@ -28,12 +28,14 @@ const CHART_JS_FILE = path.resolve(process.cwd(), "node_modules/chart.js/dist/ch
 const APP_STYLE_CSS_FILE = path.resolve(process.cwd(), "src/css/style.css");
 const AGENT_UI_CSS_FILE = path.resolve(process.cwd(), "src/css/agent-ui.css");
 const TEMPLATE_STORE_CSS_FILE = path.resolve(process.cwd(), "src/css/template-store.css");
-const UI_ASSET_VERSION = "20260505-linux-security-ui-1";
+const UI_ASSET_VERSION = "20260506-dashboard-chart-range-1";
 const ADMIN_SESSION_COOKIE_NAME = "sf_agent_session";
 const ADMIN_CSRF_COOKIE_NAME = "sf_agent_csrf";
 const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const MIGRATION_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const INSTALLER_OUTPUT_DIR = path.resolve(process.cwd(), "artifacts/installer/generated");
 const adminSessions = new Map<string, number>();
+const migrationOauthStates = new Map<string, { migrationId: string; redirectUri: string; expiresAt: number }>();
 const SETUP_EXAMPLE_JSON_FILE = path.resolve(
   process.cwd(),
   "artifacts/file-examples/setup-file-import-export.example.json"
@@ -584,6 +586,39 @@ function createCsrfToken(): string {
   return crypto.randomBytes(24).toString("hex");
 }
 
+function pruneExpiredMigrationOauthStates(now = Date.now()): void {
+  for (const [state, entry] of migrationOauthStates.entries()) {
+    if (entry.expiresAt <= now) {
+      migrationOauthStates.delete(state);
+    }
+  }
+}
+
+function createMigrationOauthState(migrationId: string, redirectUri: string): string {
+  pruneExpiredMigrationOauthStates();
+  const state = crypto.randomBytes(32).toString("hex");
+  migrationOauthStates.set(state, {
+    migrationId,
+    redirectUri,
+    expiresAt: Date.now() + MIGRATION_OAUTH_STATE_TTL_MS
+  });
+  return state;
+}
+
+function consumeMigrationOauthState(state: string): { migrationId: string; redirectUri: string } | null {
+  pruneExpiredMigrationOauthStates();
+  const entry = migrationOauthStates.get(state);
+  if (!entry) {
+    return null;
+  }
+
+  migrationOauthStates.delete(state);
+  return {
+    migrationId: entry.migrationId,
+    redirectUri: entry.redirectUri
+  };
+}
+
 function isSecureRequest(req: http.IncomingMessage): boolean {
   const forwardedProto = req.headers["x-forwarded-proto"];
   const value = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
@@ -641,6 +676,35 @@ function hasAllowedRequestOrigin(req: http.IncomingMessage): boolean {
   } catch {
     return false;
   }
+}
+
+function buildRequestOrigin(req: http.IncomingMessage): string {
+  const forwardedProto = Array.isArray(req.headers["x-forwarded-proto"]) ? req.headers["x-forwarded-proto"][0] : req.headers["x-forwarded-proto"];
+  const forwardedHost = Array.isArray(req.headers["x-forwarded-host"]) ? req.headers["x-forwarded-host"][0] : req.headers["x-forwarded-host"];
+  const protocol = String(forwardedProto || (isSecureRequest(req) ? "https" : "http")).split(",")[0].trim().toLowerCase() || "http";
+  const host = String(forwardedHost || req.headers.host || "").split(",")[0].trim();
+  if (!host) {
+    throw new Error("Host Header fehlt fuer Salesforce OAuth Redirect");
+  }
+
+  return `${protocol}://${host}`;
+}
+
+function buildMigrationOauthRedirectUri(req: http.IncomingMessage): string {
+  const configuredRedirectUri = String(process.env.SF_MIGRATION_OAUTH_REDIRECT_URI || "").trim();
+  if (configuredRedirectUri) {
+    return configuredRedirectUri;
+  }
+
+  const origin = new URL(buildRequestOrigin(req));
+  if (origin.hostname === "127.0.0.1" || origin.hostname === "::1") {
+    origin.hostname = "localhost";
+  }
+
+  origin.pathname = "/auth/migration-salesforce/callback";
+  origin.search = "";
+  origin.hash = "";
+  return origin.toString();
 }
 
 function hasValidCsrfToken(req: http.IncomingMessage): boolean {
@@ -743,6 +807,56 @@ function renderLoginShell(errorMessage = "", csrfToken = ""): string {
           errorBox.classList.remove('d-none');
         }
       });
+    </script>
+  </body>
+</html>`;
+}
+
+function renderMigrationOauthCallbackShell(options: { ok: boolean; migrationId: string; message: string }): string {
+  const payload = JSON.stringify({
+    type: "migration-salesforce-oauth",
+    ok: options.ok,
+    migrationId: options.migrationId,
+    message: options.message
+  }).replace(/</g, "\\u003c");
+
+  return `<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Salesforce Login</title>
+    <link href="/assets/bootstrap.min.css" rel="stylesheet" />
+  </head>
+  <body class="bg-light d-flex align-items-center justify-content-center min-vh-100">
+    <div class="card shadow-sm border-0" style="max-width:32rem; width:100%;">
+      <div class="card-body p-4 text-center">
+        <h1 class="h5 mb-3">${escapeHtml(options.ok ? "Salesforce-Freigabe gespeichert" : "Salesforce-Freigabe fehlgeschlagen")}</h1>
+        <p class="text-secondary small mb-0">${escapeHtml(options.message)}</p>
+      </div>
+    </div>
+    <script>
+      (function() {
+        var payload = ${payload};
+        try {
+          if (window.opener && !window.opener.closed) {
+            window.opener.postMessage(payload, window.location.origin);
+          } else {
+            setTimeout(function() {
+              window.location.href = '/';
+            }, 1200);
+          }
+        } catch (error) {
+          console.error(error);
+        }
+        setTimeout(function() {
+          try {
+            window.close();
+          } catch (error) {
+            console.error(error);
+          }
+        }, 250);
+      })();
     </script>
   </body>
 </html>`;
@@ -929,16 +1043,6 @@ function htmlShell(): string {
             <div class="col-md-3"><div class="card soft-card mini-kpi h-100"><div class="card-body"><div class="text-secondary small">Aktive Scheduler</div><h5 id="kpi-schedules" class="mb-0">0</h5><div id="kpi-schedules-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
             <div class="col-md-3"><div class="card soft-card mini-kpi h-100"><div class="card-body"><div class="text-secondary small">Connectoren</div><h5 id="kpi-connectors" class="mb-0">0</h5><div id="kpi-connectors-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
           </div>
-          <div class="d-flex justify-content-between align-items-center mb-2">
-            <div class="small text-secondary">Dashboard Zeitraum</div>
-            <div class="d-flex gap-2 align-items-center flex-wrap justify-content-end">
-              <div id="overview-stats-range" class="btn-group btn-group-sm overview-stats-range" role="group" aria-label="Dashboard Zeitraum">
-                <button type="button" class="btn btn-outline-secondary" data-range="day">Heute</button>
-                <button type="button" class="btn btn-outline-secondary active" data-range="month">Monat</button>
-                <button type="button" class="btn btn-outline-secondary" data-range="year">Jahr</button>
-              </div>
-            </div>
-          </div>
           <div class="row g-3 mb-3">
             <div class="col-lg-3 col-md-6">
               <div class="card soft-card stats-card h-100">
@@ -1018,7 +1122,14 @@ function htmlShell(): string {
             </div>
             <div class="col-lg-6">
               <div class="card soft-card h-100">
-                <div class="card-header bg-white fw-semibold">Datensätze Verlauf</div>
+                <div class="card-header bg-white d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                  <span class="fw-semibold">Datensätze Verlauf</span>
+                  <div id="overview-stats-range" class="btn-group btn-group-sm overview-stats-range" role="group" aria-label="Dashboard Zeitraum">
+                    <button type="button" class="btn btn-outline-secondary" data-range="day">Heute</button>
+                    <button type="button" class="btn btn-outline-secondary active" data-range="month">Monat</button>
+                    <button type="button" class="btn btn-outline-secondary" data-range="year">Jahr</button>
+                  </div>
+                </div>
                 <div class="card-body">
                   <div class="records-chart-wrap">
                     <canvas id="records-chart"></canvas>
@@ -1248,7 +1359,7 @@ function htmlShell(): string {
                     <select id="log-run-select" class="form-select"></select>
                     <button id="load-logs" class="btn btn-outline-primary">Laden</button>
                   </div>
-                  <pre id="logs-output" class="bg-dark text-light p-3 rounded small mb-0">Noch keine Logs geladen.</pre>
+                  <pre id="logs-output" class="bg-dark text-light p-3 rounded small mb-0" style="white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; overflow-x: hidden;">Noch keine Logs geladen.</pre>
                 </div>
               </div>
             </div>
@@ -1258,6 +1369,21 @@ function htmlShell(): string {
 
         <!-- Migration Tab -->
         <section class="tab-pane fade" id="tab-migration" role="tabpanel">
+          <div class="card soft-card mb-3">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+              <div>
+                <div class="migration-card-title">Migrationen mit eigenem Login</div>
+                <div class="migration-card-subtitle">Jede Migration traegt ihre Salesforce-Freigabe ueber die Login-Seite inklusive Status, letzter Ausfuehrung und Fehlerbild selbst.</div>
+              </div>
+              <div class="d-flex align-items-center gap-2 flex-wrap migration-header-actions">
+                <button id="new-migration-instance" class="btn btn-sm btn-outline-primary">Neue Migration</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div id="migration-instance-summary" class="small text-secondary mb-3">Migrations-Instanzen werden geladen...</div>
+              <div id="migration-instance-panels" class="row g-3"></div>
+            </div>
+          </div>
           <div class="card soft-card mb-3">
             <div class="card-header bg-white d-flex justify-content-between align-items-center">
               <div>
@@ -1297,6 +1423,7 @@ function htmlShell(): string {
             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
           </div>
           <div class="modal-body">
+            <div id="mig-modal-error" class="alert alert-danger d-none py-2" role="alert"></div>
             <!-- Wizard Steps Indicator -->
             <div class="migration-wizard-steps-line mb-4" id="mig-wizard-steps" style="--wizard-step-count: 7; --wizard-step-count-mobile: 3;">
               <div class="migration-wizard-step is-active" data-mig-step="1"><span class="migration-wizard-step-index">1</span><span class="migration-wizard-step-label">Objekte</span></div>
@@ -1319,6 +1446,65 @@ function htmlShell(): string {
                 <div class="col-md-6">
                   <label class="form-label">Beschreibung</label>
                   <input type="text" id="mig-description" class="form-control" placeholder="Optional" />
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">Salesforce Quelle</label>
+                  <select id="mig-instance-source" class="form-select">
+                    <option value="embedded">Eigenen Login in Migration speichern</option>
+                    <option value="existing">Bestehende Instanz verwenden</option>
+                  </select>
+                </div>
+                <div class="col-md-8 d-none" id="mig-existing-instance-wrap">
+                  <label class="form-label">Bestehende Instanz</label>
+                  <select id="mig-existing-instance" class="form-select"></select>
+                  <div class="form-text">Verwendet eine bereits im Agenten konfigurierte Salesforce-Instanz.</div>
+                </div>
+                <div class="col-md-4" id="mig-login-environment-wrap">
+                  <label class="form-label">Umgebung</label>
+                  <select id="mig-login-environment" class="form-select">
+                    <option value="sandbox">Sandbox</option>
+                    <option value="production">Produktion</option>
+                  </select>
+                </div>
+                <div class="col-md-4" id="mig-login-auth-type-wrap">
+                  <label class="form-label">Login-Modus</label>
+                  <select id="mig-login-auth-type" class="form-select">
+                    <option value="password">Benutzername / Passwort</option>
+                    <option value="client_credentials">Client ID + Client Secret</option>
+                    <option value="oauth_refresh_token">Salesforce Login mit Allow</option>
+                  </select>
+                </div>
+                <div class="col-md-8" id="mig-login-url-wrap">
+                  <label class="form-label">Login-URL</label>
+                  <input type="text" id="mig-login-url" class="form-control" placeholder="https://test.salesforce.com" />
+                  <div class="form-text">Standard ist die zur Umgebung passende Salesforce-Login-Seite. Bei Bedarf kannst du hier eine andere Salesforce-Domain eintragen.</div>
+                </div>
+                <div class="col-md-6" id="mig-login-username-wrap">
+                  <label class="form-label">Salesforce Benutzername</label>
+                  <input type="text" id="mig-login-username" class="form-control" placeholder="user@example.com" />
+                </div>
+                <div class="col-md-6" id="mig-login-password-wrap">
+                  <label class="form-label">Passwort</label>
+                  <input type="password" id="mig-login-password" class="form-control" />
+                </div>
+                <div class="col-md-6" id="mig-login-security-token-wrap">
+                  <label class="form-label">Security Token (optional)</label>
+                  <input type="password" id="mig-login-security-token" class="form-control" />
+                </div>
+                <div class="col-md-6 d-none" id="mig-login-client-id-wrap">
+                  <label class="form-label">Client ID</label>
+                  <input type="text" id="mig-login-client-id" class="form-control" placeholder="3MVG9..." />
+                </div>
+                <div class="col-md-6 d-none" id="mig-login-client-secret-wrap">
+                  <label class="form-label">Client Secret</label>
+                  <input type="password" id="mig-login-client-secret" class="form-control" />
+                </div>
+                <div class="col-md-8" id="mig-login-status-wrap">
+                  <label class="form-label">Salesforce Verbindung</label>
+                  <div id="mig-login-status" class="small text-secondary border rounded-3 px-3 py-2 bg-light-subtle">Noch keine Salesforce-Freigabe vorhanden.</div>
+                </div>
+                <div class="col-md-4 d-flex align-items-end" id="mig-login-authorize-wrap">
+                  <button type="button" class="btn btn-outline-primary w-100" id="mig-login-authorize">Mit Salesforce verbinden</button>
                 </div>
               </div>
               <div id="mig-pending-import-hint" class="alert alert-info py-2 small d-none"></div>
@@ -1462,6 +1648,28 @@ function htmlShell(): string {
           <div class="modal-footer">
             <button type="button" class="btn btn-light" data-bs-dismiss="modal">Abbrechen</button>
             <button id="save-instance" type="button" class="btn btn-primary">Instanz speichern</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="migration-instance-modal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header"><h5 class="modal-title">Migrations-Instanz verbinden</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+          <div class="modal-body">
+            <div class="row g-2">
+              <div class="col-12"><label class="form-label">Name</label><input id="mig-ins-name" class="form-control" placeholder="z. B. Sandbox Migration Team A" /></div>
+              <div class="col-md-6"><label class="form-label">Umgebung</label><select id="mig-ins-environment" class="form-select"><option value="sandbox">Sandbox</option><option value="production">Produktion</option></select></div>
+              <div class="col-md-6"><label class="form-label">Query Limit (optional)</label><input id="mig-ins-query-limit" class="form-control" type="number" /></div>
+              <div class="col-12"><label class="form-label">Client ID</label><input id="mig-ins-client-id" class="form-control" /></div>
+              <div class="col-12"><label class="form-label">Client Secret</label><input id="mig-ins-client-secret" class="form-control" type="password" /></div>
+              <div class="col-12"><div id="mig-ins-login-url-hint" class="form-text">Verwendete Login-URL: https://test.salesforce.com</div></div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-light" data-bs-dismiss="modal">Abbrechen</button>
+            <button id="save-migration-instance" type="button" class="btn btn-primary">Speichern und verbinden</button>
           </div>
         </div>
       </div>
@@ -1967,7 +2175,7 @@ function htmlShell(): string {
           <div class="modal-body p-0">
             <div class="table-responsive">
               <input type="search" class="form-control form-control-sm mb-2" placeholder="Suche Logs..." id="logs-filter" />
-              <table class="table table-sm mb-0" id="logs-table">
+              <table class="table table-sm mb-0" id="logs-table" style="table-layout: fixed; width: 100%;">
                 <thead>
                   <tr>
                     <th>Zeit</th>
@@ -2068,6 +2276,8 @@ function htmlShell(): string {
         activeRunVisible: false,
         name: '',
         description: '',
+        instanceId: '',
+        salesforceLogin: null,
         objects: [],
         dependencies: [],
         executionPlan: [],
@@ -2082,6 +2292,232 @@ function htmlShell(): string {
         pendingImportSuggestions: [],
         pendingImportAnalysis: null
       };
+
+      function getMigLoginUrlForEnvironment(environment) {
+        return String(environment || 'sandbox') === 'production'
+          ? 'https://login.salesforce.com'
+          : 'https://test.salesforce.com';
+      }
+
+      function populateMigExistingInstanceOptions() {
+        const select = document.getElementById('mig-existing-instance');
+        const globalSelect = document.getElementById('instance-select');
+        if (!select) {
+          return;
+        }
+
+        const options = globalSelect
+          ? Array.from(globalSelect.options).filter((option) => String(option.value || '').trim())
+          : [];
+
+        if (!options.length) {
+          select.innerHTML = '<option value="">Keine bestehenden Instanzen konfiguriert</option>';
+          select.value = '';
+          migState.instanceId = '';
+          return;
+        }
+
+        select.innerHTML = options.map((option) =>
+          '<option value="' + esc(option.value) + '">' + esc(option.textContent || option.value) + '</option>'
+        ).join('');
+
+        const desiredInstanceId = String(migState.instanceId || state.instanceId || '').trim();
+        const hasDesiredInstance = options.some((option) => String(option.value || '').trim() === desiredInstanceId);
+        select.value = hasDesiredInstance ? desiredInstanceId : String(options[0].value || '').trim();
+        migState.instanceId = String(select.value || '').trim();
+      }
+
+      function renderMigSalesforceLoginStatus() {
+        const statusEl = document.getElementById('mig-login-status');
+        const authorizeButton = document.getElementById('mig-login-authorize');
+        const instanceSourceEl = document.getElementById('mig-instance-source');
+        const existingInstanceWrap = document.getElementById('mig-existing-instance-wrap');
+        const existingInstanceEl = document.getElementById('mig-existing-instance');
+        const environmentWrap = document.getElementById('mig-login-environment-wrap');
+        const authTypeWrap = document.getElementById('mig-login-auth-type-wrap');
+        const loginUrlWrap = document.getElementById('mig-login-url-wrap');
+        const statusWrap = document.getElementById('mig-login-status-wrap');
+        const authorizeWrap = document.getElementById('mig-login-authorize-wrap');
+        const authTypeEl = document.getElementById('mig-login-auth-type');
+        const usernameWrap = document.getElementById('mig-login-username-wrap');
+        const passwordWrap = document.getElementById('mig-login-password-wrap');
+        const securityTokenWrap = document.getElementById('mig-login-security-token-wrap');
+        const clientIdWrap = document.getElementById('mig-login-client-id-wrap');
+        const clientSecretWrap = document.getElementById('mig-login-client-secret-wrap');
+        if (!statusEl) {
+          return;
+        }
+
+        const instanceSource = String(instanceSourceEl && instanceSourceEl.value || (migState.salesforceLogin ? 'embedded' : 'existing'));
+        const isExistingInstanceMode = instanceSource === 'existing';
+        if (existingInstanceWrap) existingInstanceWrap.classList.toggle('d-none', !isExistingInstanceMode);
+        if (environmentWrap) environmentWrap.classList.toggle('d-none', isExistingInstanceMode);
+        if (authTypeWrap) authTypeWrap.classList.toggle('d-none', isExistingInstanceMode);
+        if (loginUrlWrap) loginUrlWrap.classList.toggle('d-none', isExistingInstanceMode);
+        if (authorizeWrap) authorizeWrap.classList.toggle('d-none', isExistingInstanceMode);
+        if (isExistingInstanceMode) {
+          populateMigExistingInstanceOptions();
+          if (usernameWrap) usernameWrap.classList.add('d-none');
+          if (passwordWrap) passwordWrap.classList.add('d-none');
+          if (securityTokenWrap) securityTokenWrap.classList.add('d-none');
+          if (clientIdWrap) clientIdWrap.classList.add('d-none');
+          if (clientSecretWrap) clientSecretWrap.classList.add('d-none');
+          if (statusWrap) statusWrap.classList.remove('d-none');
+          const selectedLabel = String(existingInstanceEl && existingInstanceEl.selectedOptions && existingInstanceEl.selectedOptions[0] && existingInstanceEl.selectedOptions[0].textContent || '').trim();
+          if (migState.instanceId) {
+            statusEl.className = 'small text-secondary border rounded-3 px-3 py-2 bg-light-subtle';
+            statusEl.textContent = 'Verwendet bestehende Instanz: ' + String(selectedLabel || migState.instanceId);
+          } else {
+            statusEl.className = 'small text-danger border rounded-3 px-3 py-2 bg-danger-subtle';
+            statusEl.textContent = 'Keine bestehende Instanz ausgewählt.';
+          }
+          return;
+        }
+
+        const login = migState.salesforceLogin;
+        const authType = String(authTypeEl && authTypeEl.value || login && login.authType || 'password');
+        const isPasswordMode = authType === 'password';
+        const isClientCredentialsMode = authType === 'client_credentials';
+        if (usernameWrap) usernameWrap.classList.toggle('d-none', !isPasswordMode);
+        if (passwordWrap) passwordWrap.classList.toggle('d-none', !isPasswordMode);
+        if (securityTokenWrap) securityTokenWrap.classList.toggle('d-none', !isPasswordMode);
+        if (clientIdWrap) clientIdWrap.classList.toggle('d-none', !isClientCredentialsMode);
+        if (clientSecretWrap) clientSecretWrap.classList.toggle('d-none', !isClientCredentialsMode);
+        if (!login) {
+          statusEl.className = 'small text-secondary border rounded-3 px-3 py-2 bg-light-subtle';
+          statusEl.textContent = isPasswordMode
+            ? 'Noch keine Salesforce-Zugangsdaten hinterlegt.'
+            : (isClientCredentialsMode
+              ? 'Noch keine Client-ID und kein Client-Secret hinterlegt.'
+              : 'Noch keine Salesforce-Freigabe vorhanden.');
+          if (authorizeButton) authorizeButton.textContent = isPasswordMode || isClientCredentialsMode ? 'Login testen' : 'Mit Salesforce verbinden';
+          return;
+        }
+
+        if (String(login.lastConnectionStatus || 'never') === 'connected') {
+          const orgName = login.orgOverview && (login.orgOverview.organizationName || login.orgOverview.organizationId || login.orgOverview.instanceUrl) || login.instanceUrl || login.loginUrl;
+          statusEl.className = 'small text-success border rounded-3 px-3 py-2 bg-success-subtle';
+          statusEl.textContent = 'Verbunden mit ' + String(orgName || 'Salesforce') + (login.lastConnectedAt ? ' am ' + formatDate(login.lastConnectedAt, 'short') : '') + '.';
+          if (authorizeButton) authorizeButton.textContent = isPasswordMode || isClientCredentialsMode ? 'Login erneut testen' : 'Erneut mit Salesforce verbinden';
+          return;
+        }
+
+        if (String(login.lastConnectionStatus || 'never') === 'error' && login.lastConnectionError) {
+          statusEl.className = 'small text-danger border rounded-3 px-3 py-2 bg-danger-subtle';
+          statusEl.textContent = 'Letzter Loginfehler: ' + String(login.lastConnectionError || 'Unbekannter Fehler');
+          if (authorizeButton) authorizeButton.textContent = isPasswordMode || isClientCredentialsMode ? 'Login erneut testen' : 'Salesforce Login erneut starten';
+          return;
+        }
+
+        statusEl.className = 'small text-secondary border rounded-3 px-3 py-2 bg-light-subtle';
+        statusEl.textContent = isPasswordMode
+          ? 'Noch nicht verbunden. Hinterlege Benutzername und Passwort und teste dann den Login.'
+          : (isClientCredentialsMode
+            ? 'Noch nicht verbunden. Hinterlege Client ID und Client Secret und teste dann den Login.'
+            : 'Noch nicht verbunden. Der Login erfolgt ueber die Salesforce-Login-Seite mit anschliessendem Allow.');
+        if (authorizeButton) authorizeButton.textContent = isPasswordMode || isClientCredentialsMode ? 'Login testen' : 'Mit Salesforce verbinden';
+      }
+
+      function syncMigSalesforceLoginFromForm() {
+        const instanceSourceEl = document.getElementById('mig-instance-source');
+        const existingInstanceEl = document.getElementById('mig-existing-instance');
+        const environmentEl = document.getElementById('mig-login-environment');
+        const authTypeEl = document.getElementById('mig-login-auth-type');
+        const loginUrlEl = document.getElementById('mig-login-url');
+        const usernameEl = document.getElementById('mig-login-username');
+        const passwordEl = document.getElementById('mig-login-password');
+        const securityTokenEl = document.getElementById('mig-login-security-token');
+        const clientIdEl = document.getElementById('mig-login-client-id');
+        const clientSecretEl = document.getElementById('mig-login-client-secret');
+        const instanceSource = String(instanceSourceEl && instanceSourceEl.value || (migState.salesforceLogin ? 'embedded' : 'existing'));
+        if (instanceSource === 'existing') {
+          migState.instanceId = String(existingInstanceEl && existingInstanceEl.value || migState.instanceId || state.instanceId || '').trim();
+          migState.salesforceLogin = null;
+          renderMigSalesforceLoginStatus();
+          return;
+        }
+        migState.instanceId = '';
+        const environment = String(environmentEl && environmentEl.value || 'sandbox') === 'production' ? 'production' : 'sandbox';
+        const rawAuthType = String(authTypeEl && authTypeEl.value || migState.salesforceLogin && migState.salesforceLogin.authType || 'password');
+        const authType = rawAuthType === 'oauth_refresh_token'
+          ? 'oauth_refresh_token'
+          : (rawAuthType === 'client_credentials' ? 'client_credentials' : 'password');
+        const defaultLoginUrl = getMigLoginUrlForEnvironment(environment);
+        const previousEnvironment = String(migState.salesforceLogin && migState.salesforceLogin.environment || environment) === 'production' ? 'production' : 'sandbox';
+        const previousDefaultLoginUrl = getMigLoginUrlForEnvironment(previousEnvironment);
+        const currentLoginUrlValue = String(loginUrlEl && loginUrlEl.value || migState.salesforceLogin && migState.salesforceLogin.loginUrl || '').trim();
+        const loginUrl = currentLoginUrlValue && currentLoginUrlValue !== previousDefaultLoginUrl
+          ? currentLoginUrlValue
+          : defaultLoginUrl;
+        if (loginUrlEl) {
+          loginUrlEl.value = loginUrl;
+        }
+        const username = String(usernameEl && usernameEl.value || '').trim();
+        const password = String(passwordEl && passwordEl.value || '');
+        const securityToken = String(securityTokenEl && securityTokenEl.value || '').trim();
+        const clientId = String(clientIdEl && clientIdEl.value || '').trim();
+        const clientSecret = String(clientSecretEl && clientSecretEl.value || '').trim();
+        const previousAuthType = String(migState.salesforceLogin && migState.salesforceLogin.authType || '');
+        const authTypeChanged = previousAuthType && previousAuthType !== authType;
+        migState.salesforceLogin = {
+          id: migState.id || '',
+          name: (migState.name || '').trim(),
+          environment,
+          loginUrl,
+          authType,
+          username: authType === 'password' ? username : undefined,
+          password: authType === 'password' ? password : undefined,
+          securityToken: authType === 'password' ? (securityToken || undefined) : undefined,
+          clientId: authType === 'client_credentials' ? (clientId || undefined) : undefined,
+          clientSecret: authType === 'client_credentials' ? (clientSecret || undefined) : undefined,
+          instanceUrl: migState.salesforceLogin && migState.salesforceLogin.instanceUrl,
+          queryLimit: undefined,
+          lastConnectionStatus: authTypeChanged ? 'never' : (migState.salesforceLogin && migState.salesforceLogin.lastConnectionStatus || 'never'),
+          lastConnectedAt: authTypeChanged ? undefined : (migState.salesforceLogin && migState.salesforceLogin.lastConnectedAt),
+          lastConnectionError: authTypeChanged ? undefined : (migState.salesforceLogin && migState.salesforceLogin.lastConnectionError),
+          orgOverview: migState.salesforceLogin && migState.salesforceLogin.orgOverview,
+          objectCount: migState.salesforceLogin && migState.salesforceLogin.objectCount
+        };
+        renderMigSalesforceLoginStatus();
+      }
+
+      async function ensureMigRuntimeInstanceId() {
+        syncMigSalesforceLoginFromForm();
+        if (migState.salesforceLogin) {
+          if (!migState.id) {
+            await migSave();
+          }
+          const isPasswordMode = String(migState.salesforceLogin.authType || 'password') === 'password';
+          const isClientCredentialsMode = String(migState.salesforceLogin.authType || 'password') === 'client_credentials';
+          if (isPasswordMode) {
+            if (!String(migState.salesforceLogin.username || '').trim() || !String(migState.salesforceLogin.password || '')) {
+              throw new Error('Bitte zuerst Benutzername und Passwort fuer diese Migration hinterlegen.');
+            }
+            return migState.id ? 'migration:' + migState.id : '';
+          }
+          if (isClientCredentialsMode) {
+            if (!String(migState.salesforceLogin.clientId || '').trim() || !String(migState.salesforceLogin.clientSecret || '').trim()) {
+              throw new Error('Bitte zuerst Client ID und Client Secret fuer diese Migration hinterlegen.');
+            }
+            return migState.id ? 'migration:' + migState.id : '';
+          }
+          if (!migState.salesforceLogin.instanceUrl && String(migState.salesforceLogin.lastConnectionStatus || 'never') !== 'connected') {
+            throw new Error('Bitte zuerst den Salesforce-Login fuer diese Migration ueber die Login-Seite abschliessen.');
+          }
+          return migState.id ? 'migration:' + migState.id : '';
+        }
+        return String(migState.instanceId || state.instanceId || '').trim();
+      }
+
+      async function startMigrationSalesforceOAuth(migrationId, options) {
+        const targetMigrationId = String(migrationId || '').trim();
+        if (!targetMigrationId) {
+          throw new Error('Migration muss erst gespeichert werden, bevor der Salesforce-Login gestartet werden kann.');
+        }
+
+        const startUrl = withInstance('/auth/migration-salesforce/start?migrationId=' + encodeURIComponent(targetMigrationId));
+        window.location.assign(startUrl);
+      }
 
       function getCsrfToken() {
         return String(document.querySelector('meta[name="sf-agent-csrf-token"]')?.getAttribute('content') || '').trim();
@@ -3576,6 +4012,25 @@ function htmlShell(): string {
         }
       }
 
+      function showMigrationModalError(message) {
+        const el = document.getElementById('mig-modal-error');
+        if (!el) {
+          showError(message);
+          return;
+        }
+        el.textContent = message;
+        el.classList.remove('d-none');
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+
+      function clearMigrationModalError() {
+        const el = document.getElementById('mig-modal-error');
+        if (el) {
+          el.textContent = '';
+          el.classList.add('d-none');
+        }
+      }
+
       function withInstance(path) {
         const url = new URL(path, window.location.origin);
         if (state.instanceId) {
@@ -4473,6 +4928,56 @@ function htmlShell(): string {
         }
       }
 
+      function getSchedulerMappedSourceFieldsForTargetField(targetField) {
+        const normalizedTargetField = normalizeFieldKey(targetField);
+        if (!normalizedTargetField) {
+          return [];
+        }
+
+        return getSchedulerMappingRules()
+          .filter((rule) => normalizeFieldKey(rule?.targetField) === normalizedTargetField)
+          .map((rule) => String(rule?.sourceField || '').trim())
+          .filter(Boolean);
+      }
+
+      function getSchedulerSalesforceUpsertHeuristicWarning() {
+        if (!isSchedulerSalesforceUpsertSelection()) {
+          return '';
+        }
+
+        const upsertField = String(document.getElementById('sch-external-id-field')?.value || getSchedulerTargetDefinitionUpsertFieldValue() || '').trim();
+        if (!upsertField) {
+          return '';
+        }
+
+        const mappedSourceFields = getSchedulerMappedSourceFieldsForTargetField(upsertField);
+        if (!mappedSourceFields.length) {
+          return '';
+        }
+
+        const primarySourceField = mappedSourceFields[0];
+        const normalizedUpsertField = normalizeFieldKey(upsertField);
+        const normalizedPrimarySourceField = normalizeFieldKey(primarySourceField);
+        const sourceDefinitionText = String(document.getElementById('sch-source-definition')?.value || '').trim().toLowerCase();
+
+        let suggestedSourceField = '';
+        if ((normalizedUpsertField === 'erpaccountnumberc' || normalizedUpsertField === 'erpcontactnumberc') && sourceDefinitionText.includes('external_key')) {
+          suggestedSourceField = 'external_key';
+        } else if (normalizedUpsertField === 'erpordernumberc' && sourceDefinitionText.includes('order_number')) {
+          suggestedSourceField = 'order_number';
+        } else if (normalizedUpsertField === 'erpquotenumberc' && sourceDefinitionText.includes('quote_number')) {
+          suggestedSourceField = 'quote_number';
+        } else if (normalizedUpsertField === 'erpproductcodec' && sourceDefinitionText.includes('product_code')) {
+          suggestedSourceField = 'product_code';
+        }
+
+        if (!suggestedSourceField || normalizeFieldKey(suggestedSourceField) === normalizedPrimarySourceField) {
+          return '';
+        }
+
+        return 'Hinweis: Das Upsert-Feld ' + upsertField + ' ist aktuell mit ' + primarySourceField + ' verknuepft. Die Quelle enthaelt auch ' + suggestedSourceField + ', was fuer dieses Feld typischer wirkt.';
+      }
+
       function hasSchedulerPricebook2IdMapping() {
         return getSchedulerMappingRules().some((rule) => String(rule?.targetField || '').trim() === 'Pricebook2Id');
       }
@@ -4543,6 +5048,30 @@ function htmlShell(): string {
         const objectApiName = String(document.getElementById('sch-object')?.value || '').trim();
         const upsertField = String(document.getElementById('sch-external-id-field')?.value || getSchedulerTargetDefinitionUpsertFieldValue() || '').trim();
 
+        if (!upsertField) {
+          return 'Bitte waehle ein Upsert-Feld fuer die Salesforce-Zielkonfiguration.';
+        }
+
+        const rawTargetDefinition = String(document.getElementById('sch-target-definition')?.value || '').trim();
+        if (rawTargetDefinition) {
+          try {
+            const parsed = JSON.parse(rawTargetDefinition);
+            if (Array.isArray(parsed?.importProfiles)) {
+              const baseExternalIdField = String(parsed?.externalIdField || '').trim();
+              if (baseExternalIdField && baseExternalIdField !== upsertField) {
+                return 'Die Zielkonfiguration ist widerspruechlich: Basis-External-ID und aktive Importprofil-External-ID unterscheiden sich.';
+              }
+            }
+          } catch {
+            // JSON validity is handled elsewhere.
+          }
+        }
+
+        const providedTargetFieldKeys = getProvidedSchedulerTargetFieldKeys();
+        if (!providedTargetFieldKeys.has(normalizeFieldKey(upsertField))) {
+          return 'Das Upsert-Feld ' + upsertField + ' wird im Mapping oder als statischer Zielwert nicht bereitgestellt.';
+        }
+
         if (objectApiName === 'PricebookEntry' && upsertField === 'ProductCode' && !hasSchedulerPricebook2IdConfigured()) {
           return 'ProductCode ist für PricebookEntry nur zulässig, wenn Pricebook2Id als Ziel-Feld oder Mapping gesetzt ist.';
         }
@@ -4557,6 +5086,7 @@ function htmlShell(): string {
         const pricebookHelp = document.getElementById('sch-pricebook2id-help');
         const baseHelpText = String(help?.dataset.baseText || 'Wählen Sie das Feld, das für Upsert verwendet werden soll.');
         const message = getSchedulerSalesforceUpsertConstraintMessage();
+        const warning = message ? '' : getSchedulerSalesforceUpsertHeuristicWarning();
         const requiresPricebook2Id = isSchedulerPricebookEntryProductCodeSelection();
 
         if (select) {
@@ -4568,8 +5098,9 @@ function htmlShell(): string {
         }
 
         if (help) {
-          help.textContent = message || baseHelpText;
+          help.textContent = message || warning || baseHelpText;
           help.classList.toggle('text-danger', Boolean(message));
+          help.classList.toggle('text-warning', !message && Boolean(warning));
         }
 
         if (pricebookHelp) {
@@ -7306,6 +7837,15 @@ function htmlShell(): string {
           ' - ' + new Date(bucket.end).toLocaleString('de-DE');
 
         const body = document.getElementById('logs-modal-body');
+        const logsFilter = document.getElementById('logs-filter');
+        if (logsFilter) {
+          logsFilter.value = '';
+          try {
+            localStorage.removeItem(TABLE_STORAGE_KEY + '.logs');
+          } catch (e) {
+            // Ignore storage errors
+          }
+        }
         if (!rows.length) {
           body.innerHTML = '<tr><td colspan="6" class="text-secondary p-3">Keine Logs in diesem Zeitraum.</td></tr>';
           logsModal.show();
@@ -7317,9 +7857,9 @@ function htmlShell(): string {
             '<td>' + esc(entry.createdAt ? new Date(entry.createdAt).toLocaleString('de-DE') : '-') + '</td>' +
             '<td>' + esc(entry.level || '-') + '</td>' +
             '<td>' + esc(entry.connectorName || '-') + '</td>' +
-            '<td>' + esc(entry.connectorName || entry.scheduleName || '-') + '</td>' +
+            '<td>' + esc(entry.scheduleName || '-') + '</td>' +
             '<td>' + esc(entry.step || '-') + '</td>' +
-            '<td>' + esc(entry.message || '-') + '</td>' +
+            '<td style="white-space: normal; word-break: break-word; overflow-wrap: anywhere;">' + esc(entry.message || '-') + '</td>' +
           '</tr>'
         ).join('');
 
@@ -10765,8 +11305,8 @@ function htmlShell(): string {
         let sfObjects = [];
         try {
           const [fieldsRes, objectsRes] = await Promise.all([
-            fetch('/api/salesforce/object-fields?object=' + encodeURIComponent(obj.salesforceObject) + '&instanceId=' + encodeURIComponent(state.instanceId || '')),
-            fetch('/api/salesforce/objects?instanceId=' + encodeURIComponent(state.instanceId || ''))
+            fetch('/api/salesforce/object-fields?object=' + encodeURIComponent(obj.salesforceObject) + '&instanceId=' + encodeURIComponent(await ensureMigRuntimeInstanceId() || '')),
+            fetch('/api/salesforce/objects?instanceId=' + encodeURIComponent(await ensureMigRuntimeInstanceId() || ''))
           ]);
           if (fieldsRes.ok) sfFields = await fieldsRes.json();
           if (objectsRes.ok) sfObjects = await objectsRes.json();
@@ -10948,7 +11488,7 @@ function htmlShell(): string {
             return;
           }
           try {
-            const res = await fetch('/api/salesforce/object-fields?object=' + encodeURIComponent(selectedObject) + '&instanceId=' + encodeURIComponent(state.instanceId || ''));
+            const res = await fetch('/api/salesforce/object-fields?object=' + encodeURIComponent(selectedObject) + '&instanceId=' + encodeURIComponent(await ensureMigRuntimeInstanceId() || ''));
             if (!res.ok) return;
             const fields = await res.json();
             const externalIdFields = (fields || []).filter((f) => f && f.isExternalId === true);
@@ -11214,6 +11754,11 @@ function htmlShell(): string {
         const descEl = document.getElementById('mig-description');
         if (nameEl) migState.name = nameEl.value.trim() || migState.name;
         if (descEl) migState.description = descEl.value.trim();
+        syncMigSalesforceLoginFromForm();
+        if (migState.salesforceLogin) {
+          migState.salesforceLogin.name = migState.name || migState.salesforceLogin.name;
+          migState.salesforceLogin.id = migState.id || migState.salesforceLogin.id || '';
+        }
 
         migState.objects = sanitizeMigObjects(migState.objects);
 
@@ -11221,7 +11766,8 @@ function htmlShell(): string {
           id: migState.id,
           name: migState.name,
           description: migState.description,
-          instanceId: state.instanceId || undefined,
+          instanceId: migState.salesforceLogin ? undefined : (migState.instanceId || state.instanceId || undefined),
+          salesforceLogin: migState.salesforceLogin || null,
           status: 'draft',
           objects: sanitizeMigObjects(migState.objects),
           dependencies: migState.dependencies,
@@ -11237,6 +11783,7 @@ function htmlShell(): string {
       }
 
       function openMigWizard(migration, options) {
+        clearMigrationModalError();
         const requestedStep = Number(options && options.startStep ? options.startStep : 1);
         const hasLastRunResult = !!(migration && migration.lastRunResult && (
           (Array.isArray(migration.lastRunResult.steps) && migration.lastRunResult.steps.length) ||
@@ -11248,6 +11795,8 @@ function htmlShell(): string {
         migState.activeRunVisible = migState.status === 'running' || hasLastRunResult || !!(options && options.showRunSummary);
         migState.name = migration ? migration.name : (options && options.name ? options.name : '');
         migState.description = migration ? (migration.description || '') : (options && options.description ? options.description : '');
+        migState.instanceId = migration ? String(migration.instanceId || '') : String(state.instanceId || '');
+        migState.salesforceLogin = migration ? JSON.parse(JSON.stringify(migration.salesforceLogin || null)) : null;
         migState.objects = migration ? sanitizeMigObjects(migration.objects || []) : [];
         migState.dependencies = migration ? JSON.parse(JSON.stringify(migration.dependencies || [])) : [];
         migState.executionPlan = migration ? JSON.parse(JSON.stringify(migration.executionPlan || [])) : [];
@@ -11269,8 +11818,30 @@ function htmlShell(): string {
 
         const nameEl = document.getElementById('mig-name');
         const descEl = document.getElementById('mig-description');
+        const instanceSourceEl = document.getElementById('mig-instance-source');
+        const existingInstanceEl = document.getElementById('mig-existing-instance');
+        const loginEnvironmentEl = document.getElementById('mig-login-environment');
+        const loginAuthTypeEl = document.getElementById('mig-login-auth-type');
+        const loginUrlEl = document.getElementById('mig-login-url');
+        const loginUsernameEl = document.getElementById('mig-login-username');
+        const loginPasswordEl = document.getElementById('mig-login-password');
+        const loginSecurityTokenEl = document.getElementById('mig-login-security-token');
+        const loginClientIdEl = document.getElementById('mig-login-client-id');
+        const loginClientSecretEl = document.getElementById('mig-login-client-secret');
         if (nameEl) nameEl.value = migState.name;
         if (descEl) descEl.value = migState.description;
+        if (instanceSourceEl) instanceSourceEl.value = migration ? (migration.salesforceLogin ? 'embedded' : 'existing') : 'embedded';
+        populateMigExistingInstanceOptions();
+        if (existingInstanceEl) existingInstanceEl.value = String(migState.instanceId || state.instanceId || existingInstanceEl.value || '');
+        if (loginEnvironmentEl) loginEnvironmentEl.value = String(migState.salesforceLogin && migState.salesforceLogin.environment || 'sandbox');
+        if (loginAuthTypeEl) loginAuthTypeEl.value = String(migState.salesforceLogin && migState.salesforceLogin.authType || 'password');
+        if (loginUrlEl) loginUrlEl.value = String(migState.salesforceLogin && migState.salesforceLogin.loginUrl || getMigLoginUrlForEnvironment(migState.salesforceLogin && migState.salesforceLogin.environment));
+        if (loginUsernameEl) loginUsernameEl.value = String(migState.salesforceLogin && migState.salesforceLogin.username || '');
+        if (loginPasswordEl) loginPasswordEl.value = String(migState.salesforceLogin && migState.salesforceLogin.password || '');
+        if (loginSecurityTokenEl) loginSecurityTokenEl.value = String(migState.salesforceLogin && migState.salesforceLogin.securityToken || '');
+        if (loginClientIdEl) loginClientIdEl.value = String(migState.salesforceLogin && migState.salesforceLogin.clientId || '');
+        if (loginClientSecretEl) loginClientSecretEl.value = String(migState.salesforceLogin && migState.salesforceLogin.clientSecret || '');
+        renderMigSalesforceLoginStatus();
 
         resetMigTransientUi();
 
@@ -11658,6 +12229,63 @@ ${renderMigrationRunResultModule()}
         showToast('Migration gespeichert.');
       });
 
+      document.getElementById('mig-login-environment')?.addEventListener('change', () => {
+        syncMigSalesforceLoginFromForm();
+        migState.sfObjects = [];
+        const listEl = document.getElementById('mig-sf-objects-list');
+        const searchWrap = document.getElementById('mig-sf-objects-search-wrap');
+        if (listEl) {
+          listEl.innerHTML = '<div class="text-secondary small">Login-Umgebung gewechselt. Bitte Salesforce-Objekte fuer diese Migration neu laden.</div>';
+        }
+        if (searchWrap) {
+          searchWrap.classList.add('d-none');
+        }
+      });
+
+      document.getElementById('mig-login-auth-type')?.addEventListener('change', () => {
+        syncMigSalesforceLoginFromForm();
+      });
+
+      document.getElementById('mig-instance-source')?.addEventListener('change', () => {
+        syncMigSalesforceLoginFromForm();
+      });
+
+      document.getElementById('mig-existing-instance')?.addEventListener('change', () => {
+        syncMigSalesforceLoginFromForm();
+      });
+
+      document.getElementById('mig-login-url')?.addEventListener('input', () => {
+        syncMigSalesforceLoginFromForm();
+      });
+
+      document.getElementById('mig-login-authorize')?.addEventListener('click', async () => {
+        const nameEl = document.getElementById('mig-name');
+        if (nameEl) {
+          migState.name = String(nameEl.value || '').trim();
+        }
+        if (!migState.name.trim()) {
+          showMigrationModalError('Bitte zuerst einen Migrationsnamen vergeben.');
+          return;
+        }
+        try {
+          clearMigrationModalError();
+          syncMigSalesforceLoginFromForm();
+          await migSave();
+          if (String(migState.salesforceLogin && migState.salesforceLogin.authType || 'password') !== 'oauth_refresh_token') {
+            await requestJson('/api/migration-instances/' + encodeURIComponent(String(migState.id || '')) + '/connect', { method: 'POST' });
+            const refreshedMigration = await requestJson('/api/migrations/' + encodeURIComponent(String(migState.id || '')));
+            migState.salesforceLogin = refreshedMigration && refreshedMigration.salesforceLogin ? JSON.parse(JSON.stringify(refreshedMigration.salesforceLogin)) : migState.salesforceLogin;
+            renderMigSalesforceLoginStatus();
+            await renderMigrationInstances();
+            showToast('Salesforce-Login erfolgreich getestet.');
+            return;
+          }
+          await startMigrationSalesforceOAuth(String(migState.id || ''));
+        } catch (error) {
+          showMigrationModalError(error.message || 'Salesforce-Login konnte nicht gestartet werden.');
+        }
+      });
+
       // SF Objects loading
       document.getElementById('mig-load-sf-objects')?.addEventListener('click', async () => {
         const btn = document.getElementById('mig-load-sf-objects');
@@ -11665,7 +12293,7 @@ ${renderMigrationRunResultModule()}
         const listEl = document.getElementById('mig-sf-objects-list');
         const searchWrap = document.getElementById('mig-sf-objects-search-wrap');
         try {
-          const res = await fetch('/api/salesforce/objects?instanceId=' + encodeURIComponent(state.instanceId || ''));
+          const res = await fetch('/api/salesforce/objects?instanceId=' + encodeURIComponent(await ensureMigRuntimeInstanceId() || ''));
           if (!res.ok) throw new Error(await res.text());
           migState.sfObjects = await res.json();
           renderMigSfObjectsList(migState.sfObjects);
@@ -11788,6 +12416,13 @@ export function createAppServer(
         });
         res.end(html.replace("__CSRF_TOKEN__", escapeHtml(csrfToken)));
       };
+      const sendRedirect = (location: string, statusCode = 302): void => {
+        res.writeHead(statusCode, {
+          Location: location,
+          "Set-Cookie": appendSetCookie(undefined, buildCsrfCookie(req, csrfToken))
+        });
+        res.end();
+      };
       const sendFile = async (filePath: string, contentType: string): Promise<void> => {
         const file = await fs.readFile(filePath);
         res.writeHead(200, {
@@ -11814,7 +12449,8 @@ export function createAppServer(
       const isPublicRequest =
         requestUrl.pathname === "/api/system/health" ||
         requestUrl.pathname === "/auth/login" ||
-        requestUrl.pathname === "/auth/logout";
+        requestUrl.pathname === "/auth/logout" ||
+        requestUrl.pathname === "/auth/migration-salesforce/callback";
       const requiresMutationProtection = isMutatingMethod(req.method) && (requestUrl.pathname.startsWith("/api/") || requestUrl.pathname.startsWith("/auth/"));
 
       if (requiresMutationProtection && !hasAllowedRequestOrigin(req)) {
@@ -11893,6 +12529,83 @@ export function createAppServer(
         logRangeParam === "last_hour" || logRangeParam === "last_30d" || logRangeParam === "last_24h"
           ? logRangeParam
           : "last_24h";
+
+      if (req.method === "GET" && requestUrl.pathname === "/auth/migration-salesforce/callback") {
+        const state = String(requestUrl.searchParams.get("state") || "").trim();
+        const code = String(requestUrl.searchParams.get("code") || "").trim();
+        const oauthError = String(requestUrl.searchParams.get("error") || "").trim();
+        const oauthErrorDescription = String(requestUrl.searchParams.get("error_description") || "").trim();
+        const pendingState = consumeMigrationOauthState(state);
+
+        if (!pendingState) {
+          sendHtml(400, renderMigrationOauthCallbackShell({
+            ok: false,
+            migrationId: "",
+            message: "Der Salesforce-Login-Status ist abgelaufen oder ungueltig. Bitte den Login erneut aus der Migration starten."
+          }));
+          return;
+        }
+
+        if (oauthError) {
+          sendHtml(400, renderMigrationOauthCallbackShell({
+            ok: false,
+            migrationId: pendingState.migrationId,
+            message: oauthErrorDescription || oauthError
+          }));
+          return;
+        }
+
+        if (!code) {
+          sendHtml(400, renderMigrationOauthCallbackShell({
+            ok: false,
+            migrationId: pendingState.migrationId,
+            message: "Salesforce hat keinen Authorization Code geliefert."
+          }));
+          return;
+        }
+
+        try {
+          await adminDataService.completeMigrationOAuth(pendingState.migrationId, code, pendingState.redirectUri);
+          sendHtml(200, renderMigrationOauthCallbackShell({
+            ok: true,
+            migrationId: pendingState.migrationId,
+            message: "Salesforce-Freigabe gespeichert. Das Fenster schliesst sich gleich."
+          }));
+        } catch (error) {
+          sendHtml(500, renderMigrationOauthCallbackShell({
+            ok: false,
+            migrationId: pendingState.migrationId,
+            message: error instanceof Error ? error.message : String(error)
+          }));
+        }
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/auth/migration-salesforce/start") {
+        const migrationInstanceId = String(requestUrl.searchParams.get("migrationId") || "").trim();
+        if (!migrationInstanceId) {
+          sendHtml(400, renderMigrationOauthCallbackShell({
+            ok: false,
+            migrationId: "",
+            message: "Migration-ID fuer Salesforce-Login fehlt."
+          }));
+          return;
+        }
+
+        try {
+          const redirectUri = buildMigrationOauthRedirectUri(req);
+          const state = createMigrationOauthState(migrationInstanceId, redirectUri);
+          const authorizationUrl = adminDataService.getMigrationOAuthAuthorizationUrl(migrationInstanceId, state, redirectUri);
+          sendRedirect(authorizationUrl);
+        } catch (error) {
+          sendHtml(500, renderMigrationOauthCallbackShell({
+            ok: false,
+            migrationId: migrationInstanceId,
+            message: error instanceof Error ? error.message : String(error)
+          }));
+        }
+        return;
+      }
 
       if (req.method === "GET" && requestUrl.pathname === "/api/system/health") {
         sendJson(200, await buildSystemHealthSnapshot(getHealthSnapshot()));
@@ -12455,7 +13168,52 @@ export function createAppServer(
       // ─── Migration API ──────────────────────────────────────────────────────
 
       if (req.method === "GET" && requestUrl.pathname === "/api/migrations") {
-        sendJson(200, { items: adminDataService.listMigrations() });
+        sendJson(200, { items: adminDataService.listMigrationsForUi() });
+        return;
+      }
+
+      const migrationInstanceIdMatch = requestUrl.pathname.match(/^\/api\/migration-instances\/([^/]+)$/);
+      const migrationInstanceConnectMatch = requestUrl.pathname.match(/^\/api\/migration-instances\/([^/]+)\/connect$/);
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/migration-instances") {
+        sendJson(200, { items: adminDataService.listMigrationInstances() });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/migration-instances") {
+        const body = (await readJsonBody(req)) as {
+          id?: string;
+          name?: string;
+          environment?: "sandbox" | "production";
+          loginUrl?: string;
+          queryLimit?: number;
+        };
+        const item = adminDataService.saveMigrationInstance({
+          id: body.id,
+          name: String(body.name || ""),
+          environment: body.environment === "production" ? "production" : "sandbox",
+          loginUrl: String(body.loginUrl || ""),
+          queryLimit: body.queryLimit
+        });
+        sendJson(201, item);
+        return;
+      }
+
+      if (migrationInstanceConnectMatch && req.method === "POST") {
+        const migrationInstanceId = decodeURIComponent(migrationInstanceConnectMatch[1]);
+        const item = await adminDataService.connectMigrationInstance(migrationInstanceId);
+        sendJson(200, item);
+        return;
+      }
+
+      if (migrationInstanceIdMatch && req.method === "GET") {
+        const migrationInstanceId = decodeURIComponent(migrationInstanceIdMatch[1]);
+        const item = adminDataService.listMigrationInstances().find((entry) => entry.id === migrationInstanceId);
+        if (!item) {
+          sendJson(404, { error: "Migration instance not found" });
+          return;
+        }
+        sendJson(200, item);
         return;
       }
 
@@ -12676,7 +13434,7 @@ export function createAppServer(
       if (migrationIdMatch) {
         const migId = decodeURIComponent(migrationIdMatch[1]);
         if (req.method === "GET") {
-          const m = adminDataService.getMigration(migId);
+          const m = adminDataService.getMigrationForUi(migId);
           if (!m) {
             sendJson(404, { error: "Migration not found" });
           } else {
@@ -12692,7 +13450,7 @@ export function createAppServer(
             return;
           }
           const updated = adminDataService.saveMigration({ ...existing, ...body, id: migId });
-          sendJson(200, updated);
+          sendJson(200, adminDataService.getMigrationForUi(updated.id));
           return;
         }
         if (req.method === "DELETE") {
@@ -12709,13 +13467,14 @@ export function createAppServer(
           id,
           name: String(body.name || "Neue Migration"),
           description: body.description,
+          salesforceLogin: body.salesforceLogin,
           instanceId: body.instanceId || instanceId || undefined,
           status: body.status || "draft",
           objects: body.objects || [],
           dependencies: body.dependencies || [],
           executionPlan: body.executionPlan || []
         });
-        sendJson(201, saved);
+        sendJson(201, adminDataService.getMigrationForUi(saved.id));
         return;
       }
 

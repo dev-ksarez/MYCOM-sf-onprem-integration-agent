@@ -1,6 +1,6 @@
 {
   "name": "sf-onprem-integration-agent",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "private": true,
   "description": "Salesforce controlled on-prem integration agent",
   "main": "dist/main.js",

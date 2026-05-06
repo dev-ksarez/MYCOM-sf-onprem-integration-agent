@@ -1,5 +1,108 @@
 export function renderMigrationUiModule(): string {
   return `
+      function getMigrationInstanceStatusMeta(status) {
+        const normalized = String(status || 'never');
+        if (normalized === 'connected') {
+          return { badge: 'success', label: 'Verbunden' };
+        }
+        if (normalized === 'error') {
+          return { badge: 'danger', label: 'Fehler' };
+        }
+        return { badge: 'secondary', label: 'Noch nicht verbunden' };
+      }
+
+      async function renderMigrationInstances() {
+        const panels = document.getElementById('migration-instance-panels');
+        const summary = document.getElementById('migration-instance-summary');
+        if (!panels || !summary) {
+          return;
+        }
+
+        try {
+          const response = await safeRequest('/api/migration-instances', { items: [] });
+          const items = Array.isArray(response && response.items) ? response.items : [];
+          summary.textContent = items.length
+            ? (items.length + ' Migration' + (items.length === 1 ? '' : 'en') + ' mit eigenem Salesforce-Login konfiguriert')
+            : 'Noch keine Migration mit eigenem Salesforce-Login vorhanden.';
+
+          if (!items.length) {
+            panels.innerHTML = '<div class="col-12"><div class="border rounded-3 p-3 text-secondary small">Der Salesforce-Login wird direkt in der jeweiligen Migration gespeichert. Du kannst Benutzername/Passwort, Client ID plus Client Secret oder den Login ueber die Salesforce-Login-Seite mit Allow verwenden.</div></div>';
+            return;
+          }
+
+          panels.innerHTML = items.map((item) => {
+            const status = getMigrationInstanceStatusMeta(item.connectionStatus);
+            const lastMigration = item.lastMigration;
+            const lastObjects = Array.isArray(lastMigration && lastMigration.objectNames) ? lastMigration.objectNames.slice(0, 4) : [];
+            const authLabel = item.authType === 'password'
+              ? 'Benutzername/Passwort'
+              : (item.authType === 'client_credentials' ? 'Client ID/Secret' : 'Salesforce Allow');
+            return '<div class="col-12 col-xl-6">' +
+              '<div class="card h-100 border-0 shadow-sm">' +
+                '<div class="card-body">' +
+                  '<div class="d-flex justify-content-between align-items-start gap-3 mb-3">' +
+                    '<div><h6 class="mb-1">' + esc(item.name) + '</h6><div class="small text-secondary">' + esc(item.environment === 'sandbox' ? 'Sandbox' : 'Produktion') + ' · ' + esc(item.loginUrl || '') + ' · ' + esc(authLabel) + '</div></div>' +
+                    '<span class="badge bg-' + esc(status.badge) + '">' + esc(status.label) + '</span>' +
+                  '</div>' +
+                  '<div class="small mb-3">' +
+                    '<div><strong>Org:</strong> ' + esc(item.orgOverview && (item.orgOverview.organizationName || item.orgOverview.organizationId) || 'noch unbekannt') + '</div>' +
+                    '<div><strong>Objekte:</strong> ' + esc(String(item.objectCount || 0)) + '</div>' +
+                    '<div><strong>Letzter Connect:</strong> ' + esc(item.lastConnectedAt ? formatDate(item.lastConnectedAt, 'short') : 'noch nicht') + '</div>' +
+                  '</div>' +
+                  (lastMigration
+                    ? '<div class="border rounded-3 p-2 mb-3 bg-light-subtle">' +
+                        '<div class="small fw-semibold mb-1">Letzte Migration: ' + esc(lastMigration.name) + '</div>' +
+                        '<div class="small text-secondary mb-2">' + esc(lastMigration.lastRunAt ? formatDate(lastMigration.lastRunAt, 'short') : 'ohne Laufzeit') + '</div>' +
+                        '<div class="small">Datensaetze: ' + esc(String(lastMigration.recordsSucceeded || 0)) + ' erfolgreich, ' + esc(String(lastMigration.recordsFailed || 0)) + ' fehlerhaft</div>' +
+                        (lastObjects.length ? '<div class="mt-2">' + lastObjects.map((objectName) => '<span class="badge text-bg-light border me-1 mb-1">' + esc(objectName) + '</span>').join('') + '</div>' : '') +
+                        (lastMigration.errorMessage ? '<div class="small text-danger mt-2">' + esc(lastMigration.errorMessage) + '</div>' : '') +
+                      '</div>'
+                    : '<div class="border rounded-3 p-2 mb-3 small text-secondary bg-light-subtle">Noch keine Migration dieser Instanz zugeordnet.</div>') +
+                  (item.lastConnectionError ? '<div class="small text-danger mb-3">Letzter Loginfehler: ' + esc(item.lastConnectionError) + '</div>' : '') +
+                  '<div class="d-flex gap-2 flex-wrap">' +
+                    '<button type="button" class="btn btn-sm btn-outline-primary" data-mig-instance-connect="' + esc(item.id) + '">' + esc(item.authType === 'oauth_refresh_token' ? 'Mit Salesforce verbinden' : 'Login testen') + '</button>' +
+                    '<button type="button" class="btn btn-sm btn-primary" data-mig-instance-edit="' + esc(item.id) + '">Migration oeffnen</button>' +
+                  '</div>' +
+                '</div>' +
+              '</div>' +
+            '</div>';
+          }).join('');
+
+          panels.querySelectorAll('[data-mig-instance-connect]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+              const instanceId = btn.getAttribute('data-mig-instance-connect');
+              const item = items.find((entry) => String(entry.id) === String(instanceId));
+              btn.disabled = true;
+              try {
+                if (item && item.authType !== 'oauth_refresh_token') {
+                  await requestJson('/api/migration-instances/' + encodeURIComponent(instanceId) + '/connect', { method: 'POST' });
+                  showToast('Salesforce-Login erfolgreich getestet.');
+                  await renderMigrationInstances();
+                  return;
+                }
+                await startMigrationSalesforceOAuth(instanceId, { successMessage: 'Salesforce-Freigabe erfolgreich gespeichert.' });
+              } catch (error) {
+                showError(error.message || 'Migrations-Instanz konnte nicht verbunden werden');
+              } finally {
+                btn.disabled = false;
+              }
+            });
+          });
+
+          panels.querySelectorAll('[data-mig-instance-edit]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              const migrationId = btn.getAttribute('data-mig-instance-edit');
+              fetch('/api/migrations/' + encodeURIComponent(migrationId))
+                .then((res) => res.json())
+                .then((migration) => openMigWizard(migration));
+            });
+          });
+        } catch (error) {
+          summary.textContent = 'Migrations-Instanzen konnten nicht geladen werden.';
+          panels.innerHTML = '<div class="col-12"><div class="alert alert-danger py-2 mb-0">Fehler: ' + esc(error instanceof Error ? error.message : String(error)) + '</div></div>';
+        }
+      }
+
       async function startMigrationImportFromFiles(files) {
         const importFiles = Array.isArray(files) ? files.filter(Boolean) : [];
         if (!importFiles.length) {
@@ -210,6 +313,7 @@ export function renderMigrationUiModule(): string {
               if (!confirm('Migration wirklich loeschen?')) return;
               await fetch('/api/migrations/' + encodeURIComponent(btn.getAttribute('data-mig-delete')), { method: 'DELETE' });
               renderMigrationList();
+              renderMigrationInstances();
             });
           });
 
@@ -238,16 +342,23 @@ export function renderMigrationUiModule(): string {
       function initMigrationTabUi() {
         const migrationTabButton = document.querySelector('[data-bs-target="#tab-migration"]');
         migrationTabButton?.addEventListener('click', () => {
+          renderMigrationInstances();
           renderMigrationList();
         });
         migrationTabButton?.addEventListener('shown.bs.tab', () => {
+          renderMigrationInstances();
           renderMigrationList();
         });
         if (migrationTabButton?.classList.contains('active')) {
+          renderMigrationInstances();
           renderMigrationList();
         }
 
         document.getElementById('new-migration')?.addEventListener('click', () => {
+          openMigWizard(null);
+        });
+
+        document.getElementById('new-migration-instance')?.addEventListener('click', () => {
           openMigWizard(null);
         });
 
