@@ -126,9 +126,18 @@ function Resolve-RoleSelection {
   param([string]$RawRoles)
 
   $rawRolesValue = if ($null -ne $RawRoles) { [string]$RawRoles } else { "" }
-  $normalized = @($rawRolesValue.Split(",")
-    | ForEach-Object { $_.Trim().ToLowerInvariant() }
-    | Where-Object { $_ })
+  $normalized = New-Object System.Collections.Generic.List[string]
+  foreach ($part in $rawRolesValue.Split(",")) {
+    $candidate = [string]$part
+    if ($null -eq $candidate) {
+      continue
+    }
+
+    $candidate = $candidate.Trim().ToLowerInvariant()
+    if ($candidate) {
+      [void]$normalized.Add($candidate)
+    }
+  }
 
   if (-not $normalized.Count) {
     $normalized = @("agent", "web", "updater")
