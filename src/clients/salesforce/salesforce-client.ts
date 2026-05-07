@@ -2,6 +2,54 @@ import { Connection } from "jsforce";
 import { SalesforceConfig } from "../../infrastructure/config/salesforce-config";
 import { getStaleRunInactivityThresholdMinutesForSchedule } from "../../core/scheduler/stale-run-policy";
 
+function normalizeSalesforceLoginUrl(loginUrl?: string): string {
+  const rawValue = String(loginUrl || "").trim();
+  if (!rawValue) {
+    return "https://login.salesforce.com";
+  }
+
+  try {
+    const parsedUrl = new URL(rawValue);
+    parsedUrl.pathname = parsedUrl.pathname.replace(/\/(services\/(Soap|oauth2).*)$/i, "") || "/";
+    parsedUrl.search = "";
+    parsedUrl.hash = "";
+    return parsedUrl.toString().replace(/\/$/, "");
+  } catch {
+    return rawValue.replace(/\/(services\/(Soap|oauth2).*)$/i, "").replace(/\/$/, "");
+  }
+}
+
+function extractDuplicateErrorEntries(error: unknown): Array<Record<string, unknown>> {
+  if (!(error instanceof Error)) {
+    return [];
+  }
+
+  const candidate = error as Error & { data?: unknown };
+  const details = candidate.data;
+  if (Array.isArray(details)) {
+    return details.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object");
+  }
+  if (details && typeof details === "object") {
+    return [details as Record<string, unknown>];
+  }
+  return [];
+}
+
+function canRetryDuplicateWithAllowSave(error: unknown): boolean {
+  return extractDuplicateErrorEntries(error).some((entry) => {
+    const errorCode = String(entry.errorCode || "").trim().toUpperCase();
+    const duplicateResult = entry.duplicateResult;
+    const allowSave = duplicateResult && typeof duplicateResult === "object"
+      ? (duplicateResult as { allowSave?: unknown }).allowSave === true
+      : false;
+    return errorCode === "DUPLICATES_DETECTED" && allowSave;
+  });
+}
+
+function escapeSoqlLiteral(value: unknown): string {
+  return String(value ?? "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
 export interface SalesforceAccountRecord {
   Id: string;
   Name: string;
@@ -219,6 +267,7 @@ export interface SalesforceObjectFieldMetadata {
   nillable: boolean;
   isExternalId: boolean;
   createable: boolean;
+  updateable: boolean;
   defaultedOnCreate: boolean;
   calculated: boolean;
   autoNumber: boolean;
@@ -417,26 +466,28 @@ export class SalesforceClient {
   })();
 
   private readonly config: SalesforceConfig;
+  private readonly normalizedLoginUrl: string;
   private connection?: Connection;
   private readonly objectPicklistCache: Map<string, SalesforcePicklistValue[]>;
   private readonly globalPicklistCache: Map<string, SalesforcePicklistValue[]>;
 
   public constructor(config: SalesforceConfig) {
     this.config = config;
+    this.normalizedLoginUrl = normalizeSalesforceLoginUrl(config.loginUrl);
     this.objectPicklistCache = new Map();
     this.globalPicklistCache = new Map();
   }
 
   private getCacheKey(): string {
     if (this.config.authType === "password") {
-      return `${this.config.loginUrl}|password|${this.config.username || ""}`;
+      return `${this.normalizedLoginUrl}|password|${this.config.username || ""}`;
     }
 
     if (this.config.authType === "oauth_refresh_token") {
-      return `${this.config.loginUrl}|oauth_refresh_token|${this.config.clientId || ""}|${this.config.refreshToken || ""}`;
+      return `${this.normalizedLoginUrl}|oauth_refresh_token|${this.config.clientId || ""}|${this.config.refreshToken || ""}`;
     }
 
-    return `${this.config.loginUrl}|client_credentials|${this.config.clientId || ""}`;
+    return `${this.normalizedLoginUrl}|client_credentials|${this.config.clientId || ""}`;
   }
 
   public getLogRetentionDays(): number {
@@ -467,7 +518,7 @@ export class SalesforceClient {
     }
 
     this.connection = new Connection({
-      loginUrl: this.config.loginUrl,
+      loginUrl: this.normalizedLoginUrl,
       instanceUrl: session.instanceUrl
     });
   }
@@ -501,7 +552,7 @@ export class SalesforceClient {
           throw new Error("Salesforce klassischer Login benoetigt username und password");
         }
 
-        const connection = new Connection({ loginUrl: this.config.loginUrl });
+        const connection = new Connection({ loginUrl: this.normalizedLoginUrl });
         await connection.login(username, password + securityToken);
         return {
           instanceUrl: String(connection.instanceUrl || "").trim(),
@@ -531,7 +582,7 @@ export class SalesforceClient {
           throw new Error("Salesforce OAuth Login fuer Migrationen benoetigt clientId, clientSecret und refreshToken");
         }
 
-        const tokenUrl = `${this.config.loginUrl.replace(/\/$/, "")}/services/oauth2/token`;
+        const tokenUrl = `${this.normalizedLoginUrl}/services/oauth2/token`;
         const body = new URLSearchParams({
           grant_type: "refresh_token",
           client_id: clientId,
@@ -575,7 +626,7 @@ export class SalesforceClient {
         };
       }
 
-      const tokenUrl = `${this.config.loginUrl.replace(/\/$/, "")}/services/oauth2/token`;
+      const tokenUrl = `${this.normalizedLoginUrl}/services/oauth2/token`;
       const body = new URLSearchParams({
         grant_type: "client_credentials",
         client_id: String(this.config.clientId || ""),
@@ -1608,6 +1659,82 @@ export class SalesforceClient {
     return result.id;
   }
 
+  private getRestApiBasePath(): string {
+    const rawVersion = String((this.connection as Connection & { version?: string })?.version || "60.0").trim();
+    const version = rawVersion.toLowerCase().startsWith("v") ? rawVersion : `v${rawVersion}`;
+    return `/services/data/${version}`;
+  }
+
+  private async findRecordIdByExternalId(
+    objectApiName: string,
+    externalIdField: string,
+    externalIdValue: unknown
+  ): Promise<string | undefined> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const apiName = objectApiName.trim();
+    const fieldName = externalIdField.trim();
+    const fieldValue = String(externalIdValue ?? "").trim();
+    if (!apiName || !fieldName || !fieldValue) {
+      return undefined;
+    }
+
+    const result = await this.connection.query<{ Id?: string }>(`
+      SELECT Id
+      FROM ${apiName}
+      WHERE ${fieldName} = '${escapeSoqlLiteral(fieldValue)}'
+      LIMIT 1
+    `);
+
+    return String(result.records[0]?.Id || "").trim() || undefined;
+  }
+
+  private async saveRecordAllowingDuplicates(
+    objectApiName: string,
+    recordPayload: Record<string, unknown>,
+    externalIdField?: string,
+    externalIdValue?: unknown
+  ): Promise<string> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const apiName = objectApiName.trim();
+    const headers = {
+      "Content-Type": "application/json",
+      "Sforce-Duplicate-Rule-Header": "allowSave=true"
+    };
+    const recordId = externalIdField
+      ? await this.findRecordIdByExternalId(apiName, externalIdField, externalIdValue)
+      : undefined;
+
+    if (recordId) {
+      await this.connection.request({
+        method: "PATCH",
+        url: `${this.getRestApiBasePath()}/sobjects/${encodeURIComponent(apiName)}/${encodeURIComponent(recordId)}`,
+        body: JSON.stringify(recordPayload),
+        headers
+      });
+      return recordId;
+    }
+
+    const result = await this.connection.request<{ id?: string; success?: boolean; errors?: unknown[] }>({
+      method: "POST",
+      url: `${this.getRestApiBasePath()}/sobjects/${encodeURIComponent(apiName)}`,
+      body: JSON.stringify(recordPayload),
+      headers
+    });
+
+    if (!result?.id) {
+      const details = Array.isArray(result?.errors) ? JSON.stringify(result.errors) : "unknown create error";
+      throw new Error(`Failed to create ${apiName} while allowing duplicates - ${details}`);
+    }
+
+    return String(result.id).trim();
+  }
+
   public async upsertGenericRecord(input: {
     objectApiName: string;
     externalIdField: string;
@@ -1635,9 +1762,17 @@ export class SalesforceClient {
 
     const recordPayload = buildSalesforceRecordPayload(input.values);
 
-    const result = await this.connection
-      .sobject(objectApiName)
-      .upsert(recordPayload, externalIdField);
+    let result;
+    try {
+      result = await this.connection
+        .sobject(objectApiName)
+        .upsert(recordPayload, externalIdField);
+    } catch (error) {
+      if (canRetryDuplicateWithAllowSave(error)) {
+        return this.saveRecordAllowingDuplicates(objectApiName, recordPayload, externalIdField, externalIdValue);
+      }
+      throw error;
+    }
 
     if (!result.success) {
       const details = "errors" in result ? JSON.stringify(result.errors) : "unknown upsert error";
@@ -2066,6 +2201,7 @@ export class SalesforceClient {
         nillable: Boolean(field.nillable),
         isExternalId: Boolean((field as { externalId?: boolean }).externalId),
         createable: Boolean((field as { createable?: boolean }).createable),
+        updateable: Boolean((field as { updateable?: boolean }).updateable),
         defaultedOnCreate: Boolean((field as { defaultedOnCreate?: boolean }).defaultedOnCreate),
         calculated: Boolean((field as { calculated?: boolean }).calculated),
         autoNumber: Boolean((field as { autoNumber?: boolean }).autoNumber),

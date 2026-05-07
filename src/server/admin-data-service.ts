@@ -128,6 +128,24 @@ function formatSalesforceOauthError(error?: string, description?: string, loginU
   return normalizedDescription || normalizedError;
 }
 
+function normalizeMigrationSalesforceLoginUrl(loginUrl?: string, environment?: "sandbox" | "production"): string {
+  const fallbackUrl = environment === "sandbox" ? "https://test.salesforce.com" : "https://login.salesforce.com";
+  const rawValue = String(loginUrl || "").trim();
+  if (!rawValue) {
+    return fallbackUrl;
+  }
+
+  try {
+    const parsedUrl = new URL(rawValue);
+    parsedUrl.pathname = parsedUrl.pathname.replace(/\/(services\/(Soap|oauth2).*)$/i, "") || "/";
+    parsedUrl.search = "";
+    parsedUrl.hash = "";
+    return parsedUrl.toString().replace(/\/$/, "");
+  } catch {
+    return rawValue.replace(/\/(services\/(Soap|oauth2).*)$/i, "").replace(/\/$/, "") || fallbackUrl;
+  }
+}
+
 export interface MigrationSalesforceInstanceSummary {
   id: string;
   name: string;
@@ -771,6 +789,17 @@ export interface ScheduleDryRunResult {
   message: string;
 }
 
+export interface ScheduleConfigurationValidationIssue {
+  severity: "error" | "warning";
+  area: "general" | "source" | "target" | "mapping" | "connector";
+  message: string;
+}
+
+export interface ScheduleConfigurationValidationResult {
+  ok: boolean;
+  issues: ScheduleConfigurationValidationIssue[];
+}
+
 async function validatePricebookEntryDryRunConfiguration(
   schedule: ScheduleListItem,
   createClient: () => Promise<SalesforceClient>
@@ -950,12 +979,6 @@ async function validateRequiredSalesforceFieldMappings(
       return `Aktivierung nicht moeglich: Das Upsert-Feld ${externalIdField} ist in der Zielkonfiguration gesetzt, wird aber weder im Mapping noch als statischer Zielwert bereitgestellt.`;
     }
 
-    if (parsedTargetDefinition && Array.isArray(parsedTargetDefinition.importProfiles)) {
-      const baseExternalIdField = String(parsedTargetDefinition.externalIdField || "").trim();
-      if (baseExternalIdField && baseExternalIdField !== externalIdField) {
-        return `Zielkonfiguration widerspruechlich: Basis-External-ID ${baseExternalIdField} und aktive Importprofil-External-ID ${externalIdField} unterscheiden sich. Bitte nur eine konsistente External-ID speichern.`;
-      }
-    }
   }
 
   const missingRequiredFields = objectFields
@@ -1179,6 +1202,7 @@ export interface MigrationConfig {
   id: string;
   name: string;
   description?: string;
+  batchSize?: number;
   instanceId?: string;
   salesforceLogin?: MigrationSalesforceInstanceConfig;
   status: "draft" | "ready" | "running" | "done" | "error";
@@ -1679,6 +1703,17 @@ export class AdminDataService {
     return "string";
   }
 
+  private resolveMigrationBatchSize(migrationOrBatchSize?: MigrationConfig | number): number {
+    const rawValue = typeof migrationOrBatchSize === "number"
+      ? migrationOrBatchSize
+      : migrationOrBatchSize?.batchSize;
+    const parsed = Number(rawValue || 200);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return 200;
+    }
+    return Math.max(1, Math.min(200, Math.trunc(parsed)));
+  }
+
   private toMappingTransformType(value?: string): MappingTransformType {
     const normalized = String(value || "NONE").trim().toUpperCase();
     const allowed: MappingTransformType[] = [
@@ -1948,7 +1983,7 @@ export class AdminDataService {
     }
 
     const { clientId } = this.getMigrationOAuthClientCredentials();
-    const authorizationUrl = new URL(`${migration.salesforceLogin.loginUrl.replace(/\/$/, "")}/services/oauth2/authorize`);
+    const authorizationUrl = new URL(`${normalizeMigrationSalesforceLoginUrl(migration.salesforceLogin.loginUrl, migration.salesforceLogin.environment)}/services/oauth2/authorize`);
     authorizationUrl.searchParams.set("response_type", "code");
     authorizationUrl.searchParams.set("client_id", clientId);
     authorizationUrl.searchParams.set("redirect_uri", redirectUri);
@@ -1965,7 +2000,7 @@ export class AdminDataService {
     }
 
     const oauthClient = this.getMigrationOAuthClientCredentials();
-    const tokenUrl = `${migration.salesforceLogin.loginUrl.replace(/\/$/, "")}/services/oauth2/token`;
+    const tokenUrl = `${normalizeMigrationSalesforceLoginUrl(migration.salesforceLogin.loginUrl, migration.salesforceLogin.environment)}/services/oauth2/token`;
     const body = new URLSearchParams({
       grant_type: "authorization_code",
       client_id: oauthClient.clientId,
@@ -3206,6 +3241,171 @@ export class AdminDataService {
     return { fields, rows };
   }
 
+  public async validateScheduleConfiguration(
+    input: ScheduleMutationInput,
+    instanceId?: string
+  ): Promise<ScheduleConfigurationValidationResult> {
+    const issues: ScheduleConfigurationValidationIssue[] = [];
+    const add = (severity: "error" | "warning", area: ScheduleConfigurationValidationIssue["area"], message: string) => {
+      issues.push({ severity, area, message });
+    };
+    const sourceType = String(input.sourceType || "").trim().toUpperCase();
+    const targetType = String(input.targetType || "").trim().toUpperCase();
+    const connectorId = String(input.connectorId || "").trim();
+    const sourceDefinition = String(input.sourceDefinition || "").trim();
+    const targetDefinition = String(input.targetDefinition || "").trim();
+
+    if (!String(input.sourceSystem || "").trim()) add("error", "general", "Source System fehlt.");
+    if (!String(input.targetSystem || "").trim()) add("error", "general", "Target System fehlt.");
+    if (!String(input.operation || "").trim()) add("error", "general", "Operation fehlt.");
+    if (!String(input.objectName || "").trim()) add("error", "target", "Zielobjekt/Zielname fehlt.");
+    if (!sourceType) add("error", "source", "Source Type fehlt.");
+    if (!targetType) add("error", "target", "Target Type fehlt.");
+    if (!Number.isFinite(Number(input.batchSize || 0)) || Number(input.batchSize || 0) <= 0) {
+      add("error", "general", "Batch Size muss groesser als 0 sein.");
+    }
+
+    let connector: ConnectorConfig | undefined;
+    if (connectorId) {
+      try {
+        connector = await (await this.createClient(instanceId)).queryConnector(connectorId);
+      } catch (error) {
+        add("error", "connector", `Connector konnte nicht geladen werden: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    const connectorType = String(connector?.connectorType || "").trim().toUpperCase();
+    const isFileSource = sourceType === "FILE_CSV" || sourceType === "FILE_EXCEL" || sourceType === "FILE_JSON";
+    const isFileTarget = targetType === "FILE_CSV" || targetType === "FILE_EXCEL" || targetType === "FILE_JSON";
+    const isMssqlSource = sourceType === "MSSQL" || sourceType === "MSSQL_SQL";
+    const isMssqlTarget = targetType === "MSSQL" || targetType === "MSSQL_SQL";
+    const isRestSource = sourceType === "REST_API" || sourceType === "API";
+    const isRestTarget = targetType === "REST_API" || targetType === "API";
+
+    if ((isFileSource || isFileTarget || isMssqlSource || isMssqlTarget || isRestSource || isRestTarget) && !connectorId) {
+      add("error", "connector", "Diese Scheduler-Variante benoetigt einen Connector.");
+    }
+    if ((isFileSource || isFileTarget) && connector && !this.isFileConnectorType(connector.connectorType)) {
+      add("error", "connector", `Datei-Scheduler benoetigt einen Datei-Connector, gewaehlt ist ${connector.connectorType}.`);
+    }
+    if ((isMssqlSource || isMssqlTarget) && connector && !this.isMssqlTargetSystem(connectorType)) {
+      add("error", "connector", `MSSQL-Scheduler benoetigt einen MSSQL-Connector, gewaehlt ist ${connector.connectorType}.`);
+    }
+    if ((isRestSource || isRestTarget) && connector && connectorType !== "REST_API") {
+      add("error", "connector", `API-Scheduler benoetigt einen REST_API-Connector, gewaehlt ist ${connector.connectorType}.`);
+    }
+    if (isRestTarget) {
+      add("error", "target", "REST_API als TargetType ist im generischen Scheduler-Lauf noch nicht implementiert. Unterstuetzt sind REST_API-Quellen nach Salesforce/Global Picklist.");
+    }
+
+    if (isMssqlSource) {
+      const parsed = parseQuerySourceDefinition(sourceDefinition);
+      if (!parsed.queryText) add("error", "source", "MSSQL SourceDefinition braucht eine SQL-Abfrage.");
+      if (parsed.queryText && !/^\s*(SELECT|WITH)\b/i.test(parsed.queryText)) {
+        add("warning", "source", "MSSQL-Quelle wirkt nicht wie eine SELECT/WITH-Abfrage.");
+      }
+      if (parsed.delta && !parsed.delta.field) add("error", "source", "Delta-Konfiguration braucht ein Feld.");
+    } else if (isFileSource) {
+      if (!sourceDefinition) {
+        add("error", "source", "File SourceDefinition darf nicht leer sein.");
+      } else {
+        try {
+          const parsed = JSON.parse(sourceDefinition) as Record<string, unknown>;
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("kein Objekt");
+          if (!String(parsed.fileName || parsed.filePath || "").trim()) {
+            add("error", "source", "File SourceDefinition braucht fileName oder filePath.");
+          }
+        } catch {
+          if (!/\.(csv|txt|json|xlsx|xls)$/i.test(sourceDefinition)) {
+            add("warning", "source", "File SourceDefinition ist weder JSON noch ein erkennbarer Dateiname.");
+          }
+        }
+      }
+    } else if (isRestSource) {
+      try {
+        const parsed = JSON.parse(sourceDefinition) as Record<string, unknown>;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("kein Objekt");
+        if (!String(parsed.endpoint || "").trim()) add("error", "source", "REST SourceDefinition braucht endpoint.");
+        const method = String(parsed.method || "GET").trim().toUpperCase();
+        if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].includes(method)) {
+          add("error", "source", `REST Methode ${method} wird nicht unterstuetzt.`);
+        }
+      } catch {
+        add("error", "source", "REST SourceDefinition muss gueltiges JSON sein.");
+      }
+    } else if (sourceType === "SALESFORCE_SOQL") {
+      const parsed = parseQuerySourceDefinition(sourceDefinition);
+      if (!parsed.queryText) add("error", "source", "Salesforce SOQL SourceDefinition braucht eine SOQL-Abfrage.");
+      if (parsed.queryText && !/^\s*SELECT\b/i.test(parsed.queryText)) {
+        add("warning", "source", "SOQL-Quelle wirkt nicht wie eine SELECT-Abfrage.");
+      }
+    }
+
+    if (isMssqlTarget) {
+      try {
+        const parsed = targetDefinition ? JSON.parse(targetDefinition) as Record<string, unknown> : {};
+        if (String(input.operation || "").trim().toLowerCase() === "upsert" && !String(parsed.upsertKey || "").trim()) {
+          add("error", "target", "MSSQL Upsert braucht targetDefinition.upsertKey.");
+        }
+      } catch {
+        add("error", "target", "MSSQL TargetDefinition muss gueltiges JSON sein.");
+      }
+    } else if (isFileTarget) {
+      if (!targetDefinition) {
+        add("error", "target", "File TargetDefinition darf nicht leer sein.");
+      } else {
+        try {
+          const parsed = JSON.parse(targetDefinition) as Record<string, unknown>;
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("kein Objekt");
+          if (!String(parsed.fileName || parsed.filePath || "").trim()) {
+            add("error", "target", "File TargetDefinition braucht fileName oder filePath.");
+          }
+        } catch {
+          if (!/\.(csv|txt|json|xlsx|xls)$/i.test(targetDefinition)) {
+            add("warning", "target", "File TargetDefinition ist weder JSON noch ein erkennbarer Dateiname.");
+          }
+        }
+      }
+    } else if (targetType === "SALESFORCE_GLOBAL_PICKLIST") {
+      try {
+        const parsed = JSON.parse(targetDefinition) as Record<string, unknown>;
+        const resolved = resolveSelectedSalesforceTargetDefinition(targetDefinition) as Record<string, unknown>;
+        if (!Array.isArray(parsed.importProfiles) || !parsed.importProfiles.length) {
+          add("error", "target", "Global-Picklist TargetDefinition braucht importProfiles.");
+        }
+        if (!String(resolved.globalValueSetApiName || "").trim()) add("error", "target", "Global-Picklist Ziel braucht globalValueSetApiName.");
+        if (!String(resolved.externalIdField || "").trim()) add("error", "target", "Global-Picklist Ziel braucht externalIdField.");
+        if (!String(resolved.labelField || "").trim()) add("error", "target", "Global-Picklist Ziel braucht labelField.");
+      } catch {
+        add("error", "target", "Global-Picklist TargetDefinition muss gueltiges JSON sein.");
+      }
+    } else if (targetType === "SALESFORCE") {
+      try {
+        const resolved = resolveSelectedSalesforceTargetDefinition(targetDefinition || "{}") as Record<string, unknown>;
+        if (String(input.operation || "").trim().toLowerCase() === "upsert" && !String(resolved.externalIdField || "").trim()) {
+          add("error", "target", "Salesforce Upsert braucht ein externalIdField.");
+        }
+      } catch {
+        add("error", "target", "Salesforce TargetDefinition muss gueltiges JSON sein.");
+      }
+    }
+
+    if (String(input.mappingDefinition || "").trim()) {
+      try {
+        new MappingDefinitionParser().parse(String(input.mappingDefinition || ""));
+      } catch (error) {
+        add("error", "mapping", `MappingDefinition ist ungueltig: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    } else {
+      add("warning", "mapping", "Keine MappingDefinition hinterlegt.");
+    }
+
+    return {
+      ok: !issues.some((issue) => issue.severity === "error"),
+      issues
+    };
+  }
+
   public async saveSchedule(
     input: ScheduleMutationInput,
     instanceId?: string
@@ -3234,6 +3434,12 @@ export class AdminDataService {
       if (!this.isFileConnectorType(connector.connectorType)) {
         throw new Error(`Ausgewaehlter Connector ${connector.name} ist kein Datei-Connector`);
       }
+    }
+
+    const configurationValidation = await this.validateScheduleConfiguration(input, resolvedInstance.id);
+    const firstConfigurationError = configurationValidation.issues.find((issue) => issue.severity === "error");
+    if (firstConfigurationError) {
+      throw new Error(firstConfigurationError.message);
     }
 
     const pricebookEntryMappingMessage = validatePricebookEntryMappingDefinition(input);
@@ -5154,7 +5360,7 @@ export class AdminDataService {
     targetObject?: string,
     connectorId?: string,
     instanceId?: string
-  ): Promise<{ fields: Array<{ name: string; type: string; label?: string; requiredOnCreate?: boolean; nillable?: boolean; isExternalId?: boolean }> }> {
+  ): Promise<{ fields: Array<{ name: string; type: string; label?: string; requiredOnCreate?: boolean; nillable?: boolean; isExternalId?: boolean; createable?: boolean; updateable?: boolean; calculated?: boolean; autoNumber?: boolean; defaultedOnCreate?: boolean }> }> {
     const normalizedTargetSystem = this.normalizeTargetSystem(targetSystem);
 
     if (!normalizedTargetSystem) {
@@ -5171,7 +5377,12 @@ export class AdminDataService {
           label: field.label,
           requiredOnCreate: field.requiredOnCreate === true,
           nillable: field.nillable === true,
-          isExternalId: field.isExternalId === true
+          isExternalId: field.isExternalId === true,
+          createable: field.createable === true,
+          updateable: field.updateable === true,
+          calculated: field.calculated === true,
+          autoNumber: field.autoNumber === true,
+          defaultedOnCreate: field.defaultedOnCreate === true
         }))
       };
     }
@@ -5240,7 +5451,7 @@ export class AdminDataService {
     return await client.listUsers();
   }
 
-  public async describeSalesforceObjectFields(objectApiName: string, instanceId?: string): Promise<{ name: string; label: string; type: string; nillable: boolean; isExternalId: boolean; createable: boolean; defaultedOnCreate: boolean; calculated: boolean; autoNumber: boolean; requiredOnCreate: boolean }[]> {
+  public async describeSalesforceObjectFields(objectApiName: string, instanceId?: string): Promise<{ name: string; label: string; type: string; nillable: boolean; isExternalId: boolean; createable: boolean; updateable: boolean; defaultedOnCreate: boolean; calculated: boolean; autoNumber: boolean; requiredOnCreate: boolean }[]> {
     const client = await this.createClient(instanceId);
     return await client.describeObjectFields(objectApiName);
   }
@@ -6763,7 +6974,10 @@ export class AdminDataService {
           ...input.salesforceLogin,
           id: input.id,
           name: String(input.salesforceLogin.name || input.name || input.id).trim() || input.id,
-          loginUrl: String(input.salesforceLogin.loginUrl || this.getMigrationInstanceLoginUrl(input.salesforceLogin.environment)).trim() || this.getMigrationInstanceLoginUrl(input.salesforceLogin.environment),
+          loginUrl: normalizeMigrationSalesforceLoginUrl(
+            String(input.salesforceLogin.loginUrl || this.getMigrationInstanceLoginUrl(input.salesforceLogin.environment)).trim(),
+            input.salesforceLogin.environment
+          ),
           authType: input.salesforceLogin.authType === "password"
             ? "password"
             : (input.salesforceLogin.authType === "client_credentials"
@@ -6798,6 +7012,7 @@ export class AdminDataService {
       : undefined;
     const saved: MigrationConfig = {
       ...input,
+      batchSize: this.resolveMigrationBatchSize(input.batchSize),
       instanceId: normalizedLogin ? `migration:${input.id}` : (String(input.instanceId || "").trim() || undefined),
       salesforceLogin: normalizedLogin,
       createdAt: existing?.createdAt ?? input.createdAt ?? now,
@@ -7000,6 +7215,7 @@ export class AdminDataService {
     const startedAt = new Date().toISOString();
     const stepResults: MigrationRunResult["steps"] = [];
     const failedRecordsByObjectId: Record<string, MigrationFailedRecord[]> = {};
+    const batchSize = this.resolveMigrationBatchSize(migration);
 
     // Execute in order defined by executionPlan
     const orderedObjects = [...migration.executionPlan]
@@ -7112,7 +7328,6 @@ export class AdminDataService {
           const executableRecordStates = recordStates.filter((state) => state.sfRecord && !state.mappingError);
           const sfRecords = executableRecordStates.map((state) => state.sfRecord!);
 
-          const batchSize = 200;
           let succeeded = 0;
           let failed = 0;
           const sfRecordStateIndexes = recordStates
@@ -7372,7 +7587,7 @@ export class AdminDataService {
       .map((state, idx) => (state.sfRecord ? idx : -1))
       .filter((idx) => idx >= 0);
 
-    const batchSize = 200;
+    const batchSize = this.resolveMigrationBatchSize(migration);
     let succeeded = 0;
     let failed = 0;
 

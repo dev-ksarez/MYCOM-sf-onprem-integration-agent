@@ -67,6 +67,55 @@ function applyPicklistMappings(value: unknown, mappings?: MappingPicklistEntry[]
   return relaxedMatch ? relaxedMatch.target : value;
 }
 
+function normalizeEmailValue(value: unknown): string | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+
+  const normalized = String(value)
+    .trim()
+    .replace(/\s*@\s*/g, "@")
+    .replace(/\s*\.\s*/g, ".");
+
+  if (!normalized) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function isValidEmailValue(value: string): boolean {
+  if (value.includes(";") || value.includes(",") || /^www\./i.test(value) || /\s/.test(value)) {
+    return false;
+  }
+
+  return /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(value);
+}
+
+function applyEmailValidation(value: unknown, line: MappingDefinitionLine): unknown {
+  if (line.emailValidation?.enabled !== true) {
+    return value;
+  }
+
+  const normalized = normalizeEmailValue(value);
+  if (normalized === undefined || normalized === null) {
+    return normalized;
+  }
+
+  if (isValidEmailValue(normalized)) {
+    return normalized;
+  }
+
+  if (line.emailValidation.invalidAction === "ERROR") {
+    throw new Error(`Invalid email value: ${value}`);
+  }
+
+  return null;
+}
+
 function parseSupportedDateValue(value: unknown): Date | undefined {
   const normalized = String(value ?? "").trim();
   if (!normalized) {
@@ -209,7 +258,7 @@ function applyTransform(line: MappingDefinitionLine, record: MappingSourceRecord
   const transform = line.transform;
 
   if (transform.type === "STATIC") {
-    return castToTargetType(transform.argument ?? "", line.targetType);
+    return applyEmailValidation(castToTargetType(transform.argument ?? "", line.targetType), line);
   }
 
   if (transform.type === "LOOKUP") {
@@ -222,7 +271,8 @@ function applyTransform(line: MappingDefinitionLine, record: MappingSourceRecord
   const sourceValue = readSourceValue(record, line.sourceField);
   const transformedValue = applySimpleTransform(sourceValue, transform.type);
   const picklistMappedValue = applyPicklistMappings(transformedValue, line.picklistMappings);
-  return castToTargetType(picklistMappedValue, line.targetType);
+  const castedValue = castToTargetType(picklistMappedValue, line.targetType);
+  return applyEmailValidation(castedValue, line);
 }
 
 async function applyTransformAsync(
@@ -234,7 +284,7 @@ async function applyTransformAsync(
   const transform = line.transform;
 
   if (transform.type === "STATIC") {
-    return castToTargetType(transform.argument ?? "", line.targetType);
+    return applyEmailValidation(castToTargetType(transform.argument ?? "", line.targetType), line);
   }
 
   if (transform.type === "LOOKUP") {
@@ -262,7 +312,8 @@ async function applyTransformAsync(
   const sourceValue = readSourceValue(record, line.sourceField);
   const transformedValue = applySimpleTransform(sourceValue, transform.type);
   const picklistMappedValue = applyPicklistMappings(transformedValue, line.picklistMappings);
-  return castToTargetType(picklistMappedValue, line.targetType);
+  const castedValue = castToTargetType(picklistMappedValue, line.targetType);
+  return applyEmailValidation(castedValue, line);
 }
 
 export class MappingDefinitionEngine {
