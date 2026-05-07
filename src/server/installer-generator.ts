@@ -87,8 +87,8 @@ function getInstallerScenarios(adminAuth: AdminAuthConfig): InstallerScenarioSum
       commands: [
         "npm run build",
         "npm run win:install-service -- -AppRoot \"C:\\apps\\sf-onprem-integration-agent\" -InstallRoles agent,web,updater",
-        "powershell -File scripts/windows/install-windows-agent.ps1 -InstallProfile agent-host",
-        "powershell -File scripts/windows/install-windows-agent.ps1 -InstallProfile web-host",
+        "powershell -File scripts/windows/install-windows-agent.ps1 -InstallProfile agent-host   # installiert nur den Agent-Dienst",
+        "powershell -File scripts/windows/install-windows-agent.ps1 -InstallProfile web-host     # installiert Web UI und Updater",
         "Get-Service SfOnpremIntegrationAgent, SfOnpremIntegrationWeb, SfOnpremIntegrationUpdater"
       ],
       checks: [
@@ -276,7 +276,7 @@ export async function generateInstallerFiles(input: InstallerGenerationInput | u
       "Next steps:",
       `1. Copy .env.example to ${path.join(sanitized.appDir, ".env")}`,
       `2. All-in-one: npm run win:install-service -- -AppRoot \"${sanitized.appDir}\" -InstallRoles agent,web,updater`,
-      `3. Split hosts: powershell -File scripts/windows/install-windows-agent.ps1 -AppRoot \"${sanitized.appDir}\" -InstallProfile agent-host OR web-host`,
+      `3. Split hosts: powershell -File scripts/windows/install-windows-agent.ps1 -AppRoot \"${sanitized.appDir}\" -InstallProfile agent-host (nur Agent) OR web-host (Web UI + Updater)`,
       "4. Verify the services with Get-Service SfOnpremIntegrationAgent, SfOnpremIntegrationWeb, SfOnpremIntegrationUpdater"
     ].join("\n") + "\n";
     const commandNotes = [

@@ -443,8 +443,8 @@ function Resolve-InstallRolesFromProfile {
 
   $roles = switch ($Profile) {
     "all" { @("agent", "web", "updater") }
-    "agent-host" { @("agent", "updater") }
-    "web-host" { @("web") }
+    "agent-host" { @("agent") }
+    "web-host" { @("web", "updater") }
     "agent-only" { @("agent") }
     "web-only" { @("web") }
     "updater-only" { @("updater") }

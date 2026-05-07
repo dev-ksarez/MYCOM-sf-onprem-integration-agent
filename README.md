@@ -203,8 +203,10 @@ Windows:
 - Vollinstallation:
   - `powershell -File scripts/windows/install-windows-agent.ps1 -InstallProfile all`
 - Agent-Host:
+  - installiert nur den Agent-Dienst `SfOnpremIntegrationAgent`
   - `powershell -File scripts/windows/install-windows-agent.ps1 -InstallProfile agent-host`
 - Web-Host:
+  - installiert Web UI und AutoUpdater als `SfOnpremIntegrationWeb` und `SfOnpremIntegrationUpdater`
   - `powershell -File scripts/windows/install-windows-agent.ps1 -InstallProfile web-host`
 
 Linux:
