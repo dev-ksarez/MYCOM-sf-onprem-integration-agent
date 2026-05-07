@@ -1800,9 +1800,12 @@ function htmlShell(): string {
         updateStatusCheckedAt: 0,
         updateStatusPollTimer: null,
         mappingFields: [],
+        sourcePreviewRows: [],
         targetFields: [],
         mappingRules: [],
         mappingFieldsLoadSeq: 0,
+        targetObjectsLoadSeq: 0,
+        targetFieldsLoadSeq: 0,
         schedulerLookupObjects: [],
         schedulerLookupObjectsLoaded: false,
         schedulerLookupObjectsLoadPromise: null,
@@ -5781,6 +5784,8 @@ function htmlShell(): string {
       }
 
       async function loadTargetObjects(selectedObjectName) {
+        const loadSeq = Number(state.targetObjectsLoadSeq || 0) + 1;
+        state.targetObjectsLoadSeq = loadSeq;
         const targetSystem = resolveEffectiveTargetSystem();
         const connectorId = document.getElementById('sch-connector').value;
 
@@ -5800,6 +5805,10 @@ function htmlShell(): string {
             })
           });
 
+          if (loadSeq !== state.targetObjectsLoadSeq) {
+            return;
+          }
+
           const objects = Array.isArray(result.objects) ? result.objects : [];
           if (!objects.length) {
             renderSelectOptions('sch-object', state.scheduleOptions.objectNames || [], selectedObjectName || '');
@@ -5813,12 +5822,17 @@ function htmlShell(): string {
           renderTargetObjectOptions(objects, preferredObjectName);
           renderSchedulerMappingAssistant();
         } catch {
+          if (loadSeq !== state.targetObjectsLoadSeq) {
+            return;
+          }
           renderSelectOptions('sch-object', state.scheduleOptions.objectNames || [], selectedObjectName || '');
           renderSchedulerMappingAssistant();
         }
       }
 
       async function loadTargetFields() {
+        const loadSeq = Number(state.targetFieldsLoadSeq || 0) + 1;
+        state.targetFieldsLoadSeq = loadSeq;
         const targetSystem = resolveEffectiveTargetSystem();
         const objectName = document.getElementById('sch-object').value;
         const connectorId = document.getElementById('sch-connector').value;
@@ -5893,6 +5907,10 @@ function htmlShell(): string {
             })
           });
 
+          if (loadSeq !== state.targetFieldsLoadSeq) {
+            return;
+          }
+
           const fields = Array.isArray(result.fields) ? result.fields : [];
           state.targetFields = fields;
           const currentValue = preferredField || select.value;
@@ -5922,6 +5940,9 @@ function htmlShell(): string {
           renderRequiredSchedulerFieldStatus();
           renderSchedulerMappingManager();
         } catch (error) {
+          if (loadSeq !== state.targetFieldsLoadSeq) {
+            return;
+          }
           state.targetFields = [];
           state.schedulerLookupObjects = [];
           state.schedulerLookupObjectsLoaded = false;
@@ -10142,7 +10163,12 @@ function htmlShell(): string {
         document.getElementById('sch-target-archive-relative-directory').value = parsedTargetDefinition.archiveRelativeDirectory || '';
         state.rawMappingEditorDirty = false;
         state.mappingFieldsLoadSeq = Number(state.mappingFieldsLoadSeq || 0) + 1;
+        state.targetObjectsLoadSeq = Number(state.targetObjectsLoadSeq || 0) + 1;
+        state.targetFieldsLoadSeq = Number(state.targetFieldsLoadSeq || 0) + 1;
         state.mappingFields = [];
+        state.sourcePreviewRows = [];
+        state.targetFields = [];
+        state.hasIncompatibleScheduleMappings = false;
         state.schedulerLookupObjects = [];
         state.schedulerLookupObjectsLoaded = false;
         state.schedulerLookupObjectsLoadPromise = null;
@@ -10153,6 +10179,7 @@ function htmlShell(): string {
           sourceFieldsBody.innerHTML = '<tr><td colspan="2" class="text-secondary">Quellfelder werden geladen.</td></tr>';
         }
         document.getElementById('sch-mapping').value = entry?.mappingDefinition || '';
+        hydrateMappingRulesFromDefinition();
         await syncSchedulerExternalIdUi();
         state.customObjectFieldOverrides = {};
         setCreateObjectStatus('Bereit.', 'neutral');
@@ -10197,7 +10224,6 @@ function htmlShell(): string {
         await loadEntityHistory('schedule', entry?.id || '', 'sch-history-list', 'sch-history-meta', 'Scheduler noch nicht gespeichert.');
         await loadScheduleCheckpoint(entry?.id || '');
         setupMappingDropZone();
-        hydrateMappingRulesFromDefinition();
         loadTransformFunctions();
         await loadTargetObjects(entry?.objectName || '');
         toggleCreateObjectFromSourceUi();
