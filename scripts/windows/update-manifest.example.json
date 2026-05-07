@@ -1,5 +1,5 @@
 {
-  "version": "0.2.17",
-  "packageUrl": "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/download/v0.2.17/sf-onprem-integration-agent-customer-installer-0.2.17.zip",
+  "version": "0.2.18",
+  "packageUrl": "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/download/v0.2.18/sf-onprem-integration-agent-customer-installer-0.2.18.zip",
   "sha256": "PUT_SHA256_OF_ZIP_HERE"
 }

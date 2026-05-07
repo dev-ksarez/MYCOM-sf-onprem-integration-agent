@@ -126,9 +126,9 @@ function Resolve-RoleSelection {
   param([string]$RawRoles)
 
   $rawRolesValue = if ($null -ne $RawRoles) { [string]$RawRoles } else { "" }
-  $normalized = $rawRolesValue.Split(",")
+  $normalized = @($rawRolesValue.Split(",")
     | ForEach-Object { $_.Trim().ToLowerInvariant() }
-    | Where-Object { $_ }
+    | Where-Object { $_ })
 
   if (-not $normalized.Count) {
     $normalized = @("agent", "web", "updater")
