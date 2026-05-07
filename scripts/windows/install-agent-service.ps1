@@ -125,8 +125,8 @@ function Resolve-NssmExe {
 function Resolve-RoleSelection {
   param([string]$RawRoles)
 
-  $normalized = String($RawRoles || "")
-    .Split(",")
+  $rawRolesValue = if ($null -ne $RawRoles) { [string]$RawRoles } else { "" }
+  $normalized = $rawRolesValue.Split(",")
     | ForEach-Object { $_.Trim().ToLowerInvariant() }
     | Where-Object { $_ }
 
