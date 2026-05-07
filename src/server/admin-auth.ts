@@ -1,18 +1,26 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
 
 const ADMIN_SESSION_COOKIE_NAME = "sf_agent_session";
 const ADMIN_CSRF_COOKIE_NAME = "sf_agent_csrf";
 const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const STATE_TTL_MS = 10 * 60 * 1000;
 
+interface OAuthStateEntry {
+  redirectUri: string;
+  expiresAt: number;
+  codeVerifier?: string;
+}
+
 const adminSessions = new Map<string, AdminSession>();
 const migrationOauthStates = new Map<string, { migrationId: string; redirectUri: string; expiresAt: number }>();
-const salesforceLoginStates = new Map<string, { redirectUri: string; expiresAt: number }>();
+const salesforceLoginStates = new Map<string, OAuthStateEntry>();
 
 export type AdminPermission = "read" | "write" | "delete" | "admin";
 export type AdminAuthMode = "local" | "salesforce_oidc";
+export type AdminModule = "migration";
 
 export interface AdminUserRecord {
   id: string;
@@ -21,6 +29,7 @@ export interface AdminUserRecord {
   displayName?: string;
   roles: string[];
   permissions: AdminPermission[];
+  modules: AdminModule[];
 }
 
 export interface AdminSession {
@@ -30,6 +39,7 @@ export interface AdminSession {
   displayName?: string;
   roles: string[];
   permissions: AdminPermission[];
+  modules: AdminModule[];
   authProvider: "local" | "salesforce_oidc";
   expiresAt: number;
 }
@@ -48,6 +58,18 @@ export interface AdminAuthConfig {
   users: AdminUserRecord[];
   salesforceOidc?: SalesforceOidcConfig;
 }
+
+export type AdminUserMutationInput = {
+  id?: string;
+  username?: string;
+  password?: string;
+  displayName?: string;
+  roles?: string[];
+  permissions?: AdminPermission[];
+  modules?: AdminModule[];
+};
+
+const DEFAULT_ADMIN_USERS_FILE = path.resolve(process.cwd(), "artifacts/admin-users.json");
 
 function formatSalesforceOauthError(error?: string, description?: string, loginUrl?: string): string {
   const normalizedError = String(error || "").trim();
@@ -105,6 +127,22 @@ function normalizePermissions(value: unknown, roles: string[]): AdminPermission[
   return Array.from(permissions);
 }
 
+function normalizeModules(value: unknown, roles: string[]): AdminModule[] {
+  const roleSet = new Set(roles.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean));
+  const modules = new Set<AdminModule>();
+  if (Array.isArray(value)) {
+    value.forEach((item) => {
+      if (String(item || "").trim().toLowerCase() === "migration") {
+        modules.add("migration");
+      }
+    });
+  }
+  if (roleSet.has("admin")) {
+    modules.add("migration");
+  }
+  return Array.from(modules);
+}
+
 function normalizeUsers(input: unknown): AdminUserRecord[] {
   if (!Array.isArray(input)) {
     return [];
@@ -126,19 +164,46 @@ function normalizeUsers(input: unknown): AdminUserRecord[] {
         ? candidate.roles.map((role) => String(role || "").trim()).filter(Boolean)
         : [];
       const permissions = normalizePermissions(candidate.permissions, roles);
+      const modules = normalizeModules(candidate.modules, roles);
       normalized.push({
         id: String(candidate.id || `user-${index + 1}`),
         username,
         password: candidate.password ? String(candidate.password) : undefined,
         displayName: candidate.displayName ? String(candidate.displayName) : undefined,
         roles,
-        permissions: permissions.length ? permissions : ["read"]
+        permissions: permissions.length ? permissions : ["read"],
+        modules
       } satisfies AdminUserRecord);
     });
   return normalized;
 }
 
+function getAdminUsersFilePath(): string {
+  return path.resolve(String(process.env.ADMIN_UI_USERS_FILE || DEFAULT_ADMIN_USERS_FILE).trim() || DEFAULT_ADMIN_USERS_FILE);
+}
+
+function readUsersFile(filePath = getAdminUsersFilePath()): AdminUserRecord[] {
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+  try {
+    return normalizeUsers(JSON.parse(fs.readFileSync(filePath, "utf8")));
+  } catch {
+    return [];
+  }
+}
+
+function writeUsersFile(users: AdminUserRecord[], filePath = getAdminUsersFilePath()): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(users, null, 2), "utf8");
+}
+
 function loadUsersFromConfig(): AdminUserRecord[] {
+  const usersFromDefaultFile = readUsersFile();
+  if (usersFromDefaultFile.length) {
+    return usersFromDefaultFile;
+  }
+
   const usersJson = String(process.env.ADMIN_UI_USERS_JSON || "").trim();
   if (usersJson) {
     try {
@@ -169,7 +234,8 @@ function loadUsersFromConfig(): AdminUserRecord[] {
     password,
     displayName: username,
     roles: ["admin"],
-    permissions: ["admin", "read", "write", "delete"]
+    permissions: ["admin", "read", "write", "delete"],
+    modules: ["migration"]
   }];
 }
 
@@ -177,7 +243,7 @@ function getSalesforceOidcConfig(): SalesforceOidcConfig | undefined {
   const loginUrl = String(process.env.SF_IDP_LOGIN_URL || "").trim();
   const clientId = String(process.env.SF_IDP_CLIENT_ID || "").trim();
   const clientSecret = String(process.env.SF_IDP_CLIENT_SECRET || "").trim();
-  const scopes = String(process.env.SF_IDP_SCOPES || "openid email profile").trim();
+  const scopes = String(process.env.SF_IDP_SCOPES || "openid").trim();
   const enabled = Boolean(loginUrl && clientId && clientSecret);
   return enabled ? { loginUrl, clientId, clientSecret, scopes, enabled } : undefined;
 }
@@ -251,6 +317,22 @@ export function createAdminSession(user: Omit<AdminSession, "token" | "expiresAt
 
 export function createCsrfToken(): string {
   return crypto.randomBytes(24).toString("hex");
+}
+
+function base64UrlEncode(buffer: Buffer): string {
+  return buffer
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function createPkceVerifier(): string {
+  return base64UrlEncode(crypto.randomBytes(32));
+}
+
+function createPkceChallenge(verifier: string): string {
+  return base64UrlEncode(crypto.createHash("sha256").update(verifier).digest());
 }
 
 function pruneExpiringMap<T extends { expiresAt: number }>(store: Map<string, T>, now = Date.now()): void {
@@ -381,6 +463,10 @@ export function buildAdminSalesforceOidcRedirectUri(req: http.IncomingMessage): 
   }
 
   const origin = new URL(buildRequestOrigin(req));
+  if (origin.hostname === "127.0.0.1" || origin.hostname === "::1") {
+    origin.hostname = "localhost";
+  }
+
   origin.pathname = "/auth/salesforce/callback";
   origin.search = "";
   origin.hash = "";
@@ -434,6 +520,72 @@ export function hasPermission(session: AdminSession | null | undefined, permissi
   return session.permissions.includes("admin") || session.permissions.includes(permission);
 }
 
+export function hasModuleAccess(session: AdminSession | null | undefined, module: AdminModule): boolean {
+  if (!session) {
+    return false;
+  }
+
+  return session.permissions.includes("admin") || (session.modules || []).includes(module);
+}
+
+export function listAdminUsers(): AdminUserRecord[] {
+  return getAdminAuthConfig().users.map((user) => ({
+    ...user,
+    password: undefined
+  }));
+}
+
+export function saveAdminUser(input: AdminUserMutationInput): AdminUserRecord {
+  const users = readUsersFile().length ? readUsersFile() : getAdminAuthConfig().users;
+  const id = String(input.id || `user-${Date.now()}`).trim();
+  const username = String(input.username || "").trim();
+  if (!username) {
+    throw new Error("Benutzername ist erforderlich.");
+  }
+
+  const existing = users.find((user) => user.id === id || user.username.trim().toLowerCase() === username.toLowerCase());
+  const roles = Array.isArray(input.roles) ? input.roles.map((role) => String(role || "").trim()).filter(Boolean) : existing?.roles || ["viewer"];
+  const permissions = normalizePermissions(input.permissions, roles);
+  const modules = normalizeModules(input.modules, roles);
+  const saved: AdminUserRecord = {
+    id: existing?.id || id,
+    username,
+    password: input.password ? String(input.password) : existing?.password,
+    displayName: String(input.displayName || existing?.displayName || username).trim(),
+    roles,
+    permissions: permissions.length ? permissions : ["read"],
+    modules
+  };
+
+  if (!saved.password) {
+    throw new Error("Passwort ist fuer lokale Benutzer erforderlich.");
+  }
+
+  const nextUsers = existing
+    ? users.map((user) => user.id === existing.id ? saved : user)
+    : [...users, saved];
+  writeUsersFile(nextUsers);
+  return { ...saved, password: undefined };
+}
+
+export function deleteAdminUser(id: string): boolean {
+  const normalizedId = String(id || "").trim();
+  const users = readUsersFile().length ? readUsersFile() : getAdminAuthConfig().users;
+  if (users.length <= 1) {
+    throw new Error("Der letzte Admin-Benutzer kann nicht geloescht werden.");
+  }
+  const target = users.find((user) => user.id === normalizedId);
+  if (!target) {
+    return false;
+  }
+  const nextUsers = users.filter((user) => user.id !== normalizedId);
+  if (!nextUsers.some((user) => user.permissions.includes("admin"))) {
+    throw new Error("Mindestens ein Benutzer mit Admin-Recht ist erforderlich.");
+  }
+  writeUsersFile(nextUsers);
+  return true;
+}
+
 export function authenticateLocalAdminUser(username: string, password: string, config = getAdminAuthConfig()): AdminUserRecord | null {
   const normalizedUsername = String(username || "").trim().toLowerCase();
   const candidate = config.users.find((user) => user.username.trim().toLowerCase() === normalizedUsername);
@@ -444,14 +596,14 @@ export function authenticateLocalAdminUser(username: string, password: string, c
   return constantTimeEquals(password, candidate.password) ? candidate : null;
 }
 
-function createState(store: Map<string, { redirectUri: string; expiresAt: number }>, redirectUri: string): string {
+function createState(store: Map<string, OAuthStateEntry>, redirectUri: string, codeVerifier?: string): string {
   pruneExpiringMap(store);
   const state = crypto.randomBytes(32).toString("hex");
-  store.set(state, { redirectUri, expiresAt: Date.now() + STATE_TTL_MS });
+  store.set(state, { redirectUri, codeVerifier, expiresAt: Date.now() + STATE_TTL_MS });
   return state;
 }
 
-function consumeState(store: Map<string, { redirectUri: string; expiresAt: number }>, state: string): { redirectUri: string } | null {
+function consumeState(store: Map<string, OAuthStateEntry>, state: string): { redirectUri: string; codeVerifier?: string } | null {
   pruneExpiringMap(store);
   const entry = store.get(state);
   if (!entry) {
@@ -459,11 +611,11 @@ function consumeState(store: Map<string, { redirectUri: string; expiresAt: numbe
   }
 
   store.delete(state);
-  return { redirectUri: entry.redirectUri };
+  return { redirectUri: entry.redirectUri, codeVerifier: entry.codeVerifier };
 }
 
 export function createSalesforceLoginState(redirectUri: string): string {
-  return createState(salesforceLoginStates, redirectUri);
+  return createState(salesforceLoginStates, redirectUri, createPkceVerifier());
 }
 
 export function buildSalesforceLoginAuthorizationUrl(state: string, redirectUri: string, config = getAdminAuthConfig()): string {
@@ -477,6 +629,11 @@ export function buildSalesforceLoginAuthorizationUrl(state: string, redirectUri:
   authorizationUrl.searchParams.set("redirect_uri", redirectUri);
   authorizationUrl.searchParams.set("scope", config.salesforceOidc.scopes);
   authorizationUrl.searchParams.set("state", state);
+  const pendingState = salesforceLoginStates.get(state);
+  if (pendingState?.codeVerifier) {
+    authorizationUrl.searchParams.set("code_challenge", createPkceChallenge(pendingState.codeVerifier));
+    authorizationUrl.searchParams.set("code_challenge_method", "S256");
+  }
   return authorizationUrl.toString();
 }
 
@@ -491,16 +648,21 @@ export async function completeSalesforceLogin(code: string, state: string, confi
   }
 
   const tokenEndpoint = new URL("/services/oauth2/token", config.salesforceOidc.loginUrl);
+  const tokenRequestBody = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    client_id: config.salesforceOidc.clientId,
+    client_secret: config.salesforceOidc.clientSecret,
+    redirect_uri: pendingState.redirectUri
+  });
+  if (pendingState.codeVerifier) {
+    tokenRequestBody.set("code_verifier", pendingState.codeVerifier);
+  }
+
   const tokenResponse = await fetch(tokenEndpoint, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      client_id: config.salesforceOidc.clientId,
-      client_secret: config.salesforceOidc.clientSecret,
-      redirect_uri: pendingState.redirectUri
-    })
+    body: tokenRequestBody
   });
 
   const tokenPayload = (await tokenResponse.json()) as {

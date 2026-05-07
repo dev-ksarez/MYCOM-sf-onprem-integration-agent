@@ -33,11 +33,16 @@ import {
   getAdminSession,
   getAdminAuthConfig,
   getOrCreateCsrfToken,
+  deleteAdminUser,
+  listAdminUsers,
+  saveAdminUser,
   hasPermission,
+  hasModuleAccess,
   hasAllowedRequestOrigin,
   hasValidAdminSession,
   hasValidCsrfToken,
-  isMutatingMethod
+  isMutatingMethod,
+  type AdminUserMutationInput
 } from "./admin-auth";
 import { renderConnectorUiModule } from "./connector-ui-module";
 import { getDashboardUpdateStatus, triggerDashboardUpdate } from "./dashboard-update-service";
@@ -155,6 +160,78 @@ function renderLoginShell(options: { errorMessage?: string; csrfToken?: string; 
     </script>
   </body>
 </html>`;
+}
+
+function formatSalesforceLoginCallbackError(req: http.IncomingMessage, error: string, description: string): string {
+  const message = description || error || "Salesforce-Login fehlgeschlagen.";
+  if (error !== "redirect_uri_mismatch") {
+    return message;
+  }
+
+  try {
+    const redirectUri = buildAdminSalesforceOidcRedirectUri(req);
+    return [
+      message,
+      `In der Salesforce Connected App muss diese Callback URL exakt hinterlegt sein: ${redirectUri}`
+    ].join(" ");
+  } catch {
+    return [
+      message,
+      "Pruefe SF_IDP_REDIRECT_URI und die Callback URL in der Salesforce Connected App."
+    ].join(" ");
+  }
+}
+
+const AUDIT_HISTORY_FILE = path.resolve(process.cwd(), "artifacts/audit-history.json");
+
+interface AuditActor {
+  userId?: string;
+  username?: string;
+}
+
+async function appendAuditHistory(entry: {
+  action: string;
+  entityType: string;
+  entityId?: string;
+  entityName?: string;
+  actor?: AuditActor | null;
+  status?: "success" | "error";
+  message?: string;
+}): Promise<void> {
+  const now = new Date().toISOString();
+  let items: unknown[] = [];
+  try {
+    items = JSON.parse(await fs.readFile(AUDIT_HISTORY_FILE, "utf8")) as unknown[];
+    if (!Array.isArray(items)) {
+      items = [];
+    }
+  } catch {
+    items = [];
+  }
+
+  const auditEntry = {
+    id: `audit-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    at: now,
+    actor: entry.actor || null,
+    action: entry.action,
+    entityType: entry.entityType,
+    entityId: entry.entityId,
+    entityName: entry.entityName,
+    status: entry.status || "success",
+    message: entry.message
+  };
+  const nextItems = [auditEntry, ...items].slice(0, 500);
+  await fs.mkdir(path.dirname(AUDIT_HISTORY_FILE), { recursive: true });
+  await fs.writeFile(AUDIT_HISTORY_FILE, JSON.stringify(nextItems, null, 2), "utf8");
+}
+
+async function listAuditHistory(limit = 100): Promise<unknown[]> {
+  try {
+    const items = JSON.parse(await fs.readFile(AUDIT_HISTORY_FILE, "utf8")) as unknown[];
+    return Array.isArray(items) ? items.slice(0, Math.max(1, Math.min(500, limit))) : [];
+  } catch {
+    return [];
+  }
 }
 
 function renderMigrationOauthCallbackShell(options: { ok: boolean; migrationId: string; message: string }): string {
@@ -277,6 +354,7 @@ function htmlShell(): string {
           <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-connectors" type="button"><span class="agent-tab-icon">◫</span>Connectoren</button></li>
           <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-monitor" type="button"><span class="agent-tab-icon">◉</span>Monitoring</button></li>
           <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-migration" type="button"><span class="agent-tab-icon">⊞</span>Migration</button></li>
+          <li class="nav-item" role="presentation"><button id="open-admin-modal-sidebar" class="nav-link" type="button"><span class="agent-tab-icon">☷</span>Admin</button></li>
         </ul>
       </aside>
 
@@ -314,6 +392,7 @@ function htmlShell(): string {
                   <button type="button" class="agent-menu-tab" data-menu-tab="#tab-connectors" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">◫</span><span>Connectoren</span></button>
                   <button type="button" class="agent-menu-tab" data-menu-tab="#tab-monitor" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">◉</span><span>Monitoring</span></button>
                   <button type="button" class="agent-menu-tab" data-menu-tab="#tab-migration" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">⊞</span><span>Migration</span></button>
+                  <button type="button" id="open-admin-modal-menu" class="agent-menu-tab" data-bs-dismiss="offcanvas"><span class="agent-menu-tab-icon" aria-hidden="true">☷</span><span>Admin</span></button>
                 </div>
               </section>
 
@@ -754,8 +833,89 @@ function htmlShell(): string {
             </div>
           </div>
         </section>
-      </div>
         </main>
+      </div>
+    </div>
+
+    <div class="modal fade" id="admin-modal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Admin</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schliessen"></button>
+          </div>
+          <div class="modal-body">
+            <div class="row g-3">
+              <div class="col-lg-5">
+                <div class="card soft-card h-100">
+                  <div class="card-header bg-white fw-semibold">Benutzerverwaltung</div>
+                  <div class="card-body">
+                    <input id="admin-user-id" type="hidden" />
+                    <div class="mb-2">
+                      <label class="form-label">Benutzername</label>
+                      <input id="admin-user-username" class="form-control" autocomplete="off" />
+                    </div>
+                    <div class="mb-2">
+                      <label class="form-label">Anzeigename</label>
+                      <input id="admin-user-display-name" class="form-control" autocomplete="off" />
+                    </div>
+                    <div class="mb-3">
+                      <label class="form-label">Passwort</label>
+                      <input id="admin-user-password" type="password" class="form-control" autocomplete="new-password" placeholder="Leer lassen, um beizubehalten" />
+                    </div>
+                    <div class="mb-3">
+                      <div class="form-label">Berechtigungen</div>
+                      <div class="d-flex flex-wrap gap-3 small">
+                        <label><input class="form-check-input me-1" type="checkbox" data-admin-permission="read" />Lesen</label>
+                        <label><input class="form-check-input me-1" type="checkbox" data-admin-permission="write" />Schreiben</label>
+                        <label><input class="form-check-input me-1" type="checkbox" data-admin-permission="delete" />Loeschen</label>
+                        <label><input class="form-check-input me-1" type="checkbox" data-admin-permission="admin" />Admin</label>
+                      </div>
+                    </div>
+                    <div class="mb-3">
+                      <div class="form-label">Module</div>
+                      <label class="small"><input class="form-check-input me-1" type="checkbox" data-admin-module="migration" />Migrationsmodul</label>
+                    </div>
+                    <div class="d-flex gap-2">
+                      <button id="admin-user-save" class="btn btn-primary btn-sm" type="button">Benutzer speichern</button>
+                      <button id="admin-user-reset" class="btn btn-outline-secondary btn-sm" type="button">Neu</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-lg-7">
+                <div class="card soft-card mb-3">
+                  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                    <span class="fw-semibold">Benutzer</span>
+                    <button id="admin-users-refresh" class="btn btn-sm btn-outline-secondary" type="button">Aktualisieren</button>
+                  </div>
+                  <div class="card-body p-0">
+                    <div class="table-responsive">
+                      <table class="table table-sm mb-0">
+                        <thead><tr><th>Benutzer</th><th>Rechte</th><th>Module</th><th>Aktionen</th></tr></thead>
+                        <tbody id="admin-users-body"></tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+                <div class="card soft-card">
+                  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                    <span class="fw-semibold">Aenderungshistorie</span>
+                    <button id="admin-audit-refresh" class="btn btn-sm btn-outline-secondary" type="button">Aktualisieren</button>
+                  </div>
+                  <div class="card-body p-0">
+                    <div class="table-responsive">
+                      <table class="table table-sm mb-0">
+                        <thead><tr><th>Zeit</th><th>Benutzer</th><th>Aktion</th><th>Objekt</th><th>Status</th></tr></thead>
+                        <tbody id="admin-audit-body"></tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1594,6 +1754,9 @@ function htmlShell(): string {
         salesforceOverview: null,
         installerSummary: null,
         installerGeneratedFiles: [],
+        adminMe: null,
+        adminUsers: [],
+        auditHistory: [],
         customObjectFieldOverrides: {},
         scheduleOptions: {
           objectNames: [],
@@ -6278,6 +6441,139 @@ function htmlShell(): string {
         }
       }
 
+      function currentUserHasPermission(permission) {
+        const permissions = (state.adminMe && state.adminMe.user && state.adminMe.user.permissions) || [];
+        return permissions.includes('admin') || permissions.includes(permission);
+      }
+
+      function currentUserHasModule(moduleName) {
+        const user = state.adminMe && state.adminMe.user;
+        const permissions = (user && user.permissions) || [];
+        const modules = (user && user.modules) || [];
+        return permissions.includes('admin') || modules.includes(moduleName);
+      }
+
+      function applyAdminAccessUi() {
+        const canUseMigration = currentUserHasModule('migration');
+        document.querySelectorAll('[data-bs-target="#tab-migration"], [data-menu-tab="#tab-migration"]').forEach((el) => {
+          el.classList.toggle('d-none', !canUseMigration);
+        });
+        const canAdmin = currentUserHasPermission('admin');
+        document.querySelectorAll('#open-admin-modal-sidebar, #open-admin-modal-menu').forEach((el) => {
+          el.classList.toggle('d-none', !canAdmin);
+        });
+      }
+
+      function resetAdminUserForm() {
+        document.getElementById('admin-user-id').value = '';
+        document.getElementById('admin-user-username').value = '';
+        document.getElementById('admin-user-display-name').value = '';
+        document.getElementById('admin-user-password').value = '';
+        document.querySelectorAll('[data-admin-permission]').forEach((el) => { el.checked = el.getAttribute('data-admin-permission') === 'read'; });
+        document.querySelectorAll('[data-admin-module]').forEach((el) => { el.checked = false; });
+      }
+
+      function editAdminUser(user) {
+        document.getElementById('admin-user-id').value = user.id || '';
+        document.getElementById('admin-user-username').value = user.username || '';
+        document.getElementById('admin-user-display-name').value = user.displayName || '';
+        document.getElementById('admin-user-password').value = '';
+        const permissions = Array.isArray(user.permissions) ? user.permissions : [];
+        const modules = Array.isArray(user.modules) ? user.modules : [];
+        document.querySelectorAll('[data-admin-permission]').forEach((el) => {
+          el.checked = permissions.includes(el.getAttribute('data-admin-permission'));
+        });
+        document.querySelectorAll('[data-admin-module]').forEach((el) => {
+          el.checked = modules.includes(el.getAttribute('data-admin-module'));
+        });
+      }
+
+      function renderAdminUsers() {
+        const body = document.getElementById('admin-users-body');
+        if (!body) return;
+        const users = state.adminUsers || [];
+        if (!users.length) {
+          body.innerHTML = '<tr><td colspan="4" class="text-secondary">Keine Benutzer gefunden.</td></tr>';
+          return;
+        }
+        body.innerHTML = users.map((user) => {
+          return '<tr>' +
+            '<td><div class="fw-semibold">' + esc(user.displayName || user.username) + '</div><div class="small text-secondary">' + esc(user.username) + '</div></td>' +
+            '<td>' + esc((user.permissions || []).join(', ') || '-') + '</td>' +
+            '<td>' + esc((user.modules || []).join(', ') || '-') + '</td>' +
+            '<td class="text-nowrap"><button class="btn btn-sm btn-outline-primary me-1" data-admin-user-edit="' + esc(user.id) + '">Bearbeiten</button><button class="btn btn-sm btn-outline-danger" data-admin-user-delete="' + esc(user.id) + '">Löschen</button></td>' +
+            '</tr>';
+        }).join('');
+        body.querySelectorAll('[data-admin-user-edit]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const user = users.find((item) => item.id === btn.getAttribute('data-admin-user-edit'));
+            if (user) editAdminUser(user);
+          });
+        });
+        body.querySelectorAll('[data-admin-user-delete]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            if (!confirm('Benutzer wirklich löschen?')) return;
+            await requestJson('/api/admin/users/' + encodeURIComponent(btn.getAttribute('data-admin-user-delete')), { method: 'DELETE' });
+            await loadAdminData();
+          });
+        });
+      }
+
+      function renderAuditHistory() {
+        const body = document.getElementById('admin-audit-body');
+        if (!body) return;
+        const items = state.auditHistory || [];
+        if (!items.length) {
+          body.innerHTML = '<tr><td colspan="5" class="text-secondary">Keine Historie vorhanden.</td></tr>';
+          return;
+        }
+        body.innerHTML = items.slice(0, 100).map((item) => {
+          const actor = item.actor && item.actor.username ? item.actor.username : '-';
+          const objectName = [item.entityType, item.entityName || item.entityId].filter(Boolean).join(': ');
+          return '<tr>' +
+            '<td>' + esc(formatDate(item.at, 'short')) + '</td>' +
+            '<td>' + esc(actor) + '</td>' +
+            '<td>' + esc(item.action || '-') + '</td>' +
+            '<td>' + esc(objectName || '-') + '</td>' +
+            '<td>' + esc(item.status || '-') + '</td>' +
+            '</tr>';
+        }).join('');
+      }
+
+      async function loadAdminData() {
+        state.adminMe = await safeRequest('/api/admin/me', { user: null });
+        applyAdminAccessUi();
+        if (currentUserHasPermission('admin')) {
+          const users = await safeRequest('/api/admin/users', { items: [] });
+          const audit = await safeRequest('/api/admin/audit-history?limit=100', { items: [] });
+          state.adminUsers = users.items || [];
+          state.auditHistory = audit.items || [];
+          renderAdminUsers();
+          renderAuditHistory();
+        }
+      }
+
+      async function saveAdminUserFromForm() {
+        const permissions = Array.from(document.querySelectorAll('[data-admin-permission]')).filter((el) => el.checked).map((el) => el.getAttribute('data-admin-permission'));
+        const modules = Array.from(document.querySelectorAll('[data-admin-module]')).filter((el) => el.checked).map((el) => el.getAttribute('data-admin-module'));
+        const payload = {
+          id: document.getElementById('admin-user-id').value || undefined,
+          username: document.getElementById('admin-user-username').value,
+          displayName: document.getElementById('admin-user-display-name').value,
+          password: document.getElementById('admin-user-password').value || undefined,
+          roles: permissions.includes('admin') ? ['admin'] : (permissions.includes('write') ? ['editor'] : ['viewer']),
+          permissions,
+          modules
+        };
+        await requestJson('/api/admin/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        resetAdminUserForm();
+        await loadAdminData();
+      }
+
       function renderLogChart(summary) {
         const canvas = document.getElementById('logs-chart');
         if (!canvas || typeof window.Chart !== 'function') {
@@ -9585,6 +9881,7 @@ function htmlShell(): string {
         const shouldRefreshChart = options.refreshChart !== false;
         clearError();
 
+        await loadAdminData();
         const healthData = await safeRequest('/api/system/health', {});
         const installerSummary = await safeRequest('/api/installer/summary', null);
         state.installerSummary = installerSummary;
@@ -9594,7 +9891,7 @@ function htmlShell(): string {
         const connectors = await safeRequest('/api/connectors', { items: [] });
         const runs = await safeRequest('/api/runs', { items: [] });
         const staleRuns = await safeRequest('/api/runs/stale', { items: [] });
-        const migrations = await safeRequest('/api/migrations', { items: [] });
+        const migrations = currentUserHasModule('migration') ? await safeRequest('/api/migrations', { items: [] }) : { items: [] };
         const graph = await safeRequest('/api/graph', { nodes: [], edges: [] });
         const salesforceOverview = await safeRequest('/api/salesforce/overview', {});
         await loadScheduleOptions();
@@ -9663,6 +9960,18 @@ function htmlShell(): string {
         element.dataset[marker] = '1';
       }
 
+      function openAdminModal() {
+        if (!currentUserHasPermission('admin')) {
+          showError('Admin-Berechtigung fehlt');
+          return;
+        }
+        const modalEl = document.getElementById('admin-modal');
+        if (!modalEl || !window.bootstrap?.Modal) {
+          return;
+        }
+        window.bootstrap.Modal.getOrCreateInstance(modalEl).show();
+      }
+
       // Boot data loading before the large listener block so the UI still initializes
       // even if a later non-critical listener registration fails.
       (async () => {
@@ -9688,6 +9997,18 @@ function htmlShell(): string {
       })();
 
       bindEventListenerOnce('new-schedule', 'click', () => openScheduleModal(''));
+      bindEventListenerOnce('open-admin-modal-sidebar', 'click', openAdminModal);
+      bindEventListenerOnce('open-admin-modal-menu', 'click', openAdminModal);
+      bindEventListenerOnce('admin-user-save', 'click', async () => {
+        try {
+          await saveAdminUserFromForm();
+        } catch (error) {
+          showError(error.message || 'Benutzer konnte nicht gespeichert werden');
+        }
+      });
+      bindEventListenerOnce('admin-user-reset', 'click', resetAdminUserForm);
+      bindEventListenerOnce('admin-users-refresh', 'click', loadAdminData);
+      bindEventListenerOnce('admin-audit-refresh', 'click', loadAdminData);
       document.querySelectorAll('[data-menu-tab]').forEach((button) => {
         if (button.dataset.boundMenuTab === '1') {
           return;
@@ -11797,6 +12118,7 @@ export function createAppServer(
         res.end(file);
       };
       const session = getAdminSession(req);
+      const auditActor = session ? { userId: session.userId, username: session.username } : null;
       const isAuthenticated = !adminAuthRequired || Boolean(session);
       const isAssetRequest = requestUrl.pathname.startsWith("/assets/");
       const isPublicRequest =
@@ -11874,6 +12196,7 @@ export function createAppServer(
           displayName: user.displayName,
           roles: user.roles,
           permissions: user.permissions,
+          modules: user.modules,
           authProvider: "local"
         });
         res.setHeader("Set-Cookie", buildSessionCookie(req, sessionToken));
@@ -11903,7 +12226,11 @@ export function createAppServer(
         const oauthError = String(requestUrl.searchParams.get("error") || "").trim();
         const oauthErrorDescription = String(requestUrl.searchParams.get("error_description") || "").trim();
         if (oauthError) {
-          sendHtml(401, renderLoginShell({ errorMessage: oauthErrorDescription || oauthError, csrfToken, authMode: "salesforce_oidc" }));
+          sendHtml(401, renderLoginShell({
+            errorMessage: formatSalesforceLoginCallbackError(req, oauthError, oauthErrorDescription),
+            csrfToken,
+            authMode: "salesforce_oidc"
+          }));
           return;
         }
 
@@ -11920,6 +12247,7 @@ export function createAppServer(
             displayName: user.displayName,
             roles: user.roles,
             permissions: user.permissions,
+            modules: user.modules,
             authProvider: "salesforce_oidc"
           });
           res.setHeader("Set-Cookie", buildSessionCookie(req, sessionToken));
@@ -11956,6 +12284,19 @@ export function createAppServer(
         }
 
         sendHtml(403, renderLoginShell({ errorMessage: `Berechtigung '${requiredPermission}' fehlt`, csrfToken, authMode: adminAuth.mode }));
+        return;
+      }
+
+      const isMigrationRequest =
+        requestUrl.pathname === "/auth/migration-salesforce/start" ||
+        requestUrl.pathname.startsWith("/api/migrations") ||
+        requestUrl.pathname.startsWith("/api/migration-instances");
+      if (adminAuthRequired && isMigrationRequest && !hasModuleAccess(session, "migration")) {
+        if (requestUrl.pathname.startsWith("/api/")) {
+          sendJson(403, { error: "Modulberechtigung 'migration' fehlt" });
+          return;
+        }
+        sendHtml(403, renderLoginShell({ errorMessage: "Modulberechtigung 'migration' fehlt", csrfToken, authMode: adminAuth.mode }));
         return;
       }
 
@@ -12055,6 +12396,67 @@ export function createAppServer(
         return;
       }
 
+      if (req.method === "GET" && requestUrl.pathname === "/api/admin/me") {
+        sendJson(200, {
+          authenticated: Boolean(session),
+          user: session ? {
+            id: session.userId,
+            username: session.username,
+            displayName: session.displayName,
+            roles: session.roles,
+            permissions: session.permissions,
+            modules: session.modules,
+            authProvider: session.authProvider
+          } : null
+        });
+        return;
+      }
+
+      if (requestUrl.pathname.startsWith("/api/admin/") && !hasPermission(session, "admin")) {
+        sendJson(403, { error: "Admin-Berechtigung fehlt" });
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/admin/users") {
+        sendJson(200, { items: listAdminUsers() });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/admin/users") {
+        const body = (await readJsonBody(req)) as AdminUserMutationInput;
+        const item = saveAdminUser(body);
+        await appendAuditHistory({
+          actor: auditActor,
+          action: body.id ? "update" : "create",
+          entityType: "admin-user",
+          entityId: item.id,
+          entityName: item.username
+        });
+        sendJson(200, item);
+        return;
+      }
+
+      const adminUserDeleteMatch = req.method === "DELETE" ? requestUrl.pathname.match(/^\/api\/admin\/users\/([^/]+)$/) : null;
+      if (adminUserDeleteMatch) {
+        const id = decodeURIComponent(adminUserDeleteMatch[1]);
+        const deleted = deleteAdminUser(id);
+        await appendAuditHistory({
+          actor: auditActor,
+          action: "delete",
+          entityType: "admin-user",
+          entityId: id,
+          status: deleted ? "success" : "error"
+        });
+        sendJson(deleted ? 200 : 404, { ok: deleted });
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/admin/audit-history") {
+        const limit = Number(requestUrl.searchParams.get("limit") || 100) || 100;
+        sendJson(200, { items: await listAuditHistory(limit) });
+        return;
+      }
+
       if (req.method === "GET" && requestUrl.pathname === "/api/installer/summary") {
         sendJson(200, getInstallerSummary());
         return;
@@ -12147,6 +12549,7 @@ export function createAppServer(
       if (req.method === "POST" && requestUrl.pathname === "/api/instances") {
         const body = (await readJsonBody(req)) as SalesforceInstanceMutationInput;
         const item = adminDataService.saveInstance(body);
+        await appendAuditHistory({ actor: auditActor, action: body.id ? "update" : "create", entityType: "salesforce-instance", entityId: item.id, entityName: item.name || item.id });
         if (isRemoteAgentConfigured()) {
           await syncRemoteAgentInstances(adminDataService.listConfiguredInstanceConfigs());
         }
@@ -12163,6 +12566,7 @@ export function createAppServer(
       if (req.method === "POST" && requestUrl.pathname === "/api/setup/import") {
         const body = (await readJsonBody(req)) as SetupExportDocument;
         const result = await adminDataService.importSetup(body, instanceId);
+        await appendAuditHistory({ actor: auditActor, action: "import", entityType: "setup", entityId: instanceId });
         sendJson(200, result);
         return;
       }
@@ -12260,6 +12664,7 @@ export function createAppServer(
       if (req.method === "POST" && requestUrl.pathname === "/api/templates") {
         const body = await readJsonBody(req);
         const result = await adminDataService.saveTemplate(body as any);
+        await appendAuditHistory({ actor: auditActor, action: "save", entityType: "template", entityId: result.id, entityName: result.name });
         sendJson(200, result);
         return;
       }
@@ -12286,6 +12691,7 @@ export function createAppServer(
       if (req.method === "POST" && requestUrl.pathname === "/api/schedules") {
         const body = (await readJsonBody(req)) as ScheduleMutationInput;
         const result = await adminDataService.saveSchedule(body, instanceId);
+        await appendAuditHistory({ actor: auditActor, action: body.id ? "update" : "create", entityType: "schedule", entityId: result.id, entityName: body.name });
         sendJson(200, result);
         return;
       }
@@ -12294,6 +12700,7 @@ export function createAppServer(
         const scheduleId = decodeURIComponent(requestUrl.pathname.replace(/^\/api\/schedules\/([^/]+)\/active$/, "$1"));
         const body = (await readJsonBody(req)) as { active?: boolean };
         const result = await adminDataService.setScheduleActive(scheduleId, body.active === true, instanceId);
+        await appendAuditHistory({ actor: auditActor, action: body.active === true ? "activate" : "deactivate", entityType: "schedule", entityId: scheduleId });
         sendJson(200, result);
         return;
       }
@@ -12309,6 +12716,7 @@ export function createAppServer(
         const scheduleId = decodeURIComponent(requestUrl.pathname.replace(/^\/api\/schedules\/([^/]+)\/checkpoint$/, "$1"));
         const body = (await readJsonBody(req)) as ScheduleCheckpointMutationInput;
         const result = await adminDataService.updateScheduleCheckpoint(scheduleId, body, instanceId);
+        await appendAuditHistory({ actor: auditActor, action: "update-checkpoint", entityType: "schedule", entityId: scheduleId });
         sendJson(200, result);
         return;
       }
@@ -12316,6 +12724,7 @@ export function createAppServer(
       if (scheduleDeleteMatch) {
         const scheduleId = decodeURIComponent(scheduleDeleteMatch[1]);
         const result = await adminDataService.deleteSchedule(scheduleId, instanceId);
+        await appendAuditHistory({ actor: auditActor, action: "delete", entityType: "schedule", entityId: scheduleId, entityName: result.deletedNames.join(", ") });
         sendJson(200, result);
         return;
       }
@@ -12331,6 +12740,7 @@ export function createAppServer(
         const scheduleId = decodeURIComponent(scheduleDuplicateMatch[1]);
         const body = (await readJsonBody(req)) as { name?: string };
         const result = await adminDataService.duplicateSchedule(scheduleId, body.name, instanceId);
+        await appendAuditHistory({ actor: auditActor, action: "duplicate", entityType: "schedule", entityId: scheduleId, entityName: body.name });
         sendJson(200, result);
         return;
       }
@@ -12355,6 +12765,7 @@ export function createAppServer(
       if (req.method === "POST" && requestUrl.pathname === "/api/connectors") {
         const body = (await readJsonBody(req)) as ConnectorMutationInput;
         const result = await adminDataService.saveConnector(body, instanceId);
+        await appendAuditHistory({ actor: auditActor, action: body.id ? "update" : "create", entityType: "connector", entityId: result.id, entityName: body.name });
         sendJson(200, result);
         return;
       }
@@ -12362,6 +12773,7 @@ export function createAppServer(
       if (connectorDeleteMatch) {
         const connectorId = decodeURIComponent(connectorDeleteMatch[1]);
         const result = await adminDataService.deleteConnector(connectorId, instanceId);
+        await appendAuditHistory({ actor: auditActor, action: "delete", entityType: "connector", entityId: connectorId, entityName: result.connectorName });
         sendJson(200, result);
         return;
       }
@@ -12641,6 +13053,7 @@ export function createAppServer(
           loginUrl: String(body.loginUrl || ""),
           queryLimit: body.queryLimit
         });
+        await appendAuditHistory({ actor: auditActor, action: body.id ? "update" : "create", entityType: "migration-instance", entityId: item.id, entityName: item.name });
         sendJson(201, item);
         return;
       }
@@ -12648,6 +13061,7 @@ export function createAppServer(
       if (migrationInstanceConnectMatch && req.method === "POST") {
         const migrationInstanceId = decodeURIComponent(migrationInstanceConnectMatch[1]);
         const item = await adminDataService.connectMigrationInstance(migrationInstanceId);
+        await appendAuditHistory({ actor: auditActor, action: "connect", entityType: "migration-instance", entityId: item.id, entityName: item.name, status: item.connectionStatus === "connected" ? "success" : "error", message: item.lastConnectionError });
         sendJson(200, item);
         return;
       }
@@ -12699,6 +13113,7 @@ export function createAppServer(
           delimiter: body.delimiter,
           textQualifier: body.textQualifier
         });
+        await appendAuditHistory({ actor: auditActor, action: "upload-file", entityType: "migration", entityId: migrationId, entityName: fileName });
 
         sendJson(200, {
           filePath: analysis.filePath,
@@ -12743,6 +13158,7 @@ export function createAppServer(
             error: err instanceof Error ? err.message : String(err)
           });
         });
+        await appendAuditHistory({ actor: auditActor, action: "run", entityType: "migration", entityId: migId, entityName: migration.name });
 
         sendJson(202, {
           accepted: true,
@@ -12896,11 +13312,13 @@ export function createAppServer(
             return;
           }
           const updated = adminDataService.saveMigration({ ...existing, ...body, id: migId });
+          await appendAuditHistory({ actor: auditActor, action: "update", entityType: "migration", entityId: updated.id, entityName: updated.name });
           sendJson(200, adminDataService.getMigrationForUi(updated.id));
           return;
         }
         if (req.method === "DELETE") {
           const deleted = adminDataService.deleteMigration(migId);
+          await appendAuditHistory({ actor: auditActor, action: "delete", entityType: "migration", entityId: migId, status: deleted ? "success" : "error" });
           sendJson(deleted ? 200 : 404, { ok: deleted });
           return;
         }
@@ -12920,6 +13338,7 @@ export function createAppServer(
           dependencies: body.dependencies || [],
           executionPlan: body.executionPlan || []
         });
+        await appendAuditHistory({ actor: auditActor, action: "create", entityType: "migration", entityId: saved.id, entityName: saved.name });
         sendJson(201, adminDataService.getMigrationForUi(saved.id));
         return;
       }
