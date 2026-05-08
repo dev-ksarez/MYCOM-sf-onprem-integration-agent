@@ -1,6 +1,6 @@
 ---
 connie-publish: true
-connie-title: 07 - Assistent Scheduler
+connie-title: 06.2 - Assistent Scheduler
 tags:
   - sf-onprem-integration-agent
   - assistent
@@ -9,7 +9,7 @@ tags:
 
 # Assistent Scheduler
 
-![Scheduler](./assets/screenshots/03-scheduler.png)
+![Assistent Scheduler](../assets/screenshots/09-assistent-scheduler.png)
 
 Der Scheduler-Assistent verwaltet die zeitliche Ausfuehrung von Importen und Exporten. Er verbindet Zeitsteuerung, Richtung, Connectoren, Mapping und Laufkontrolle zu einem ausfuehrbaren Integrationsprofil.
 

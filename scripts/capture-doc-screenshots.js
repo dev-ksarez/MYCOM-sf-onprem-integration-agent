@@ -115,6 +115,20 @@ async function screenshot(client, fileName) {
   fs.writeFileSync(path.join(confluenceOutputDir, fileName), imageBuffer);
 }
 
+async function screenshotMany(client, fileNames) {
+  const result = await client.send("Page.captureScreenshot", {
+    format: "png",
+    captureBeyondViewport: false,
+    fromSurface: true
+  });
+  const imageBuffer = Buffer.from(result.data, "base64");
+  fs.mkdirSync(confluenceOutputDir, { recursive: true });
+  for (const fileName of fileNames) {
+    fs.writeFileSync(path.join(outputDir, fileName), imageBuffer);
+    fs.writeFileSync(path.join(confluenceOutputDir, fileName), imageBuffer);
+  }
+}
+
 async function showTab(client, selector) {
   await client.send("Runtime.evaluate", {
     awaitPromise: true,
@@ -205,10 +219,10 @@ async function main() {
     await screenshot(client, "02-dashboard.png");
 
     await showTab(client, '[data-bs-target="#tab-schedulers"]');
-    await screenshot(client, "03-scheduler.png");
+    await screenshotMany(client, ["03-scheduler.png", "09-assistent-scheduler.png"]);
 
     await showTab(client, '[data-bs-target="#tab-connectors"]');
-    await screenshot(client, "04-connectoren.png");
+    await screenshotMany(client, ["04-connectoren.png", "08-assistent-connector.png"]);
 
     await showTab(client, '[data-bs-target="#tab-monitor"]');
     await screenshot(client, "05-monitoring.png");
@@ -217,7 +231,7 @@ async function main() {
     await screenshot(client, "06-installation.png");
 
     await showTab(client, '[data-bs-target="#tab-migration"]');
-    await screenshot(client, "07-migration.png");
+    await screenshotMany(client, ["07-migration.png", "10-assistent-migration.png"]);
 
     client.close();
     browserClient.close();

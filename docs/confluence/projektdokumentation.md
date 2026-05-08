@@ -13,7 +13,7 @@ tags:
 
 Diese Seite ist der Einstiegspunkt fuer die Projektdokumentation. Die Detaildokumentation ist in einzelne Themen-Seiten aufgeteilt und wird ueber GitHub Actions nach Confluence publiziert.
 
-## Themen-Seiten
+## Hauptthemen
 
 | Seite | Inhalt |
 | --- | --- |
@@ -22,9 +22,8 @@ Diese Seite ist der Einstiegspunkt fuer die Projektdokumentation. Die Detaildoku
 | [Installationsbeschreibung](./03-installation.md) | Voraussetzungen, Windows-/Linux-Installation, Salesforce-Metadaten und Updates |
 | [Funktionsdokumentation](./04-funktionsdokumentation.md) | Bedienoberflaeche, Dashboard, Monitoring und Bildschirmfotos |
 | [Betrieb und Sicherheit](./05-betrieb-und-sicherheit.md) | Betriebsregeln, Security-Vorgaben, Monitoring und Pflege |
-| [Assistent Connector](./06-assistent-connector.md) | Pflege, Test und Zuordnung technischer Connectoren |
-| [Assistent Scheduler](./07-assistent-scheduler.md) | Zeitsteuerung, Laufkontrolle und Overlap-Schutz |
-| [Assistent Migration](./08-assistent-migration.md) | Datei- und Salesforce-Migrationen mit Preflight und Ergebnisprotokoll |
+| [Assistenten](./06-assistenten.md) | Uebersicht der Assistenten mit Unterthemen fuer Connector, Scheduler und Migration |
+| [Release Historie](./07-release-historie.md) | Versionen, Release Notes, Betriebswirkung und Upgrade-Hinweise |
 
 ## Systemueberblick
 
