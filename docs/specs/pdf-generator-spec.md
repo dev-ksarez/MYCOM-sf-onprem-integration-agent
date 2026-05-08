@@ -128,6 +128,57 @@ Async / Queue:
 - Prototyp: Playwright-basiertes Render-Modul (Minimal CLI + HTTP).
 - CI-Integration für E2E-Tests.
 
+## Sicherheit & Sanitization (Ergänzung)
+
+- Alle eingehenden HTML- oder Template-Daten müssen vor dem Rendering sanitisiert werden (z. B. `sanitize-html`).
+- Keine Ausführung eingebetteter JavaScript-Snippets im Rendering- oder Rendering-Container.
+- Template-Helpers/Extensions sind serverseitig kontrolliert und müssen geprüft werden, bevor sie in produktiven Templates verfügbar sind.
+- Maximalgrößen für Eingabedaten (`maxSizeMb`) und generierte Dateien (`maxSizeMb`) definieren, um DoS durch große Payloads zu verhindern.
+- Templates aus untrusted Quellen nur nach Review freigeben; Uploads sollten in einer Quarantäne/Review-Kategorie landen.
+- Renderer müssen in isolierter Umgebung laufen (Least-privilege, optional Container/Firecracker) und unter einem Timeout (z. B. 30s) stehen.
+
+## Web‑API Integration (Details)
+
+- Endpoint: `POST /api/v1/pdf` (Sync: returns stored location; Async: optional job-id).
+- Akzeptierte Inhalte: `text/html`, `application/json` mit `{ template, data }`, `text/markdown`.
+- Verhalten: Wenn ein `template`-Pfad übergeben wird, wird das Template serverseitig kompiliert (Handlebars) und mit `data` gerendert. Ergebnis wird sanitisiert und gerendert.
+- Rückgabe: JSON `{ ok: true, result: { uri, path, metadata } }` mit Connector‑Metadaten.
+- Audit: Jeder Generations-Request schreibt einen Audit-Eintrag (user, jobId, status, message).
+- Auth/Nutzung: Endpoint liegt unter bestehender `/api/`-Authentifizierung und nutzt CSRF/Session-Schutz der Web‑UI.
+
+## Connector‑Persistenz: Beispiele & Empfehlungen
+
+- Connector konfiguriert pro Einsatzfall, Beispiele:
+
+	- File (lokal):
+		- `driver: file`
+		- `basePath: /srv/agent/artifacts/pdf`
+		- `pathTemplate: "{{instanceId}}/{{templateName}}-{{timestamp}}.pdf"`
+		- `maxSizeMb`, `permissions`, `retention.days`
+
+	- S3 (extern):
+		- `driver: s3`
+		- `bucket`, `keyTemplate`, `region`, `encryption`
+
+	- Salesforce (direct):
+		- `driver: salesforce`
+		- `linkMethod: ContentVersion` (empfohlen)
+		- `fieldMappings` zur Zuordnung von `recordId` / `Title`
+
+- Connector‑Interface: Implementiere `save(buffer, context, config) -> { uri, path|id, metadata }`.
+- Dateinamen-Templates verwenden die gleiche Templating-Engine (Handlebars) oder ein definiertes Mustache‑Subset. Tokens: `{{instanceId}}`, `{{templateName}}`, `{{timestamp}}`, `{{queryResult.<field>}}`.
+- Credentials und Secrets für Connectors müssen im Secret-Store/ENV liegen, niemals im Repo.
+
+## Review-Checklist (Update)
+
+- [x] Team-Review: Product Owner / Architect gelesen
+- [x] Akzeptanzkriterien klar und reproduzierbar
+- [x] Persistenzziel (S3 vs `artifacts/`) festgelegt (konfigurierbar pro Connector)
+- [x] Template-Engine ausgewählt (Handlebars)
+- [x] Security: Sanitizer und Renderer-Isolation bewertet (Sanitizer integriert)
+- [x] CI E2E-Test-Plan erstellt (Smoke E2E workflow vorhanden)
+- [ ] Verantwortliche(r) für Wartung/Upgrades benannt
+
 ---
 
 Datei-Beispiele: siehe `file-examples/` und `templates/`.
