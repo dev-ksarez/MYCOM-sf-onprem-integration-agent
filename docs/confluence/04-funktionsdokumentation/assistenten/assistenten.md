@@ -1,6 +1,6 @@
 ---
 connie-publish: true
-connie-title: 06 - Assistenten
+connie-title: Assistenten
 tags:
   - sf-onprem-integration-agent
   - assistenten
@@ -14,9 +14,9 @@ Die Assistenten fuehren Administratoren durch zusammenhaengende Konfigurations- 
 
 | Unterthema | Inhalt |
 | --- | --- |
-| [Connector-Assistent](./assistenten/01-connector.md) | Technische Endpunkte anlegen, testen und Schedulern zuordnen |
-| [Scheduler-Assistent](./assistenten/02-scheduler.md) | Integrationsprofile zeitlich steuern und Laeufe kontrollieren |
-| [Migrations-Assistent](./assistenten/03-migration.md) | Einmalige Datenuebernahmen vorbereiten, pruefen und ausfuehren |
+| [Connector-Assistent](./01-connector.md) | Technische Endpunkte anlegen, testen und Schedulern zuordnen |
+| [Scheduler-Assistent](./02-scheduler.md) | Integrationsprofile zeitlich steuern und Laeufe kontrollieren |
+| [Migrations-Assistent](./03-migration.md) | Einmalige Datenuebernahmen vorbereiten, pruefen und ausfuehren |
 
 ## Zusammenspiel
 

@@ -10,8 +10,8 @@ Diese Dokumentation wird als Docs-as-Code gepflegt:
 ## Quelle
 
 - Startseite: `docs/confluence/projektdokumentation.md`
-- Hauptthemen: `docs/confluence/01-*.md` bis `docs/confluence/07-*.md`
-- Unterthemen: `docs/confluence/assistenten/*.md`
+- Hauptthemen: `docs/confluence/01-*.md`, `docs/confluence/04-funktionsdokumentation/04-funktionsdokumentation.md`, `docs/confluence/05-*.md`, `docs/confluence/ReleaseNotes.md`
+- Unterthemen: `docs/confluence/04-funktionsdokumentation/assistenten/*.md`
 - Netzwerkdiagramm: `docs/confluence/assets/systemdiagramm-netzwerk.svg`
 - Screenshots: `docs/confluence/assets/screenshots/`
 - Workflow: `.github/workflows/publish-confluence-docs.yml`
@@ -38,13 +38,13 @@ Aktuelle Seitenstruktur:
 | `01-allgemeine-beschreibung.md` | 01 - Allgemeine Beschreibung |
 | `02-technische-beschreibung.md` | 02 - Technische Beschreibung |
 | `03-installation.md` | 03 - Installationsbeschreibung |
-| `04-funktionsdokumentation.md` | 04 - Funktionsdokumentation |
+| `04-funktionsdokumentation/04-funktionsdokumentation.md` | 04 - Funktionsdokumentation |
+| `04-funktionsdokumentation/assistenten/assistenten.md` | Assistenten |
+| `04-funktionsdokumentation/assistenten/01-connector.md` | 06.1 - Assistent Connector |
+| `04-funktionsdokumentation/assistenten/02-scheduler.md` | 06.2 - Assistent Scheduler |
+| `04-funktionsdokumentation/assistenten/03-migration.md` | 06.3 - Assistent Migration |
 | `05-betrieb-und-sicherheit.md` | 05 - Betrieb und Sicherheit |
-| `06-assistenten.md` | 06 - Assistenten |
-| `assistenten/01-connector.md` | 06.1 - Assistent Connector |
-| `assistenten/02-scheduler.md` | 06.2 - Assistent Scheduler |
-| `assistenten/03-migration.md` | 06.3 - Assistent Migration |
-| `07-release-historie.md` | 07 - Release Historie |
+| `ReleaseNotes.md` | ReleaseNotes |
 
 Screenshot-Anlagen:
 

@@ -9,7 +9,7 @@ tags:
 
 # Assistent Connector
 
-![Assistent Connector](../assets/screenshots/08-assistent-connector.png)
+![Assistent Connector](../../assets/screenshots/08-assistent-connector.png)
 
 Der Connector-Assistent dient zur Pflege technischer Datenquellen und Zielsysteme. Er fuehrt Administratoren durch Typauswahl, Parameterpflege, Secret-Referenzen, Verbindungstest und Zuordnung zu Schedulern.
 

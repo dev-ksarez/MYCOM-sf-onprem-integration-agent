@@ -20,10 +20,9 @@ Diese Seite ist der Einstiegspunkt fuer die Projektdokumentation. Die Detaildoku
 | [Allgemeine Beschreibung](./01-allgemeine-beschreibung.md) | Zielbild, Einsatzszenarien und fachlicher Nutzen |
 | [Technische Beschreibung](./02-technische-beschreibung.md) | Architektur, Netzwerkdiagramm, Salesforce-Komponenten und Datenfluss |
 | [Installationsbeschreibung](./03-installation.md) | Voraussetzungen, Windows-/Linux-Installation, Salesforce-Metadaten und Updates |
-| [Funktionsdokumentation](./04-funktionsdokumentation.md) | Bedienoberflaeche, Dashboard, Monitoring und Bildschirmfotos |
+| [Funktionsdokumentation](./04-funktionsdokumentation/04-funktionsdokumentation.md) | Bedienoberflaeche, Dashboard, Monitoring, Assistenten und Bildschirmfotos |
 | [Betrieb und Sicherheit](./05-betrieb-und-sicherheit.md) | Betriebsregeln, Security-Vorgaben, Monitoring und Pflege |
-| [Assistenten](./06-assistenten.md) | Uebersicht der Assistenten mit Unterthemen fuer Connector, Scheduler und Migration |
-| [Release Historie](./07-release-historie.md) | Versionen, Release Notes, Betriebswirkung und Upgrade-Hinweise |
+| [ReleaseNotes](./ReleaseNotes.md) | Versionen, Release Notes, Betriebswirkung und Upgrade-Hinweise |
 
 ## Systemueberblick
 
