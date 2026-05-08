@@ -1,0 +1,205 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="940" viewBox="0 0 1440 940" role="img" aria-labelledby="title desc">
+  <title id="title">Systemdiagramm: Netzwerktechnische Anbindung SF On-Prem Integration Agent</title>
+  <desc id="desc">Darstellung der Netzwerkzonen und Datenfluesse zwischen Salesforce, Web UI, Agent, Scheduler, Connectoren und On-Prem-Systemen.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7fafc"/>
+      <stop offset="1" stop-color="#eef4f8"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#0f172a" flood-opacity="0.14"/>
+    </filter>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M1.5,1.5 L7,4 L1.5,6.5 Z" fill="#2563eb" fill-opacity="0.62"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M1.5,1.5 L7,4 L1.5,6.5 Z" fill="#15803d" fill-opacity="0.62"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M1.5,1.5 L7,4 L1.5,6.5 Z" fill="#b45309" fill-opacity="0.62"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M1.5,1.5 L7,4 L1.5,6.5 Z" fill="#b91c1c" fill-opacity="0.62"/>
+    </marker>
+    <style>
+      .page { fill: url(#bg); }
+      .title { font: 700 34px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 17px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .zone-title { font: 700 18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .zone-note { font: 500 13px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748b; }
+      .card-title { font: 700 17px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .card-text { font: 500 13px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .small { font: 600 12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748b; }
+      .pill { font: 700 12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #ffffff; }
+      .flow-label { font: 700 11px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748b; }
+      .zone { fill: rgba(255,255,255,0.72); stroke: #cbd5e1; stroke-width: 1.4; }
+      .cloud { fill: #e8f3ff; stroke: #60a5fa; }
+      .dmz { fill: #f8fafc; stroke: #94a3b8; }
+      .agent { fill: #eefbf3; stroke: #86efac; }
+      .data { fill: #fff7ed; stroke: #fdba74; }
+      .card { fill: #ffffff; stroke: #dbe3ec; stroke-width: 1.2; filter: url(#shadow); }
+      .card-blue { stroke: #93c5fd; }
+      .card-green { stroke: #86efac; }
+      .card-orange { stroke: #fdba74; }
+      .card-slate { stroke: #cbd5e1; }
+      .line-blue { fill: none; stroke: #2563eb; stroke-width: 2; stroke-opacity: 0.62; marker-end: url(#arrow-blue); }
+      .line-green { fill: none; stroke: #15803d; stroke-width: 2; stroke-opacity: 0.68; marker-end: url(#arrow-green); }
+      .line-orange { fill: none; stroke: #b45309; stroke-width: 2; stroke-opacity: 0.68; marker-end: url(#arrow-orange); }
+      .line-red { fill: none; stroke: #b91c1c; stroke-width: 2; stroke-opacity: 0.6; marker-end: url(#arrow-red); }
+      .line-dash { stroke-dasharray: 6 8; }
+      .line-thin { stroke-width: 1.7; }
+      .icon { font: 700 26px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #ffffff; }
+    </style>
+  </defs>
+
+  <rect class="page" width="1440" height="940"/>
+  <text class="title" x="64" y="68">SF On-Prem Integration Agent</text>
+  <text class="subtitle" x="64" y="98">Netzwerktechnische Anbindung zwischen Agent, Connectoren, Scheduler und Salesforce</text>
+
+  <rect class="zone cloud" x="64" y="140" width="360" height="640" rx="18"/>
+  <text class="zone-title" x="92" y="178">Salesforce Cloud</text>
+  <text class="zone-note" x="92" y="202">Steuerung, OAuth, Logs und Zielobjekte</text>
+
+  <rect class="zone dmz" x="462" y="140" width="260" height="640" rx="18"/>
+  <text class="zone-title" x="490" y="178">Web-/DMZ-Host</text>
+  <text class="zone-note" x="490" y="202">Admin UI und Remote-Bedienung</text>
+
+  <rect class="zone agent" x="760" y="140" width="360" height="640" rx="18"/>
+  <text class="zone-title" x="788" y="178">On-Prem Agent-Host</text>
+  <text class="zone-note" x="788" y="202">Scheduler, Runtime und Connectoren</text>
+
+  <rect class="zone data" x="1160" y="140" width="216" height="640" rx="18"/>
+  <text class="zone-title" x="1188" y="178">On-Prem Systeme</text>
+  <text class="zone-note" x="1188" y="202">Datenquellen / Ziele</text>
+
+  <rect class="card card-blue" x="100" y="242" width="288" height="96" rx="12"/>
+  <circle cx="134" cy="290" r="21" fill="#2563eb"/>
+  <text class="icon" x="126" y="299">S</text>
+  <text class="card-title" x="170" y="277">Connected App / OAuth</text>
+  <text class="card-text" x="170" y="302">Client Credentials</text>
+  <text class="small" x="170" y="322">HTTPS 443</text>
+
+  <rect class="card card-blue" x="100" y="376" width="288" height="120" rx="12"/>
+  <circle cx="134" cy="426" r="21" fill="#0284c7"/>
+  <text class="icon" x="126" y="435">C</text>
+  <text class="card-title" x="170" y="410">Schedules &amp; Config</text>
+  <text class="card-text" x="170" y="435">MSD_Schedule__c</text>
+  <text class="card-text" x="170" y="456">MSD_Connector__c</text>
+  <text class="small" x="170" y="477">Polling durch Agent</text>
+
+  <rect class="card card-blue" x="100" y="536" width="288" height="120" rx="12"/>
+  <circle cx="134" cy="586" r="21" fill="#0369a1"/>
+  <text class="icon" x="126" y="595">R</text>
+  <text class="card-title" x="170" y="570">Runs &amp; Logs</text>
+  <text class="card-text" x="170" y="595">MSD_Run__c / Logs</text>
+  <text class="card-text" x="170" y="616">Status &amp; Audit Trail</text>
+  <text class="small" x="170" y="637">Status vom Agent</text>
+
+  <rect class="card card-slate" x="494" y="260" width="196" height="124" rx="12"/>
+  <circle cx="526" cy="314" r="21" fill="#475569"/>
+  <text class="icon" x="518" y="323">W</text>
+  <text class="card-title" x="562" y="294">Web UI</text>
+  <text class="card-text" x="562" y="319">Admin, Dashboard</text>
+  <text class="card-text" x="562" y="340">Installer, Health</text>
+  <text class="small" x="562" y="358">Port 8080 intern</text>
+  <text class="small" x="562" y="376">HTTPS via Proxy</text>
+
+  <rect class="card card-slate" x="494" y="520" width="196" height="108" rx="12"/>
+  <circle cx="526" cy="568" r="21" fill="#64748b"/>
+  <text class="icon" x="518" y="577">I</text>
+  <text class="card-title" x="562" y="554">Admin Login</text>
+  <text class="card-text" x="562" y="579">lokal oder OIDC</text>
+  <text class="small" x="562" y="602">Browser -> UI</text>
+
+  <rect class="card card-green" x="792" y="232" width="296" height="96" rx="12"/>
+  <circle cx="826" cy="280" r="21" fill="#16a34a"/>
+  <text class="icon" x="818" y="289">A</text>
+  <text class="card-title" x="862" y="267">Agent-Dienst</text>
+  <text class="card-text" x="862" y="292">Job Runner, Mapping Engine</text>
+  <text class="small" x="862" y="312">ausgehend zu APIs</text>
+
+  <rect class="card card-green" x="792" y="360" width="296" height="104" rx="12"/>
+  <circle cx="826" cy="412" r="21" fill="#15803d"/>
+  <text class="icon" x="818" y="421">T</text>
+  <text class="card-title" x="862" y="395">Scheduler</text>
+  <text class="card-text" x="862" y="420">Zeitfenster, Intervalle</text>
+  <text class="card-text" x="862" y="441">Overlap-Schutz</text>
+
+  <rect class="card card-green" x="792" y="496" width="296" height="108" rx="12"/>
+  <circle cx="826" cy="548" r="21" fill="#0f766e"/>
+  <text class="icon" x="818" y="557">X</text>
+  <text class="card-title" x="862" y="531">Connector Registry</text>
+  <text class="card-text" x="862" y="556">MSSQL, REST, File</text>
+  <text class="card-text" x="862" y="577">Salesforce Adapter</text>
+
+  <rect class="card card-green" x="792" y="636" width="296" height="88" rx="12"/>
+  <circle cx="826" cy="680" r="21" fill="#4d7c0f"/>
+  <text class="icon" x="818" y="689">L</text>
+  <text class="card-title" x="862" y="666">Lokale Artefakte</text>
+  <text class="card-text" x="862" y="691">Health, Audit, Secrets</text>
+
+  <rect class="card card-orange" x="1192" y="252" width="152" height="96" rx="12"/>
+  <circle cx="1224" cy="300" r="20" fill="#d97706"/>
+  <text class="icon" x="1216" y="309">D</text>
+  <text class="card-title" x="1256" y="287">MSSQL</text>
+  <text class="card-text" x="1256" y="312">TCP 1433</text>
+  <text class="small" x="1256" y="332">TLS optional</text>
+
+  <rect class="card card-orange" x="1192" y="408" width="152" height="96" rx="12"/>
+  <circle cx="1224" cy="456" r="20" fill="#c2410c"/>
+  <text class="icon" x="1216" y="465">F</text>
+  <text class="card-title" x="1256" y="443">Files</text>
+  <text class="card-text" x="1256" y="468">CSV/XLSX</text>
+  <text class="small" x="1256" y="488">Share/lokal</text>
+
+  <rect class="card card-orange" x="1192" y="564" width="152" height="96" rx="12"/>
+  <circle cx="1224" cy="612" r="20" fill="#b45309"/>
+  <text class="icon" x="1216" y="621">R</text>
+  <text class="card-title" x="1256" y="599">REST API</text>
+  <text class="card-text" x="1256" y="624">HTTP(S)</text>
+  <text class="small" x="1256" y="644">kundenspez.</text>
+
+  <path class="line-blue" d="M792 268 C690 218, 510 218, 388 290"/>
+  <text class="flow-label" x="500" y="232">OAuth / API</text>
+
+  <path class="line-blue" d="M388 438 C520 438, 648 408, 792 408"/>
+  <text class="flow-label" x="464" y="430">Config lesen</text>
+
+  <path class="line-blue" d="M792 570 C690 706, 500 704, 388 596"/>
+  <text class="flow-label" x="498" y="700">Runs / Logs</text>
+
+  <path class="line-orange" d="M1088 536 C1132 520, 1130 300, 1192 300"/>
+  <text class="flow-label" x="1116" y="292">SQL</text>
+
+  <path class="line-orange" d="M1088 550 C1130 550, 1148 456, 1192 456"/>
+  <text class="flow-label" x="1116" y="458">Datei</text>
+
+  <path class="line-orange" d="M1088 564 C1130 584, 1148 612, 1192 612"/>
+  <text class="flow-label" x="1116" y="610">REST</text>
+
+  <path class="line-green line-thin" d="M940 328 L940 360"/>
+  <text class="flow-label" x="958" y="350">due Runs</text>
+
+  <path class="line-green line-thin" d="M940 464 L940 496"/>
+  <text class="flow-label" x="958" y="486">Adapter</text>
+
+  <path class="line-green line-thin" d="M940 604 L940 636"/>
+  <text class="flow-label" x="958" y="626">Status</text>
+
+  <path class="line-red line-dash" d="M690 292 C724 230, 748 226, 792 262"/>
+  <text class="flow-label" x="704" y="238">Agent API 8090</text>
+
+  <path class="line-blue line-dash line-thin" d="M526 520 C476 452, 476 386, 494 322"/>
+  <text class="flow-label" x="504" y="488">OIDC optional</text>
+
+  <rect x="64" y="818" width="1312" height="72" rx="14" fill="#ffffff" stroke="#cbd5e1"/>
+  <rect x="92" y="839" width="16" height="16" rx="8" fill="#2563eb"/>
+  <text class="small" x="118" y="852">Salesforce HTTPS 443</text>
+  <text class="small" x="118" y="870">OAuth, API, Metadata</text>
+  <rect x="502" y="839" width="16" height="16" rx="8" fill="#b91c1c"/>
+  <text class="small" x="528" y="852">Remote Agent API</text>
+  <text class="small" x="528" y="870">intern 8090, Bearer Token</text>
+  <rect x="912" y="839" width="16" height="16" rx="8" fill="#b45309"/>
+  <text class="small" x="938" y="852">On-Prem Connectoren</text>
+  <text class="small" x="938" y="870">MSSQL, Dateien, REST</text>
+</svg>
