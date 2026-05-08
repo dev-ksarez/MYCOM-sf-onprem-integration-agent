@@ -1,13 +1,13 @@
 ---
 connie-publish: true
-connie-title: 07 - Release Historie
+connie-title: ReleaseNotes
 tags:
   - sf-onprem-integration-agent
   - release
   - changelog
 ---
 
-# Release Historie
+# ReleaseNotes
 
 Diese Seite fasst die publizierten Versionen des SF On-Prem Integration Agent zusammen. Detaillierte technische Release Notes liegen im Repository als `RELEASE_NOTES_<version>.md`.
 

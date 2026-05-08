@@ -9,7 +9,7 @@ tags:
 
 # Assistent Scheduler
 
-![Assistent Scheduler](../assets/screenshots/09-assistent-scheduler.png)
+![Assistent Scheduler](../../assets/screenshots/09-assistent-scheduler.png)
 
 Der Scheduler-Assistent verwaltet die zeitliche Ausfuehrung von Importen und Exporten. Er verbindet Zeitsteuerung, Richtung, Connectoren, Mapping und Laufkontrolle zu einem ausfuehrbaren Integrationsprofil.
 

@@ -11,13 +11,13 @@ tags:
 
 ## Login
 
-![Login](./assets/screenshots/01-login.png)
+![Login](../assets/screenshots/01-login.png)
 
 Die Web UI ist durch einen Admin-Login geschuetzt. Unterstuetzt werden lokale Benutzer aus der Admin-Benutzerdatei sowie optional Salesforce OIDC. Rollen und Rechte steuern, ob Benutzer nur lesen oder auch Konfigurationen aendern duerfen.
 
 ## Dashboard / Uebersicht
 
-![Dashboard](./assets/screenshots/02-dashboard.png)
+![Dashboard](../assets/screenshots/02-dashboard.png)
 
 Die Uebersicht zeigt:
 
@@ -32,7 +32,7 @@ Die Uebersicht zeigt:
 
 ## Scheduler-Verwaltung
 
-![Scheduler](./assets/screenshots/03-scheduler.png)
+![Scheduler](../assets/screenshots/03-scheduler.png)
 
 Die Scheduler-Verwaltung dient zur Pflege und Kontrolle der Import-/Exportprofile. Wichtige Funktionen:
 
@@ -45,7 +45,7 @@ Die Scheduler-Verwaltung dient zur Pflege und Kontrolle der Import-/Exportprofil
 
 ## Connectoren
 
-![Connectoren](./assets/screenshots/04-connectoren.png)
+![Connectoren](../assets/screenshots/04-connectoren.png)
 
 Connectoren beschreiben technische Endpunkte und Zugriffsdaten. Unterstuetzte Typen:
 
@@ -64,7 +64,7 @@ Funktionen:
 
 ## Monitoring
 
-![Monitoring](./assets/screenshots/05-monitoring.png)
+![Monitoring](../assets/screenshots/05-monitoring.png)
 
 Das Monitoring unterstuetzt den Betrieb durch:
 
@@ -76,12 +76,16 @@ Das Monitoring unterstuetzt den Betrieb durch:
 
 ## Installation
 
-![Installation](./assets/screenshots/06-installation.png)
+![Installation](../assets/screenshots/06-installation.png)
 
 Der Installationstab erzeugt passende Installationsartefakte fuer die Zielumgebung. Unterstuetzt werden Windows Server, Linux/Ubuntu und oeffentliche Linux-Server mit Reverse Proxy und TLS.
 
 ## Migration
 
-![Migration](./assets/screenshots/07-migration.png)
+![Migration](../assets/screenshots/07-migration.png)
 
 Das Migrationsmodul unterstuetzt Datei- und Salesforce-Migrationen. Es bietet Import, Migrationsentwuerfe, Salesforce-Login je Migration, Preflight-Pruefungen, Ausfuehrung mit Fortschritt und Behandlung fehlerhafter Datensaetze.
+
+## Assistenten
+
+[Assistenten](./assistenten/assistenten.md) sind als eigenes Unterthema dieser Funktionsdokumentation gepflegt. Dort sind Connector-, Scheduler- und Migrations-Assistent mit eigenen Screenshots und Ablaufdiagrammen beschrieben.

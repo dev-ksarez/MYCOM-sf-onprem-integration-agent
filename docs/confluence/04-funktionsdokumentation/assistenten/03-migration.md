@@ -9,7 +9,7 @@ tags:
 
 # Assistent Migration
 
-![Assistent Migration](../assets/screenshots/10-assistent-migration.png)
+![Assistent Migration](../../assets/screenshots/10-assistent-migration.png)
 
 Der Migrations-Assistent unterstuetzt einmalige oder vorbereitete Datenmigrationen. Er eignet sich fuer Dateiimporte, Salesforce-Zielobjekte und kontrollierte Uebernahmen mit Preflight-Pruefung und Ergebnisprotokoll.
 
