@@ -17,6 +17,9 @@ Die Assistenten fuehren Administratoren durch zusammenhaengende Konfigurations- 
 | [Connector-Assistent](./01-connector.md) | Technische Endpunkte anlegen, testen und Schedulern zuordnen |
 | [Scheduler-Assistent](./02-scheduler.md) | Integrationsprofile zeitlich steuern und Laeufe kontrollieren |
 | [Migrations-Assistent](./03-migration.md) | Einmalige Datenuebernahmen vorbereiten, pruefen und ausfuehren |
+| [Quelle](./04-quelle.md) | Datenquelle, Source Type, Source Definition und Quellvorschau dokumentieren |
+| [Ziel](./05-ziel.md) | Zielsystem, Zielobjekt, Operation und Target Definition dokumentieren |
+| [Mapping](./06-mapping.md) | Feldzuordnungen, Transform-Regeln und Mapping-Vorschau dokumentieren |
 
 ## Zusammenspiel
 

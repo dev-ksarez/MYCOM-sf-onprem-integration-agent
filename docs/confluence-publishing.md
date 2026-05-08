@@ -43,6 +43,9 @@ Aktuelle Seitenstruktur:
 | `04-funktionsdokumentation/assistenten/01-connector.md` | 06.1 - Assistent Connector |
 | `04-funktionsdokumentation/assistenten/02-scheduler.md` | 06.2 - Assistent Scheduler |
 | `04-funktionsdokumentation/assistenten/03-migration.md` | 06.3 - Assistent Migration |
+| `04-funktionsdokumentation/assistenten/04-quelle.md` | 06.4 - Assistent Quelle |
+| `04-funktionsdokumentation/assistenten/05-ziel.md` | 06.5 - Assistent Ziel |
+| `04-funktionsdokumentation/assistenten/06-mapping.md` | 06.6 - Assistent Mapping |
 | `05-betrieb-und-sicherheit.md` | 05 - Betrieb und Sicherheit |
 | `ReleaseNotes.md` | ReleaseNotes |
 
@@ -54,6 +57,9 @@ Screenshot-Anlagen:
 | `08-assistent-connector.png` | Assistent Connector |
 | `09-assistent-scheduler.png` | Assistent Scheduler |
 | `10-assistent-migration.png` | Assistent Migration |
+| `11-assistent-quelle.png` | Assistent Quelle |
+| `12-assistent-ziel.png` | Assistent Ziel |
+| `13-assistent-mapping.png` | Assistent Mapping |
 
 ## GitHub Secrets
 
