@@ -118,6 +118,10 @@ Die Web-Authentifizierung unterstuetzt jetzt serverseitig durchgesetzte Rechte:
 - `delete`
 - `admin`
 
+Benutzer koennen lokal in der Web UI im Tab `Admin` gepflegt werden. Persistiert wird standardmaessig in `artifacts/admin-users.json` oder in der per `ADMIN_UI_USERS_FILE` gesetzten Datei. Fuer Docker ist `./artifacts:/app/artifacts` gemountet, damit Benutzer und Historie Neustarts ueberleben.
+
+Neuinstallationen und Windows-Updates legen bei Bedarf automatisch eine Bootstrap-Datei `artifacts/admin-users.json` an und ergaenzen `.env` um `ADMIN_UI_USERS_FILE=artifacts/admin-users.json`. Vorhandene Benutzerdateien und Betriebsdaten bleiben dabei erhalten.
+
 Standardzuordnung:
 
 - `viewer` -> `read`
@@ -132,16 +136,24 @@ Beispiel fuer `ADMIN_UI_USERS_JSON`:
     "id": "ops-admin",
     "username": "admin@example.com",
     "password": "starkes-passwort",
-    "roles": ["admin"]
+    "roles": ["admin"],
+    "modules": ["migration"]
   },
   {
     "id": "ops-viewer",
     "username": "viewer@example.com",
     "roles": ["viewer"],
-    "permissions": ["read"]
+    "permissions": ["read"],
+    "modules": []
   }
 ]
 ```
+
+Aktuell verfuegbare Modulberechtigung:
+
+- `migration` fuer das Migrationsmodul
+
+Konfigurationsaenderungen an Instanzen, Templates, Schedulern, Connectoren, Migrationen und Admin-Benutzern werden mit Benutzer und Zeitstempel in `artifacts/audit-history.json` protokolliert und im Admin-Tab angezeigt.
 
 Im Modus `salesforce_oidc` wird das Passwort lokal nicht verwendet. Die lokale Benutzerliste dient dann als Rollen- und Berechtigungszuordnung fuer Salesforce-Benutzer.
 
@@ -191,8 +203,10 @@ Windows:
 - Vollinstallation:
   - `powershell -File scripts/windows/install-windows-agent.ps1 -InstallProfile all`
 - Agent-Host:
+  - installiert nur den Agent-Dienst `SfOnpremIntegrationAgent`
   - `powershell -File scripts/windows/install-windows-agent.ps1 -InstallProfile agent-host`
 - Web-Host:
+  - installiert Web UI und AutoUpdater als `SfOnpremIntegrationWeb` und `SfOnpremIntegrationUpdater`
   - `powershell -File scripts/windows/install-windows-agent.ps1 -InstallProfile web-host`
 
 Linux:
@@ -349,6 +363,13 @@ npm run win:build-package
 Artefakt:
 
 - `artifacts/sf-onprem-integration-agent-customer-installer-<version>.zip`
+
+Das Paket enthaelt fuer lokale Admin-Anmeldung standardmaessig eine Bootstrap-Datei `artifacts/admin-users.json` mit:
+
+- Benutzer: `admin`
+- Passwort: `admin123!`
+
+Dieses Passwort sollte nach der ersten Anmeldung direkt ueber die Admin-Benutzerverwaltung geaendert werden.
 
 Optional (groesser, dafuer ohne npm-Install auf Kundensystem):
 

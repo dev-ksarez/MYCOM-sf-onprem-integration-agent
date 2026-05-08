@@ -140,6 +140,10 @@ async function main() {
     path.join(stagingAppRoot, "artifacts", "file-examples")
   );
   await copyIfExists(
+    path.join(appRoot, "artifacts", "admin-users.json"),
+    path.join(stagingAppRoot, "artifacts", "admin-users.json")
+  );
+  await copyIfExists(
     path.join(appRoot, "artifacts", "templates"),
     path.join(stagingAppRoot, "artifacts", "templates")
   );
@@ -165,6 +169,10 @@ async function main() {
   await copyIfExists(
     path.join(appRoot, "METADATA_DEPLOYMENT_TROUBLESHOOTING.md"),
     path.join(stagingAppRoot, "METADATA_DEPLOYMENT_TROUBLESHOOTING.md")
+  );
+  await copyIfExists(
+    path.join(appRoot, `RELEASE_NOTES_${version}.md`),
+    path.join(stagingAppRoot, `RELEASE_NOTES_${version}.md`)
   );
   await copyIfExists(path.join(appRoot, "nssm.exe"), path.join(stagingAppRoot, "nssm.exe"));
   await copyIfExists(

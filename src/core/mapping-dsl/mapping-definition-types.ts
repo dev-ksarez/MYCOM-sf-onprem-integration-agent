@@ -16,6 +16,13 @@ export interface MappingPicklistEntry {
   target: string;
 }
 
+export type MappingEmailInvalidAction = "EMPTY" | "ERROR";
+
+export interface MappingEmailValidationOptions {
+  enabled: boolean;
+  invalidAction: MappingEmailInvalidAction;
+}
+
 export interface ParsedTransform {
   type: MappingTransformType;
   raw: string;
@@ -32,6 +39,7 @@ export interface MappingDefinitionLine {
   sourceField: string;
   transform: ParsedTransform;
   picklistMappings?: MappingPicklistEntry[];
+  emailValidation?: MappingEmailValidationOptions;
 }
 
 export interface MappingDefinitionParseResult {

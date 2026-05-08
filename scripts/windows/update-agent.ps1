@@ -86,6 +86,118 @@ function Ensure-Directory {
   }
 }
 
+function Get-EnvValueMap {
+  param([string]$Path)
+
+  $values = [ordered]@{}
+  if (-not (Test-Path -Path $Path)) {
+    return $values
+  }
+
+  foreach ($line in Get-Content -Path $Path) {
+    if ($line -match '^\s*#' -or $line -notmatch '=') {
+      continue
+    }
+
+    $parts = $line -split '=', 2
+    $key = $parts[0].Trim()
+    if (-not $key) {
+      continue
+    }
+
+    $value = if ($parts.Count -gt 1) { $parts[1] } else { "" }
+    $values[$key] = $value
+  }
+
+  return $values
+}
+
+function Set-OrAppendEnvValues {
+  param(
+    [string]$Path,
+    [hashtable]$Updates
+  )
+
+  $lines = New-Object System.Collections.Generic.List[string]
+  if (Test-Path -Path $Path) {
+    foreach ($line in Get-Content -Path $Path) {
+      $lines.Add($line)
+    }
+  }
+
+  foreach ($entry in $Updates.GetEnumerator()) {
+    $key = $entry.Key
+    $value = [string]$entry.Value
+    $replacement = "$key=$value"
+    $pattern = '^\s*' + [regex]::Escape($key) + '\s*='
+    $replaced = $false
+
+    for ($index = 0; $index -lt $lines.Count; $index += 1) {
+      if ($lines[$index] -match $pattern) {
+        $lines[$index] = $replacement
+        $replaced = $true
+        break
+      }
+    }
+
+    if (-not $replaced) {
+      if ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -ne "") {
+        $lines.Add("")
+      }
+      $lines.Add($replacement)
+    }
+  }
+
+  Set-Content -Path $Path -Value $lines -Encoding UTF8
+}
+
+function Ensure-LocalAdminBootstrap {
+  param(
+    [string]$AppRootPath,
+    [string]$PayloadRootPath
+  )
+
+  $artifactsDir = Join-Path $AppRootPath "artifacts"
+  $adminUsersFilePath = Join-Path $artifactsDir "admin-users.json"
+  Ensure-Directory -Path $artifactsDir
+
+  if (-not (Test-Path -Path $adminUsersFilePath)) {
+    $payloadAdminUsers = Join-Path $PayloadRootPath "artifacts\admin-users.json"
+    if (Test-Path -Path $payloadAdminUsers) {
+      Copy-Item -Path $payloadAdminUsers -Destination $adminUsersFilePath -Force
+    } else {
+      @(
+        [ordered]@{
+          id = "local-admin"
+          username = "admin"
+          password = "admin123!"
+          displayName = "Lokaler Admin"
+          roles = @("admin")
+          permissions = @("admin", "read", "write", "delete")
+          modules = @("migration")
+        }
+      ) | ConvertTo-Json -Depth 5 | Set-Content -Path $adminUsersFilePath -Encoding UTF8
+    }
+  }
+
+  $envPath = Join-Path $AppRootPath ".env"
+  if (-not (Test-Path -Path $envPath)) {
+    return
+  }
+
+  $envValues = Get-EnvValueMap -Path $envPath
+  $updates = [ordered]@{}
+  if (-not $envValues.Contains('ADMIN_UI_USERS_FILE')) {
+    $updates['ADMIN_UI_USERS_FILE'] = "artifacts/admin-users.json"
+  }
+  if (-not $envValues.Contains('ADMIN_AUTH_MODE')) {
+    $updates['ADMIN_AUTH_MODE'] = "local"
+  }
+  if ($updates.Count -gt 0) {
+    Set-OrAppendEnvValues -Path $envPath -Updates $updates
+  }
+}
+
 function Write-UpdateProgress {
   param(
     [string]$State,
@@ -415,6 +527,7 @@ $restorePlan = @(
   @{ Source = (Join-Path $appRootResolved "salesforce"); Backup = (Join-Path $backupRoot "salesforce"); Target = (Join-Path $appRootResolved "salesforce"); Payload = (Join-Path $payloadRoot "salesforce") },
   @{ Source = (Join-Path $appRootResolved "artifacts\templates"); Backup = (Join-Path $backupRoot "artifacts\templates"); Target = (Join-Path $appRootResolved "artifacts\templates"); Payload = (Join-Path $payloadRoot "artifacts\templates") },
   @{ Source = (Join-Path $appRootResolved "artifacts\file-examples"); Backup = (Join-Path $backupRoot "artifacts\file-examples"); Target = (Join-Path $appRootResolved "artifacts\file-examples"); Payload = (Join-Path $payloadRoot "artifacts\file-examples") },
+  @{ Source = (Join-Path $appRootResolved "nssm.exe"); Backup = (Join-Path $backupRoot "nssm.exe"); Target = (Join-Path $appRootResolved "nssm.exe"); Payload = (Join-Path $payloadRoot "nssm.exe") },
   @{ Source = (Join-Path $appRootResolved "package.json"); Backup = (Join-Path $backupRoot "package.json"); Target = (Join-Path $appRootResolved "package.json"); Payload = (Join-Path $payloadRoot "package.json") },
   @{ Source = (Join-Path $appRootResolved "node_modules"); Backup = (Join-Path $backupRoot "node_modules"); Target = (Join-Path $appRootResolved "node_modules"); Payload = (Join-Path $payloadRoot "node_modules") }
 )
@@ -444,6 +557,8 @@ try {
       Copy-Item -Path $item.Payload -Destination $item.Target -Force
     }
   }
+
+  Ensure-LocalAdminBootstrap -AppRootPath $appRootResolved -PayloadRootPath $payloadRoot
 
   Reconfigure-ManagedServices -TargetVersion $targetVersion
 

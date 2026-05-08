@@ -20,6 +20,8 @@ services:
       AUTO_UPDATER_ENABLED: "0"
     ports:
       - "8090:8090"
+    volumes:
+      - ./artifacts:/app/artifacts
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/api/agent/health',{headers:{Authorization:'Bearer test-shared-agent-token'}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 15s
@@ -45,12 +47,19 @@ services:
       WEB_UI_PORT: 8080
       AGENT_REMOTE_BASE_URL: http://agent-host:8090
       AGENT_REMOTE_TOKEN: test-shared-agent-token
-      ADMIN_AUTH_MODE: local
-      ADMIN_UI_USERS_JSON: '[{"id":"docker-admin","username":"admin","password":"admin123!","roles":["admin"]},{"id":"docker-viewer","username":"viewer","password":"viewer123!","roles":["viewer"]}]'
+      ADMIN_AUTH_MODE: ${ADMIN_AUTH_MODE:-local}
+      ADMIN_UI_USERS_JSON: ${ADMIN_UI_USERS_JSON:-[{"id":"docker-admin","username":"admin","password":"admin123!","roles":["admin"]},{"id":"docker-viewer","username":"viewer","password":"viewer123!","roles":["viewer"]}]}
+      SF_IDP_LOGIN_URL: ${SF_IDP_LOGIN_URL:-https://test.salesforce.com}
+      SF_IDP_CLIENT_ID: ${SF_IDP_CLIENT_ID:-}
+      SF_IDP_CLIENT_SECRET: ${SF_IDP_CLIENT_SECRET:-}
+      SF_IDP_SCOPES: ${SF_IDP_SCOPES:-openid}
+      SF_IDP_REDIRECT_URI: ${SF_IDP_REDIRECT_URI:-http://localhost:18080/auth/salesforce/callback}
       UPDATE_MANIFEST_URL: http://example.invalid/update-manifest.json
       AUTO_UPDATER_ENABLED: "0"
     ports:
       - "18080:8080"
+    volumes:
+      - ./artifacts:/app/artifacts
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/system/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 15s

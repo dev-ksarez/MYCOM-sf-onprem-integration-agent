@@ -502,6 +502,7 @@ export class SalesforceTargetAdapter implements TargetAdapter {
   private readonly lastRunAt?: string;
   private picklistSqlDatabase?: MssqlDatabase;
   private readonly sqlMappingCache: Map<string, Map<string, string>>;
+  private static readonly PRICEBOOK_UPSERT_CONCURRENCY = 10;
 
   private async preparePricebookEntryCompositeLookup(
     records: GenericRecord[],
@@ -557,6 +558,100 @@ export class SalesforceTargetAdapter implements TargetAdapter {
     };
   }
 
+  private async writePreparedPricebookEntryRecord(
+    record: GenericRecord,
+    context: TransferContext,
+    target: SalesforceObjectTargetDefinition,
+    preparedPricebookEntryLookup?: { product2IdsByProductCode: Map<string, string>; existingEntryIdsByCompositeKey: Map<string, string> }
+  ): Promise<ConnectorResult> {
+    const normalizedValues = await this.normalizePicklistValues(normalizeRecordValues(record.values));
+    const valuesWithTargetDefaults =
+      target.pricebook2Id && normalizedValues.Pricebook2Id === undefined
+        ? {
+            ...normalizedValues,
+            Pricebook2Id: target.pricebook2Id
+          }
+        : normalizedValues;
+    const externalKeyValue = valuesWithTargetDefaults[target.externalIdField];
+    const externalKey =
+      typeof externalKeyValue === "string"
+        ? externalKeyValue
+        : String(externalKeyValue ?? "UNKNOWN");
+
+    try {
+      if (externalKeyValue === undefined || externalKeyValue === null || externalKeyValue === "") {
+        throw new Error(`Mapped record is missing required external id field: ${target.externalIdField}`);
+      }
+
+      validateRequiredRelationshipLookups(target.objectApiName, valuesWithTargetDefaults);
+
+      const resolvedProduct2Id = String(
+        valuesWithTargetDefaults.Product2Id
+          ?? preparedPricebookEntryLookup?.product2IdsByProductCode.get(String(valuesWithTargetDefaults.ProductCode ?? "").trim())
+          ?? ""
+      ).trim();
+      const resolvedPricebook2Id = String(valuesWithTargetDefaults.Pricebook2Id ?? target.pricebook2Id ?? "").trim();
+      const existingEntryId = resolvedPricebook2Id && resolvedProduct2Id
+        ? preparedPricebookEntryLookup?.existingEntryIdsByCompositeKey.get(
+            buildPricebookEntryCompositeKey(resolvedPricebook2Id, resolvedProduct2Id)
+          )
+        : undefined;
+
+      const targetId = await this.salesforceClient.upsertPricebookEntryByCompositeKey(valuesWithTargetDefaults, {
+        product2Id: resolvedProduct2Id || undefined,
+        existingEntryId
+      });
+
+      return {
+        externalKey,
+        success: true,
+        targetId,
+        statusCode: "UPSERT_OK",
+        message: `Salesforce record upserted in run ${context.runId}`,
+        retryable: false
+      };
+    } catch (error) {
+      const message = formatUnknownError(error);
+      const isDuplicateError = isDuplicateSalesforceError(message);
+      const isExternalIdConfigError = isExternalIdConfigurationError(message);
+      const isNonRetryable = isDuplicateError || isExternalIdConfigError;
+
+      return {
+        externalKey,
+        success: false,
+        statusCode: isDuplicateError
+          ? "DUPLICATE_ERROR"
+          : isExternalIdConfigError
+            ? "CONFIGURATION_ERROR"
+            : "TECHNICAL_ERROR",
+        message,
+        retryable: !isNonRetryable
+      };
+    }
+  }
+
+  private async writePricebookEntryRecords(
+    records: GenericRecord[],
+    context: TransferContext,
+    target: SalesforceObjectTargetDefinition,
+    preparedPricebookEntryLookup?: { product2IdsByProductCode: Map<string, string>; existingEntryIdsByCompositeKey: Map<string, string> }
+  ): Promise<ConnectorResult[]> {
+    const results = new Array<ConnectorResult>(records.length);
+    const concurrency = Math.max(1, SalesforceTargetAdapter.PRICEBOOK_UPSERT_CONCURRENCY);
+
+    for (let index = 0; index < records.length; index += concurrency) {
+      const chunk = records.slice(index, index + concurrency);
+      const chunkResults = await Promise.all(
+        chunk.map((record) => this.writePreparedPricebookEntryRecord(record, context, target, preparedPricebookEntryLookup))
+      );
+      chunkResults.forEach((result, chunkIndex) => {
+        results[index + chunkIndex] = result;
+      });
+    }
+
+    return results;
+  }
+
   public constructor(
     salesforceClient: SalesforceClient,
     targetDefinition: string,
@@ -608,6 +703,10 @@ export class SalesforceTargetAdapter implements TargetAdapter {
     const preparedPricebookEntryLookup = shouldUsePricebookCompositeKey
       ? await this.preparePricebookEntryCompositeLookup(records, target)
       : undefined;
+
+    if (shouldUsePricebookCompositeKey && target.operation === "upsert") {
+      return this.writePricebookEntryRecords(records, context, target, preparedPricebookEntryLookup);
+    }
 
     for (const record of records) {
       const normalizedValues = await this.normalizePicklistValues(normalizeRecordValues(record.values));

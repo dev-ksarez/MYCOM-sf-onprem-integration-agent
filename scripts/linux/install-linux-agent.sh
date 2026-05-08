@@ -117,9 +117,31 @@ WEB_UI_HOST=127.0.0.1
 WEB_UI_PORT=$APP_PORT
 LOG_LEVEL=info
 UPDATE_CHECK_INTERVAL_MS=900000
+ADMIN_AUTH_MODE=local
+ADMIN_UI_USERS_FILE=artifacts/admin-users.json
 EOF
   chown root:"$SERVICE_GROUP" "$ENV_FILE"
   chmod 0640 "$ENV_FILE"
+fi
+
+ADMIN_USERS_FILE="$APP_DIR/artifacts/admin-users.json"
+if [[ ! -f "$ADMIN_USERS_FILE" ]]; then
+  install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$APP_DIR/artifacts"
+  cat > "$ADMIN_USERS_FILE" <<EOF
+[
+  {
+    "id": "local-admin",
+    "username": "admin",
+    "password": "admin123!",
+    "displayName": "Lokaler Admin",
+    "roles": ["admin"],
+    "permissions": ["admin", "read", "write", "delete"],
+    "modules": ["migration"]
+  }
+]
+EOF
+  chown "$SERVICE_USER:$SERVICE_GROUP" "$ADMIN_USERS_FILE"
+  chmod 0640 "$ADMIN_USERS_FILE"
 fi
 
 for template in \

@@ -322,6 +322,51 @@ function Set-OrAppendEnvValues {
   Set-Content -Path $Path -Value $lines -Encoding UTF8
 }
 
+function Ensure-LocalAdminBootstrap {
+  param(
+    [string]$AppRootPath,
+    [string]$EnvPath
+  )
+
+  $artifactsDir = Join-Path $AppRootPath "artifacts"
+  $adminUsersFileName = "admin-users.json"
+  $adminUsersFilePath = Join-Path $artifactsDir $adminUsersFileName
+  if (-not (Test-Path -Path $artifactsDir)) {
+    New-Item -Path $artifactsDir -ItemType Directory -Force | Out-Null
+  }
+
+  if (-not (Test-Path -Path $adminUsersFilePath)) {
+    $bootstrapUsers = @(
+      [ordered]@{
+        id = "local-admin"
+        username = "admin"
+        password = "admin123!"
+        displayName = "Lokaler Admin"
+        roles = @("admin")
+        permissions = @("admin", "read", "write", "delete")
+        modules = @("migration")
+      }
+    ) | ConvertTo-Json -Depth 5
+    Set-Content -Path $adminUsersFilePath -Value $bootstrapUsers -Encoding UTF8
+    Write-InstallerLog -Message ("Bootstrap admin user file created: " + $adminUsersFilePath)
+  }
+
+  if (Test-Path -Path $EnvPath) {
+    $envValues = Get-EnvValueMap -Path $EnvPath
+    $updates = [ordered]@{}
+    if (-not $envValues.Contains('ADMIN_UI_USERS_FILE')) {
+      $updates['ADMIN_UI_USERS_FILE'] = "artifacts/admin-users.json"
+    }
+    if (-not $envValues.Contains('ADMIN_AUTH_MODE')) {
+      $updates['ADMIN_AUTH_MODE'] = "local"
+    }
+    if ($updates.Count -gt 0) {
+      Set-OrAppendEnvValues -Path $EnvPath -Updates $updates
+      Write-InstallerLog -Message ".env extended with local admin bootstrap defaults."
+    }
+  }
+}
+
 function Read-ConfigValue {
   param(
     [string]$Prompt,
@@ -398,8 +443,8 @@ function Resolve-InstallRolesFromProfile {
 
   $roles = switch ($Profile) {
     "all" { @("agent", "web", "updater") }
-    "agent-host" { @("agent", "updater") }
-    "web-host" { @("web") }
+    "agent-host" { @("agent") }
+    "web-host" { @("web", "updater") }
     "agent-only" { @("agent") }
     "web-only" { @("web") }
     "updater-only" { @("updater") }
@@ -643,6 +688,8 @@ try {
     Write-InstallerLog -Level ERROR -Message ".env is still missing and user declined continuation."
   throw "Installation cancelled until .env is provided."
   }
+
+  Ensure-LocalAdminBootstrap -AppRootPath $appRootResolved -EnvPath $envPath
 
   if ($RunInitialSetup) {
   if (-not $npmExe) {

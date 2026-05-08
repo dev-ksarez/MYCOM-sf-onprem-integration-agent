@@ -32,6 +32,9 @@ interface StoredMappingRule {
   lookupObject?: unknown;
   lookupField?: unknown;
   picklistMappings?: unknown;
+  emailValidationEnabled?: unknown;
+  emailInvalidAction?: unknown;
+  emailValidation?: unknown;
 }
 
 function normalizeStoredPicklistMappings(value: unknown): MappingPicklistEntry[] {
@@ -49,6 +52,22 @@ function normalizeStoredPicklistMappings(value: unknown): MappingPicklistEntry[]
       };
     })
     .filter((entry) => entry.source.length > 0 || entry.target.length > 0);
+}
+
+function normalizeStoredEmailValidation(rule: StoredMappingRule) {
+  const nested = rule.emailValidation && typeof rule.emailValidation === "object" && !Array.isArray(rule.emailValidation)
+    ? rule.emailValidation as { enabled?: unknown; invalidAction?: unknown }
+    : undefined;
+  const enabled = Boolean(nested?.enabled ?? rule.emailValidationEnabled);
+  if (!enabled) {
+    return undefined;
+  }
+
+  const rawAction = String(nested?.invalidAction ?? rule.emailInvalidAction ?? "EMPTY").trim().toUpperCase();
+  return {
+    enabled: true,
+    invalidAction: rawAction === "ERROR" ? "ERROR" as const : "EMPTY" as const
+  };
 }
 
 function isSupportedTargetType(value: string): value is MappingTargetType {
@@ -171,7 +190,8 @@ function parseStoredRule(rule: StoredMappingRule, lineNumber: number): MappingDe
     targetType,
     sourceField,
     transform,
-    picklistMappings: normalizeStoredPicklistMappings(rule.picklistMappings)
+    picklistMappings: normalizeStoredPicklistMappings(rule.picklistMappings),
+    emailValidation: normalizeStoredEmailValidation(rule)
   };
 }
 
