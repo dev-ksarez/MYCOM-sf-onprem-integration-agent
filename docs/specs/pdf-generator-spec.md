@@ -26,6 +26,15 @@ Autor: GitHub Copilot (Draft)
 
 Ein modularer PDF-Generator für das Projekt, der strukturierte Eingabedaten (JSON, HTML, Markdown) in hochwertige PDF-Dokumente umwandelt. Fokus: Nachvollziehbarkeit, Konfigurierbarkeit und einfache Integration in bestehende Flows (CLI, API, Worker).
 
+## Integration in den SF-Agenten
+
+Der PDF-Generator ist ein neues, selbstständiges Modul innerhalb des SF-Agenten. Generierung wird gesteuert über konfigurierbare Abfragen (Queries) und Templates:
+
+- Neuer Scheduler-Typ: `PDF` — erlaubt zeit- oder ereignisgesteuerte Ausführung von PDF-Jobs basierend auf hinterlegten Queries.
+- Neuer Connector-Typ: `PDF` — definiert Zielablage (lokal `artifacts/` oder extern, z. B. S3), dynamische Dateinamensgebung und Mapping von Query-Ergebnissen in Template-Variablen.
+
+Scheduler und Connector arbeiten zusammen: Ein `PDF`-Scheduler-Job referenziert einen `PDF`-Connector und ein Template; bei Ausführung werden die Query-Ergebnisse durch das Template gerendert und das Ergebnis über den Connector persistiert oder zugestellt.
+
 ## Anwendungsfälle
 
 - Erstellen von Report-PDFs aus JSON-Daten + Templates.
