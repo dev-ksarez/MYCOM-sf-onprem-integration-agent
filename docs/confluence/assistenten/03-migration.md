@@ -1,6 +1,6 @@
 ---
 connie-publish: true
-connie-title: 08 - Assistent Migration
+connie-title: 06.3 - Assistent Migration
 tags:
   - sf-onprem-integration-agent
   - assistent
@@ -9,7 +9,7 @@ tags:
 
 # Assistent Migration
 
-![Migration](./assets/screenshots/07-migration.png)
+![Assistent Migration](../assets/screenshots/10-assistent-migration.png)
 
 Der Migrations-Assistent unterstuetzt einmalige oder vorbereitete Datenmigrationen. Er eignet sich fuer Dateiimporte, Salesforce-Zielobjekte und kontrollierte Uebernahmen mit Preflight-Pruefung und Ergebnisprotokoll.
 

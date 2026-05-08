@@ -10,7 +10,8 @@ Diese Dokumentation wird als Docs-as-Code gepflegt:
 ## Quelle
 
 - Startseite: `docs/confluence/projektdokumentation.md`
-- Themen-Seiten: `docs/confluence/01-*.md` bis `docs/confluence/08-*.md`
+- Hauptthemen: `docs/confluence/01-*.md` bis `docs/confluence/07-*.md`
+- Unterthemen: `docs/confluence/assistenten/*.md`
 - Netzwerkdiagramm: `docs/confluence/assets/systemdiagramm-netzwerk.svg`
 - Screenshots: `docs/confluence/assets/screenshots/`
 - Workflow: `.github/workflows/publish-confluence-docs.yml`
@@ -39,9 +40,20 @@ Aktuelle Seitenstruktur:
 | `03-installation.md` | 03 - Installationsbeschreibung |
 | `04-funktionsdokumentation.md` | 04 - Funktionsdokumentation |
 | `05-betrieb-und-sicherheit.md` | 05 - Betrieb und Sicherheit |
-| `06-assistent-connector.md` | 06 - Assistent Connector |
-| `07-assistent-scheduler.md` | 07 - Assistent Scheduler |
-| `08-assistent-migration.md` | 08 - Assistent Migration |
+| `06-assistenten.md` | 06 - Assistenten |
+| `assistenten/01-connector.md` | 06.1 - Assistent Connector |
+| `assistenten/02-scheduler.md` | 06.2 - Assistent Scheduler |
+| `assistenten/03-migration.md` | 06.3 - Assistent Migration |
+| `07-release-historie.md` | 07 - Release Historie |
+
+Screenshot-Anlagen:
+
+| Datei | Verwendung |
+| --- | --- |
+| `01-login.png` bis `07-migration.png` | Funktionsdokumentation |
+| `08-assistent-connector.png` | Assistent Connector |
+| `09-assistent-scheduler.png` | Assistent Scheduler |
+| `10-assistent-migration.png` | Assistent Migration |
 
 ## GitHub Secrets
 
