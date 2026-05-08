@@ -6083,6 +6083,21 @@ function htmlShell(): string {
             });
           }
         });
+        // Fallback: wenn keine Felder vom Connector geladen wurden (z.B. Remote-Agent),
+        // Quellfelder aus den gespeicherten Mapping-Regeln (Salesforce) synthetisieren.
+        if (byKey.size === 0) {
+          (Array.isArray(state.mappingRules) ? state.mappingRules : []).forEach((rule) => {
+            const name = resolveSourceFieldName(String(rule?.sourceField || '').trim());
+            const key = normalizeFieldKey(name);
+            if (name && key && !byKey.has(key)) {
+              byKey.set(key, {
+                name,
+                label: '',
+                type: String(rule?.sourceType || 'string').trim() || 'string'
+              });
+            }
+          });
+        }
         return Array.from(byKey.values()).sort((a, b) => {
           const left = String(a?.label || a?.name || '').trim();
           const right = String(b?.label || b?.name || '').trim();
