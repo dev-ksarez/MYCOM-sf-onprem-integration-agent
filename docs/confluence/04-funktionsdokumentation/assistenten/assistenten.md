@@ -20,13 +20,12 @@ Die Assistenten fuehren Administratoren durch zusammenhaengende Konfigurations- 
 
 ## Zusammenspiel
 
-```mermaid
-flowchart LR
-  C[Connector-Assistent] --> S[Scheduler-Assistent]
-  M[Migrations-Assistent] --> C
-  S --> R[Runs, Logs, Checkpoints]
-  C --> A[Agent Runtime]
-  A --> R
-```
+| Schritt | Komponente | Ergebnis |
+| --- | --- | --- |
+| 1 | Connector-Assistent | Technische Endpunkte und Zugriffsdaten werden gepflegt. |
+| 2 | Scheduler-Assistent | Wiederkehrende Integrationslaeufe nutzen die gepflegten Connectoren. |
+| 3 | Migrations-Assistent | Einmalige Datenuebernahmen koennen Parameter und Mappings vorbereiten. |
+| 4 | Agent Runtime | Connectoren und Scheduler werden ausgefuehrt. |
+| 5 | Runs, Logs, Checkpoints | Ergebnisse werden fuer Betrieb und Nachvollziehbarkeit gespeichert. |
 
 Connectoren bilden die technischen Endpunkte. Scheduler nutzen diese Connectoren fuer wiederkehrende Integrationen. Migrationen dienen kontrollierten Einmaluebernahmen und koennen als Vorlage fuer spaetere Scheduler-Konfigurationen verwendet werden.

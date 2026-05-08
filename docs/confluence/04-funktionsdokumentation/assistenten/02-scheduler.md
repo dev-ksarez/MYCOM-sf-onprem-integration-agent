@@ -15,20 +15,17 @@ Der Scheduler-Assistent verwaltet die zeitliche Ausfuehrung von Importen und Exp
 
 ## Ablauf
 
-```mermaid
-flowchart TD
-  A[Scheduler oeffnen] --> B[Profil und Richtung festlegen]
-  B --> C[Source- und Target-Connector waehlen]
-  C --> D[Mapping und Filter setzen]
-  D --> E[Intervall und Zeitfenster definieren]
-  E --> F{Aktiv?}
-  F -->|Ja| G[Due Run wird eingeplant]
-  F -->|Nein| H[Profil bleibt pausiert]
-  G --> I[Overlap-Schutz prueft laufende Runs]
-  I --> J{Kein aktiver Run?}
-  J -->|Ja| K[Job Runner startet Lauf]
-  J -->|Nein| L[Run wird blockiert oder uebersprungen]
-```
+| Schritt | Aktion | Ergebnis |
+| --- | --- | --- |
+| 1 | Scheduler oeffnen | Neues oder bestehendes Integrationsprofil wird bearbeitet. |
+| 2 | Profil und Richtung festlegen | Import, Export oder anderer Laufkontext wird definiert. |
+| 3 | Source- und Target-Connector waehlen | Technische Endpunkte werden mit dem Profil verbunden. |
+| 4 | Mapping und Filter setzen | Feldzuordnung und Datenselektion werden festgelegt. |
+| 5 | Intervall und Zeitfenster definieren | Automatische Ausfuehrung wird zeitlich begrenzt. |
+| 6 | Aktivstatus setzen | Aktive Profile koennen faellige Runs erzeugen. |
+| 7 | Overlap-Schutz pruefen | Laufende Runs verhindern parallele Ausfuehrung desselben Profils. |
+| 8 | Job Runner starten | Gueltige faellige Runs werden ausgefuehrt. |
+| 9 | Run protokollieren | Status, Zaehler, Fehler und Checkpoints werden gespeichert. |
 
 ## Kernfunktionen
 
