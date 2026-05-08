@@ -43,10 +43,12 @@ In GitHub unter `Settings -> Secrets and variables -> Actions -> Variables` anle
 
 | Variable | Empfohlener Wert | Zweck |
 | --- | --- | --- |
-| `CONFLUENCE_BASE_URL` | `https://mycom.atlassian.net/wiki` | Base URL der Confluence Cloud Site |
+| `CONFLUENCE_BASE_URL` | `https://mycom.atlassian.net` | Base URL der Confluence Cloud Site ohne `/wiki` |
 | `CONFLUENCE_PARENT_ID` | Parent-Page-ID der Dokumentation | Parent-Seite fuer neue Seiten |
 
 Hinweis: Die aktuelle Dokumentationsseite hat bereits `connie-page-id: "4399431685"` und `connie-dont-change-parent-page: true`. Die Parent-ID wird vom Tool trotzdem als Pflichtparameter erwartet. Wenn die echte Parent-ID bekannt ist, sollte sie als `CONFLUENCE_PARENT_ID` gesetzt werden.
+
+Der Workflow normalisiert `CONFLUENCE_BASE_URL` automatisch. Falls die Variable versehentlich mit `/wiki` hinterlegt wurde, wird dieser Suffix vor dem Publish entfernt, weil die verwendete Confluence-Client-Bibliothek fuer Atlassian Cloud den Host in der Form `https://<tenant>.atlassian.net` erwartet.
 
 ## Workflow starten
 
