@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Publish Markdown to Confluence
-        uses: markdown-confluence/publish@v5
+        uses: markdown-confluence/publish-action@v5
         with:
           confluenceBaseUrl: ${{ vars.CONFLUENCE_BASE_URL || 'https://mycom.atlassian.net/wiki' }}
           confluenceParentId: ${{ vars.CONFLUENCE_PARENT_ID || '4399431685' }}

@@ -13,6 +13,7 @@ Diese Dokumentation wird als Docs-as-Code gepflegt:
 - Netzwerkdiagramm: `docs/confluence/assets/systemdiagramm-netzwerk.svg`
 - Screenshots: `docs/confluence/assets/screenshots/`
 - Workflow: `.github/workflows/publish-confluence-docs.yml`
+- GitHub Action: `markdown-confluence/publish-action@v5`
 
 Die Markdown-Datei enthaelt Confluence-Frontmatter:
 
