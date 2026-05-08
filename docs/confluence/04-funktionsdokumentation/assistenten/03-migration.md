@@ -15,19 +15,17 @@ Der Migrations-Assistent unterstuetzt einmalige oder vorbereitete Datenmigration
 
 ## Ablauf
 
-```mermaid
-flowchart TD
-  A[Migration anlegen] --> B[Datei oder Salesforce-Quelle waehlen]
-  B --> C[Objekt und Feldmapping planen]
-  C --> D[Salesforce-Login je Migration pruefen]
-  D --> E[Preflight ausfuehren]
-  E --> F{Preflight erfolgreich?}
-  F -->|Ja| G[Migration starten]
-  F -->|Nein| H[Fehler korrigieren]
-  H --> C
-  G --> I[Fortschritt und Ergebnisse protokollieren]
-  I --> J[Fehlerhafte Datensaetze exportieren oder nachbearbeiten]
-```
+| Schritt | Aktion | Ergebnis |
+| --- | --- | --- |
+| 1 | Migration anlegen | Neuer Migrationsentwurf wird erstellt. |
+| 2 | Datei oder Salesforce-Quelle waehlen | Datenquelle fuer die Uebernahme wird festgelegt. |
+| 3 | Objekt und Feldmapping planen | Zielobjekt, Pflichtfelder und Zuordnungen werden definiert. |
+| 4 | Salesforce-Login pruefen | Zugriff und Berechtigungen werden migrationsbezogen validiert. |
+| 5 | Preflight ausfuehren | Datei, Mapping und Zielobjekt werden vor dem Import geprueft. |
+| 6 | Fehler korrigieren | Fehlende Pflichtfelder oder Mappingfehler werden bereinigt. |
+| 7 | Migration starten | Gueltige Datensaetze werden kontrolliert importiert. |
+| 8 | Ergebnisse protokollieren | Fortschritt, Zaehler und Fehler werden nachvollziehbar dokumentiert. |
+| 9 | Fehlerhafte Datensaetze nachbearbeiten | Problemfaelle koennen exportiert oder erneut verarbeitet werden. |
 
 ## Funktionsumfang
 

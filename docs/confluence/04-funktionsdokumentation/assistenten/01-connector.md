@@ -15,18 +15,16 @@ Der Connector-Assistent dient zur Pflege technischer Datenquellen und Zielsystem
 
 ## Ablauf
 
-```mermaid
-flowchart TD
-  A[Connector oeffnen] --> B[Connector-Typ waehlen]
-  B --> C[Parameter und Secret Keys pflegen]
-  C --> D[Verbindung testen]
-  D --> E{Test erfolgreich?}
-  E -->|Ja| F[Connector speichern]
-  E -->|Nein| G[Fehlerdetails pruefen]
-  G --> C
-  F --> H[Scheduler zuordnen]
-  H --> I[Monitoring und Runs beobachten]
-```
+| Schritt | Aktion | Ergebnis |
+| --- | --- | --- |
+| 1 | Connector oeffnen | Bestehenden Connector bearbeiten oder neuen Connector anlegen. |
+| 2 | Connector-Typ waehlen | MSSQL, REST API, File oder Salesforce festlegen. |
+| 3 | Parameter und Secret Keys pflegen | Technische Verbindung wird vollstaendig beschrieben. |
+| 4 | Verbindung testen | Netzwerk, Authentifizierung und Berechtigungen werden geprueft. |
+| 5 | Fehlerdetails pruefen | Bei Fehlern werden Parameter korrigiert und der Test wiederholt. |
+| 6 | Connector speichern | Gueltige Konfiguration wird fuer die Runtime verfuegbar. |
+| 7 | Scheduler zuordnen | Jobs koennen den Connector als Quelle oder Ziel verwenden. |
+| 8 | Monitoring beobachten | Runs und Fehler zeigen die operative Wirkung der Konfiguration. |
 
 ## Unterstuetzte Connector-Typen
 
