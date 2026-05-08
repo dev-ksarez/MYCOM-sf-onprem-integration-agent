@@ -43,3 +43,12 @@ Weitere Hinweise:
 - Open Questions sind im Spec gelistet; bitte vor Review ergänzen falls nötig.
 
 Aktualisierung: Spec wurde am 2026-05-08 angepasst und die `docs`-Kopie auf den aktuellen Stand gebracht. Bitte Review auf `docs/specs/pdf-generator-spec.md` durchführen.
+
+Integration-Hinweis:
+- Der PDF-Generator ist als neues Modul im SF-Agenten vorgesehen. Die Spec enthält jetzt Details zum neuen Scheduler-Typ `PDF` und Connector-Typ `PDF`, die zusammen generierte PDFs aus konfigurierten Abfragen und Templates erstellen.
+
+Prototype & CI:
+- Minimaler Playwright-Prototyp (Renderer, CLI, HTTP) ist in PR #4 enthalten: https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/pull/4
+- Ein GitHub Actions E2E-Workflow (`.github/workflows/pdf-generator-e2e.yml`) wurde hinzugefügt und läuft für PRs, die `src/pdf-generator/**` oder `docs/specs/**` betreffen.
+
+Bitte bei Review besonders auf die Integration mit Scheduler/Connector und Persistenz/Storage-Entscheidungen achten.
