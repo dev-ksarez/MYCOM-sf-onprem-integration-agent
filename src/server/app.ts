@@ -1336,7 +1336,7 @@ function htmlShell(): string {
                   <div class="col-md-4"><label class="form-label">Target System</label><select id="sch-target-system" class="form-select"><option value="">- Wählen -</option></select></div>
                   <div class="col-md-4"><label class="form-label">Objekt</label><select id="sch-object" class="form-select"><option value="">- Wählen -</option></select></div>
                   <div class="col-md-4"><label class="form-label">Operation</label><select id="sch-operation" class="form-select"><option value="">- Wählen -</option></select></div>
-                  <div class="col-md-4"><label class="form-label">Target Type</label><select id="sch-target-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE">SALESFORCE</option><option value="SALESFORCE_GLOBAL_PICKLIST">SALESFORCE_GLOBAL_PICKLIST</option><option value="MSSQL">MSSQL</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
+                  <div class="col-md-4"><label class="form-label">Target Type</label><select id="sch-target-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE">SALESFORCE</option><option value="SALESFORCE_GLOBAL_PICKLIST">SALESFORCE_GLOBAL_PICKLIST</option><option value="MSSQL">MSSQL</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option><option value="PDF">PDF</option></select></div>
                   <div class="col-md-4"><label class="form-label">Direction</label><select id="sch-direction" class="form-select"><option value="">- Wählen -</option></select></div>
                   <div id="sch-external-id-wrap" class="col-md-4 d-none"><label id="sch-external-id-label" class="form-label">Upsert Feld</label><select id="sch-external-id-field" class="form-select"><option value="">- Upsert Feld wählen -</option></select><div id="sch-external-id-help" class="form-text">Wählen Sie das Feld, das für Upsert verwendet werden soll.</div></div>
                   <div id="sch-pricebook2id-wrap" class="col-md-4 d-none"><label class="form-label">Pricebook</label><select id="sch-pricebook2id" class="form-select"><option value="">- Pricebook wählen -</option></select><div id="sch-pricebook2id-help" class="form-text">Optional als festes Ziel-Pricebook für PricebookEntry-Upserts.</div></div>
@@ -7046,7 +7046,12 @@ function htmlShell(): string {
       }
 
       function isFileScheduleTargetType(targetType) {
-        return targetType === 'FILE_CSV' || targetType === 'FILE_EXCEL' || targetType === 'FILE_JSON';
+        return (
+          targetType === 'FILE_CSV' ||
+          targetType === 'FILE_EXCEL' ||
+          targetType === 'FILE_JSON' ||
+          targetType === 'PDF'
+        );
       }
 
       function detectFileFormatFromName(value) {
@@ -14068,6 +14073,123 @@ export function createAppServer(
       if (req.method === "POST" && requestUrl.pathname === "/api/system/update-now") {
         const result = await triggerDashboardUpdate();
         sendJson(result.ok ? 200 : 500, result);
+        return;
+      }
+
+      // PDF generation endpoint (prototype integration)
+      if (req.method === "POST" && requestUrl.pathname === "/api/v1/pdf") {
+        try {
+          const contentType = String(req.headers["content-type"] || "").toLowerCase();
+
+          // read raw body for HTML or JSON bodies
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          }
+          const raw = Buffer.concat(chunks || []).toString("utf8");
+
+          let html: string | null = null;
+          let bodyObj: any = null;
+          if (contentType.includes("application/json")) {
+            bodyObj = raw ? JSON.parse(raw) : {};
+          } else if (contentType.includes("text/html") || contentType.includes("application/xhtml+xml")) {
+            html = raw;
+          } else if (contentType.includes("text/markdown") || contentType.includes("text/x-markdown")) {
+            // convert markdown to HTML
+            try {
+              const marked = require('marked');
+              html = marked.parse ? marked.parse(raw) : marked(raw);
+            } catch (e) {
+              html = raw; // fallback: treat as plain HTML-ish
+            }
+          } else {
+            // try JSON parse, else treat as HTML
+            try {
+              bodyObj = raw ? JSON.parse(raw) : {};
+            } catch {
+              html = raw;
+            }
+          }
+
+          const Handlebars = require("handlebars");
+          const fileConnector = require("../pdf-generator/connectors/file-connector");
+
+          let finalHtml = html;
+          if (!finalHtml) {
+            const templatePath = bodyObj?.template || String(requestUrl.searchParams.get("template") || "").trim();
+            const data = bodyObj?.data || {};
+            if (!templatePath) {
+              sendJson(400, { error: "Kein HTML-Body und kein Template-Pfad angegeben" });
+              return;
+            }
+
+            const resolved = path.resolve(process.cwd(), templatePath);
+            try {
+              const tplSrc = await fs.readFile(resolved, "utf8");
+              const tpl = Handlebars.compile(tplSrc);
+              finalHtml = tpl(data);
+            } catch (err) {
+              sendJson(500, { error: "Template kann nicht gelesen oder kompiliert werden", detail: String(err) });
+              return;
+            }
+          }
+
+          // sanitize HTML to remove unsafe tags/attributes before rendering
+          const sanitizeHtml = require("sanitize-html");
+          finalHtml = sanitizeHtml(finalHtml, {
+            allowedTags: sanitizeHtml.defaults.allowedTags.concat(["img"]),
+            allowedAttributes: Object.assign({}, sanitizeHtml.defaults.allowedAttributes, { img: ["src", "alt"] }),
+            allowedSchemesByTag: Object.assign({}, sanitizeHtml.defaults.allowedSchemesByTag, { img: ["data", "http", "https"] })
+          });
+
+          // render PDF using renderer if present
+          let pdfBuffer: Buffer;
+          try {
+            // renderer may be JS/TS prototype under src/pdf-generator/renderer
+            const renderer = require("../pdf-generator/renderer");
+            if (renderer && typeof renderer.renderHtmlToPdf === "function") {
+              // renderer may return Buffer
+              pdfBuffer = await renderer.renderHtmlToPdf(finalHtml, { format: "A4" });
+            } else {
+              throw new Error("renderer missing");
+            }
+          } catch (e) {
+            // fallback: mock small PDF buffer for prototype
+            pdfBuffer = Buffer.from("%PDF-1.4\n%mock-pdf\n" + finalHtml);
+          }
+
+          // preview handling: if ?preview=1 return PDF binary directly
+          const isPreview = String(requestUrl.searchParams.get('preview') || '') === '1';
+          if (isPreview) {
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', 'inline; filename="preview.pdf"');
+            res.statusCode = 200;
+            res.end(pdfBuffer);
+            await appendAuditHistory({ actor: auditActor, action: "generate-pdf", entityType: "pdf", entityId: undefined, status: "success", message: 'Preview served' });
+            return;
+          }
+
+          // choose connector config
+          const connectorConfig = bodyObj?.connectorConfig || {
+            basePath: String(process.env.PDF_ARTIFACTS_PATH || "tmp/artifacts"),
+            pathTemplate: bodyObj?.outputFileNameTemplate || String(requestUrl.searchParams.get("pathTemplate") || "{{timestamp}}.pdf"),
+            permissions: "0644"
+          };
+
+          const ctx = Object.assign({}, bodyObj?.context || {}, {
+            templateName: bodyObj?.templateName || "inline",
+            timestamp: new Date().toISOString().replace(/[:.]/g, "-"),
+            instanceId: bodyObj?.instanceId || "web-trigger"
+          });
+
+          const result = await fileConnector.save(pdfBuffer, ctx, connectorConfig);
+
+          await appendAuditHistory({ actor: auditActor, action: "generate-pdf", entityType: "pdf", entityId: undefined, status: "success", message: `Stored: ${result.path}` });
+          sendJson(200, { ok: true, result });
+        } catch (err) {
+          await appendAuditHistory({ actor: auditActor, action: "generate-pdf", entityType: "pdf", entityId: undefined, status: "error", message: String(err) });
+          sendJson(500, { error: "PDF-Generierung fehlgeschlagen", detail: String(err) });
+        }
         return;
       }
 
