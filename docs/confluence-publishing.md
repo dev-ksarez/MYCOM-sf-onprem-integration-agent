@@ -9,7 +9,8 @@ Diese Dokumentation wird als Docs-as-Code gepflegt:
 
 ## Quelle
 
-- Markdown-Seite: `docs/confluence/projektdokumentation.md`
+- Startseite: `docs/confluence/projektdokumentation.md`
+- Themen-Seiten: `docs/confluence/01-*.md` bis `docs/confluence/08-*.md`
 - Netzwerkdiagramm: `docs/confluence/assets/systemdiagramm-netzwerk.svg`
 - Screenshots: `docs/confluence/assets/screenshots/`
 - Workflow: `.github/workflows/publish-confluence-docs.yml`
@@ -25,6 +26,22 @@ connie-dont-change-parent-page: true
 ```
 
 Damit wird die bestehende Seite mit der ID `4399431685` aktualisiert.
+
+Weitere Markdown-Dateien unter `docs/confluence/` besitzen keine feste `connie-page-id`. Sie werden durch die GitHub Action als Confluence-Seiten angelegt bzw. anhand des Titels aktualisiert. `CONFLUENCE_PARENT_ID` sollte deshalb auf die Projektdokumentationsseite `4399431685` zeigen, damit die Themen-Seiten darunter erscheinen.
+
+Aktuelle Seitenstruktur:
+
+| Datei | Confluence-Seite |
+| --- | --- |
+| `projektdokumentation.md` | SF On-Prem Integration Agent - Projektdokumentation |
+| `01-allgemeine-beschreibung.md` | 01 - Allgemeine Beschreibung |
+| `02-technische-beschreibung.md` | 02 - Technische Beschreibung |
+| `03-installation.md` | 03 - Installationsbeschreibung |
+| `04-funktionsdokumentation.md` | 04 - Funktionsdokumentation |
+| `05-betrieb-und-sicherheit.md` | 05 - Betrieb und Sicherheit |
+| `06-assistent-connector.md` | 06 - Assistent Connector |
+| `07-assistent-scheduler.md` | 07 - Assistent Scheduler |
+| `08-assistent-migration.md` | 08 - Assistent Migration |
 
 ## GitHub Secrets
 
@@ -44,7 +61,7 @@ In GitHub unter `Settings -> Secrets and variables -> Actions -> Variables` anle
 | Variable | Empfohlener Wert | Zweck |
 | --- | --- | --- |
 | `CONFLUENCE_BASE_URL` | `https://mycom.atlassian.net` | Base URL der Confluence Cloud Site ohne `/wiki` |
-| `CONFLUENCE_PARENT_ID` | Parent-Page-ID der Dokumentation | Parent-Seite fuer neue Seiten |
+| `CONFLUENCE_PARENT_ID` | `4399431685` | Parent-Seite fuer neue Themen-Seiten |
 
 Hinweis: Die aktuelle Dokumentationsseite hat bereits `connie-page-id: "4399431685"` und `connie-dont-change-parent-page: true`. Die Parent-ID wird vom Tool trotzdem als Pflichtparameter erwartet. Wenn die echte Parent-ID bekannt ist, sollte sie als `CONFLUENCE_PARENT_ID` gesetzt werden.
 
