@@ -146,6 +146,43 @@ async function showTab(client, selector) {
   await sleep(500);
 }
 
+async function showSchedulerWizardStep(client, step) {
+  await client.send("Runtime.evaluate", {
+    awaitPromise: true,
+    expression: `
+      (async () => {
+        const newButton = document.querySelector('#new-schedule');
+        if (newButton && !document.querySelector('#schedule-modal.show')) {
+          newButton.click();
+          await new Promise((resolve) => setTimeout(resolve, 900));
+        }
+        const stepButton = document.querySelector('[data-sch-step="${String(step)}"]');
+        const stepPanel = document.querySelector('[data-sch-step-panel="${String(step)}"]');
+        if (!stepButton || !stepPanel) return false;
+        document.querySelectorAll('[data-sch-step]').forEach((button) => {
+          const buttonStep = Number(button.getAttribute('data-sch-step') || '0');
+          button.classList.toggle('is-active', button === stepButton);
+          button.classList.toggle('is-complete', buttonStep > 0 && buttonStep < ${String(step)});
+        });
+        document.querySelectorAll('[data-sch-step-panel]').forEach((panel) => {
+          const isActive = panel === stepPanel;
+          panel.classList.toggle('show', isActive);
+          panel.classList.toggle('active', isActive);
+          panel.classList.toggle('d-none', !isActive);
+        });
+        const hint = document.querySelector('#sch-wizard-hint');
+        if (hint) {
+          const labels = { 2: 'Quelle', 3: 'Ziel', 5: 'Mapping' };
+          hint.textContent = 'Dokumentationsansicht: Schritt ' + ${String(step)} + ' - ' + (labels[${String(step)}] || 'Scheduler-Assistent') + '.';
+        }
+        await new Promise((resolve) => setTimeout(resolve, 900));
+        return true;
+      })()
+    `
+  });
+  await sleep(500);
+}
+
 async function main() {
   if (!fs.existsSync(chromePath)) {
     throw new Error(`Chrome not found at ${chromePath}`);
@@ -220,6 +257,12 @@ async function main() {
 
     await showTab(client, '[data-bs-target="#tab-schedulers"]');
     await screenshotMany(client, ["03-scheduler.png", "09-assistent-scheduler.png"]);
+    await showSchedulerWizardStep(client, 2);
+    await screenshotMany(client, ["11-assistent-quelle.png"]);
+    await showSchedulerWizardStep(client, 3);
+    await screenshotMany(client, ["12-assistent-ziel.png"]);
+    await showSchedulerWizardStep(client, 5);
+    await screenshotMany(client, ["13-assistent-mapping.png"]);
 
     await showTab(client, '[data-bs-target="#tab-connectors"]');
     await screenshotMany(client, ["04-connectoren.png", "08-assistent-connector.png"]);
