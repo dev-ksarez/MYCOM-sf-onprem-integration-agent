@@ -20,11 +20,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
+      - name: Normalize Confluence settings
+        env:
+          CONFLUENCE_BASE_URL_RAW: ${{ vars.CONFLUENCE_BASE_URL || 'https://mycom.atlassian.net' }}
+          CONFLUENCE_PARENT_ID_RAW: ${{ vars.CONFLUENCE_PARENT_ID || '4399431685' }}
+        run: |
+          set -euo pipefail
+          base_url="${CONFLUENCE_BASE_URL_RAW%/}"
+          base_url="${base_url%/wiki}"
+          echo "CONFLUENCE_BASE_URL_CLEAN=${base_url}" >> "$GITHUB_ENV"
+          echo "CONFLUENCE_PARENT_ID_EFFECTIVE=${CONFLUENCE_PARENT_ID_RAW}" >> "$GITHUB_ENV"
+
+      - name: Verify Confluence page access
+        env:
+          ATLASSIAN_USERNAME: ${{ secrets.ATLASSIAN_USERNAME }}
+          ATLASSIAN_API_TOKEN: ${{ secrets.ATLASSIAN_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          api_url="${CONFLUENCE_BASE_URL_CLEAN}/wiki/rest/api/content/4399431685?expand=space,version"
+          echo "Checking Confluence page access for page 4399431685"
+          curl --fail --silent --show-error \
+            --user "${ATLASSIAN_USERNAME}:${ATLASSIAN_API_TOKEN}" \
+            --header "Accept: application/json" \
+            "${api_url}" > /tmp/confluence-page.json
+          node -e "const page=require('/tmp/confluence-page.json'); console.log('Confluence page:', page.id, page.title, 'space:', page.space && page.space.key);"
+
       - name: Publish Markdown to Confluence
         uses: markdown-confluence/publish-action@v5
         with:
-          confluenceBaseUrl: ${{ vars.CONFLUENCE_BASE_URL || 'https://mycom.atlassian.net/wiki' }}
-          confluenceParentId: ${{ vars.CONFLUENCE_PARENT_ID || '4399431685' }}
+          confluenceBaseUrl: ${{ env.CONFLUENCE_BASE_URL_CLEAN }}
+          confluenceParentId: ${{ env.CONFLUENCE_PARENT_ID_EFFECTIVE }}
           atlassianUserName: ${{ secrets.ATLASSIAN_USERNAME }}
           atlassianApiToken: ${{ secrets.ATLASSIAN_API_TOKEN }}
           folderToPublish: docs/confluence
