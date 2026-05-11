@@ -49,8 +49,8 @@ jobs:
           target_file="${target_dir}/release-${normalized_version}.md"
 
           if [ ! -f "$source_file" ]; then
-            echo "Release notes source not found: $source_file"
-            exit 1
+            echo "::warning::Release notes source not found: $source_file – skipping Confluence page generation."
+            exit 0
           fi
 
           mkdir -p "$target_dir"
