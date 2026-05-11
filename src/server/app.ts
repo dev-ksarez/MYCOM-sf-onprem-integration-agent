@@ -1,5 +1,6 @@
 
 import http from "node:http";
+import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -78,6 +79,17 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+const APP_VERSION = (() => {
+  try {
+    const packageJsonPath = path.resolve(process.cwd(), "package.json");
+    const parsed = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version?: unknown };
+    const version = String(parsed.version || "").trim();
+    return version || "-";
+  } catch {
+    return "-";
+  }
+})();
+
 function renderLoginShell(options: { errorMessage?: string; csrfToken?: string; authMode?: "local" | "salesforce_oidc" } = {}): string {
   const errorMessage = options.errorMessage || "";
   const csrfToken = options.csrfToken || "";
@@ -96,18 +108,23 @@ function renderLoginShell(options: { errorMessage?: string; csrfToken?: string; 
             <h1 class="h3 mb-2">SF Integration Agent</h1>
             <p class="text-secondary mb-0">${authMode === "salesforce_oidc" ? "Bitte mit Salesforce anmelden." : "Bitte mit Admin-Benutzer und Passwort anmelden."}</p>
           </div>
-          <div id="login-error" class="alert alert-danger ${safeErrorMessage ? "" : "d-none"}" role="alert">${safeErrorMessage || "Anmeldung fehlgeschlagen"}</div>
-          ${authMode === "local" ? `<form id="login-form" class="d-grid gap-3">
-            <div>
-              <label for="login-username" class="form-label">Benutzername</label>
-              <input id="login-username" name="username" class="form-control" autocomplete="username" required />
-            </div>
-            <div>
-              <label for="login-password" class="form-label">Passwort</label>
-              <input id="login-password" name="password" type="password" class="form-control" autocomplete="current-password" required />
-            </div>
-            <button type="submit" class="btn btn-primary">Anmelden</button>
-          </form>` : `<div class="d-grid gap-3"><a class="btn btn-primary" href="/auth/salesforce/login">Mit Salesforce anmelden</a></div>`}
+          <div class="agent-login-content">
+            <div id="login-error" class="alert alert-danger ${safeErrorMessage ? "" : "d-none"}" role="alert">${safeErrorMessage || "Anmeldung fehlgeschlagen"}</div>
+            ${authMode === "local" ? `<form id="login-form" class="d-grid gap-3">
+              <div>
+                <label for="login-username" class="form-label">Benutzername</label>
+                <input id="login-username" name="username" class="form-control" autocomplete="username" required />
+              </div>
+              <div>
+                <label for="login-password" class="form-label">Passwort</label>
+                <input id="login-password" name="password" type="password" class="form-control" autocomplete="current-password" required />
+              </div>
+              <button type="submit" class="btn btn-primary">Anmelden</button>
+            </form>` : `<div class="d-grid gap-3"><a class="btn btn-primary" href="/auth/salesforce/login">Mit Salesforce anmelden</a></div>`}
+          </div>
+          <div class="agent-login-meta">
+            <span class="agent-login-version">v${escapeHtml(APP_VERSION)}</span>
+          </div>
         </div>
       </div>
     </main>`
@@ -231,7 +248,7 @@ ${renderSidebarModuleNavigation()}
               ☰
               <span id="agent-menu-update-bullet" class="agent-update-bullet d-none" aria-hidden="true"></span>
             </button>
-            <div class="agent-topbar-brand">SF Integration Agent</div>
+            <div class="agent-topbar-brand">SF Integration Agent <span id="agent-version-label" class="agent-version-label">v${escapeHtml(APP_VERSION)}</span></div>
           </div>
           <div class="agent-navbar-actions offcanvas offcanvas-end" tabindex="-1" id="agent-header-menu" aria-labelledby="agent-header-menu-title">
             <div class="offcanvas-header agent-offcanvas-header">

@@ -4569,13 +4569,22 @@ export function renderAdminUiScript(): string {
         state.schedulerLookupExternalIdFieldPromises[normalizedObject] = (async () => {
           try {
             const result = await requestJson('/api/salesforce/object-fields?object=' + encodeURIComponent(normalizedObject) + '&instanceId=' + encodeURIComponent(state.instanceId || ''));
-            const fields = (Array.isArray(result) ? result : [])
-              .filter((field) => field && field.isExternalId === true)
+            const allFields = (Array.isArray(result) ? result : [])
               .map((field) => ({
                 name: String(field?.name || '').trim(),
-                label: String(field?.label || field?.name || '').trim()
+                label: String(field?.label || field?.name || '').trim(),
+                isExternalId: field?.isExternalId === true,
+                calculated: field?.calculated === true
               }))
-              .filter((field) => field.name);
+              .filter((field) => field.name && !field.calculated);
+
+            const externalIdFields = allFields.filter((field) => field.isExternalId === true);
+            const fields = (externalIdFields.length ? externalIdFields : allFields)
+              .filter((field) => String(field.name || '').trim().toLowerCase() !== 'id')
+              .map((field) => ({
+                name: field.name,
+                label: field.isExternalId ? (field.label + ' (External ID)') : field.label
+              }));
             state.schedulerLookupExternalIdFieldsByObject[normalizedObject] = fields;
             return fields;
           } catch {
@@ -4607,8 +4616,8 @@ export function renderAdminUiScript(): string {
           ? state.schedulerLookupExternalIdFieldsByObject[normalizedObject]
           : [];
         const hasSelected = selected && fields.some((item) => String(item?.name || '') === selected);
-        const fallbackLabel = selected ? selected + ' (keine External ID)' : '';
-        return '<option value="">- Ext-ID Feld wählen -</option>' + fields.map((item) => {
+        const fallbackLabel = selected ? selected + ' (gespeichert)' : '';
+        return '<option value="">- Lookup Feld wählen -</option>' + fields.map((item) => {
           const name = String(item?.name || '').trim();
           const label = String(item?.label || name).trim();
           const optionLabel = label && label !== name ? label + ' (' + name + ')' : name;

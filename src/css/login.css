@@ -23,6 +23,12 @@ body {
   box-shadow: 0 1.5rem 3rem rgba(3, 45, 96, 0.14);
 }
 
+.agent-login-card .card-body {
+  min-height: 24.5rem;
+  display: flex;
+  flex-direction: column;
+}
+
 .agent-login-card::before {
   display: block;
   height: 0.35rem;
@@ -39,4 +45,22 @@ body {
 .agent-login-card .btn-primary:focus {
   background-color: #0b5cab;
   border-color: #0b5cab;
+}
+
+.agent-login-content {
+  flex: 1 1 auto;
+}
+
+.agent-login-meta {
+  margin-top: 1.25rem;
+  text-align: center;
+}
+
+.agent-login-version {
+  display: inline-block;
+  color: #8f98a6;
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: 0.015em;
 }

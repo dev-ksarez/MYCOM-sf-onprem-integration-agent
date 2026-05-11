@@ -2759,7 +2759,7 @@ body {
 
 .agent-topbar {
   background: linear-gradient(90deg, #032d60 0%, #006aa8 52%, #0176d3 100%);
-  border-bottom: 3px solid #00ace3;
+  border-bottom: 0;
   min-height: 64px;
   padding: 0.65rem 1.1rem;
   display: flex;

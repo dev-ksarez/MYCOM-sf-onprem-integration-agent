@@ -3259,7 +3259,12 @@ export class AdminDataService {
 
   public async previewMapping(mappingDefinition: string, sourceData: Record<string, unknown>[]): Promise<MappingPreviewResult> {
     const parser = new MappingDefinitionParser();
-    const engine = new MappingDefinitionEngine();
+    // Preview should stay usable even when LOOKUP transforms are configured.
+    // For preview, unresolved lookups fall back to the source value.
+    const engine = new MappingDefinitionEngine(async (_lookupObject, _lookupField, rawValue) => {
+      const normalized = String(rawValue ?? "").trim();
+      return normalized ? normalized : null;
+    });
     const parsed = parser.parse(mappingDefinition);
     const rows = await Promise.all(sourceData.map(async (row) => (await engine.mapRecord(row, parsed.lines)).values));
     const fields = rows.length > 0 ? Object.keys(rows[0]) : parsed.lines.map((line) => line.targetField);

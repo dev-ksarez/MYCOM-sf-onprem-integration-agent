@@ -9916,7 +9916,7 @@ a,
 .agent-topbar-primary {
   background:
     linear-gradient(90deg, var(--sf-navy) 0%, var(--mycom-blue) 48%, var(--sf-blue) 100%);
-  border-bottom: 3px solid var(--mycom-cyan);
+  border-bottom: 0;
 }
 
 .agent-topbar-brand,
