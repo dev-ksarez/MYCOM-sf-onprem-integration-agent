@@ -130,6 +130,7 @@ async function main() {
     force: true,
   });
   await copyIfExists(path.join(appRoot, "src", "css"), path.join(stagingAppRoot, "src", "css"));
+  await copyIfExists(path.join(appRoot, "src", "public"), path.join(stagingAppRoot, "src", "public"));
   await copyIfExists(
     path.join(appRoot, "artifacts", "migrations.json"),
     path.join(stagingAppRoot, "artifacts", "migrations.json")

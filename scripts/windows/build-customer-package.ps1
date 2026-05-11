@@ -64,6 +64,9 @@ Copy-Item -Path (Join-Path $appRootResolved "scripts") -Destination (Join-Path $
 if (Test-Path (Join-Path $appRootResolved "src\css")) {
   Copy-Item -Path (Join-Path $appRootResolved "src\css") -Destination (Join-Path $stagingAppRoot "src\css") -Recurse -Force
 }
+if (Test-Path (Join-Path $appRootResolved "src\public")) {
+  Copy-Item -Path (Join-Path $appRootResolved "src\public") -Destination (Join-Path $stagingAppRoot "src\public") -Recurse -Force
+}
 if (Test-Path (Join-Path $appRootResolved "artifacts")) {
   Copy-Item -Path (Join-Path $appRootResolved "artifacts") -Destination (Join-Path $stagingAppRoot "artifacts") -Recurse -Force
 }

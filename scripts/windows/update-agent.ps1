@@ -523,6 +523,7 @@ Ensure-Directory -Path $backupRoot
 $restorePlan = @(
   @{ Source = (Join-Path $appRootResolved "dist"); Backup = (Join-Path $backupRoot "dist"); Target = (Join-Path $appRootResolved "dist"); Payload = (Join-Path $payloadRoot "dist") },
   @{ Source = (Join-Path $appRootResolved "src\css"); Backup = (Join-Path $backupRoot "src\css"); Target = (Join-Path $appRootResolved "src\css"); Payload = (Join-Path $payloadRoot "src\css") },
+  @{ Source = (Join-Path $appRootResolved "src\public"); Backup = (Join-Path $backupRoot "src\public"); Target = (Join-Path $appRootResolved "src\public"); Payload = (Join-Path $payloadRoot "src\public") },
   @{ Source = (Join-Path $appRootResolved "scripts"); Backup = (Join-Path $backupRoot "scripts"); Target = (Join-Path $appRootResolved "scripts"); Payload = (Join-Path $payloadRoot "scripts") },
   @{ Source = (Join-Path $appRootResolved "salesforce"); Backup = (Join-Path $backupRoot "salesforce"); Target = (Join-Path $appRootResolved "salesforce"); Payload = (Join-Path $payloadRoot "salesforce") },
   @{ Source = (Join-Path $appRootResolved "artifacts\templates"); Backup = (Join-Path $backupRoot "artifacts\templates"); Target = (Join-Path $appRootResolved "artifacts\templates"); Payload = (Join-Path $payloadRoot "artifacts\templates") },

@@ -1,4 +1,20 @@
 (function () {
+  try {
+    var currentUrl = new URL(window.location.href);
+    var hadSensitiveParams = false;
+    ["username", "password", "user", "pass"].forEach(function (key) {
+      if (currentUrl.searchParams.has(key)) {
+        currentUrl.searchParams.delete(key);
+        hadSensitiveParams = true;
+      }
+    });
+    if (hadSensitiveParams) {
+      window.history.replaceState({}, document.title, currentUrl.pathname + currentUrl.search + currentUrl.hash);
+    }
+  } catch (_error) {
+    // Ignore URL parsing failures and keep login functional.
+  }
+
   var loginForm = document.getElementById("login-form");
   if (!loginForm) {
     return;
