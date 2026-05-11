@@ -52,6 +52,7 @@ import { generateInstallerFiles, getInstallerSummary, INSTALLER_OUTPUT_DIR, Inst
 import { AISchedulerService } from "./ai-scheduler-service";
 import { AIErrorAnalyzer, type RunErrorData } from "./ai-error-analyzer";
 import { AIMigrationAnalyzer, type MigrationSourceData } from "./ai-migration-analyzer";
+import { AIDashboardAnalyzer, type AIDashboardAnalysisInput } from "./ai-dashboard-analyzer";
 import { generateSalesforceMappingRules } from "../core/mapping-dsl/salesforce-mapping-generator";
 import { serveStaticAsset, UI_ASSET_VERSION } from "./asset-server";
 import { appendAuditHistory, listAuditHistory } from "./audit-history-service";
@@ -401,6 +402,50 @@ ${renderMenuModuleNavigation()}
             </div>
           </div>
           <div class="row g-3 mb-3">
+            <div class="col-12">
+              <div class="card soft-card">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center flex-wrap gap-2">
+                  <span class="fw-semibold">Agentenanalyse (KI)</span>
+                  <span id="agent-analysis-status" class="badge bg-secondary">-</span>
+                </div>
+                <div class="card-body">
+                  <div class="row g-3">
+                    <div class="col-lg-2 col-md-4 col-6">
+                      <div class="small text-secondary">Health-Score</div>
+                      <div id="agent-analysis-score" class="h4 mb-0">-</div>
+                    </div>
+                    <div class="col-lg-3 col-md-4 col-6">
+                      <div class="small text-secondary">Laufzeiten</div>
+                      <div id="agent-analysis-runtime" class="small">-</div>
+                    </div>
+                    <div class="col-lg-3 col-md-4 col-12">
+                      <div class="small text-secondary">Fehlerbild</div>
+                      <div id="agent-analysis-errors" class="small">-</div>
+                    </div>
+                    <div class="col-lg-3 col-md-6 col-12">
+                      <div class="small text-secondary">Datenwuchs</div>
+                      <div id="agent-analysis-growth" class="small">-</div>
+                    </div>
+                    <div class="col-lg-1 col-md-6 col-12 text-md-end">
+                      <div class="small text-secondary">Stand</div>
+                      <div id="agent-analysis-updated" class="small">-</div>
+                    </div>
+                    <div class="col-12">
+                      <div class="small text-secondary">KI-Zusammenfassung</div>
+                      <div id="agent-analysis-summary" class="small">-</div>
+                    </div>
+                    <div class="col-12">
+                      <div class="small text-secondary">KI-Empfehlungen</div>
+                      <ul id="agent-analysis-recommendations" class="small mb-0 ps-3">
+                        <li>-</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="row g-3 mb-3">
             <div class="col-lg-6">
               <div class="card soft-card h-100">
                 <div class="card-header bg-white d-flex justify-content-between align-items-center">
@@ -700,11 +745,11 @@ ${renderAISchedulerAssistantModule()}
             </div>
             <div class="card-body">
               <div class="row g-3">
-                <div class="col-md-6">
+                <div class="col-md-4">
                   <label class="form-label small">Quellname</label>
                   <input type="text" id="migration-source-name" class="form-control form-control-sm" placeholder="z.B. SAP_Customers" />
                 </div>
-                <div class="col-md-6">
+                <div class="col-md-4">
                   <label class="form-label small">Quelltyp</label>
                   <select id="migration-source-type" class="form-select form-select-sm">
                     <option value="MSSQL_SQL">MSSQL/SQL Server</option>
@@ -714,6 +759,30 @@ ${renderAISchedulerAssistantModule()}
                     <option value="SALESFORCE">Salesforce</option>
                     <option value="OTHER">Sonstiges</option>
                   </select>
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label small">Salesforce Zielobjekt</label>
+                  <select id="migration-target-object" class="form-select form-select-sm">
+                    <option value="Contact" selected>Contact</option>
+                    <option value="Account">Account</option>
+                    <option value="Lead">Lead</option>
+                    <option value="Opportunity">Opportunity</option>
+                    <option value="Order">Order</option>
+                    <option value="Product2">Product</option>
+                    <option value="PricebookEntry">ProductPrice</option>
+                  </select>
+                </div>
+                <div class="col-12">
+                  <label class="form-label small">Datei für Auto-Analyse (optional)</label>
+                  <div id="migration-analysis-dropzone" class="migration-list-drop-target p-3">
+                    <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+                      <button id="migration-analysis-file-pick" type="button" class="btn btn-sm btn-outline-primary">Datei auswählen</button>
+                      <input id="migration-analysis-file" type="file" class="d-none" accept=".csv,.txt,.json,.xlsx,.xls" />
+                      <small id="migration-analysis-file-meta" class="text-secondary">Keine Datei gewählt.</small>
+                    </div>
+                    <div class="migration-drop-target-hint">Datei hierher ziehen (CSV, TXT, JSON, Excel), um Felddefinitionen automatisch zu erzeugen.</div>
+                  </div>
+                  <div class="form-text">Die Datei wird lokal verarbeitet, Header/Feldnamen werden automatisch übernommen.</div>
                 </div>
                 <div class="col-12">
                   <label class="form-label small">Feld-Definitionen (JSON)</label>
@@ -1767,6 +1836,7 @@ export function createAppServer(
         requestUrl.pathname === "/api/system/health" ||
         requestUrl.pathname === "/auth/login" ||
         requestUrl.pathname === "/auth/logout" ||
+        requestUrl.pathname === "/favicon.ico" ||
         requestUrl.pathname === "/auth/migration-salesforce/callback" ||
         requestUrl.pathname === "/auth/salesforce/login" ||
         requestUrl.pathname === "/auth/salesforce/callback";
@@ -1778,7 +1848,7 @@ export function createAppServer(
         if (requestUrl.pathname === "/auth/login" || requestUrl.pathname === "/auth/salesforce/login" || requestUrl.pathname === "/auth/salesforce/callback") {
           return null;
         }
-        if (requestUrl.pathname === "/api/system/health" || isAssetRequest) {
+        if (requestUrl.pathname === "/api/system/health" || requestUrl.pathname === "/favicon.ico" || isAssetRequest) {
           return null;
         }
         if (req.method === "DELETE") {
@@ -2169,6 +2239,18 @@ export function createAppServer(
         return;
       }
 
+      if (req.method === "GET" && requestUrl.pathname.endsWith(".map")) {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/favicon.ico") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
       if (req.method === "GET" && await serveStaticAsset(requestUrl.pathname, res)) {
         return;
       }
@@ -2399,6 +2481,7 @@ export function createAppServer(
         const body = (await readJsonBody(req)) as {
           sourceName?: string;
           sourceType?: string;
+          targetObject?: "Account" | "Contact" | "Lead" | "Opportunity" | "Order" | "Product2" | "PricebookEntry";
           sampleData?: Record<string, unknown>[];
           fieldDefinitions?: Array<{ name: string; type: string; nullable?: boolean; sampleValues?: unknown[] }>;
           estimatedRecords?: number;
@@ -2411,9 +2494,12 @@ export function createAppServer(
         }
 
         const migrationAnalyzer = new AIMigrationAnalyzer();
+        const allowedTargetObjects = new Set(["Account", "Contact", "Lead", "Opportunity", "Order", "Product2", "PricebookEntry"]);
+        const requestedTargetObject = String(body.targetObject || "").trim();
         const analysis = await migrationAnalyzer.analyzeMigrationSource({
           sourceName: body.sourceName,
           sourceType: (body.sourceType as MigrationSourceData["sourceType"]) || "OTHER",
+          targetObject: (allowedTargetObjects.has(requestedTargetObject) ? requestedTargetObject : "Contact") as MigrationSourceData["targetObject"],
           sampleData: body.sampleData,
           fieldDefinitions: body.fieldDefinitions,
           estimatedRecords: body.estimatedRecords,
@@ -2428,6 +2514,24 @@ export function createAppServer(
           entityName: `Analysis: ${body.sourceName}`,
           status: analysis.sensitiveFields.length > 0 ? "success" : "success",
           message: `${analysis.totalFields} Felder, ${analysis.sensitiveFields.length} sensitiv, Qualität: ${Math.round(analysis.dataQualityScore * 100)}%`
+        });
+
+        sendJson(200, analysis);
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/ai/analyze-dashboard") {
+        const body = (await readJsonBody(req)) as AIDashboardAnalysisInput;
+        const dashboardAnalyzer = new AIDashboardAnalyzer();
+        const analysis = dashboardAnalyzer.analyze(body || {});
+
+        await appendAuditHistory({
+          action: "AI_DASHBOARD_ANALYSIS",
+          entityType: "dashboard",
+          entityId: "overview",
+          entityName: "Agentenanalyse",
+          status: analysis.status === "Kritisch" ? "error" : "success",
+          message: analysis.summary.substring(0, 160)
         });
 
         sendJson(200, analysis);

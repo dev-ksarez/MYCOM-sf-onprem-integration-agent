@@ -92,6 +92,8 @@ export class AISchedulerService {
     targetSystem?: string;
     objectName?: string;
     operation?: string;
+    upsertTargetField?: string;
+    upsertSourceField?: string;
     direction?: "Inbound" | "Outbound";
     timing?: { type: string; value: string };
     confidence: number;
@@ -112,6 +114,9 @@ export class AISchedulerService {
     // Operation erkennen
     const operation = this.detectOperation(lower, keywords);
 
+    // Upsert-Feld (Target/Source) erkennen, z.B. "Upsert Feld external_id zu ERP_adressnummer"
+    const upsertKey = this.extractUpsertKey(prompt);
+
     // Direction bestimmen
     const direction = this.detectDirection(lower, sourceSystem, targetSystem);
 
@@ -128,11 +133,36 @@ export class AISchedulerService {
       targetSystem,
       objectName,
       operation,
+      upsertTargetField: upsertKey.targetField,
+      upsertSourceField: upsertKey.sourceField,
       direction,
       timing,
       confidence,
       rawKeywords: keywords
     };
+  }
+
+  /**
+   * Extrahiert Upsert-Schlüssel aus natürlicher Sprache
+   */
+  private extractUpsertKey(prompt: string): { targetField?: string; sourceField?: string } {
+    const raw = String(prompt || "");
+
+    const pairMatch = raw.match(/upsert\s*feld(?:\s+id)?\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:zu|=|auf|from)\s*([A-Za-z_][A-Za-z0-9_]*)/i);
+    if (pairMatch) {
+      return {
+        targetField: pairMatch[1],
+        sourceField: pairMatch[2]
+      };
+    }
+
+    const explicitExternalId = raw.match(/(?:external\s*id|eindeutige\s*id|upsert\s*feld)\s*[:=]?\s*([A-Za-z_][A-Za-z0-9_]*)/i);
+    if (explicitExternalId) {
+      const field = explicitExternalId[1];
+      return { targetField: field, sourceField: field };
+    }
+
+    return {};
   }
 
   /**
@@ -441,11 +471,14 @@ export class AISchedulerService {
    * Generiere Target-Definition (JSON)
    */
   private generateTargetDefinition(analysis: ReturnType<typeof this.analyzePrompt>): string {
+    const defaultUpsertField = this.inferDefaultUpsertField(analysis.objectName || "Contact");
+    const upsertField = analysis.upsertTargetField || defaultUpsertField;
+
     if (analysis.targetSystem?.toLowerCase().includes("salesforce")) {
       return JSON.stringify(
         {
           objectApiName: analysis.objectName || "Contact",
-          externalIdField: "Id",
+          externalIdField: upsertField,
           deployOptions: {
             purgeOnDelete: false,
             rollbackOnError: true
@@ -461,11 +494,25 @@ export class AISchedulerService {
       {
         endpoint: "/v1/records",
         method: "POST",
-        upsertKey: "Id"
+        upsertKey: upsertField
       },
       null,
       2
     );
+  }
+
+  /**
+   * Liefert sinnvollen Default für Upsert-Key je Object
+   */
+  private inferDefaultUpsertField(objectName: string): string {
+    const normalized = String(objectName || "").toLowerCase();
+    if (normalized === "contact" || normalized === "lead") {
+      return "Email";
+    }
+    if (normalized === "account") {
+      return "Name";
+    }
+    return "Name";
   }
 
   /**
@@ -505,7 +552,17 @@ export class AISchedulerService {
       Opportunity: ["Name;string=OpportunityName;NONE", "Amount;number=Value;NONE", "StageName;string=Stage;NONE"]
     };
 
-    return (standardMappings[objectName] || standardMappings["Contact"]).join("\n");
+    const mappingLines = [...(standardMappings[objectName] || standardMappings["Contact"])];
+
+    const upsertTargetField = analysis.upsertTargetField || this.inferDefaultUpsertField(objectName);
+    const upsertSourceField = analysis.upsertSourceField || upsertTargetField;
+
+    const hasTargetField = mappingLines.some((line) => line.split(";")[0] === upsertTargetField);
+    if (!hasTargetField) {
+      mappingLines.unshift(`${upsertTargetField};string=${upsertSourceField};NONE`);
+    }
+
+    return mappingLines.join("\n");
   }
 
   /**

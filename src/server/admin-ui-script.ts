@@ -28,6 +28,9 @@ export function renderAdminUiScript(): string {
         runs: [],
         staleRuns: [],
         recordsSummary: null,
+        aiDashboardAnalysis: null,
+        aiDashboardAnalysisAt: 0,
+        aiDashboardAnalysisPromise: null,
         updateStatus: null,
         updateStatusCheckedAt: 0,
         updateStatusPollTimer: null,
@@ -98,6 +101,8 @@ export function renderAdminUiScript(): string {
         pendingImportInProgress: false,
         pendingImportSuggestions: [],
         pendingImportAnalysis: null,
+        migrationSourceAnalysis: null,
+        migrationSourcePayload: null,
         createdAt: '',
         updatedAt: '',
         createdByName: '',
@@ -1507,6 +1512,15 @@ export function renderAdminUiScript(): string {
           .replaceAll('>', '&gt;');
       }
 
+      function htmlEscape(value) {
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#039;');
+      }
+
       function getTemplateAccent(item) {
         const tags = Array.isArray(item?.tags) ? item.tags.map((tag) => String(tag || '').toLowerCase()) : [];
         if (tags.includes('ezb')) {
@@ -1875,6 +1889,16 @@ export function renderAdminUiScript(): string {
       function showError(message) {
         const alert = document.getElementById('global-alert');
         alert.textContent = message;
+        alert.classList.remove('alert-info');
+        alert.classList.add('alert-danger');
+        alert.classList.remove('d-none');
+      }
+
+      function showInfo(message) {
+        const alert = document.getElementById('global-alert');
+        alert.textContent = message;
+        alert.classList.remove('alert-danger');
+        alert.classList.add('alert-info');
         alert.classList.remove('d-none');
       }
 
@@ -6274,6 +6298,9 @@ export function renderAdminUiScript(): string {
         const summary = await safeRequest('/api/dashboard/records-summary?range=' + encodeURIComponent(range), fallback);
         state.recordsSummary = summary;
         renderRecordsTrendChart(summary);
+        if (state.health) {
+          renderOverview(state.health);
+        }
       }
 
       function renderOverviewUpdateStatus() {
@@ -7146,6 +7173,126 @@ export function renderAdminUiScript(): string {
         }
       }
 
+      function setAgentAnalysisStatusBadge(element, status) {
+        if (!element) {
+          return;
+        }
+
+        const normalized = String(status || '').toLowerCase();
+        let className = 'badge bg-primary';
+        if (normalized === 'gesund') {
+          className = 'badge bg-success';
+        } else if (normalized === 'stabil') {
+          className = 'badge bg-primary';
+        } else if (normalized === 'beobachten') {
+          className = 'badge bg-warning text-dark';
+        } else if (normalized === 'kritisch') {
+          className = 'badge bg-danger';
+        }
+
+        element.className = className;
+        element.textContent = status || '-';
+      }
+
+      function renderAIDashboardAnalysis(analysis) {
+        if (!analysis || typeof analysis !== 'object') {
+          return;
+        }
+
+        const scoreElement = document.getElementById('agent-analysis-score');
+        const statusElement = document.getElementById('agent-analysis-status');
+        const runtimeElement = document.getElementById('agent-analysis-runtime');
+        const errorsElement = document.getElementById('agent-analysis-errors');
+        const growthElement = document.getElementById('agent-analysis-growth');
+        const updatedElement = document.getElementById('agent-analysis-updated');
+        const summaryElement = document.getElementById('agent-analysis-summary');
+        const recommendationsElement = document.getElementById('agent-analysis-recommendations');
+
+        const score = Number(analysis.score);
+        if (scoreElement && Number.isFinite(score)) {
+          scoreElement.textContent = String(Math.round(score));
+          scoreElement.classList.remove('text-success', 'text-warning', 'text-danger');
+          if (score >= 85) {
+            scoreElement.classList.add('text-success');
+          } else if (score >= 45) {
+            scoreElement.classList.add('text-warning');
+          } else {
+            scoreElement.classList.add('text-danger');
+          }
+        }
+
+        setAgentAnalysisStatusBadge(statusElement, String(analysis.status || '-'));
+
+        if (runtimeElement) {
+          runtimeElement.textContent = String(analysis?.insights?.runtime || '-');
+        }
+        if (errorsElement) {
+          errorsElement.textContent = String(analysis?.insights?.errors || '-');
+        }
+        if (growthElement) {
+          growthElement.textContent = String(analysis?.insights?.dataGrowth || '-');
+        }
+        if (summaryElement) {
+          summaryElement.textContent = String(analysis.summary || '-');
+        }
+        if (updatedElement) {
+          updatedElement.textContent = formatDate(new Date().toISOString(), 'short');
+        }
+
+        if (recommendationsElement) {
+          const recommendations = Array.isArray(analysis.recommendations)
+            ? analysis.recommendations.filter((item) => String(item || '').trim().length > 0)
+            : [];
+          if (!recommendations.length) {
+            recommendationsElement.innerHTML = '<li>Keine Empfehlungen</li>';
+          } else {
+            recommendationsElement.innerHTML = recommendations
+              .slice(0, 4)
+              .map((item) => '<li>' + esc(String(item)) + '</li>')
+              .join('');
+          }
+        }
+      }
+
+      function ensureAIDashboardAnalysis(metrics) {
+        const summaryElement = document.getElementById('agent-analysis-summary');
+        const now = Date.now();
+        const hasFreshCache = state.aiDashboardAnalysis && (now - Number(state.aiDashboardAnalysisAt || 0) < 60000);
+
+        if (hasFreshCache) {
+          renderAIDashboardAnalysis(state.aiDashboardAnalysis);
+          return;
+        }
+
+        if (state.aiDashboardAnalysisPromise) {
+          return;
+        }
+
+        if (summaryElement) {
+          summaryElement.textContent = 'KI analysiert Dashboarddaten...';
+        }
+
+        state.aiDashboardAnalysisPromise = requestJson('/api/ai/analyze-dashboard', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(metrics || {})
+        })
+          .then((analysis) => {
+            state.aiDashboardAnalysis = analysis;
+            state.aiDashboardAnalysisAt = Date.now();
+            renderAIDashboardAnalysis(analysis);
+          })
+          .catch((error) => {
+            if (summaryElement) {
+              summaryElement.textContent = 'KI-Analyse derzeit nicht verfügbar';
+            }
+            console.warn('Dashboard KI-Analyse fehlgeschlagen', error);
+          })
+          .finally(() => {
+            state.aiDashboardAnalysisPromise = null;
+          });
+      }
+
       function renderOverview(healthData) {
         const previousSnapshot = state.previousOverviewSnapshot;
         const formatByteSize = (bytes) => {
@@ -7298,6 +7445,14 @@ export function renderAdminUiScript(): string {
         const sqlitePendingCounter = document.getElementById('kpi-sqlite-pending');
         const sqliteSuccessCounter = document.getElementById('kpi-sqlite-success');
         const sqliteErrorsCounter = document.getElementById('kpi-sqlite-errors');
+        const agentAnalysisScore = document.getElementById('agent-analysis-score');
+        const agentAnalysisStatus = document.getElementById('agent-analysis-status');
+        const agentAnalysisRuntime = document.getElementById('agent-analysis-runtime');
+        const agentAnalysisErrors = document.getElementById('agent-analysis-errors');
+        const agentAnalysisGrowth = document.getElementById('agent-analysis-growth');
+        const agentAnalysisUpdated = document.getElementById('agent-analysis-updated');
+        const agentAnalysisSummary = document.getElementById('agent-analysis-summary');
+        const agentAnalysisRecommendations = document.getElementById('agent-analysis-recommendations');
 
         const updateKpiTrend = (elementId, delta, positiveWhenUp, neutralText) => {
           const element = document.getElementById(elementId);
@@ -7384,6 +7539,131 @@ export function renderAdminUiScript(): string {
         if (sqliteErrorsCounter) {
           sqliteErrorsCounter.textContent = String(sqliteErrorCount);
         }
+
+        const bucketTotals = (Array.isArray(state.recordsSummary?.buckets) ? state.recordsSummary.buckets : []).map((bucket) => {
+          const directTotal = Number(bucket?.total);
+          if (Number.isFinite(directTotal)) {
+            return Math.max(0, directTotal);
+          }
+          const connectorTotals = bucket?.connectorTotals && typeof bucket.connectorTotals === 'object'
+            ? Object.values(bucket.connectorTotals).reduce((sum, value) => sum + (Number(value || 0) || 0), 0)
+            : 0;
+          return Math.max(0, Number(connectorTotals || 0));
+        });
+        const latestBucketTotal = bucketTotals.length ? Number(bucketTotals[bucketTotals.length - 1] || 0) : 0;
+        const previousBucketTotal = bucketTotals.length > 1 ? Number(bucketTotals[bucketTotals.length - 2] || 0) : 0;
+        const growthAbsolute = latestBucketTotal - previousBucketTotal;
+        const growthPercent = previousBucketTotal > 0 ? (growthAbsolute / previousBucketTotal) * 100 : null;
+
+        let healthScore = 100;
+        if (String(healthData.service || '').toLowerCase() !== 'ok') {
+          healthScore -= 30;
+        }
+        if (String(healthData.scheduler || '').toLowerCase() !== 'running') {
+          healthScore -= 15;
+        }
+        healthScore -= Math.min(35, Math.round(errorRate * 0.8));
+        if (averageRunDurationMs !== null) {
+          if (averageRunDurationMs > 5 * 60_000) {
+            healthScore -= 20;
+          } else if (averageRunDurationMs > 2 * 60_000) {
+            healthScore -= 10;
+          }
+        }
+        if (normalizedCpuPercent !== null && normalizedCpuPercent > 85) {
+          healthScore -= 10;
+        }
+        if (sqliteErrorCount > 0) {
+          healthScore -= Math.min(15, sqliteErrorCount);
+        }
+        healthScore = Math.max(0, Math.min(100, Math.round(healthScore)));
+
+        let healthStatusLabel = 'Stabil';
+        let healthStatusClass = 'badge bg-primary';
+        if (healthScore >= 85) {
+          healthStatusLabel = 'Gesund';
+          healthStatusClass = 'badge bg-success';
+        } else if (healthScore >= 65) {
+          healthStatusLabel = 'Stabil';
+          healthStatusClass = 'badge bg-primary';
+        } else if (healthScore >= 45) {
+          healthStatusLabel = 'Beobachten';
+          healthStatusClass = 'badge bg-warning text-dark';
+        } else {
+          healthStatusLabel = 'Kritisch';
+          healthStatusClass = 'badge bg-danger';
+        }
+
+        const slowRunCount = completedRunDurations.filter((duration) => Number(duration || 0) > 5 * 60_000).length;
+        const runtimeText = averageRunDurationMs === null
+          ? 'Keine Laufdaten verfügbar'
+          : ('Ø ' + formatDurationMinSec(averageRunDurationMs) + ' • Langläufer: ' + slowRunCount);
+        const errorText = totalCount > 0
+          ? (failedCount + ' von ' + totalCount + ' Runs fehlerhaft (' + errorRate + '%)')
+          : 'Keine Runs im gewählten Zeitraum';
+        const growthText = bucketTotals.length < 2
+          ? (bucketTotals.length === 1
+              ? (latestBucketTotal + ' Datensätze im letzten Intervall')
+              : 'Noch keine Verlaufsdaten')
+          : ((growthAbsolute >= 0 ? '+' : '') + growthAbsolute + ' Datensätze' +
+              (growthPercent === null ? '' : ' (' + (growthPercent >= 0 ? '+' : '') + growthPercent.toFixed(1) + '%)'));
+
+        if (agentAnalysisScore) {
+          agentAnalysisScore.textContent = String(healthScore);
+          agentAnalysisScore.classList.remove('text-success', 'text-warning', 'text-danger');
+          if (healthScore >= 85) {
+            agentAnalysisScore.classList.add('text-success');
+          } else if (healthScore >= 45) {
+            agentAnalysisScore.classList.add('text-warning');
+          } else {
+            agentAnalysisScore.classList.add('text-danger');
+          }
+        }
+        if (agentAnalysisStatus) {
+          agentAnalysisStatus.className = healthStatusClass;
+          agentAnalysisStatus.textContent = healthStatusLabel;
+        }
+        if (agentAnalysisRuntime) {
+          agentAnalysisRuntime.textContent = runtimeText;
+        }
+        if (agentAnalysisErrors) {
+          agentAnalysisErrors.textContent = errorText;
+        }
+        if (agentAnalysisGrowth) {
+          agentAnalysisGrowth.textContent = growthText;
+          agentAnalysisGrowth.classList.remove('text-success', 'text-warning', 'text-danger', 'text-secondary');
+          if (bucketTotals.length < 2) {
+            agentAnalysisGrowth.classList.add('text-secondary');
+          } else if (growthAbsolute > 0) {
+            agentAnalysisGrowth.classList.add('text-warning');
+          } else if (growthAbsolute < 0) {
+            agentAnalysisGrowth.classList.add('text-success');
+          } else {
+            agentAnalysisGrowth.classList.add('text-secondary');
+          }
+        }
+        if (agentAnalysisUpdated) {
+          agentAnalysisUpdated.textContent = formatDate(new Date().toISOString(), 'short');
+        }
+        if (agentAnalysisSummary && !String(agentAnalysisSummary.textContent || '').trim()) {
+          agentAnalysisSummary.textContent = 'Basisanalyse läuft...';
+        }
+        if (agentAnalysisRecommendations && !agentAnalysisRecommendations.children.length) {
+          agentAnalysisRecommendations.innerHTML = '<li>Warte auf KI-Empfehlungen...</li>';
+        }
+
+        ensureAIDashboardAnalysis({
+          serviceStatus: healthData.service,
+          schedulerStatus: healthData.scheduler,
+          runsTotal: totalCount,
+          runsFailed: failedCount,
+          errorRate,
+          averageRunDurationMs,
+          cpuLoadPercent: normalizedCpuPercent,
+          dataGrowthAbsolute: growthAbsolute,
+          dataGrowthPercent: growthPercent,
+          sqliteErrors: sqliteErrorCount
+        });
 
         const serviceTrend = document.getElementById('kpi-service-trend');
         if (serviceTrend) {
@@ -9588,7 +9868,7 @@ export function renderAdminUiScript(): string {
         document.body.appendChild(container);
 
         // Zeige Modal
-        const modal = new (window as any).bootstrap.Modal(document.getElementById('error-analysis-modal'));
+        const modal = new window.bootstrap.Modal(document.getElementById('error-analysis-modal'));
         modal.show();
       }
 
@@ -9660,6 +9940,145 @@ export function renderAdminUiScript(): string {
         document.getElementById('mapping-output').textContent = JSON.stringify(result, null, 2);
       }
 
+      function normalizeMigrationTargetObject(value) {
+        const allowedTargets = ['Account', 'Contact', 'Lead', 'Opportunity', 'Order', 'Product2', 'PricebookEntry'];
+        const normalized = String(value || '').trim();
+        return allowedTargets.includes(normalized) ? normalized : 'Contact';
+      }
+
+      function getRequiredFieldsForMigrationTarget(targetObject) {
+        const normalized = normalizeMigrationTargetObject(targetObject);
+        const requiredByTarget = {
+          Account: ['Name'],
+          Contact: ['LastName'],
+          Lead: ['LastName', 'Company'],
+          Opportunity: ['Name', 'StageName', 'CloseDate'],
+          Order: ['AccountId', 'EffectiveDate', 'Status'],
+          Product2: ['Name'],
+          PricebookEntry: ['Pricebook2Id', 'Product2Id', 'UnitPrice']
+        };
+        return Array.isArray(requiredByTarget[normalized]) ? requiredByTarget[normalized] : [];
+      }
+
+      function findMissingRequiredFieldsForMigrationTarget(targetObject, mappings) {
+        const requiredFields = getRequiredFieldsForMigrationTarget(targetObject);
+        if (!requiredFields.length) {
+          return [];
+        }
+
+        const mappedTargetFields = new Set(
+          (Array.isArray(mappings) ? mappings : [])
+            .map((item) => String(item && item.targetField ? item.targetField : '').trim().toLowerCase())
+            .filter(Boolean)
+        );
+
+        return requiredFields.filter((fieldName) => !mappedTargetFields.has(String(fieldName).toLowerCase()));
+      }
+
+      function mapAnalysisDataTypeToTargetFieldType(dataType) {
+        const normalized = String(dataType || '').trim().toLowerCase();
+        if (normalized === 'datetime' || normalized === 'date') {
+          return normalized;
+        }
+        if (normalized === 'integer') {
+          return 'int';
+        }
+        if (normalized === 'decimal') {
+          return 'double';
+        }
+        if (normalized === 'boolean') {
+          return 'boolean';
+        }
+        return 'string';
+      }
+
+      async function createMigrationProfileFromAnalysis() {
+        try {
+          clearError();
+
+          const analysis = migState.migrationSourceAnalysis;
+          const payload = migState.migrationSourcePayload || {};
+          if (!analysis || !Array.isArray(analysis.suggestedMappings)) {
+            showError('Bitte zuerst eine KI-Analyse durchführen.');
+            return;
+          }
+
+          const selectedTargetObject = normalizeMigrationTargetObject(document.getElementById('migration-target-object')?.value);
+          const effectiveTargetObject = normalizeMigrationTargetObject(selectedTargetObject || String(analysis.suggestedTargetObject || 'Contact'));
+
+          const suggestedMappings = analysis.suggestedMappings
+            .filter((item) => item && String(item.sourceField || '').trim())
+            .filter((item) => String(item.targetField || '').trim())
+            .filter((item) => String(item.privacyAction || '').trim() !== 'exclude');
+
+          if (!suggestedMappings.length) {
+            showError('Es konnten keine nutzbaren Feld-Mappings für ein Profil abgeleitet werden.');
+            return;
+          }
+
+          const missingRequiredFields = findMissingRequiredFieldsForMigrationTarget(effectiveTargetObject, suggestedMappings);
+          if (missingRequiredFields.length) {
+            const proceed = window.confirm(
+              'Hinweis: Für Salesforce ' + effectiveTargetObject + ' fehlen Pflichtfelder in den KI-Mappings:\\n- ' +
+              missingRequiredFields.join('\\n- ') +
+              '\\n\\nDas Profil wird erstellt, aber vor dem Run solltest du diese Felder ergänzen. Trotzdem fortfahren?'
+            );
+            if (!proceed) {
+              showInfo('Profilerstellung abgebrochen. Bitte fehlende Pflichtfelder ergänzen und erneut erstellen.');
+              return;
+            }
+          }
+
+          const migrationObjectId = 'obj-' + String(effectiveTargetObject).toLowerCase() + '-' + Date.now();
+          const migrationName = 'KI-Profil: ' + String(payload.sourceName || analysis.sourceName || 'Quelle') + ' → ' + effectiveTargetObject;
+
+          const migrationPayload = {
+            name: migrationName,
+            description: [
+              'Automatisch aus KI-Analyse erstellt',
+              payload.description ? String(payload.description) : ''
+            ].filter(Boolean).join(' · '),
+            batchSize: 200,
+            instanceId: state.instanceId || undefined,
+            status: 'draft',
+            objects: [
+              {
+                id: migrationObjectId,
+                salesforceObject: effectiveTargetObject,
+                operation: 'upsert',
+                fileColumns: suggestedMappings.map((item) => String(item.sourceField || '').trim()).filter(Boolean),
+                fieldMappings: suggestedMappings.map((item) => ({
+                  sourceColumn: String(item.sourceField || '').trim(),
+                  targetField: String(item.targetField || '').trim(),
+                  targetFieldType: mapAnalysisDataTypeToTargetFieldType(item.dataType),
+                  transformFunction: 'NONE'
+                }))
+              }
+            ],
+            dependencies: [],
+            executionPlan: [
+              {
+                order: 1,
+                objectId: migrationObjectId,
+                description: effectiveTargetObject + ' import'
+              }
+            ]
+          };
+
+          const savedMigration = await requestJson('/api/migrations', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(migrationPayload)
+          });
+
+          await refresh();
+          openMigWizard(savedMigration, { startStep: 3, pendingImportAnalysis: analysis });
+          showInfo('Migrationsprofil wurde aus der KI-Analyse erstellt.');
+        } catch (error) {
+          showError('Migrationsprofil konnte nicht erstellt werden: ' + (error instanceof Error ? error.message : String(error)));
+        }
+      }
+
       async function analyzeMigrationSource() {
         try {
           clearError();
@@ -9667,6 +10086,7 @@ export function renderAdminUiScript(): string {
 
           const sourceName = document.getElementById('migration-source-name').value.trim();
           const sourceType = document.getElementById('migration-source-type').value;
+          const targetObject = normalizeMigrationTargetObject(document.getElementById('migration-target-object')?.value);
           const fieldDefsStr = document.getElementById('migration-field-defs').value.trim();
           const estimatedRecords = Number(document.getElementById('migration-est-records').value || 0);
           const description = document.getElementById('migration-description').value;
@@ -9692,11 +10112,51 @@ export function renderAdminUiScript(): string {
             body: JSON.stringify({
               sourceName,
               sourceType,
+              targetObject,
               fieldDefinitions,
               estimatedRecords: estimatedRecords > 0 ? estimatedRecords : undefined,
               description: description || undefined
             })
           });
+
+          migState.migrationSourceAnalysis = analysis;
+          migState.migrationSourcePayload = {
+            sourceName,
+            sourceType,
+            targetObject,
+            fieldDefinitions,
+            estimatedRecords: estimatedRecords > 0 ? estimatedRecords : undefined,
+            description: description || undefined
+          };
+
+          const effectiveTargetObject = normalizeMigrationTargetObject(String(analysis.suggestedTargetObject || targetObject || 'Contact'));
+          const targetObjectSelect = document.getElementById('migration-target-object');
+          if (targetObjectSelect) {
+            targetObjectSelect.value = effectiveTargetObject;
+          }
+
+          const usableMappings = (Array.isArray(analysis.suggestedMappings) ? analysis.suggestedMappings : [])
+            .filter((item) => item && String(item.sourceField || '').trim())
+            .filter((item) => String(item.targetField || '').trim())
+            .filter((item) => String(item.privacyAction || '').trim() !== 'exclude');
+          const requiredFields = getRequiredFieldsForMigrationTarget(effectiveTargetObject);
+          const missingRequiredFieldsPreview = findMissingRequiredFieldsForMigrationTarget(effectiveTargetObject, usableMappings);
+          const mappedRequiredFieldsCount = Math.max(0, requiredFields.length - missingRequiredFieldsPreview.length);
+          const requiredCoveragePercent = requiredFields.length
+            ? Math.round((mappedRequiredFieldsCount / requiredFields.length) * 100)
+            : 100;
+          let requiredStatusClass = 'alert-success';
+          let requiredStatusLabel = 'GRUEN';
+          let requiredStatusText = 'Alle Pflichtfelder für ' + effectiveTargetObject + ' sind in den Vorschlägen enthalten.';
+          if (requiredFields.length > 0 && missingRequiredFieldsPreview.length === requiredFields.length) {
+            requiredStatusClass = 'alert-danger';
+            requiredStatusLabel = 'ROT';
+            requiredStatusText = 'Pflichtfelder fehlen vollständig. Profil nur als Roh-Entwurf verwenden.';
+          } else if (missingRequiredFieldsPreview.length > 0) {
+            requiredStatusClass = 'alert-warning';
+            requiredStatusLabel = 'GELB';
+            requiredStatusText = 'Pflichtfelder sind nur teilweise abgedeckt. Vor dem Run ergänzen.';
+          }
 
           // Zeige Analyse-Ergebnis
           const resultDiv = document.getElementById('migration-analysis-result');
@@ -9708,6 +10168,7 @@ export function renderAdminUiScript(): string {
                   <div class="d-flex gap-2">
                     <span class="badge bg-info">\${Math.round(analysis.dataQualityScore * 100)}% Qualität</span>
                     <span class="badge bg-\${analysis.complianceIssues.length > 0 ? 'warning' : 'success'}">\${analysis.sensitiveFields.length} sensitive Felder</span>
+                    <span class="badge bg-primary">Ziel: Salesforce \${htmlEscape(effectiveTargetObject)}</span>
                   </div>
                 </div>
                 <div class="card-body">
@@ -9715,7 +10176,19 @@ export function renderAdminUiScript(): string {
                     <div class="col-12">
                       <strong>Quelle:</strong> \${htmlEscape(analysis.sourceName)} (\${htmlEscape(analysis.sourceType)})
                       <br/>
-                      <small class="text-secondary">Gesamt-Felder: \${analysis.totalFields} | Konfidenz: \${Math.round(analysis.confidence * 100)}%</small>
+                      <small class="text-secondary">Gesamt-Felder: \${analysis.totalFields} | Zielobjekt: \${htmlEscape(effectiveTargetObject)} | Konfidenz: \${Math.round(analysis.confidence * 100)}%</small>
+                    </div>
+
+                    <div class="col-12">
+                      <div class="alert \${requiredStatusClass} py-2 mb-0">
+                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                          <strong>Pflichtfeld-Check \${requiredStatusLabel}</strong>
+                          <span class="badge bg-secondary">Abdeckung: \${requiredCoveragePercent}%</span>
+                        </div>
+                        <div class="small mt-1">\${htmlEscape(requiredStatusText)}</div>
+                        <div class="small mt-1">Pflichtfelder: \${requiredFields.length ? requiredFields.map(function(field) { return htmlEscape(field); }).join(', ') : '-'}</div>
+                        \${missingRequiredFieldsPreview.length ? \`<div class="small mt-1 text-danger">Fehlend: \${missingRequiredFieldsPreview.map(function(field) { return htmlEscape(field); }).join(', ')}</div>\` : ''}
+                      </div>
                     </div>
 
                     \${analysis.sensitiveFields.length > 0 ? \`
@@ -9770,16 +10243,182 @@ export function renderAdminUiScript(): string {
                         \${analysis.suggestedMappings.length > 10 ? \`<div class="small text-secondary mt-2">... und \${analysis.suggestedMappings.length - 10} weitere Felder</div>\` : ''}
                       </div>
                     </div>
+
+                    <div class="col-12 d-flex justify-content-end">
+                      <button id="migration-create-profile-from-analysis" type="button" class="btn btn-primary btn-sm">Migrationsprofil aus Analyse erstellen</button>
+                    </div>
+                    </div>
                   </div>
                 </div>
               </div>
             \`;
+
+            const createProfileButton = document.getElementById('migration-create-profile-from-analysis');
+            if (createProfileButton) {
+              createProfileButton.addEventListener('click', createMigrationProfileFromAnalysis);
+            }
           }
 
           showInfo('Datenquelle analysiert - Datenschutz-Check abgeschlossen');
         } catch (error) {
           showError('Migrations-Analyse fehlgeschlagen: ' + (error instanceof Error ? error.message : String(error)));
         }
+      }
+
+      async function analyzeMigrationSourceFile(file) {
+        if (!file) {
+          showError('Bitte zuerst eine Datei auswählen.');
+          return;
+        }
+
+        try {
+          clearError();
+          showInfo('Datei wird analysiert und Felddefinitionen werden vorbereitet...');
+
+          const result = await requestJson('/api/migrations/analyze-import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileName: file.name,
+              contentBase64: await fileToBase64(file)
+            })
+          });
+
+          const primary = Array.isArray(result.sheets) && result.sheets.length ? result.sheets[0] : result;
+          const headers = Array.isArray(primary.headers) ? primary.headers : [];
+          if (!headers.length) {
+            showError('Aus der Datei konnten keine Feldnamen gelesen werden.');
+            return;
+          }
+
+          const fieldDefinitions = headers.map((header) => ({
+            name: String(header || '').trim(),
+            type: 'string'
+          })).filter((item) => item.name);
+
+          const defsEl = document.getElementById('migration-field-defs');
+          if (defsEl) {
+            defsEl.value = JSON.stringify(fieldDefinitions, null, 2);
+          }
+
+          const sourceNameEl = document.getElementById('migration-source-name');
+          if (sourceNameEl && !String(sourceNameEl.value || '').trim()) {
+            sourceNameEl.value = String(file.name || '').replace(/\.[^.]+$/, '');
+          }
+
+          const sourceTypeEl = document.getElementById('migration-source-type');
+          if (sourceTypeEl) {
+            const format = String(result.format || '').toLowerCase();
+            sourceTypeEl.value = format === 'excel' ? 'FILE_XLSX' : format === 'csv' ? 'FILE_CSV' : 'OTHER';
+          }
+
+          const recordCountEl = document.getElementById('migration-est-records');
+          if (recordCountEl && !String(recordCountEl.value || '').trim()) {
+            const recordCount = Number(primary.recordCount || 0);
+            if (recordCount > 0) {
+              recordCountEl.value = String(recordCount);
+            }
+          }
+
+          const metaEl = document.getElementById('migration-analysis-file-meta');
+          if (metaEl) {
+            metaEl.textContent = file.name + ' • ' + fieldDefinitions.length + ' Felder erkannt';
+          }
+
+          showInfo('Datei analysiert: Felddefinitionen wurden automatisch übernommen.');
+        } catch (error) {
+          showError('Datei-Analyse fehlgeschlagen: ' + (error instanceof Error ? error.message : String(error)));
+        }
+      }
+
+      function setupMigrationAnalysisDropzone() {
+        const dropzone = document.getElementById('migration-analysis-dropzone');
+        const input = document.getElementById('migration-analysis-file');
+        const pickButton = document.getElementById('migration-analysis-file-pick');
+        if (!dropzone || !input || dropzone.dataset.bound === '1') {
+          return;
+        }
+
+        dropzone.dataset.bound = '1';
+
+        const setDropzoneState = (state) => {
+          dropzone.classList.remove('is-active', 'border-success', 'border-danger', 'bg-success-subtle', 'bg-danger-subtle');
+          if (state === 'active') {
+            dropzone.classList.add('is-active');
+            return;
+          }
+          if (state === 'success') {
+            dropzone.classList.add('border-success', 'bg-success-subtle');
+            return;
+          }
+          if (state === 'error') {
+            dropzone.classList.add('border-danger', 'bg-danger-subtle');
+          }
+        };
+
+        const flashDropzoneState = (state) => {
+          setDropzoneState(state);
+          window.setTimeout(() => {
+            setDropzoneState('idle');
+          }, 1800);
+        };
+
+        const handleFiles = async (files) => {
+          const selected = Array.isArray(files) ? files.filter(Boolean) : [];
+          if (!selected.length) {
+            return;
+          }
+
+          const file = selected[0];
+          if (!isSupportedMigrationImportFile(file)) {
+            showError('Unterstützte Dateitypen sind CSV, TXT, JSON und Excel.');
+            flashDropzoneState('error');
+            return;
+          }
+
+          try {
+            await analyzeMigrationSourceFile(file);
+            flashDropzoneState('success');
+          } catch {
+            flashDropzoneState('error');
+          }
+        };
+
+        pickButton.addEventListener('click', () => {
+          input.value = '';
+          input.click();
+        });
+
+        input.addEventListener('change', async () => {
+          const files = input.files ? Array.from(input.files) : [];
+          if (!files.length) {
+            return;
+          }
+          await handleFiles(files);
+          input.value = '';
+        });
+
+        ['dragenter', 'dragover'].forEach((eventName) => {
+          dropzone.addEventListener(eventName, (event) => {
+            event.preventDefault();
+            setDropzoneState('active');
+          });
+        });
+
+        ['dragleave', 'dragend'].forEach((eventName) => {
+          dropzone.addEventListener(eventName, () => {
+            setDropzoneState('idle');
+          });
+        });
+
+        dropzone.addEventListener('drop', async (event) => {
+          event.preventDefault();
+          setDropzoneState('idle');
+          const files = event.dataTransfer && event.dataTransfer.files
+            ? Array.from(event.dataTransfer.files)
+            : [];
+          await handleFiles(files);
+        });
       }
 
       async function previewMapping() {
@@ -10352,6 +10991,7 @@ export function renderAdminUiScript(): string {
       document.getElementById('load-logs').addEventListener('click', loadLogs);
       document.getElementById('analyze-run-error').addEventListener('click', analyzeCurrentRunError);
       document.getElementById('migration-ai-analyze')?.addEventListener('click', analyzeMigrationSource);
+      setupMigrationAnalysisDropzone();
       document.getElementById('sch-refresh-recent-logs')?.addEventListener('click', async () => {
         await renderScheduleRecentLogs(document.getElementById('sch-id')?.value || '');
       });

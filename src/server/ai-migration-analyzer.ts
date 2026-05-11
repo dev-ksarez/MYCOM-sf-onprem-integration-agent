@@ -10,9 +10,12 @@
  * - Migrationskonfiguration mit Datenschutz
  */
 
+type SalesforceTargetObject = "Account" | "Contact" | "Lead" | "Opportunity" | "Order" | "Product2" | "PricebookEntry";
+
 export interface MigrationSourceData {
   sourceName: string;
   sourceType: "MSSQL_SQL" | "REST_API" | "FILE_CSV" | "FILE_XLSX" | "SALESFORCE" | "OTHER";
+  targetObject?: SalesforceTargetObject;
   sampleData?: Record<string, unknown>[];
   fieldDefinitions?: Array<{
     name: string;
@@ -35,6 +38,7 @@ export interface SensitiveField {
 export interface MigrationAnalysisResult {
   sourceName: string;
   sourceType: string;
+  suggestedTargetObject: SalesforceTargetObject;
   totalFields: number;
   sensitiveFields: SensitiveField[];
   dataQualityScore: number; // 0-1
@@ -57,16 +61,18 @@ export class AIMigrationAnalyzer {
    */
   async analyzeMigrationSource(sourceData: MigrationSourceData): Promise<MigrationAnalysisResult> {
     const totalFields = sourceData.fieldDefinitions?.length || 0;
+    const targetObject = this.resolveTargetObject(sourceData);
     const sensitiveFields = this.detectSensitiveFields(sourceData.fieldDefinitions || [], sourceData.sampleData || []);
     const complianceIssues = this.checkComplianceIssues(sensitiveFields, sourceData.sourceType);
-    const recommendations = this.generateRecommendations(sensitiveFields, complianceIssues, sourceData.sourceType);
-    const suggestedMappings = this.generatePrivacyAwareMappings(sourceData.fieldDefinitions || [], sensitiveFields);
+    const recommendations = this.generateRecommendations(sensitiveFields, complianceIssues, sourceData.sourceType, targetObject);
+    const suggestedMappings = this.generatePrivacyAwareMappings(sourceData.fieldDefinitions || [], sensitiveFields, targetObject);
     const dataQualityScore = this.calculateDataQuality(sourceData);
     const confidence = this.calculateConfidence(sourceData);
 
     return {
       sourceName: sourceData.sourceName,
       sourceType: sourceData.sourceType,
+      suggestedTargetObject: targetObject,
       totalFields,
       sensitiveFields,
       dataQualityScore,
@@ -258,8 +264,15 @@ export class AIMigrationAnalyzer {
   /**
    * Generiert Datenschutz-Empfehlungen
    */
-  private generateRecommendations(sensitiveFields: SensitiveField[], complianceIssues: string[], sourceType: string): string[] {
+  private generateRecommendations(
+    sensitiveFields: SensitiveField[],
+    complianceIssues: string[],
+    sourceType: string,
+    targetObject: SalesforceTargetObject
+  ): string[] {
     const recommendations: string[] = [];
+
+    recommendations.push(`🎯 Zielobjekt-Vorschlag: Salesforce ${targetObject}`);
 
     // Alle exclude-Felder
     const excludeFields = sensitiveFields.filter((f) => f.suggestedAction === "exclude");
@@ -298,7 +311,8 @@ export class AIMigrationAnalyzer {
    */
   private generatePrivacyAwareMappings(
     fieldDefs: MigrationSourceData["fieldDefinitions"],
-    sensitiveFields: SensitiveField[]
+    sensitiveFields: SensitiveField[],
+    targetObject: SalesforceTargetObject
   ): MigrationAnalysisResult["suggestedMappings"] {
     const sensitiveMap = new Map(sensitiveFields.map((f) => [f.fieldName, f]));
 
@@ -308,7 +322,7 @@ export class AIMigrationAnalyzer {
 
       return {
         sourceField: field.name,
-        targetField: this.suggestTargetField(field.name, sensitive),
+        targetField: this.suggestTargetField(field.name, sensitive, targetObject),
         dataType: this.normalizeDataType(field.type),
         isSensitive,
         privacyAction: sensitive?.suggestedAction
@@ -319,22 +333,300 @@ export class AIMigrationAnalyzer {
   /**
    * Schlägt Ziel-Feldname vor
    */
-  private suggestTargetField(sourceField: string, sensitive?: SensitiveField): string | undefined {
-    if (!sensitive) {
-      return sourceField; // 1:1 Mapping für nicht-sensitive Felder
+  private suggestTargetField(
+    sourceField: string,
+    sensitive: SensitiveField | undefined,
+    targetObject: SalesforceTargetObject
+  ): string | undefined {
+    if (sensitive?.suggestedAction === "exclude") {
+      return undefined;
     }
 
-    // Für sensitive Felder: Suffix hinzufügen
-    const suffixes: Record<SensitiveField["suggestedAction"], string> = {
-      exclude: undefined as any,
-      anonymize: "_anon",
-      mask: "_masked",
-      encrypt: "_encrypted",
-      hash: "_hashed"
+    const normalized = this.normalizeFieldToken(sourceField);
+    const mappingDictionary = this.getFieldMapForTarget(targetObject);
+    const direct = mappingDictionary.get(normalized);
+    if (direct) {
+      return direct;
+    }
+
+    if (sourceField.endsWith("__c")) {
+      return sourceField;
+    }
+
+    const fallbackMap = this.getFallbackFieldMapForTarget(targetObject);
+    return fallbackMap.get(normalized) || undefined;
+  }
+
+  private resolveTargetObject(sourceData: MigrationSourceData): SalesforceTargetObject {
+    if (sourceData.targetObject) {
+      return sourceData.targetObject;
+    }
+
+    const names = (sourceData.fieldDefinitions || [])
+      .map((field) => this.normalizeFieldToken(field.name))
+      .filter(Boolean);
+
+    const score: Record<SalesforceTargetObject, number> = {
+      Account: 0,
+      Contact: 0,
+      Lead: 0,
+      Opportunity: 0,
+      Order: 0,
+      Product2: 0,
+      PricebookEntry: 0
     };
 
-    const suffix = suffixes[sensitive.suggestedAction];
-    return suffix ? `${sourceField}${suffix}` : undefined;
+    const signals: Record<SalesforceTargetObject, string[]> = {
+      Contact: ["firstname", "lastname", "salutation", "email", "mobilephone", "birthdate", "contactname"],
+      Account: ["company", "companyname", "accountname", "industry", "vat", "tax", "revenue", "employees", "website"],
+      Lead: ["leadsource", "company", "status", "rating", "converted"],
+      Opportunity: ["stagename", "closedate", "amount", "probability", "forecast"],
+      Order: ["ordernumber", "orderdate", "effectivedate", "status", "contract"],
+      Product2: ["productcode", "family", "sku", "stockkeepingunit", "isactive"],
+      PricebookEntry: ["unitprice", "price", "listprice", "pricelist", "usestandardprice", "pricebook"]
+    };
+
+    names.forEach((name) => {
+      (Object.keys(signals) as SalesforceTargetObject[]).forEach((target) => {
+        if (signals[target].some((signal) => name.includes(signal))) {
+          score[target] += 1;
+        }
+      });
+    });
+
+    const ranked = (Object.keys(score) as SalesforceTargetObject[])
+      .sort((a, b) => score[b] - score[a]);
+    return score[ranked[0]] > 0 ? ranked[0] : "Contact";
+  }
+
+  private normalizeFieldToken(value: string): string {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "");
+  }
+
+  private contactFieldMap(): Map<string, string> {
+    return new Map<string, string>([
+      ["firstname", "FirstName"],
+      ["vorname", "FirstName"],
+      ["lastname", "LastName"],
+      ["nachname", "LastName"],
+      ["name", "LastName"],
+      ["fullname", "LastName"],
+      ["salutation", "Salutation"],
+      ["email", "Email"],
+      ["emailaddress", "Email"],
+      ["telefon", "Phone"],
+      ["phone", "Phone"],
+      ["telefon2", "OtherPhone"],
+      ["phone2", "OtherPhone"],
+      ["mobile", "MobilePhone"],
+      ["mobil", "MobilePhone"],
+      ["mobilephone", "MobilePhone"],
+      ["department", "Department"],
+      ["title", "Title"],
+      ["jobtitle", "Title"],
+      ["birthdate", "Birthdate"],
+      ["street", "MailingStreet"],
+      ["adresse", "MailingStreet"],
+      ["city", "MailingCity"],
+      ["stadt", "MailingCity"],
+      ["state", "MailingState"],
+      ["region", "MailingState"],
+      ["zip", "MailingPostalCode"],
+      ["plz", "MailingPostalCode"],
+      ["postalcode", "MailingPostalCode"],
+      ["country", "MailingCountry"],
+      ["company", "AccountId"],
+      ["companyname", "AccountId"],
+      ["account", "AccountId"],
+      ["website", "Website"],
+      ["description", "Description"]
+    ]);
+  }
+
+  private accountFieldMap(): Map<string, string> {
+    return new Map<string, string>([
+      ["name", "Name"],
+      ["accountname", "Name"],
+      ["company", "Name"],
+      ["companyname", "Name"],
+      ["website", "Website"],
+      ["phone", "Phone"],
+      ["telefon", "Phone"],
+      ["industry", "Industry"],
+      ["employees", "NumberOfEmployees"],
+      ["numberofemployees", "NumberOfEmployees"],
+      ["revenue", "AnnualRevenue"],
+      ["annualrevenue", "AnnualRevenue"],
+      ["billingstreet", "BillingStreet"],
+      ["street", "BillingStreet"],
+      ["adresse", "BillingStreet"],
+      ["billingcity", "BillingCity"],
+      ["city", "BillingCity"],
+      ["stadt", "BillingCity"],
+      ["billingstate", "BillingState"],
+      ["state", "BillingState"],
+      ["region", "BillingState"],
+      ["billingpostalcode", "BillingPostalCode"],
+      ["zip", "BillingPostalCode"],
+      ["plz", "BillingPostalCode"],
+      ["postalcode", "BillingPostalCode"],
+      ["billingcountry", "BillingCountry"],
+      ["country", "BillingCountry"],
+      ["description", "Description"],
+      ["taxid", "Tax_Id__c"],
+      ["vat", "Tax_Id__c"],
+      ["ustid", "Tax_Id__c"]
+    ]);
+  }
+
+  private leadFieldMap(): Map<string, string> {
+    return new Map<string, string>([
+      ["firstname", "FirstName"],
+      ["vorname", "FirstName"],
+      ["lastname", "LastName"],
+      ["nachname", "LastName"],
+      ["company", "Company"],
+      ["companyname", "Company"],
+      ["email", "Email"],
+      ["phone", "Phone"],
+      ["mobile", "MobilePhone"],
+      ["title", "Title"],
+      ["leadsource", "LeadSource"],
+      ["status", "Status"],
+      ["street", "Street"],
+      ["city", "City"],
+      ["state", "State"],
+      ["postalcode", "PostalCode"],
+      ["zip", "PostalCode"],
+      ["plz", "PostalCode"],
+      ["country", "Country"],
+      ["description", "Description"]
+    ]);
+  }
+
+  private opportunityFieldMap(): Map<string, string> {
+    return new Map<string, string>([
+      ["name", "Name"],
+      ["opportunityname", "Name"],
+      ["account", "AccountId"],
+      ["accountid", "AccountId"],
+      ["stagename", "StageName"],
+      ["stage", "StageName"],
+      ["closedate", "CloseDate"],
+      ["amount", "Amount"],
+      ["probability", "Probability"],
+      ["type", "Type"],
+      ["leadsource", "LeadSource"],
+      ["description", "Description"]
+    ]);
+  }
+
+  private orderFieldMap(): Map<string, string> {
+    return new Map<string, string>([
+      ["account", "AccountId"],
+      ["accountid", "AccountId"],
+      ["effectivedate", "EffectiveDate"],
+      ["orderdate", "EffectiveDate"],
+      ["status", "Status"],
+      ["description", "Description"],
+      ["pricebook", "Pricebook2Id"],
+      ["pricebookid", "Pricebook2Id"],
+      ["contract", "ContractId"],
+      ["contractid", "ContractId"]
+    ]);
+  }
+
+  private product2FieldMap(): Map<string, string> {
+    return new Map<string, string>([
+      ["name", "Name"],
+      ["productname", "Name"],
+      ["productcode", "ProductCode"],
+      ["sku", "ProductCode"],
+      ["family", "Family"],
+      ["description", "Description"],
+      ["isactive", "IsActive"],
+      ["active", "IsActive"]
+    ]);
+  }
+
+  private pricebookEntryFieldMap(): Map<string, string> {
+    return new Map<string, string>([
+      ["product", "Product2Id"],
+      ["productid", "Product2Id"],
+      ["productcode", "Product2Id"],
+      ["pricebook", "Pricebook2Id"],
+      ["pricebookid", "Pricebook2Id"],
+      ["unitprice", "UnitPrice"],
+      ["price", "UnitPrice"],
+      ["listprice", "UnitPrice"],
+      ["usestandardprice", "UseStandardPrice"],
+      ["isactive", "IsActive"],
+      ["active", "IsActive"]
+    ]);
+  }
+
+  private getFieldMapForTarget(targetObject: SalesforceTargetObject): Map<string, string> {
+    switch (targetObject) {
+      case "Account":
+        return this.accountFieldMap();
+      case "Contact":
+        return this.contactFieldMap();
+      case "Lead":
+        return this.leadFieldMap();
+      case "Opportunity":
+        return this.opportunityFieldMap();
+      case "Order":
+        return this.orderFieldMap();
+      case "Product2":
+        return this.product2FieldMap();
+      case "PricebookEntry":
+        return this.pricebookEntryFieldMap();
+      default:
+        return this.contactFieldMap();
+    }
+  }
+
+  private getFallbackFieldMapForTarget(targetObject: SalesforceTargetObject): Map<string, string> {
+    if (targetObject === "Product2") {
+      return new Map<string, string>([
+        ["name", "Name"],
+        ["description", "Description"],
+        ["productcode", "ProductCode"]
+      ]);
+    }
+
+    if (targetObject === "PricebookEntry") {
+      return new Map<string, string>([
+        ["price", "UnitPrice"],
+        ["unitprice", "UnitPrice"],
+        ["active", "IsActive"]
+      ]);
+    }
+
+    if (targetObject === "Order") {
+      return new Map<string, string>([
+        ["status", "Status"],
+        ["date", "EffectiveDate"],
+        ["description", "Description"]
+      ]);
+    }
+
+    return new Map<string, string>([
+      ["email", "Email"],
+      ["phone", "Phone"],
+      ["mobile", "MobilePhone"],
+      ["website", "Website"],
+      ["city", "City"],
+      ["country", "Country"],
+      ["postalcode", "PostalCode"],
+      ["state", "State"],
+      ["street", "Street"],
+      ["description", "Description"],
+      ["name", "Name"]
+    ]);
   }
 
   /**

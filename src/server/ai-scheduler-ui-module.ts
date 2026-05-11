@@ -265,6 +265,38 @@ export function renderAISchedulerAssistantModule(): string {
         isLoading: false
       };
 
+      function aiWithInstance(path) {
+        const url = new URL(path, window.location.origin);
+        const instanceSelect = document.getElementById('instance-select');
+        const instanceId = String(instanceSelect?.value || '').trim();
+        if (instanceId) {
+          url.searchParams.set('instanceId', instanceId);
+        }
+        return url.pathname + url.search;
+      }
+
+      async function aiRequestJson(path, options) {
+        const requestOptions = options && typeof options === 'object' ? options : {};
+        const response = await fetch(aiWithInstance(path), requestOptions);
+        if (response.status === 401) {
+          window.location.href = '/';
+          throw new Error('Sitzung abgelaufen');
+        }
+
+        let data;
+        try {
+          data = await response.json();
+        } catch {
+          data = { error: 'Ungueltige Antwort vom Server' };
+        }
+
+        if (!response.ok) {
+          throw new Error(data.error || data.message || 'Request failed');
+        }
+
+        return data;
+      }
+
       // Beispiel-Prompts
       const examplePrompts = {
         "inbound-1": "Alle Accounts aus unserer MSSQL-Datenbank nach Salesforce synchronisieren. Email als eindeutige ID. Täglich um 08:00 Uhr.",
@@ -310,6 +342,23 @@ export function renderAISchedulerAssistantModule(): string {
         });
       }
 
+      async function bootAIAssistant() {
+        if (window.aiSchedulerState._initialized) {
+          return;
+        }
+        window.aiSchedulerState._initialized = true;
+
+        let connectors = [];
+        try {
+          const connectorResponse = await aiRequestJson('/api/connectors');
+          connectors = Array.isArray(connectorResponse?.items) ? connectorResponse.items : [];
+        } catch (error) {
+          console.warn('KI-Assistent: Connector-Liste konnte nicht geladen werden', error);
+        }
+
+        initializeAIAssistant(connectors);
+      }
+
       async function generateScheduler() {
         const prompt = String(document.getElementById('ai-prompt-input')?.value || '').trim();
         if (!prompt) {
@@ -322,8 +371,9 @@ export function renderAISchedulerAssistantModule(): string {
 
         showLoading(true);
         try {
-          const response = await requestJson('/api/ai/generate-scheduler', {
+          const response = await aiRequestJson('/api/ai/generate-scheduler', {
             method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               userPrompt: prompt,
               connectorId,
@@ -417,8 +467,9 @@ export function renderAISchedulerAssistantModule(): string {
         if (!result) return;
 
         try {
-          const response = await requestJson('/api/schedules', {
+          const response = await aiRequestJson('/api/schedules', {
             method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(result.schedule)
           });
 
@@ -439,6 +490,12 @@ export function renderAISchedulerAssistantModule(): string {
       function esc(str) {
         const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
         return String(str || '').replace(/[&<>"']/g, m => map[m]);
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', bootAIAssistant);
+      } else {
+        void bootAIAssistant();
       }
     </script>
   `;
