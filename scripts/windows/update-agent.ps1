@@ -430,9 +430,13 @@ function Stop-ManagedServices {
     $service = Get-Service -Name $name -ErrorAction SilentlyContinue
     if ($service -and $service.Status -ne "Stopped") {
       Write-UpdateProgress -State "running" -Message "Dienst '$name' wird gestoppt." -ProgressPercent 60 -Stage "stop-service" -TargetVersion $TargetVersion
-      Stop-Service -Name $name -Force
-      if (-not (Wait-ServiceState -Name $name -ExpectedState "Stopped" -TimeoutSeconds 60)) {
-        throw "Service $name did not stop in time."
+      try {
+        Stop-Service -Name $name -Force
+        if (-not (Wait-ServiceState -Name $name -ExpectedState "Stopped" -TimeoutSeconds 60)) {
+          throw "Service $name timed out while stopping (waited 60s)."
+        }
+      } catch {
+        throw "Service-Stop fehlgeschlagen fuer '$name': $($_.Exception.Message)"
       }
     }
   }
@@ -446,10 +450,6 @@ function Reconfigure-ManagedServices {
     throw "Service installer script not found: $installerScript"
   }
 
-  # Der Updater-Dienst laeuft als Host dieses Skripts (NSSM -> node -> powershell).
-  # Wuerde install-agent-service.ps1 den Updater-Dienst per Stop-Service stoppen,
-  # wuerde der eigene Prozess gekillt und Agent/Web nie neu gestartet.
-  # Der Updater startet nach Skriptende automatisch ueber NSSM neu (neues dist/ liegt bereits vor).
   $rolesToReconfigure = @($installProfile.roles | Where-Object { $_ -ne "updater" })
 
   if (-not $rolesToReconfigure -or $rolesToReconfigure.Count -eq 0) {
@@ -458,152 +458,200 @@ function Reconfigure-ManagedServices {
   }
 
   Write-UpdateProgress -State "running" -Message "Dienste werden auf die neue Struktur migriert." -ProgressPercent 90 -Stage "start-service" -TargetVersion $TargetVersion
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installerScript `
-    -AppRoot $appRootResolved `
-    -ServiceName $ServiceName `
-    -WebServiceName $WebServiceName `
-    -UpdaterServiceName $UpdaterServiceName `
-    -InstallRoles ($rolesToReconfigure -join ",") `
-    -NonInteractive `
-    -ForceRecreate
+  
+  try {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installerScript `
+      -AppRoot $appRootResolved `
+      -ServiceName $ServiceName `
+      -WebServiceName $WebServiceName `
+      -UpdaterServiceName $UpdaterServiceName `
+      -InstallRoles ($rolesToReconfigure -join ",") `
+      -NonInteractive `
+      -ForceRecreate
+  } catch {
+    throw "Service-Neukonfiguration Exception: $($_.Exception.Message)"
+  }
 
   if ($LASTEXITCODE -ne 0) {
-    throw "Service reconfiguration failed (exit code $LASTEXITCODE)."
+    throw "Service reconfiguration script failed with exit code $LASTEXITCODE. Check logs in $appRootResolved\logs\ for details."
   }
 }
-
-Write-UpdateProgress -State "running" -Message "Update wird initialisiert." -ProgressPercent 5 -Stage "init"
-
-if (-not $UpdateManifestUrl) {
-  throw "UpdateManifestUrl is required."
-}
-
-Ensure-Directory -Path $TempRoot
-$runId = (Get-Date).ToString("yyyyMMdd-HHmmss")
-$runRoot = Join-Path $TempRoot $runId
-Ensure-Directory -Path $runRoot
-
-$manifestPath = Join-Path $runRoot "manifest.json"
-Write-UpdateProgress -State "running" -Message "Update-Manifest wird geladen." -ProgressPercent 10 -Stage "manifest"
-Invoke-WebRequest -Uri $UpdateManifestUrl -OutFile $manifestPath
-$manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
-
-$targetVersion = [string]$manifest.version
-$packageUrl = [string]$manifest.packageUrl
-$sha256 = [string]$manifest.sha256
-
-if (-not $targetVersion -or -not $packageUrl) {
-  throw "Manifest must include version and packageUrl."
-}
-
-if ((Compare-Version -Left $targetVersion -Right $currentVersion) -le 0) {
-  Write-Host "No update needed. Current=$currentVersion Target=$targetVersion"
-  Write-UpdateProgress -State "completed" -Message "Kein Update erforderlich." -ProgressPercent 100 -Stage "idle" -TargetVersion $targetVersion
-  Invoke-MaintenanceCleanup
-  exit 0
-}
-
-Write-Host "Update available: $currentVersion -> $targetVersion" -ForegroundColor Cyan
-Write-UpdateProgress -State "running" -Message "Updatepaket wird heruntergeladen." -ProgressPercent 20 -Stage "download" -TargetVersion $targetVersion
-
-$zipPath = Join-Path $runRoot "update.zip"
-Invoke-WebRequest -Uri $packageUrl -OutFile $zipPath
-
-if ($sha256) {
-  Write-UpdateProgress -State "running" -Message "Paketintegritaet wird geprueft." -ProgressPercent 35 -Stage "verify" -TargetVersion $targetVersion
-  $actualHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-  if ($actualHash -ne $sha256.ToLowerInvariant()) {
-    throw "SHA256 mismatch for downloaded package."
-  }
-}
-
-$extractRoot = Join-Path $runRoot "extract"
-Write-UpdateProgress -State "running" -Message "Updatepaket wird entpackt." -ProgressPercent 45 -Stage "extract" -TargetVersion $targetVersion
-Expand-ZipArchive -ArchivePath $zipPath -DestinationPath $extractRoot
-
-$payloadRoot = Resolve-ExtractedPayloadRoot -ExtractRoot $extractRoot
-
-$requiredDist = Join-Path $payloadRoot "dist"
-if (-not (Test-Path $requiredDist)) {
-  throw "Update package is invalid: dist directory is missing."
-}
-
-$backupRoot = Join-Path $appRootResolved "backups\$runId"
-Ensure-Directory -Path $backupRoot
-
-$restorePlan = @(
-  @{ Source = (Join-Path $appRootResolved "dist"); Backup = (Join-Path $backupRoot "dist"); Target = (Join-Path $appRootResolved "dist"); Payload = (Join-Path $payloadRoot "dist") },
-  @{ Source = (Join-Path $appRootResolved "src\css"); Backup = (Join-Path $backupRoot "src\css"); Target = (Join-Path $appRootResolved "src\css"); Payload = (Join-Path $payloadRoot "src\css") },
-  @{ Source = (Join-Path $appRootResolved "src\public"); Backup = (Join-Path $backupRoot "src\public"); Target = (Join-Path $appRootResolved "src\public"); Payload = (Join-Path $payloadRoot "src\public") },
-  @{ Source = (Join-Path $appRootResolved "scripts"); Backup = (Join-Path $backupRoot "scripts"); Target = (Join-Path $appRootResolved "scripts"); Payload = (Join-Path $payloadRoot "scripts") },
-  @{ Source = (Join-Path $appRootResolved "salesforce"); Backup = (Join-Path $backupRoot "salesforce"); Target = (Join-Path $appRootResolved "salesforce"); Payload = (Join-Path $payloadRoot "salesforce") },
-  @{ Source = (Join-Path $appRootResolved "artifacts\templates"); Backup = (Join-Path $backupRoot "artifacts\templates"); Target = (Join-Path $appRootResolved "artifacts\templates"); Payload = (Join-Path $payloadRoot "artifacts\templates") },
-  @{ Source = (Join-Path $appRootResolved "artifacts\file-examples"); Backup = (Join-Path $backupRoot "artifacts\file-examples"); Target = (Join-Path $appRootResolved "artifacts\file-examples"); Payload = (Join-Path $payloadRoot "artifacts\file-examples") },
-  @{ Source = (Join-Path $appRootResolved "nssm.exe"); Backup = (Join-Path $backupRoot "nssm.exe"); Target = (Join-Path $appRootResolved "nssm.exe"); Payload = (Join-Path $payloadRoot "nssm.exe") },
-  @{ Source = (Join-Path $appRootResolved "package.json"); Backup = (Join-Path $backupRoot "package.json"); Target = (Join-Path $appRootResolved "package.json"); Payload = (Join-Path $payloadRoot "package.json") },
-  @{ Source = (Join-Path $appRootResolved "node_modules"); Backup = (Join-Path $backupRoot "node_modules"); Target = (Join-Path $appRootResolved "node_modules"); Payload = (Join-Path $payloadRoot "node_modules") }
-)
-
-foreach ($item in $restorePlan) {
-  Backup-Path -Source $item.Source -Backup $item.Backup
-}
-
-Stop-ManagedServices -TargetVersion $targetVersion
-
-$updateSucceeded = $false
 
 try {
-  Write-UpdateProgress -State "running" -Message "Update-Dateien werden eingespielt." -ProgressPercent 75 -Stage "apply" -TargetVersion $targetVersion
-  foreach ($item in $restorePlan) {
-    if (-not (Test-Path $item.Payload)) {
-      Write-Verbose "Payload not found (optional): $($item.Payload)"
-      continue
-    }
+  Write-UpdateProgress -State "running" -Message "Update wird initialisiert." -ProgressPercent 5 -Stage "init"
 
-    Write-Verbose "Updating: $($item.Target)"
-    if (Test-Path $item.Target) {
-      Remove-Item -Path $item.Target -Recurse -Force -ErrorAction Stop
-    }
-
-    if (Test-Path $item.Payload -PathType Container) {
-      robocopy $item.Payload $item.Target /E /NFL /NDL /NJH /NJS /NP | Out-Null
-      if ($LASTEXITCODE -gt 3) {
-        throw "robocopy failed for $($item.Payload) -> $($item.Target) (exit code: $LASTEXITCODE)"
-      }
-    } else {
-      Copy-Item -Path $item.Payload -Destination $item.Target -Force -ErrorAction Stop
-    }
+  if (-not $UpdateManifestUrl) {
+    throw "UpdateManifestUrl is required."
   }
 
-  Ensure-LocalAdminBootstrap -AppRootPath $appRootResolved -PayloadRootPath $payloadRoot
+  Ensure-Directory -Path $TempRoot
+  $runId = (Get-Date).ToString("yyyyMMdd-HHmmss")
+  $runRoot = Join-Path $TempRoot $runId
+  Ensure-Directory -Path $runRoot
 
-  Reconfigure-ManagedServices -TargetVersion $targetVersion
+  $manifestPath = Join-Path $runRoot "manifest.json"
+  Write-UpdateProgress -State "running" -Message "Update-Manifest wird geladen." -ProgressPercent 10 -Stage "manifest"
+  
+  try {
+    Invoke-WebRequest -Uri $UpdateManifestUrl -OutFile $manifestPath -ErrorAction Stop
+  } catch {
+    throw "Manifest-Download fehlgeschlagen: $($_.Exception.Message)"
+  }
+  
+  $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
 
-  $updateSucceeded = $true
-  Write-UpdateProgress -State "completed" -Message "Update auf Version $targetVersion abgeschlossen." -ProgressPercent 100 -Stage "completed" -TargetVersion $targetVersion
-  Write-Host "Update to version $targetVersion completed." -ForegroundColor Green
-} finally {
-  if (-not $updateSucceeded) {
-    Write-UpdateProgress -State "failed" -Message "Update fehlgeschlagen. Rollback wird gestartet." -ProgressPercent 95 -Stage "rollback" -TargetVersion $targetVersion
-    Write-Warning "Update failed. Starting rollback."
+  $targetVersion = [string]$manifest.version
+  $packageUrl = [string]$manifest.packageUrl
+  $sha256 = [string]$manifest.sha256
 
-    foreach ($name in Get-ManagedServices) {
-      Stop-Service -Name $name -Force -ErrorAction SilentlyContinue
-      [void](Wait-ServiceState -Name $name -ExpectedState "Stopped" -TimeoutSeconds 30)
-    }
+  if (-not $targetVersion -or -not $packageUrl) {
+    throw "Manifest must include version and packageUrl."
+  }
 
-    foreach ($item in $restorePlan) {
-      Restore-Path -Backup $item.Backup -Target $item.Target
-    }
+  if ((Compare-Version -Left $targetVersion -Right $currentVersion) -le 0) {
+    Write-Host "No update needed. Current=$currentVersion Target=$targetVersion"
+    Write-UpdateProgress -State "completed" -Message "Kein Update erforderlich." -ProgressPercent 100 -Stage "idle" -TargetVersion $targetVersion
+    Invoke-MaintenanceCleanup
+    exit 0
+  }
 
+  Write-Host "Update available: $currentVersion -> $targetVersion" -ForegroundColor Cyan
+  Write-UpdateProgress -State "running" -Message "Updatepaket wird heruntergeladen." -ProgressPercent 20 -Stage "download" -TargetVersion $targetVersion
+
+  $zipPath = Join-Path $runRoot "update.zip"
+  
+  try {
+    Invoke-WebRequest -Uri $packageUrl -OutFile $zipPath -ErrorAction Stop
+  } catch {
+    throw "Package-Download fehlgeschlagen ($packageUrl): $($_.Exception.Message)"
+  }
+
+  if ($sha256) {
+    Write-UpdateProgress -State "running" -Message "Paketintegritaet wird geprueft." -ProgressPercent 35 -Stage "verify" -TargetVersion $targetVersion
     try {
-      Reconfigure-ManagedServices -TargetVersion $targetVersion
+      $actualHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+      if ($actualHash -ne $sha256.ToLowerInvariant()) {
+        throw "SHA256 mismatch for downloaded package. Expected: $sha256, Got: $actualHash"
+      }
     } catch {
-      Write-Warning "Service rollback configuration failed: $($_.Exception.Message)"
+      throw "Paketverifizierung fehlgeschlagen: $($_.Exception.Message)"
+    }
+  }
+
+  $extractRoot = Join-Path $runRoot "extract"
+  Write-UpdateProgress -State "running" -Message "Updatepaket wird entpackt." -ProgressPercent 45 -Stage "extract" -TargetVersion $targetVersion
+  
+  try {
+    Expand-ZipArchive -ArchivePath $zipPath -DestinationPath $extractRoot
+  } catch {
+    throw "ZIP-Entpacken fehlgeschlagen: $($_.Exception.Message)"
+  }
+
+  $payloadRoot = Resolve-ExtractedPayloadRoot -ExtractRoot $extractRoot
+
+  $requiredDist = Join-Path $payloadRoot "dist"
+  if (-not (Test-Path $requiredDist)) {
+    throw "Update package is invalid: dist directory is missing. Payload root: $payloadRoot"
+  }
+
+$backupRoot = Join-Path $appRootResolved "backups\$runId"
+  Ensure-Directory -Path $backupRoot
+
+  $restorePlan = @(
+    @{ Source = (Join-Path $appRootResolved "dist"); Backup = (Join-Path $backupRoot "dist"); Target = (Join-Path $appRootResolved "dist"); Payload = (Join-Path $payloadRoot "dist") },
+    @{ Source = (Join-Path $appRootResolved "src\css"); Backup = (Join-Path $backupRoot "src\css"); Target = (Join-Path $appRootResolved "src\css"); Payload = (Join-Path $payloadRoot "src\css") },
+    @{ Source = (Join-Path $appRootResolved "src\public"); Backup = (Join-Path $backupRoot "src\public"); Target = (Join-Path $appRootResolved "src\public"); Payload = (Join-Path $payloadRoot "src\public") },
+    @{ Source = (Join-Path $appRootResolved "scripts"); Backup = (Join-Path $backupRoot "scripts"); Target = (Join-Path $appRootResolved "scripts"); Payload = (Join-Path $payloadRoot "scripts") },
+    @{ Source = (Join-Path $appRootResolved "salesforce"); Backup = (Join-Path $backupRoot "salesforce"); Target = (Join-Path $appRootResolved "salesforce"); Payload = (Join-Path $payloadRoot "salesforce") },
+    @{ Source = (Join-Path $appRootResolved "artifacts\templates"); Backup = (Join-Path $backupRoot "artifacts\templates"); Target = (Join-Path $appRootResolved "artifacts\templates"); Payload = (Join-Path $payloadRoot "artifacts\templates") },
+    @{ Source = (Join-Path $appRootResolved "artifacts\file-examples"); Backup = (Join-Path $backupRoot "artifacts\file-examples"); Target = (Join-Path $appRootResolved "artifacts\file-examples"); Payload = (Join-Path $payloadRoot "artifacts\file-examples") },
+    @{ Source = (Join-Path $appRootResolved "nssm.exe"); Backup = (Join-Path $backupRoot "nssm.exe"); Target = (Join-Path $appRootResolved "nssm.exe"); Payload = (Join-Path $payloadRoot "nssm.exe") },
+    @{ Source = (Join-Path $appRootResolved "package.json"); Backup = (Join-Path $backupRoot "package.json"); Target = (Join-Path $appRootResolved "package.json"); Payload = (Join-Path $payloadRoot "package.json") },
+    @{ Source = (Join-Path $appRootResolved "node_modules"); Backup = (Join-Path $backupRoot "node_modules"); Target = (Join-Path $appRootResolved "node_modules"); Payload = (Join-Path $payloadRoot "node_modules") }
+  )
+
+  foreach ($item in $restorePlan) {
+    try {
+      Backup-Path -Source $item.Source -Backup $item.Backup
+    } catch {
+      throw "Backup fehlgeschlagen fuer $($item.Source): $($_.Exception.Message)"
+    }
+  }
+
+  Stop-ManagedServices -TargetVersion $targetVersion
+
+  $updateSucceeded = $false
+
+  try {
+    Write-UpdateProgress -State "running" -Message "Update-Dateien werden eingespielt." -ProgressPercent 75 -Stage "apply" -TargetVersion $targetVersion
+    foreach ($item in $restorePlan) {
+      if (-not (Test-Path $item.Payload)) {
+        Write-Verbose "Payload not found (optional): $($item.Payload)"
+        continue
+      }
+
+      Write-Verbose "Updating: $($item.Target)"
+      try {
+        if (Test-Path $item.Target) {
+          Remove-Item -Path $item.Target -Recurse -Force -ErrorAction Stop
+        }
+
+        if (Test-Path $item.Payload -PathType Container) {
+          robocopy $item.Payload $item.Target /E /NFL /NDL /NJH /NJS /NP | Out-Null
+          if ($LASTEXITCODE -gt 3) {
+            throw "robocopy failed for $($item.Payload) -> $($item.Target) (exit code: $LASTEXITCODE)"
+          }
+        } else {
+          Copy-Item -Path $item.Payload -Destination $item.Target -Force -ErrorAction Stop
+        }
+      } catch {
+        throw "Fehler beim Kopieren von $($item.Source): $($_.Exception.Message)"
+      }
     }
 
-    Write-UpdateProgress -State "failed" -Message "Update fehlgeschlagen. Der vorherige Stand wurde wiederhergestellt." -ProgressPercent 100 -Stage "failed" -TargetVersion $targetVersion
-  }
-}
+    Ensure-LocalAdminBootstrap -AppRootPath $appRootResolved -PayloadRootPath $payloadRoot
 
-Invoke-MaintenanceCleanup
+    Reconfigure-ManagedServices -TargetVersion $targetVersion
+
+    $updateSucceeded = $true
+    Write-UpdateProgress -State "completed" -Message "Update auf Version $targetVersion abgeschlossen." -ProgressPercent 100 -Stage "completed" -TargetVersion $targetVersion
+    Write-Host "Update to version $targetVersion completed." -ForegroundColor Green
+  } finally {
+    if (-not $updateSucceeded) {
+      Write-UpdateProgress -State "failed" -Message "Update fehlgeschlagen. Rollback wird gestartet." -ProgressPercent 95 -Stage "rollback" -TargetVersion $targetVersion
+      Write-Warning "Update failed. Starting rollback."
+
+      foreach ($name in Get-ManagedServices) {
+        try {
+          Stop-Service -Name $name -Force -ErrorAction SilentlyContinue
+          [void](Wait-ServiceState -Name $name -ExpectedState "Stopped" -TimeoutSeconds 30)
+        } catch {
+          Write-Warning "Fehler beim Stoppen von $name waehrend Rollback: $($_.Exception.Message)"
+        }
+      }
+
+      foreach ($item in $restorePlan) {
+        try {
+          Restore-Path -Backup $item.Backup -Target $item.Target
+        } catch {
+          Write-Warning "Restore fehlgeschlagen fuer $($item.Target): $($_.Exception.Message)"
+        }
+      }
+
+      try {
+        Reconfigure-ManagedServices -TargetVersion $targetVersion
+      } catch {
+        Write-Warning "Service rollback configuration failed: $($_.Exception.Message)"
+      }
+
+      Write-UpdateProgress -State "failed" -Message "Update fehlgeschlagen. Der vorherige Stand wurde wiederhergestellt." -ProgressPercent 100 -Stage "failed" -TargetVersion $targetVersion
+    }
+  }
+
+  Invoke-MaintenanceCleanup
+} catch {
+  Write-Host "Update failed: $($_.Exception.Message)" -ForegroundColor Red
+  Write-Error $_.Exception.Message
+  Write-UpdateProgress -State "failed" -Message "Update fehlgeschlagen: $($_.Exception.Message)" -ProgressPercent 0 -Stage "error" -TargetVersion ""
+  exit 1
+}
