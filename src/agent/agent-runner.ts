@@ -904,8 +904,18 @@ async function executeSchedule(
       const salesforceLookupResolver: LookupResolverFn = async (objectName, field, value) => {
         const escapedValue = String(value).replace(/'/g, "\\'");
         const soql = `SELECT Id FROM ${objectName} WHERE ${field} = '${escapedValue}' LIMIT 1`;
-        const records = await salesforceClient.queryGeneric(soql);
-        return records.length > 0 ? String(records[0].Id) : null;
+        try {
+          logger.debug({ scheduleId: schedule.id, runId, objectName, field, rawValue: value, soql }, "Lookup resolver: executing SOQL");
+          const records = await salesforceClient.queryGeneric(soql);
+          logger.debug(
+            { scheduleId: schedule.id, runId, soql, found: records.length > 0, recordsCount: records.length, sample: records[0] ?? null },
+            "Lookup resolver: result"
+          );
+          return records.length > 0 ? String(records[0].Id) : null;
+        } catch (err) {
+          logger.error({ scheduleId: schedule.id, runId, soql, error: err instanceof Error ? err.message : String(err) }, "Lookup resolver: query failed");
+          return null;
+        }
       };
 
       if (
