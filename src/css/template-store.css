@@ -212,6 +212,29 @@
   justify-content: flex-start;
 }
 
+/* Admin UI: field edit toggle and subtle footer highlight */
+.field-edit-wrap { position: relative; }
+.field-edit-toggle {
+  border: 1px solid rgba(15,23,42,0.06);
+  padding: 4px 6px;
+  font-size: 0.85rem;
+  border-radius: 6px;
+  color: #0f172a;
+  background: rgba(255,255,255,0.9);
+}
+.field-edit-toggle.active { background: #e8f1ff; color: #0d6efd; }
+.field-edit-toggle:focus { outline: none; box-shadow: 0 0 0 3px rgba(13,110,253,0.12); }
+.field-edit-wrap input.editing, .field-edit-wrap textarea.editing { box-shadow: 0 0 0 3px rgba(13,110,253,0.06) inset; }
+
+/* Subtle footer highlight for connector wizard/footer grouping */
+.connector-wizard-footer { background: rgba(15,23,42,0.02); border-top: 1px solid rgba(15,23,42,0.03); }
+
+/* Align created/updated metadata */
+.meta-row { display:flex; gap:12px; align-items:center; }
+.meta-row .meta-item { min-width:0; display:flex; flex-direction:column; }
+.meta-item .meta-label { font-size:0.78rem; color:#6b7280; }
+.meta-item .meta-value { font-size:0.92rem; color:#0f172a; }
+
 body.theme-midnight .template-app-card {
   background: #132032 !important;
   border-color: #31415a !important;

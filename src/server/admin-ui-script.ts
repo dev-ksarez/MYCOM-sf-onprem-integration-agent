@@ -334,6 +334,57 @@ export function renderAdminUiScript(): string {
         return String(document.querySelector('meta[name="sf-agent-csrf-token"]')?.getAttribute('content') || '').trim();
       }
 
+      // Field edit toggle (pencil icon) and readonly protection
+      function createFieldEditToggle(input) {
+        if (!input || input.dataset.__hasEditToggle) return;
+        input.dataset.__hasEditToggle = '1';
+        const wrap = document.createElement('div');
+        wrap.className = 'field-edit-wrap position-relative';
+        input.parentNode && input.parentNode.replaceChild(wrap, input);
+        wrap.appendChild(input);
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'field-edit-toggle btn btn-sm btn-light position-absolute';
+        btn.innerHTML = '<span class="bi bi-pencil" aria-hidden="true"></span>';
+        btn.title = 'Bearbeiten';
+        btn.style.right = '6px';
+        btn.style.top = '6px';
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          toggleFieldEditable(input, btn);
+        });
+        wrap.appendChild(btn);
+        // initial state
+        if (!input.hasAttribute('readonly')) {
+          btn.classList.add('active');
+        }
+      }
+
+      function toggleFieldEditable(input, btn) {
+        const isReadOnly = input.hasAttribute('readonly');
+        if (isReadOnly) {
+          input.removeAttribute('readonly');
+          input.classList.add('editing');
+          btn.classList.add('active');
+          input.focus();
+        } else {
+          // blur -> save event can be triggered by existing handlers
+          input.setAttribute('readonly', '');
+          input.classList.remove('editing');
+          btn.classList.remove('active');
+          try { input.dispatchEvent(new Event('change')); } catch (e) {}
+        }
+      }
+
+      function attachFieldEditToggles(root = document) {
+        const inputs = Array.from(root.querySelectorAll('input[readonly], textarea[readonly], select[readonly], input[data-protected], textarea[data-protected], select[data-protected]'));
+        inputs.forEach((el) => createFieldEditToggle(el));
+      }
+
+      // Call once initially and after dynamic modal inserts
+      setTimeout(() => attachFieldEditToggles(), 200);
+
+
       window.fetch = (input, options = {}) => {
         const request = input instanceof Request ? input : null;
         const method = String(options.method || (request ? request.method : 'GET')).toUpperCase();
@@ -2333,8 +2384,12 @@ export function renderAdminUiScript(): string {
         const createdBy = getWizardUserLabel(entry, 'created');
         const modifiedBy = String(entry?.lastModifiedByName || entry?.lastModifiedByUsername || entry?.updatedByName || entry?.updatedBy || '').trim() || '-';
         element.innerHTML =
-          '<span><strong>Erstellt:</strong> ' + esc(formatDate(createdAt, 'short')) + ' · ' + esc(createdBy) + '</span>' +
-          '<span><strong>Letzte Änderung:</strong> ' + esc(formatDate(modifiedAt, 'short')) + ' · ' + esc(modifiedBy) + '</span>';
+          '<div class="meta-row">' +
+            '<div class="meta-item"><span class="meta-label"><strong>Erstellt:</strong></span><span class="meta-value">' + esc(formatDate(createdAt, 'short')) + ' · ' + esc(createdBy) + '</span></div>' +
+            '<div class="meta-item"><span class="meta-label"><strong>Letzte Änderung:</strong></span><span class="meta-value">' + esc(formatDate(modifiedAt, 'short')) + ' · ' + esc(modifiedBy) + '</span></div>' +
+          '</div>';
+        // Re-attach edit toggles for any newly inserted inputs inside this element
+        try { attachFieldEditToggles(element); } catch (e) {}
       }
 
       function formatDurationMinSec(milliseconds) {

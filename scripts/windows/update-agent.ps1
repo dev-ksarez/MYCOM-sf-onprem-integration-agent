@@ -544,17 +544,22 @@ try {
   Write-UpdateProgress -State "running" -Message "Update-Dateien werden eingespielt." -ProgressPercent 75 -Stage "apply" -TargetVersion $targetVersion
   foreach ($item in $restorePlan) {
     if (-not (Test-Path $item.Payload)) {
+      Write-Verbose "Payload not found (optional): $($item.Payload)"
       continue
     }
 
+    Write-Verbose "Updating: $($item.Target)"
     if (Test-Path $item.Target) {
-      Remove-Item -Path $item.Target -Recurse -Force
+      Remove-Item -Path $item.Target -Recurse -Force -ErrorAction Stop
     }
 
     if (Test-Path $item.Payload -PathType Container) {
       robocopy $item.Payload $item.Target /E /NFL /NDL /NJH /NJS /NP | Out-Null
+      if ($LASTEXITCODE -gt 3) {
+        throw "robocopy failed for $($item.Payload) -> $($item.Target) (exit code: $LASTEXITCODE)"
+      }
     } else {
-      Copy-Item -Path $item.Payload -Destination $item.Target -Force
+      Copy-Item -Path $item.Payload -Destination $item.Target -Force -ErrorAction Stop
     }
   }
 

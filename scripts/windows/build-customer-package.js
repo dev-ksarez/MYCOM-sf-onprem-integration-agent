@@ -106,19 +106,30 @@ async function main() {
 
   console.log(`Staging package at: ${packageRoot}`);
 
-  await fsp.cp(path.join(appRoot, "dist"), path.join(stagingAppRoot, "dist"), {
-    recursive: true,
-    force: true,
-  });
+  // Entferne große und unnötige Dateien aus dem ZIP-Archiv
+  const excludePatterns = [
+    path.join(stagingAppRoot, "artifacts", "file-examples"),
+    path.join(stagingAppRoot, "artifacts", "dev-sandbox-schedule-examples.json"),
+  ];
+
+  for (const excludePath of excludePatterns) {
+    if (await exists(excludePath)) {
+      console.log(`Entferne: ${excludePath}`);
+      await fsp.rm(excludePath, { recursive: true, force: true });
+    }
+  }
+
+  // Sicherstellen, dass das dist-Verzeichnis explizit in das Staging-Verzeichnis kopiert wird
+  const distSource = path.join(appRoot, "dist");
+  const distTarget = path.join(stagingAppRoot, "dist");
+  console.log(`Kopiere dist-Verzeichnis von ${distSource} nach ${distTarget}`);
+  await fsp.cp(distSource, distTarget, { recursive: true });
+
   await fsp.cp(path.join(appRoot, "scripts"), path.join(stagingAppRoot, "scripts"), {
     recursive: true,
     force: true,
   });
   await copyIfExists(path.join(appRoot, "src", "css"), path.join(stagingAppRoot, "src", "css"));
-  await copyIfExists(
-    path.join(appRoot, "artifacts", "dev-sandbox-schedule-examples.json"),
-    path.join(stagingAppRoot, "artifacts", "dev-sandbox-schedule-examples.json")
-  );
   await copyIfExists(
     path.join(appRoot, "artifacts", "migrations.json"),
     path.join(stagingAppRoot, "artifacts", "migrations.json")
@@ -136,10 +147,6 @@ async function main() {
     path.join(stagingAppRoot, "artifacts", "sf-instances.json")
   );
   await copyIfExists(
-    path.join(appRoot, "artifacts", "file-examples"),
-    path.join(stagingAppRoot, "artifacts", "file-examples")
-  );
-  await copyIfExists(
     path.join(appRoot, "artifacts", "admin-users.json"),
     path.join(stagingAppRoot, "artifacts", "admin-users.json")
   );
@@ -152,7 +159,6 @@ async function main() {
   await fsp.cp(path.join(appRoot, "package.json"), path.join(stagingAppRoot, "package.json"), {
     force: true,
   });
-  await copyIfExists(path.join(appRoot, "package-lock.json"), path.join(stagingAppRoot, "package-lock.json"));
   await copyIfExists(path.join(appRoot, ".env.example"), path.join(stagingAppRoot, ".env.example"));
   await copyIfExists(
     path.join(appRoot, "WINDOWS_DEPLOYMENT.md"),
