@@ -51,6 +51,7 @@ import { HealthSnapshot } from "./health-snapshot";
 import { generateInstallerFiles, getInstallerSummary, INSTALLER_OUTPUT_DIR, InstallerGenerationInput } from "./installer-generator";
 import { AISchedulerService } from "./ai-scheduler-service";
 import { AIErrorAnalyzer, type RunErrorData } from "./ai-error-analyzer";
+import { AIMigrationAnalyzer, type MigrationSourceData } from "./ai-migration-analyzer";
 import { generateSalesforceMappingRules } from "../core/mapping-dsl/salesforce-mapping-generator";
 import { serveStaticAsset, UI_ASSET_VERSION } from "./asset-server";
 import { appendAuditHistory, listAuditHistory } from "./audit-history-service";
@@ -689,6 +690,48 @@ ${renderAISchedulerAssistantModule()}
               <div id="migration-instance-panels" class="row g-3"></div>
             </div>
           </div>
+          <div class="card soft-card mb-3">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+              <div>
+                <div class="migration-card-title">🤖 KI-Datenquellen-Analyse</div>
+                <div class="migration-card-subtitle">Datenquellen mit Fokus auf Datenschutz & automatisches Mapping analysieren</div>
+              </div>
+              <button id="migration-ai-analyze" type="button" class="btn btn-sm btn-info">⚡ Quelle analysieren</button>
+            </div>
+            <div class="card-body">
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <label class="form-label small">Quellname</label>
+                  <input type="text" id="migration-source-name" class="form-control form-control-sm" placeholder="z.B. SAP_Customers" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small">Quelltyp</label>
+                  <select id="migration-source-type" class="form-select form-select-sm">
+                    <option value="MSSQL_SQL">MSSQL/SQL Server</option>
+                    <option value="REST_API">REST API</option>
+                    <option value="FILE_CSV">CSV Datei</option>
+                    <option value="FILE_XLSX">Excel Datei</option>
+                    <option value="SALESFORCE">Salesforce</option>
+                    <option value="OTHER">Sonstiges</option>
+                  </select>
+                </div>
+                <div class="col-12">
+                  <label class="form-label small">Feld-Definitionen (JSON)</label>
+                  <textarea id="migration-field-defs" class="form-control form-control-sm" rows="4" placeholder='[{"name":"FirstName","type":"varchar(100)"},{"name":"Email","type":"varchar(255)"}]'></textarea>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small">Geschätzte Records</label>
+                  <input type="number" id="migration-est-records" class="form-control form-control-sm" placeholder="z.B. 10000" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small">Beschreibung (optional)</label>
+                  <input type="text" id="migration-description" class="form-control form-control-sm" placeholder="z.B. Kundenaddaten aus SAP" />
+                </div>
+              </div>
+              <div id="migration-analysis-result" class="mt-3"></div>
+            </div>
+          </div>
+
           <div class="card soft-card mb-3">
             <div class="card-header bg-white d-flex justify-content-between align-items-center">
               <div>
@@ -2346,6 +2389,45 @@ export function createAppServer(
           entityName: body.scheduleName,
           status: analysis.severity === "critical" ? "error" : "success",
           message: `${analysis.errorCategory}: ${analysis.rootCause.substring(0, 100)}`
+        });
+
+        sendJson(200, analysis);
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/ai/analyze-migration-source") {
+        const body = (await readJsonBody(req)) as {
+          sourceName?: string;
+          sourceType?: string;
+          sampleData?: Record<string, unknown>[];
+          fieldDefinitions?: Array<{ name: string; type: string; nullable?: boolean; sampleValues?: unknown[] }>;
+          estimatedRecords?: number;
+          description?: string;
+        };
+
+        if (!body.sourceName) {
+          sendJson(400, { error: "sourceName ist erforderlich" });
+          return;
+        }
+
+        const migrationAnalyzer = new AIMigrationAnalyzer();
+        const analysis = await migrationAnalyzer.analyzeMigrationSource({
+          sourceName: body.sourceName,
+          sourceType: (body.sourceType as MigrationSourceData["sourceType"]) || "OTHER",
+          sampleData: body.sampleData,
+          fieldDefinitions: body.fieldDefinitions,
+          estimatedRecords: body.estimatedRecords,
+          description: body.description
+        });
+
+        // Audit-Log für Migrations-Analyse (sensitive!)
+        await appendAuditHistory({
+          action: "AI_MIGRATION_ANALYSIS",
+          entityType: "migration",
+          entityId: body.sourceName,
+          entityName: `Analysis: ${body.sourceName}`,
+          status: analysis.sensitiveFields.length > 0 ? "success" : "success",
+          message: `${analysis.totalFields} Felder, ${analysis.sensitiveFields.length} sensitiv, Qualität: ${Math.round(analysis.dataQualityScore * 100)}%`
         });
 
         sendJson(200, analysis);

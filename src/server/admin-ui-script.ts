@@ -9660,6 +9660,139 @@ export function renderAdminUiScript(): string {
         document.getElementById('mapping-output').textContent = JSON.stringify(result, null, 2);
       }
 
+      async function analyzeMigrationSource() {
+        try {
+          clearError();
+          showInfo('Analysiere Datenquelle mit Datenschutz-Fokus...');
+
+          const sourceName = (document.getElementById('migration-source-name') as HTMLInputElement).value.trim();
+          const sourceType = (document.getElementById('migration-source-type') as HTMLSelectElement).value;
+          const fieldDefsStr = (document.getElementById('migration-field-defs') as HTMLTextAreaElement).value.trim();
+          const estimatedRecords = Number((document.getElementById('migration-est-records') as HTMLInputElement).value || 0);
+          const description = (document.getElementById('migration-description') as HTMLInputElement).value;
+
+          if (!sourceName) {
+            showError('Bitte gebe einen Quellnamen ein');
+            return;
+          }
+
+          let fieldDefinitions: any[] = [];
+          if (fieldDefsStr) {
+            try {
+              fieldDefinitions = JSON.parse(fieldDefsStr);
+            } catch (e) {
+              showError('Feld-Definitionen sind kein gültiges JSON: ' + (e as Error).message);
+              return;
+            }
+          }
+
+          const analysis = await requestJson('/api/ai/analyze-migration-source', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sourceName,
+              sourceType,
+              fieldDefinitions,
+              estimatedRecords: estimatedRecords > 0 ? estimatedRecords : undefined,
+              description: description || undefined
+            })
+          });
+
+          // Zeige Analyse-Ergebnis
+          const resultDiv = document.getElementById('migration-analysis-result');
+          if (resultDiv) {
+            resultDiv.innerHTML = \`
+              <div class="card soft-card border-info">
+                <div class="card-header bg-light d-flex justify-content-between align-items-center">
+                  <strong>Analyse-Ergebnis</strong>
+                  <div class="d-flex gap-2">
+                    <span class="badge bg-info">\${Math.round(analysis.dataQualityScore * 100)}% Qualität</span>
+                    <span class="badge bg-\${analysis.complianceIssues.length > 0 ? 'warning' : 'success'}">\${analysis.sensitiveFields.length} sensitive Felder</span>
+                  </div>
+                </div>
+                <div class="card-body">
+                  <div class="row g-3">
+                    <div class="col-12">
+                      <strong>Quelle:</strong> \${htmlEscape(analysis.sourceName)} (\${htmlEscape(analysis.sourceType)})
+                      <br/>
+                      <small class="text-secondary">Gesamt-Felder: \${analysis.totalFields} | Konfidenz: \${Math.round(analysis.confidence * 100)}%</small>
+                    </div>
+
+                    \${analysis.sensitiveFields.length > 0 ? \`
+                      <div class="col-12">
+                        <strong>🔒 Sensitive Felder (\${analysis.sensitiveFields.length}):</strong>
+                        <ul class="small mb-0">
+                          \${analysis.sensitiveFields.map((f: any) => \`
+                            <li>
+                              <code>\${htmlEscape(f.fieldName)}</code>
+                              <span class="badge bg-danger">\${f.category}</span>
+                              <span class="badge bg-warning">Aktion: \${f.suggestedAction}</span>
+                            </li>
+                          \`).join('')}
+                        </ul>
+                      </div>
+                    \` : ''}
+
+                    \${analysis.complianceIssues.length > 0 ? \`
+                      <div class="col-12">
+                        <div class="alert alert-warning mb-0">
+                          <strong>⚠️ Datenschutz-Hinweise:</strong>
+                          <ul class="small mb-0">
+                            \${analysis.complianceIssues.map((issue: string) => \`<li>\${htmlEscape(issue)}</li>\`).join('')}
+                          </ul>
+                        </div>
+                      </div>
+                    \` : ''}
+
+                    <div class="col-12">
+                      <strong>📋 Empfehlungen:</strong>
+                      <ul class="small mb-0">
+                        \${analysis.recommendations.map((rec: string) => \`<li>\${htmlEscape(rec)}</li>\`).join('')}
+                      </ul>
+                    </div>
+
+                    <div class="col-12">
+                      <strong>🗺️ Vorgeschlagene Mappings:</strong>
+                      <div class="small bg-light p-2 rounded">
+                        <table class="table table-sm mb-0">
+                          <thead><tr><th>Source-Feld</th><th>Datentyp</th><th>Ziel-Feld</th><th>Privacy</th></tr></thead>
+                          <tbody>
+                            \${analysis.suggestedMappings.slice(0, 10).map((m: any) => \`
+                              <tr>
+                                <td><code>\${htmlEscape(m.sourceField)}</code></td>
+                                <td><small>\${htmlEscape(m.dataType)}</small></td>
+                                <td><code>\${m.targetField ? htmlEscape(m.targetField) : '-'}</code></td>
+                                <td>\${m.isSensitive ? '🔒 ' + (m.privacyAction || '-') : '✓'}</td>
+                              </tr>
+                            \`).join('')}
+                          </tbody>
+                        </table>
+                        \${analysis.suggestedMappings.length > 10 ? \`<div class="small text-secondary mt-2">... und \${analysis.suggestedMappings.length - 10} weitere Felder</div>\` : ''}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            \`;
+          }
+
+          showInfo('Datenquelle analysiert - Datenschutz-Check abgeschlossen');
+        } catch (error) {
+          showError('Migrations-Analyse fehlgeschlagen: ' + (error instanceof Error ? error.message : String(error)));
+        }
+      }
+
+      async function previewMapping() {
+        const mappingDefinition = document.getElementById('mapping-definition').value;
+        const sourceData = JSON.parse(document.getElementById('mapping-source').value || '[]');
+        const result = await requestJson('/api/mappings/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mappingDefinition, sourceData })
+        });
+        document.getElementById('mapping-output').textContent = JSON.stringify(result, null, 2);
+      }
+
       async function loadInstances() {
         const select = document.getElementById('instance-select');
         const response = await safeRequest('/api/instances', { items: [] });
@@ -10218,6 +10351,7 @@ export function renderAdminUiScript(): string {
       document.getElementById('con-rest-auth-type').addEventListener('change', updateRestAuthUi);
       document.getElementById('load-logs').addEventListener('click', loadLogs);
       document.getElementById('analyze-run-error').addEventListener('click', analyzeCurrentRunError);
+      document.getElementById('migration-ai-analyze')?.addEventListener('click', analyzeMigrationSource);
       document.getElementById('sch-refresh-recent-logs')?.addEventListener('click', async () => {
         await renderScheduleRecentLogs(document.getElementById('sch-id')?.value || '');
       });
