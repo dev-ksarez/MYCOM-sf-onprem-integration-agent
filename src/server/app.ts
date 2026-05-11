@@ -49,6 +49,7 @@ import {
 import { getDashboardUpdateStatus, triggerDashboardUpdate } from "./dashboard-update-service";
 import { HealthSnapshot } from "./health-snapshot";
 import { generateInstallerFiles, getInstallerSummary, INSTALLER_OUTPUT_DIR, InstallerGenerationInput } from "./installer-generator";
+import { AISchedulerService } from "./ai-scheduler-service";
 import { generateSalesforceMappingRules } from "../core/mapping-dsl/salesforce-mapping-generator";
 import { serveStaticAsset, UI_ASSET_VERSION } from "./asset-server";
 import { appendAuditHistory, listAuditHistory } from "./audit-history-service";
@@ -2267,6 +2268,35 @@ export function createAppServer(
       if (req.method === "GET" && requestUrl.pathname === "/api/schedules/options") {
         const options = await adminDataService.getScheduleFormOptions(instanceId);
         sendJson(200, options satisfies ScheduleFormOptions);
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/ai/generate-scheduler") {
+        const body = (await readJsonBody(req)) as {
+          userPrompt?: string;
+          connectorId?: string;
+          targetSystem?: string;
+          objectName?: string;
+          existingConnectors?: any[];
+        };
+
+        const userPrompt = String(body.userPrompt || "").trim();
+        if (!userPrompt) {
+          sendJson(400, { error: "userPrompt ist erforderlich" });
+          return;
+        }
+
+        const connectors = await adminDataService.listConnectors(instanceId);
+        const aiService = new AISchedulerService();
+        const result = await aiService.generateScheduler({
+          userPrompt,
+          connectorId: body.connectorId,
+          targetSystem: body.targetSystem,
+          objectName: body.objectName,
+          existingConnectors: connectors
+        });
+
+        sendJson(200, result);
         return;
       }
 
