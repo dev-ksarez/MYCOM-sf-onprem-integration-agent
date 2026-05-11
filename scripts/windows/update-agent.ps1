@@ -16,7 +16,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $script:ScriptDirectory = Split-Path -Parent $PSCommandPath
 
-Add-Type -AssemblyName System.IO.Compression.FileSystem
+# Load required assemblies for ZIP extraction
+try {
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+} catch {
+  Write-Error "Fehler beim Laden von System.IO.Compression.FileSystem: $($_.Exception.Message)"
+  exit 1
+}
 
 function Resolve-AppRoot {
   param([string]$InputPath)

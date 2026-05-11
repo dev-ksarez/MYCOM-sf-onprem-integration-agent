@@ -55,6 +55,8 @@ export function createUpdaterServiceRuntime(logger: pino.Logger): UpdaterService
     }
 
     await new Promise<void>((resolve, reject) => {
+      let stderrOutput = "";
+      
       const child = spawn(
         "powershell.exe",
         [
@@ -79,9 +81,15 @@ export function createUpdaterServiceRuntime(logger: pino.Logger): UpdaterService
         {
           cwd: process.cwd(),
           windowsHide: true,
-          stdio: "ignore"
+          stdio: ["ignore", "ignore", "pipe"]
         }
       );
+
+      if (child.stderr) {
+        child.stderr.on("data", (data: Buffer) => {
+          stderrOutput += data.toString();
+        });
+      }
 
       child.once("error", reject);
       child.once("exit", (code) => {
@@ -90,7 +98,11 @@ export function createUpdaterServiceRuntime(logger: pino.Logger): UpdaterService
           return;
         }
 
-        reject(new Error(`Updater script exited with code ${code ?? -1}`));
+        const errorMsg = stderrOutput.trim() 
+          ? `Updater script exited with code ${code ?? -1}: ${stderrOutput}`
+          : `Updater script exited with code ${code ?? -1}`;
+        
+        reject(new Error(errorMsg));
       });
     });
   };
