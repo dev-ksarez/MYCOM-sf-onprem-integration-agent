@@ -662,6 +662,7 @@ ${renderAISchedulerAssistantModule()}
                   <div class="input-group mb-2">
                     <select id="log-run-select" class="form-select"></select>
                     <button id="load-logs" class="btn btn-outline-primary">Laden</button>
+                    <button id="analyze-run-error" class="btn btn-outline-info" title="Analysiere Fehler mit KI-Assistent">⚡ Fehleranalyse</button>
                   </div>
                   <pre id="logs-output" class="bg-dark text-light p-3 rounded small mb-0" style="white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; overflow-x: hidden;">Noch keine Logs geladen.</pre>
                 </div>

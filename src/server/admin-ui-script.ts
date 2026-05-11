@@ -9474,6 +9474,124 @@ export function renderAdminUiScript(): string {
         document.getElementById('logs-output').textContent = lines.join('\\n') || 'Keine Logs gefunden.';
       }
 
+      async function analyzeCurrentRunError() {
+        const runId = document.getElementById('log-run-select').value;
+        if (!runId) {
+          showError('Bitte wähle zuerst einen Run aus');
+          return;
+        }
+
+        try {
+          const logsOutput = document.getElementById('logs-output').textContent || '';
+          
+          if (!logsOutput || logsOutput.includes('Noch keine Logs') || logsOutput.includes('Keine Logs gefunden')) {
+            showError('Keine Logs zum Analysieren vorhanden');
+            return;
+          }
+
+          // Finde Run-Details für zusätzliche Kontext
+          const selectedRun = (state.runs || []).find((r) => r.id === runId);
+          if (!selectedRun) {
+            showError('Run-Details nicht gefunden');
+            return;
+          }
+
+          // Zeige Analyse-Status
+          showInfo('Analysiere Fehler mit KI...');
+
+          const analysis = await requestJson('/api/ai/analyze-error', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              runId: runId,
+              scheduleName: selectedRun.scheduleName || 'Unknown',
+              sourceSystem: selectedRun.sourceSystem || 'Unknown',
+              targetSystem: selectedRun.targetSystem || 'Unknown',
+              errorLog: logsOutput,
+              errorCode: selectedRun.errorCode,
+              recordsProcessed: selectedRun.recordsProcessed,
+              failedRecords: selectedRun.failedRecords
+            })
+          });
+
+          // Zeige Analyse-Ergebnis in Modal
+          showErrorAnalysisModal(analysis);
+        } catch (error) {
+          showError('Fehleranalyse fehlgeschlagen: ' + (error.message || String(error)));
+        }
+      }
+
+      function showErrorAnalysisModal(analysis) {
+        const modalHtml = \`
+          <div class="modal fade" id="error-analysis-modal" tabindex="-1">
+            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+              <div class="modal-content">
+                <div class="modal-header bg-light">
+                  <h5 class="modal-title">KI-Fehleranalyse</h5>
+                  <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                  <div class="row g-3">
+                    <div class="col-12">
+                      <div class="d-flex align-items-center gap-2">
+                        <span class="badge bg-\${analysis.severity === 'critical' ? 'danger' : analysis.severity === 'error' ? 'warning' : 'info'}">\${analysis.severity.toUpperCase()}</span>
+                        <span class="badge bg-secondary">\${analysis.errorCategory}</span>
+                        <span class="badge bg-light text-dark">\${Math.round(analysis.confidence * 100)}% Konfidenz</span>
+                      </div>
+                    </div>
+
+                    <div class="col-12">
+                      <strong>Root-Cause:</strong>
+                      <p class="small text-secondary mb-0">\${htmlEscape(analysis.rootCause)}</p>
+                    </div>
+
+                    \${analysis.affectedFields && analysis.affectedFields.length > 0 ? \`
+                      <div class="col-12">
+                        <strong>Betroffene Felder:</strong>
+                        <div class="small">
+                          \${analysis.affectedFields.map((f) => \`<code>\${htmlEscape(f)}</code>\`).join(', ')}
+                        </div>
+                      </div>
+                    \` : ''}
+
+                    <div class="col-12">
+                      <strong>Handlungsempfehlungen:</strong>
+                      <ul class="small mb-0">
+                        \${analysis.recommendations.map((rec) => \`<li>\${htmlEscape(rec)}</li>\`).join('')}
+                      </ul>
+                    </div>
+
+                    \${analysis.suggestedFix ? \`
+                      <div class="col-12">
+                        <div class="alert alert-info mb-0 small">
+                          <strong>Schnelle Lösung:</strong> \${htmlEscape(analysis.suggestedFix)}
+                        </div>
+                      </div>
+                    \` : ''}
+                  </div>
+                </div>
+                <div class="modal-footer">
+                  <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Schließen</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        \`;
+
+        // Entferne altes Modal falls vorhanden
+        const oldModal = document.getElementById('error-analysis-modal');
+        if (oldModal) oldModal.remove();
+
+        // Erstelle neues Modal
+        const container = document.createElement('div');
+        container.innerHTML = modalHtml;
+        document.body.appendChild(container);
+
+        // Zeige Modal
+        const modal = new (window as any).bootstrap.Modal(document.getElementById('error-analysis-modal'));
+        modal.show();
+      }
+
       async function renderScheduleRecentLogs(scheduleId) {
         const outputEl = document.getElementById('sch-recent-logs-output');
         const metaEl = document.getElementById('sch-recent-logs-meta');
@@ -10099,6 +10217,7 @@ export function renderAdminUiScript(): string {
       document.getElementById('con-wizard-type').addEventListener('change', () => applyConnectorWizardSelection(false));
       document.getElementById('con-rest-auth-type').addEventListener('change', updateRestAuthUi);
       document.getElementById('load-logs').addEventListener('click', loadLogs);
+      document.getElementById('analyze-run-error').addEventListener('click', analyzeCurrentRunError);
       document.getElementById('sch-refresh-recent-logs')?.addEventListener('click', async () => {
         await renderScheduleRecentLogs(document.getElementById('sch-id')?.value || '');
       });
