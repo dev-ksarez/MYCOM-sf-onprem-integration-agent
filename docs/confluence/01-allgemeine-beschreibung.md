@@ -18,6 +18,7 @@ Der SF On-Prem Integration Agent ist eine Node.js-/TypeScript-Anwendung zur Sale
 - REST-basierte Anbindung externer Systeme.
 - Betriebsueberwachung ueber Web UI, Dashboard, Logs, Scheduler-Status und Update-Status.
 - Kundeninstallation als Windows-Dienst oder Linux/systemd-Dienst.
+- Erweiterung der Web UI um andockbare Module, z. B. Admin-, Migration-, Reporting- oder spaetere PDF-Funktionen.
 
 ## Zentrale Ziele
 
@@ -26,6 +27,7 @@ Der SF On-Prem Integration Agent ist eine Node.js-/TypeScript-Anwendung zur Sale
 - Lokale Datenzugriffe bleiben im Kundennetz.
 - Reproduzierbare Installation, Update-Faehigkeit und Rollback.
 - Erweiterbare Connector-Architektur fuer neue Quellen und Ziele.
+- Modulare Web-UI-Struktur mit wiederverwendbaren Assets, Templates und zentraler Audit-Historie.
 
 ## Rollen im System
 

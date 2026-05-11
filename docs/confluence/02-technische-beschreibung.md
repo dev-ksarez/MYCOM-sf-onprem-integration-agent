@@ -21,6 +21,21 @@ Die Zielarchitektur besteht aus drei getrennten Betriebsrollen:
 
 Die Dienste koennen gemeinsam auf einem Host oder verteilt betrieben werden. Bei getrennten Hosts kommuniziert die Web UI ueber die Agent API mit dem Agent-Host.
 
+## Web-UI-Modulstruktur
+
+Die Web UI besteht aus einem schlanken HTTP-Einstieg und mehreren dedizierten Modulen:
+
+| Bereich | Modul |
+| --- | --- |
+| Modulregistrierung und Navigation | `src/server/app-modules.ts` |
+| Statische Assets | `src/server/asset-server.ts` |
+| HTML-Dokumentrahmen | `src/server/ui-template.ts` |
+| Admin-UI-Script | `src/server/admin-ui-script.ts` |
+| Admin-Datenservice | `src/server/admin-data-service.ts` |
+| Audit-Historie | `src/server/audit-history-service.ts` |
+
+Neue fachliche Erweiterungen sollen diese gemeinsame Basis nutzen. Businesslogik bleibt in Services, Runtime-Adaptern oder Agent-Modulen; UI-Module liefern nur Bedienoberflaeche, Navigation und API-Anbindung.
+
 ## Netzwerkdiagramm
 
 ![Systemdiagramm Netzwerk](./assets/systemdiagramm-netzwerk.svg)
@@ -59,3 +74,7 @@ Die Salesforce-Seite enthaelt Metadaten fuer Steuerung und Laufzeitprotokollieru
 6. Der Job Runner liest Quelldaten, fuehrt Mapping aus und schreibt Zieldaten.
 7. Ergebnisse werden als Run, Logs und Checkpoints nach Salesforce zurueckgeschrieben.
 8. Die Web UI liest lokale und Salesforce-nahe Betriebsinformationen fuer Dashboard und Admin-Funktionen.
+
+## Entfernte experimentelle PDF-Funktion
+
+Das experimentelle PDF-Modul ist seit Release `0.2.23` nicht mehr Bestandteil des Produktstands. Eine spaetere PDF-Funktion wird als neues Modul ueber die gemeinsame Web-UI- und Service-Struktur angebunden.

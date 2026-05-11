@@ -22,6 +22,7 @@ Diese Seite ist der Einstiegspunkt fuer die Projektdokumentation. Die Detaildoku
 | [Installationsbeschreibung](./03-installation.md) | Voraussetzungen, Windows-/Linux-Installation, Salesforce-Metadaten und Updates |
 | [Funktionsdokumentation](./04-funktionsdokumentation/04-funktionsdokumentation.md) | Bedienoberflaeche, Dashboard, Monitoring, Assistenten und Bildschirmfotos |
 | [Betrieb und Sicherheit](./05-betrieb-und-sicherheit.md) | Betriebsregeln, Security-Vorgaben, Monitoring und Pflege |
+| [Architektur und Modulstruktur](./06-architektur-und-modulstruktur.md) | Modulare Codebasis, UI-Assets, Templates und Erweiterungsregeln |
 | [ReleaseNotes](./ReleaseNotes.md) | Versionen, Release Notes, Betriebswirkung und Upgrade-Hinweise |
 
 ## Systemueberblick
@@ -29,6 +30,8 @@ Diese Seite ist der Einstiegspunkt fuer die Projektdokumentation. Die Detaildoku
 ![Systemdiagramm Netzwerk](./assets/systemdiagramm-netzwerk.svg)
 
 Der Agent laeuft im Kundennetz und baut alle Salesforce-Verbindungen ausgehend ueber HTTPS auf. Lokale Systeme wie MSSQL, Dateiablagen und REST-Endpunkte bleiben im On-Prem-Netz angebunden. Salesforce dient als Steuerungsebene fuer Scheduler, Connector-Konfigurationen, Runs, Logs und Checkpoints.
+
+Seit Release `0.2.23` ist die Web-UI-Basis staerker modularisiert. Neue fachliche Module sollen die gemeinsame Modulregistrierung, Asset-Auslieferung, Templates und Audit-Historie verwenden.
 
 ## Pflegehinweise
 

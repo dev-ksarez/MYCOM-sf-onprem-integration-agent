@@ -18,6 +18,7 @@ tags:
 - Die Agent API benoetigt ein Bearer Token und sollte nur intern erreichbar sein.
 - MSSQL-Verbindungen nutzen sichere Defaults mit `encrypt=true` und `trustServerCertificate=false`.
 - Updates sollten ueber definierte Release-Pakete und Manifest erfolgen.
+- Connector-Assistenten speichern Secret-Key-Werte nur fuer passende Connector-Typen.
 
 ## Betriebsueberwachung
 
@@ -29,6 +30,7 @@ tags:
 | Connectoren | Endpunkte sind erreichbar, Secrets sind gueltig, Tests liefern nachvollziehbare Ergebnisse. |
 | Logs | Fehler werden als Run-/Log-Daten dokumentiert und koennen fachlich ausgewertet werden. |
 | Updates | Manifest ist erreichbar, Backups werden erstellt, Rollback ist moeglich. |
+| Web-Assets | Nach Releases mit UI-Aenderungen ist der Web-Server neu gestartet und Browser-Cache bei Bedarf geleert. |
 
 ## Pflegehinweise
 

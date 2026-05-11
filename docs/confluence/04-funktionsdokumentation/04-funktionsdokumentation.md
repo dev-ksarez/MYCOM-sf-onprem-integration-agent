@@ -58,9 +58,11 @@ Funktionen:
 
 - Connectoren anlegen und bearbeiten.
 - Verbindung testen.
-- Secret-Key-basierte Konfiguration.
+- Typabhaengige Parameter- und Secret-Key-Konfiguration.
 - Anzeige zugeordneter Scheduler.
 - Benachrichtigungseinstellungen fuer Fehlerklassen.
+
+SQL-spezifische Secret-Key-Felder werden nur bei SQL-Connectoren angezeigt. Datei-, REST- und Salesforce-Connectoren zeigen diese Felder nicht.
 
 ## Monitoring
 
@@ -85,6 +87,10 @@ Der Installationstab erzeugt passende Installationsartefakte fuer die Zielumgebu
 ![Migration](../assets/screenshots/07-migration.png)
 
 Das Migrationsmodul unterstuetzt Datei- und Salesforce-Migrationen. Es bietet Import, Migrationsentwuerfe, Salesforce-Login je Migration, Preflight-Pruefungen, Ausfuehrung mit Fortschritt und Behandlung fehlerhafter Datensaetze.
+
+## Modulare Erweiterungen
+
+Die Web UI verwendet seit Release `0.2.23` eine gemeinsame Modulregistrierung, zentrale Asset-Auslieferung und wiederverwendbare HTML-Templates. Neue Bereiche wie Reporting oder ein spaeteres PDF-Modul sollen diese Basis verwenden und keine eigene UI-Grundstruktur duplizieren.
 
 ## Assistenten
 
