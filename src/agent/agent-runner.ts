@@ -1144,14 +1144,18 @@ export async function runDueSchedulesOnce(logger: pino.Logger, agentId: string):
   const salesforceClient = new SalesforceClient(salesforceConfig);
   await salesforceClient.login();
 
-  logger.info("Salesforce login successful");
+  logger.debug("Salesforce login successful");
 
   await runLogRetentionIfDue(salesforceClient, logger);
 
   const scheduleSource = new SalesforceScheduleSource(salesforceClient);
   const schedules = await scheduleSource.getActiveSchedules();
 
-  logger.info({ schedulesFound: schedules.length }, "Active schedules loaded");
+  if (schedules.length > 0) {
+    logger.info({ schedulesFound: schedules.length }, "Active schedules loaded");
+  } else {
+    logger.debug({ schedulesFound: 0 }, "Active schedules loaded");
+  }
 
   const duplicateProtectionWinners = new Map<string, IntegrationSchedule>();
   const duplicateProtectionLosers = new Set<string>();
@@ -1259,10 +1263,10 @@ export async function runDueSchedulesOnce(logger: pino.Logger, agentId: string):
     }
   }
 
-  logger.info({ dueSchedules }, "Due schedules identified");
-
-  if (dueSchedules === 0) {
-    logger.info("No due schedules found");
+  if (dueSchedules > 0) {
+    logger.info({ dueSchedules, schedulesFound: schedules.length }, "Due schedules identified");
+  } else {
+    logger.debug({ dueSchedules, schedulesFound: schedules.length }, "No due schedules found");
   }
 
   return {

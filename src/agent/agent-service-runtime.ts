@@ -17,6 +17,13 @@ export interface AgentServiceRuntime {
   getHealthSnapshot(): HealthSnapshot;
 }
 
+// Wenn wiederholt keine aktiven Schedules gefunden werden, wird der Poll-Interval
+// schrittweise erhoeht, um unnoetige Salesforce-API-Calls zu vermeiden.
+// Sobald wieder Schedules gefunden werden, kehrt der Interval zum Normalwert zurueck.
+const BACKOFF_STEP_MULTIPLIER = 2;
+const BACKOFF_MAX_CYCLES_WITHOUT_SCHEDULES = 4; // nach 4 Leerzyklen maximaler Backoff
+const BACKOFF_MAX_MULTIPLIER = 8; // maximal 8x Normalintervall
+
 export function createAgentServiceRuntime(options: AgentServiceRuntimeOptions): AgentServiceRuntime {
   const startedAt = new Date();
   let schedulerTimer: NodeJS.Timeout | undefined;
@@ -28,6 +35,7 @@ export function createAgentServiceRuntime(options: AgentServiceRuntimeOptions): 
   let schedulesFound: number | undefined;
   let dueSchedules: number | undefined;
   let processedSchedules: number | undefined;
+  let consecutiveEmptyCycles = 0;
 
   const getHealthSnapshot = (): HealthSnapshot => {
     const service = lastRunStatus === "error" ? "degraded" : "ok";
@@ -57,6 +65,27 @@ export function createAgentServiceRuntime(options: AgentServiceRuntimeOptions): 
     await writeAgentHealthSnapshot(getHealthSnapshot());
   };
 
+  const scheduleNextCycle = (): void => {
+    // Backoff: bei wiederholten Leerzyklen Poll-Interval verdoppeln (bis zum Maximum)
+    const backoffFactor = consecutiveEmptyCycles === 0
+      ? 1
+      : Math.min(
+          Math.pow(BACKOFF_STEP_MULTIPLIER, Math.min(consecutiveEmptyCycles, BACKOFF_MAX_CYCLES_WITHOUT_SCHEDULES)),
+          BACKOFF_MAX_MULTIPLIER
+        );
+    const nextIntervalMs = Math.round(options.schedulerIntervalMs * backoffFactor);
+    if (backoffFactor > 1) {
+      options.logger.debug(
+        { emptyCycles: consecutiveEmptyCycles, nextIntervalMs, normalIntervalMs: options.schedulerIntervalMs },
+        "No active schedules – polling less frequently (backoff)"
+      );
+    }
+
+    schedulerTimer = setTimeout(() => {
+      void runSchedulerCycle();
+    }, nextIntervalMs);
+  };
+
   const runSchedulerCycle = async (): Promise<void> => {
     if (isSchedulerRunning) {
       options.logger.warn("Scheduler cycle already running, skipping overlapping trigger");
@@ -74,6 +103,12 @@ export function createAgentServiceRuntime(options: AgentServiceRuntimeOptions): 
       dueSchedules = summary.dueSchedules;
       processedSchedules = summary.processedSchedules;
       lastRunStatus = "success";
+
+      if (summary.schedulesFound === 0) {
+        consecutiveEmptyCycles += 1;
+      } else {
+        consecutiveEmptyCycles = 0;
+      }
     } catch (error) {
       lastRunStatus = "error";
       lastRunError = error instanceof Error ? error.message : "Unknown error";
@@ -83,6 +118,8 @@ export function createAgentServiceRuntime(options: AgentServiceRuntimeOptions): 
       isSchedulerRunning = false;
       await persistSnapshot();
     }
+    // Naechsten Zyklus planen (ggf. mit Backoff wenn keine Schedules gefunden)
+    scheduleNextCycle();
   };
 
   return {
@@ -92,15 +129,12 @@ export function createAgentServiceRuntime(options: AgentServiceRuntimeOptions): 
         options.logger.info("Agent scheduler disabled");
         return;
       }
-      await runSchedulerCycle();
-      schedulerTimer = setInterval(() => {
-        void runSchedulerCycle();
-      }, options.schedulerIntervalMs);
+      await runSchedulerCycle(); // plant nach Abschluss selbst den naechsten Zyklus via scheduleNextCycle()
       options.logger.info({ schedulerIntervalMs: options.schedulerIntervalMs }, "Agent service started");
     },
     stop(): void {
       if (schedulerTimer) {
-        clearInterval(schedulerTimer);
+        clearTimeout(schedulerTimer);
       }
       schedulerTimer = undefined;
       void persistSnapshot();
