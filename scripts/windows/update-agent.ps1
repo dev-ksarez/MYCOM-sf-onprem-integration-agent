@@ -467,15 +467,24 @@ function Reconfigure-ManagedServices {
   Write-UpdateProgress -State "running" -Message "Dienste werden auf die neue Struktur migriert." -ProgressPercent 90 -Stage "start-service" -TargetVersion $TargetVersion
   
   try {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installerScript `
-      -AppRoot $appRootResolved `
-      -ServiceName $ServiceName `
-      -WebServiceName $WebServiceName `
-      -UpdaterServiceName $UpdaterServiceName `
-      -NodeExePath $NodeExePath `
-      -InstallRoles ($rolesToReconfigure -join ",") `
-      -NonInteractive `
-      -ForceRecreate
+    $installArgs = @(
+      "-NoProfile",
+      "-ExecutionPolicy", "Bypass",
+      "-File", $installerScript,
+      "-AppRoot", $appRootResolved,
+      "-ServiceName", $ServiceName,
+      "-WebServiceName", $WebServiceName,
+      "-UpdaterServiceName", $UpdaterServiceName,
+      "-InstallRoles", ($rolesToReconfigure -join ","),
+      "-NonInteractive",
+      "-ForceRecreate"
+    )
+
+    if ($NodeExePath -and $NodeExePath.Trim()) {
+      $installArgs += @("-NodeExePath", $NodeExePath)
+    }
+
+    & powershell.exe @installArgs
   } catch {
     throw "Service-Neukonfiguration Exception: $($_.Exception.Message)"
   }
