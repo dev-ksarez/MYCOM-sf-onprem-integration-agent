@@ -9427,8 +9427,14 @@ export function renderAdminUiScript(): string {
         }
       }
 
+      const AUTO_REFRESH_INTERVAL_MS = 60000;
+
       async function refresh(options = {}) {
         const shouldRefreshChart = options.refreshChart !== false;
+        const includeGraph = options.includeGraph !== false;
+        const includeSalesforceOverview = options.includeSalesforceOverview !== false;
+        const includeScheduleOptions = options.includeScheduleOptions !== false;
+        const includeRecordsSummary = options.includeRecordsSummary !== false;
         clearError();
 
         await loadAdminData();
@@ -9442,9 +9448,15 @@ export function renderAdminUiScript(): string {
         const runs = await safeRequest('/api/runs', { items: [] });
         const staleRuns = await safeRequest('/api/runs/stale', { items: [] });
         const migrations = currentUserHasModule('migration') ? await safeRequest('/api/migrations', { items: [] }) : { items: [] };
-        const graph = await safeRequest('/api/graph', { nodes: [], edges: [] });
-        const salesforceOverview = await safeRequest('/api/salesforce/overview', {});
-        await loadScheduleOptions();
+        const graph = includeGraph
+          ? await safeRequest('/api/graph', { nodes: [], edges: [] })
+          : state.graphData || { nodes: [], edges: [] };
+        const salesforceOverview = includeSalesforceOverview
+          ? await safeRequest('/api/salesforce/overview', {})
+          : null;
+        if (includeScheduleOptions) {
+          await loadScheduleOptions();
+        }
 
         state.schedules = schedules.items || [];
         state.connectors = connectors.items || [];
@@ -9452,7 +9464,9 @@ export function renderAdminUiScript(): string {
         state.staleRuns = staleRuns.items || [];
         state.migrations = migrations.items || [];
         state.graphData = graph;
-        renderSalesforceOverview(salesforceOverview);
+        if (includeSalesforceOverview) {
+          renderSalesforceOverview(salesforceOverview || {});
+        }
 
         renderOverview(healthData);
         renderInstallerSummary();
@@ -9462,7 +9476,9 @@ export function renderAdminUiScript(): string {
         renderStaleRuns();
         renderOverviewConnectorFilter();
         redrawOverviewGraph();
-        await loadRecordsSummary();
+        if (includeRecordsSummary) {
+          await loadRecordsSummary();
+        }
         await loadOverviewUpdateStatus();
         if (shouldRefreshChart) {
           await loadLogSummary();
@@ -9538,8 +9554,18 @@ export function renderAdminUiScript(): string {
           updateWeekdayChips();
           initializeTableFilters();
           setInterval(() => {
-            void refresh({ refreshChart: false });
-          }, 7000);
+            // Polling only while tab is visible; use light mode to avoid heavy Salesforce calls.
+            if (document.hidden) {
+              return;
+            }
+            void refresh({
+              refreshChart: false,
+              includeGraph: false,
+              includeSalesforceOverview: false,
+              includeScheduleOptions: false,
+              includeRecordsSummary: false
+            });
+          }, AUTO_REFRESH_INTERVAL_MS);
         } catch (error) {
           console.error('UI bootstrap failed', error);
           showError(error?.message || 'UI bootstrap failed');
