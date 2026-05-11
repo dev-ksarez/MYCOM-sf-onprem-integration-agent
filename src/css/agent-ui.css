@@ -2548,34 +2548,48 @@ body {
 }
 
 .agent-topbar {
-  background: var(--layout-topbar-bg);
-  border-bottom: 1px solid var(--layout-topbar-border);
-  min-height: 58px;
-  padding: 0.55rem 1.15rem;
+  background: linear-gradient(90deg, #032d60 0%, #006aa8 52%, #0176d3 100%);
+  border-bottom: 3px solid #00ace3;
+  min-height: 64px;
+  padding: 0.65rem 1.1rem;
   display: flex;
   align-items: center;
   gap: 0.8rem;
-  box-shadow: 0 1px 2px rgba(9, 30, 66, 0.06);
+  box-shadow: 0 2px 8px rgba(3, 45, 96, 0.18);
 }
 
 .agent-topbar-primary {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
+  gap: 0.8rem;
   min-width: 0;
+  width: 100%;
 }
 
 .agent-topbar-menu {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 2.4rem;
-  height: 2.4rem;
-  border-radius: 8px;
-  font-size: 1.15rem;
+  min-width: 2.25rem;
+  height: 2.25rem;
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  border-radius: 6px;
+  font-size: 1rem;
   line-height: 1;
   padding: 0;
   position: relative;
+  box-shadow: none;
+}
+
+.agent-topbar-menu:hover,
+.agent-topbar-menu:focus,
+.agent-topbar-menu:active {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.55);
+  box-shadow: 0 0 0 0.18rem rgba(0, 172, 227, 0.2);
 }
 
 .agent-offcanvas-header {
@@ -2597,22 +2611,32 @@ body {
 }
 
 .agent-topbar-brand {
+  min-width: 0;
+  color: #ffffff;
   font-size: 1.02rem;
-  color: var(--layout-topbar-text);
   font-weight: 700;
   letter-spacing: 0.2px;
   white-space: nowrap;
   display: flex;
   align-items: baseline;
-  gap: 0.45rem;
+  gap: 0.55rem;
+  text-shadow: 0 1px 1px rgba(3, 45, 96, 0.18);
 }
 
 .agent-version-label {
-  color: var(--layout-muted);
-  font-size: 0.78rem;
+  display: inline-flex;
+  align-items: center;
+  color: #032d60;
+  background: #ffffff;
+  border: 1px solid rgba(0, 172, 227, 0.38);
+  border-radius: 999px;
+  padding: 0.12rem 0.45rem;
+  font-size: 0.72rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  text-transform: none;
+  line-height: 1.15;
+  text-shadow: none;
 }
 
 .agent-navbar-actions {
