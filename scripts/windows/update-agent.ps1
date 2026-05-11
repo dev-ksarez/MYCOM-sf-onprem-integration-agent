@@ -2,6 +2,7 @@ param(
   [string]$ServiceName = "SfOnpremIntegrationAgent",
   [string]$WebServiceName = "SfOnpremIntegrationWeb",
   [string]$UpdaterServiceName = "SfOnpremIntegrationUpdater",
+  [string]$NodeExePath,
   [string]$AppRoot,
   [string]$UpdateManifestUrl,
   [string]$StatusFilePath,
@@ -471,6 +472,7 @@ function Reconfigure-ManagedServices {
       -ServiceName $ServiceName `
       -WebServiceName $WebServiceName `
       -UpdaterServiceName $UpdaterServiceName `
+      -NodeExePath $NodeExePath `
       -InstallRoles ($rolesToReconfigure -join ",") `
       -NonInteractive `
       -ForceRecreate

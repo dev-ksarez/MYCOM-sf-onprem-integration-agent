@@ -2,6 +2,7 @@ param(
   [string]$ServiceName = "SfOnpremIntegrationAgent",
   [string]$WebServiceName = "SfOnpremIntegrationWeb",
   [string]$UpdaterServiceName = "SfOnpremIntegrationUpdater",
+  [string]$NodeExePath,
   [string]$DisplayName = "SF OnPrem Integration Agent",
   [string]$Description = "Runs the Salesforce On-Prem Integration Agent scheduler runtime",
   [string]$WebDisplayName = "SF OnPrem Integration Web",
@@ -248,8 +249,13 @@ $agentEntryPoint = Join-Path $appRootResolved "dist\agent-main.js"
 $webEntryPoint = Join-Path $appRootResolved "dist\web-main.js"
 $updaterEntryPoint = Join-Path $appRootResolved "dist\updater-main.js"
 $selectedRoles = Resolve-RoleSelection -RawRoles $InstallRoles
-$nodeCommand = Get-Command node -ErrorAction SilentlyContinue
-$nodeExe = if ($nodeCommand) { $nodeCommand.Source } else { $null }
+$nodeExe = $null
+if ($NodeExePath -and $NodeExePath.Trim() -and (Test-Path -Path $NodeExePath)) {
+  $nodeExe = (Resolve-Path -Path $NodeExePath).Path
+} else {
+  $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+  $nodeExe = if ($nodeCommand) { $nodeCommand.Source } else { $null }
+}
 $nssmExe = Resolve-NssmExe -ResolvedAppRoot $appRootResolved
 
 if (-not $nodeExe) {

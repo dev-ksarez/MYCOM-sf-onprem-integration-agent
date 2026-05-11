@@ -71,6 +71,8 @@ export function createUpdaterServiceRuntime(logger: pino.Logger): UpdaterService
           DEFAULT_WINDOWS_WEB_SERVICE_NAME,
           "-UpdaterServiceName",
           DEFAULT_WINDOWS_UPDATER_SERVICE_NAME,
+          "-NodeExePath",
+          process.execPath,
           "-AppRoot",
           process.cwd(),
           "-UpdateManifestUrl",
