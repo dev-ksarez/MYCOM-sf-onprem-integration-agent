@@ -446,13 +446,24 @@ function Reconfigure-ManagedServices {
     throw "Service installer script not found: $installerScript"
   }
 
+  # Der Updater-Dienst laeuft als Host dieses Skripts (NSSM -> node -> powershell).
+  # Wuerde install-agent-service.ps1 den Updater-Dienst per Stop-Service stoppen,
+  # wuerde der eigene Prozess gekillt und Agent/Web nie neu gestartet.
+  # Der Updater startet nach Skriptende automatisch ueber NSSM neu (neues dist/ liegt bereits vor).
+  $rolesToReconfigure = @($installProfile.roles | Where-Object { $_ -ne "updater" })
+
+  if (-not $rolesToReconfigure -or $rolesToReconfigure.Count -eq 0) {
+    Write-Warning "Reconfigure-ManagedServices: Keine anderen Rollen zu konfigurieren (nur Updater installiert). Ueberspringe Neustart."
+    return
+  }
+
   Write-UpdateProgress -State "running" -Message "Dienste werden auf die neue Struktur migriert." -ProgressPercent 90 -Stage "start-service" -TargetVersion $TargetVersion
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installerScript `
     -AppRoot $appRootResolved `
     -ServiceName $ServiceName `
     -WebServiceName $WebServiceName `
     -UpdaterServiceName $UpdaterServiceName `
-    -InstallRoles ($installProfile.roles -join ",") `
+    -InstallRoles ($rolesToReconfigure -join ",") `
     -NonInteractive `
     -ForceRecreate
 
