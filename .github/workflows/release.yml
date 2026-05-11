@@ -35,9 +35,15 @@ jobs:
           VERSION="${TAG#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "customer_zip_name=sf-onprem-integration-agent-customer-installer-${VERSION}.zip" >> "$GITHUB_OUTPUT"
           echo "runtime_zip_name=sf-onprem-integration-agent-installer-runtime-assets.zip" >> "$GITHUB_OUTPUT"
           echo "installer_zip_name=sf-onprem-integration-agent-installer.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Align package version with tag
+        run: |
+          set -e
+          VERSION="${{ steps.version.outputs.version }}"
+          node -e "const fs=require('fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(j,null,2)+'\\n');" "$VERSION"
+          node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('package.json','utf8'));console.log('package.json version=' + j.version)"
 
       - name: Create customer installer ZIP
         id: customer_zip
@@ -45,13 +51,16 @@ jobs:
           set -e
           RELEASE_DIR="artifacts"
           mkdir -p "$RELEASE_DIR"
+          rm -f "$RELEASE_DIR"/sf-onprem-integration-agent-customer-installer-*.zip
           node scripts/windows/build-customer-package.js --output-dir "$RELEASE_DIR"
-          ZIP_PATH="$RELEASE_DIR/${{ steps.version.outputs.customer_zip_name }}"
+          ZIP_PATH=$(ls -1 "$RELEASE_DIR"/sf-onprem-integration-agent-customer-installer-*.zip | head -n 1)
           if [ ! -f "$ZIP_PATH" ]; then
             echo "ERROR: Customer ZIP not created at $ZIP_PATH"
             exit 1
           fi
+          ZIP_NAME="$(basename "$ZIP_PATH")"
           echo "zip_path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Create runtime update package ZIP
         id: runtime_zip
@@ -79,7 +88,7 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
-          ZIP_NAME: ${{ steps.version.outputs.runtime_zip_name }}
+          ZIP_NAME: ${{ steps.customer_zip.outputs.zip_name }}
           SHA256: ${{ steps.sha.outputs.sha256 }}
         run: |
           RELEASE_DIR="artifacts"
