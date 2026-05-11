@@ -149,3 +149,10 @@ jobs:
           fail_on_unmatched_files: true
           draft: false
           prerelease: false
+
+  publish-release-notes-to-confluence:
+    needs: build-and-release
+    uses: ./.github/workflows/publish-confluence-docs.yml
+    secrets: inherit
+    with:
+      release_version: ${{ github.ref_name }}
