@@ -9837,3 +9837,273 @@ body.md-skin {
     margin: 0;
   }
 }
+
+/*
+ * MYCOM / Salesforce application skin.
+ * MYCOM provides cyan/blue brand accents; Salesforce provides the operational blue path pattern.
+ */
+:root {
+  --mycom-cyan: #00ace3;
+  --mycom-blue: #006aa8;
+  --mycom-gray: #575756;
+  --sf-blue: #0176d3;
+  --sf-blue-dark: #0b5cab;
+  --sf-navy: #032d60;
+  --sf-cloud: #f3f7fb;
+  --sf-border: #d8dde6;
+  --sf-success: #2e844a;
+  --agent-brand-primary: var(--sf-blue);
+  --agent-brand-primary-dark: var(--sf-blue-dark);
+  --agent-brand-accent: var(--mycom-cyan);
+  --agent-brand-ink: var(--sf-navy);
+  --agent-brand-muted: #6b7280;
+}
+
+body {
+  color: var(--agent-brand-ink);
+  background:
+    linear-gradient(180deg, rgba(0, 172, 227, 0.06), rgba(1, 118, 211, 0.03) 24rem),
+    #f7f9fc;
+}
+
+a,
+.text-primary {
+  color: var(--agent-brand-primary) !important;
+}
+
+.btn-primary {
+  background-color: var(--agent-brand-primary);
+  border-color: var(--agent-brand-primary);
+  box-shadow: 0 1px 0 rgba(3, 45, 96, 0.12);
+}
+
+.btn-primary:hover,
+.btn-primary:focus,
+.btn-primary.focus,
+.btn-primary:not(:disabled):not(.disabled):active,
+.btn-primary:not(:disabled):not(.disabled).active,
+.show > .btn-primary.dropdown-toggle {
+  background-color: var(--agent-brand-primary-dark);
+  border-color: var(--agent-brand-primary-dark);
+}
+
+.btn-outline-primary {
+  color: var(--agent-brand-primary);
+  border-color: var(--agent-brand-primary);
+}
+
+.btn-outline-primary:hover,
+.btn-outline-primary:focus,
+.btn-outline-primary:not(:disabled):not(.disabled):active {
+  color: #ffffff;
+  background-color: var(--agent-brand-primary);
+  border-color: var(--agent-brand-primary);
+}
+
+.bg-primary,
+.badge-primary,
+.label-primary,
+.progress-bar {
+  background-color: var(--agent-brand-primary) !important;
+}
+
+.form-control:focus,
+.form-select:focus {
+  border-color: var(--agent-brand-primary);
+  box-shadow: 0 0 0 0.2rem rgba(1, 118, 211, 0.16);
+}
+
+.agent-topbar-primary {
+  background:
+    linear-gradient(90deg, var(--sf-navy) 0%, var(--mycom-blue) 48%, var(--sf-blue) 100%);
+  border-bottom: 3px solid var(--mycom-cyan);
+}
+
+.agent-topbar-brand,
+.agent-version-label {
+  color: #ffffff;
+}
+
+.agent-menu-panel-primary {
+  border-top: 3px solid var(--mycom-cyan);
+}
+
+.agent-menu-tab.is-active,
+.agent-menu-tab.active,
+.agent-menu-tab:hover,
+.agent-menu-tab:focus,
+#admin-tabs .nav-link.active,
+#admin-tabs .nav-link:hover,
+#admin-tabs .nav-link:focus {
+  color: var(--sf-navy);
+  background: rgba(1, 118, 211, 0.08);
+  border-color: rgba(0, 172, 227, 0.32);
+}
+
+.soft-card,
+.schedule-helper-card,
+.card {
+  border-color: rgba(216, 221, 230, 0.8);
+  box-shadow: 0 1px 2px rgba(3, 45, 96, 0.06);
+}
+
+.modal-header {
+  border-bottom-color: var(--sf-border);
+}
+
+.modal-title {
+  color: var(--sf-navy);
+}
+
+.connector-wizard-hint {
+  color: var(--sf-navy);
+  background: linear-gradient(90deg, rgba(0, 172, 227, 0.12), rgba(1, 118, 211, 0.08));
+  border: 1px solid rgba(1, 118, 211, 0.18);
+  border-left: 4px solid var(--mycom-cyan);
+  border-radius: 6px;
+  padding: 0.65rem 0.8rem;
+}
+
+.migration-wizard-steps-line {
+  --wizard-path-gap: 0.18rem;
+  display: grid;
+  grid-template-columns: repeat(var(--wizard-step-count, 5), minmax(0, 1fr));
+  gap: var(--wizard-path-gap);
+  align-items: stretch;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 6px;
+}
+
+.migration-wizard-step,
+.connector-wizard-step {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 2.55rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.42rem;
+  margin: 0;
+  padding: 0.55rem 1.25rem 0.55rem 1.45rem;
+  color: #3e4e63;
+  background: #edf2f7;
+  border: 0;
+  border-radius: 0;
+  font-weight: 700;
+  line-height: 1.1;
+  text-align: center;
+  text-decoration: none;
+  clip-path: polygon(0 0, calc(100% - 1rem) 0, 100% 50%, calc(100% - 1rem) 100%, 0 100%, 1rem 50%);
+  transition: background-color 140ms ease, color 140ms ease, filter 140ms ease;
+}
+
+.migration-wizard-step:first-child,
+.connector-wizard-step:first-child {
+  padding-left: 1rem;
+  clip-path: polygon(0 0, calc(100% - 1rem) 0, 100% 50%, calc(100% - 1rem) 100%, 0 100%);
+}
+
+.migration-wizard-step:last-child,
+.connector-wizard-step:last-child {
+  padding-right: 1rem;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 1rem 50%);
+}
+
+.migration-wizard-step:only-child,
+.connector-wizard-step:only-child {
+  clip-path: none;
+}
+
+button.migration-wizard-step,
+button.connector-wizard-step {
+  cursor: pointer;
+}
+
+button.migration-wizard-step:hover,
+button.connector-wizard-step:hover,
+.migration-wizard-step:focus-visible,
+.connector-wizard-step:focus-visible {
+  color: var(--sf-navy);
+  background: #dfeaf5;
+  outline: 2px solid rgba(0, 172, 227, 0.45);
+  outline-offset: -2px;
+}
+
+.migration-wizard-step.is-complete,
+.connector-wizard-step.is-complete {
+  color: #ffffff;
+  background: var(--sf-success);
+}
+
+.migration-wizard-step.is-active,
+.connector-wizard-step.is-active {
+  color: #ffffff;
+  background: linear-gradient(90deg, var(--mycom-blue), var(--sf-blue));
+  filter: drop-shadow(0 2px 4px rgba(3, 45, 96, 0.16));
+}
+
+.migration-wizard-step-index,
+.connector-wizard-step-index {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  color: currentColor;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  line-height: 1;
+  opacity: 0.9;
+}
+
+.migration-wizard-step.is-complete .migration-wizard-step-index,
+.connector-wizard-step.is-complete .connector-wizard-step-index {
+  font-size: 0;
+}
+
+.migration-wizard-step.is-complete .migration-wizard-step-index::before,
+.connector-wizard-step.is-complete .connector-wizard-step-index::before {
+  content: "\2713";
+  font-size: 0.8rem;
+}
+
+.migration-wizard-step-label,
+.connector-wizard-step-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 992px) {
+  .migration-wizard-steps-line {
+    grid-template-columns: repeat(var(--wizard-step-count-mobile, 3), minmax(0, 1fr));
+    overflow: visible;
+    border-radius: 0;
+  }
+
+  .migration-wizard-step,
+  .connector-wizard-step,
+  .migration-wizard-step:first-child,
+  .connector-wizard-step:first-child,
+  .migration-wizard-step:last-child,
+  .connector-wizard-step:last-child {
+    min-height: 2.25rem;
+    padding: 0.48rem 0.65rem;
+    clip-path: none;
+    border-radius: 6px;
+  }
+}
+
+@media (max-width: 576px) {
+  .migration-wizard-steps-line {
+    grid-template-columns: 1fr;
+  }
+
+  .migration-wizard-step,
+  .connector-wizard-step {
+    justify-content: flex-start;
+  }
+}

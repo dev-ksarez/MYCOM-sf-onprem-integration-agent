@@ -1,7 +1,10 @@
 body {
   min-height: 100vh;
   margin: 0;
-  background: linear-gradient(135deg, #eef4f8 0%, #d9e7ef 100%);
+  color: #032d60;
+  background:
+    linear-gradient(135deg, rgba(0, 172, 227, 0.18), rgba(1, 118, 211, 0.16)),
+    linear-gradient(180deg, #ffffff 0%, #eef4f8 100%);
 }
 
 .agent-login-shell {
@@ -14,7 +17,26 @@ body {
 
 .agent-login-card {
   width: min(100%, 28rem);
-  border: 0;
-  border-radius: 1.25rem;
-  box-shadow: 0 1.5rem 3rem rgba(31, 57, 76, 0.16);
+  overflow: hidden;
+  border: 1px solid rgba(216, 221, 230, 0.9);
+  border-radius: 0.75rem;
+  box-shadow: 0 1.5rem 3rem rgba(3, 45, 96, 0.14);
+}
+
+.agent-login-card::before {
+  display: block;
+  height: 0.35rem;
+  content: "";
+  background: linear-gradient(90deg, #00ace3, #006aa8 48%, #0176d3);
+}
+
+.agent-login-card .btn-primary {
+  background-color: #0176d3;
+  border-color: #0176d3;
+}
+
+.agent-login-card .btn-primary:hover,
+.agent-login-card .btn-primary:focus {
+  background-color: #0b5cab;
+  border-color: #0b5cab;
 }
