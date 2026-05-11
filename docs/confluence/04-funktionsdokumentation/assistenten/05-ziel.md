@@ -13,6 +13,8 @@ tags:
 
 Der Schritt Ziel beschreibt, wohin die gelesenen und gemappten Datensaetze geschrieben werden. Er verbindet fachliches Zielsystem, Zielobjekt, Operation, Target Type und technische Target Definition.
 
+Bei Datei-Zielen konzentriert sich der Schritt auf die Target Definition. Zielobjekt, Operation und Mapping sind fuer diesen Typ nicht erforderlich und werden ausgeblendet.
+
 ## Eingaben
 
 | Feld | Bedeutung |
@@ -25,6 +27,8 @@ Der Schritt Ziel beschreibt, wohin die gelesenen und gemappten Datensaetze gesch
 | Upsert Feld | Externe ID oder Schluesselfeld fuer Upsert-Operationen. |
 | Target Definition | JSON-Konfiguration fuer Zielfelder, Dateiausgabe, Tabellenziel oder Speziallogik. |
 
+Fuer Datei-Ziele setzt der Server intern `Target System = File`, `Objekt = FileExport` und `Operation = Write`, sofern keine bestehenden Werte vorhanden sind.
+
 ## Validierung
 
 | Pruefung | Ergebnis |
@@ -33,6 +37,7 @@ Der Schritt Ziel beschreibt, wohin die gelesenen und gemappten Datensaetze gesch
 | Upsert-Feld gesetzt | Stellt sicher, dass Upsert-Laeufe ein eindeutiges Zielfeld besitzen. |
 | Pflichtfelder abgedeckt | Vergleicht Zielpflichtfelder mit Mapping und festen Zielwerten. |
 | Custom-Objekt erzeugen | Kann bei passenden Quellen ein Salesforce Custom-Objekt aus Quellfeldern vorbereiten. |
+| Datei-Ziel pruefen | Erwartet eine gueltige Target Definition und keine Mapping-Pflicht. |
 
 ## Betriebswirkung
 

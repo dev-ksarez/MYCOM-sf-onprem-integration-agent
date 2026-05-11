@@ -22,6 +22,7 @@ import { SalesforceGlobalPicklistTargetAdapter } from "../target-adapters/salesf
 import { JobContext } from "../types/job-context";
 import { TransferContext } from "../types/transfer-context";
 import { IntegrationSchedule } from "../types/integration-schedule";
+import { isFileScheduleType } from "../types/file-schedule-type";
 import { SalesforceConfig } from "../infrastructure/config/salesforce-config";
 import { GenericRecord } from "../types/generic-record";
 import { parseQuerySourceDefinition, resolveAfterExportValue } from "../utils/query-source-definition";
@@ -685,8 +686,8 @@ async function executeSchedule(
   options?: { forceRun?: boolean }
 ): Promise<boolean> {
   const forceRun = options?.forceRun ?? false;
-  const isFileSource = schedule.sourceType === "FILE_CSV" || schedule.sourceType === "FILE_EXCEL" || schedule.sourceType === "FILE_JSON";
-  const isFileTarget = schedule.targetType === "FILE_CSV" || schedule.targetType === "FILE_EXCEL" || schedule.targetType === "FILE_JSON";
+  const isFileSource = isFileScheduleType(schedule.sourceType);
+  const isFileTarget = isFileScheduleType(schedule.targetType);
   const isRestSource = schedule.sourceType === "REST_API";
 
   const isGenericSalesforceToMssql =

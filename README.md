@@ -83,13 +83,18 @@ Die ausfuehrliche Einfuehrung steht in [SPEC_DRIVEN_DEVELOPMENT.md](SPEC_DRIVEN_
 
 ## Modulgrenzen Web UI
 
-Die grosse Server- und UI-Datei wird inkrementell aufgeteilt.
+Die grosse Server- und UI-Datei wird inkrementell aufgeteilt. Neue Funktionen sollen als andockbare Module auf gemeinsame Services, Templates und Assets zugreifen, statt neue Inline-Bloecke in `src/server/app.ts` aufzubauen.
 
 - Dashboard-Update-Logik: `src/server/dashboard-update-service.ts`
 - Migration Listen-/Import-UI: `src/server/migration-ui-module.ts`
 - Zentrale Aggregation und Mutationen: `src/server/admin-data-service.ts`
+- App-Modulregistrierung und Navigation: `src/server/app-modules.ts`
+- Statische Web-Assets: `src/server/asset-server.ts`
+- Wiederverwendbarer HTML-Dokumentrahmen: `src/server/ui-template.ts`
+- Admin-UI-JavaScript-Auslieferung: `src/server/admin-ui-script.ts`
+- Audit-Historie: `src/server/audit-history-service.ts`
 
-Neue serverseitige und UI-nahe Logik sollte bevorzugt in diesen Modulen oder weiteren kleinen Nachfolgemodulen landen, statt `src/server/app.ts` weiter aufzublähen.
+Neue serverseitige und UI-nahe Logik sollte bevorzugt in diesen Modulen oder weiteren kleinen Nachfolgemodulen landen. Das gilt insbesondere fuer kuenftige Migration-, Admin-, Reporting- oder PDF-Module.
 
 ## Zielarchitektur Dienste
 

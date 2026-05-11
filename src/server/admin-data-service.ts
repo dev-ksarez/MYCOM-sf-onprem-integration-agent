@@ -36,6 +36,7 @@ import {
   TemplateMutationInput
 } from "./template-library";
 import { IntegrationSchedule } from "../types/integration-schedule";
+import { FileScheduleType, isFileScheduleType, normalizeScheduleType } from "../types/file-schedule-type";
 import { runScheduleNow } from "../agent/agent-runner";
 import { analyzeUploadedFile, decodeTextBuffer, parseDelimitedRows, parseFileFromConnector } from "../utils/file-transfer";
 import { parseQuerySourceDefinition } from "../utils/query-source-definition";
@@ -3061,7 +3062,7 @@ export class AdminDataService {
       return this.previewSql(connectorId, parseQuerySourceDefinition(trimmedDefinition).queryText, normalizedLimit, instanceId);
     }
 
-    if (normalizedType === "FILE_CSV" || normalizedType === "FILE_EXCEL" || normalizedType === "FILE_JSON") {
+    if (isFileScheduleType(normalizedType)) {
       if (!connectorId) {
         throw new Error("Fuer Datei-Vorschau muss ein Datei-Connector ausgewaehlt sein");
       }
@@ -3193,7 +3194,7 @@ export class AdminDataService {
       return this.getMssqlSourceFields(connectorId, parseQuerySourceDefinition(sourceDefinition).queryText, instanceId);
     }
 
-    if (normalizedType === "FILE_CSV" || normalizedType === "FILE_EXCEL" || normalizedType === "FILE_JSON") {
+    if (isFileScheduleType(normalizedType)) {
       if (!connectorId) {
         throw new Error("Fuer Datei-Feldmetadaten muss ein Datei-Connector ausgewaehlt sein");
       }
@@ -3249,16 +3250,14 @@ export class AdminDataService {
     const add = (severity: "error" | "warning", area: ScheduleConfigurationValidationIssue["area"], message: string) => {
       issues.push({ severity, area, message });
     };
-    const sourceType = String(input.sourceType || "").trim().toUpperCase();
-    const targetType = String(input.targetType || "").trim().toUpperCase();
+    const sourceType = normalizeScheduleType(input.sourceType);
+    const targetType = normalizeScheduleType(input.targetType);
     const connectorId = String(input.connectorId || "").trim();
     const sourceDefinition = String(input.sourceDefinition || "").trim();
     const targetDefinition = String(input.targetDefinition || "").trim();
 
     if (!String(input.sourceSystem || "").trim()) add("error", "general", "Source System fehlt.");
     if (!String(input.targetSystem || "").trim()) add("error", "general", "Target System fehlt.");
-    if (!String(input.operation || "").trim()) add("error", "general", "Operation fehlt.");
-    if (!String(input.objectName || "").trim()) add("error", "target", "Zielobjekt/Zielname fehlt.");
     if (!sourceType) add("error", "source", "Source Type fehlt.");
     if (!targetType) add("error", "target", "Target Type fehlt.");
     if (!Number.isFinite(Number(input.batchSize || 0)) || Number(input.batchSize || 0) <= 0) {
@@ -3275,12 +3274,15 @@ export class AdminDataService {
     }
 
     const connectorType = String(connector?.connectorType || "").trim().toUpperCase();
-    const isFileSource = sourceType === "FILE_CSV" || sourceType === "FILE_EXCEL" || sourceType === "FILE_JSON";
-    const isFileTarget = targetType === "FILE_CSV" || targetType === "FILE_EXCEL" || targetType === "FILE_JSON";
+    const isFileSource = isFileScheduleType(sourceType);
+    const isFileTarget = isFileScheduleType(targetType);
     const isMssqlSource = sourceType === "MSSQL" || sourceType === "MSSQL_SQL";
     const isMssqlTarget = targetType === "MSSQL" || targetType === "MSSQL_SQL";
     const isRestSource = sourceType === "REST_API" || sourceType === "API";
     const isRestTarget = targetType === "REST_API" || targetType === "API";
+
+    if (!isFileTarget && !String(input.operation || "").trim()) add("error", "general", "Operation fehlt.");
+    if (!isFileTarget && !String(input.objectName || "").trim()) add("error", "target", "Zielobjekt/Zielname fehlt.");
 
     if ((isFileSource || isFileTarget || isMssqlSource || isMssqlTarget || isRestSource || isRestTarget) && !connectorId) {
       add("error", "connector", "Diese Scheduler-Variante benoetigt einen Connector.");
@@ -3412,10 +3414,10 @@ export class AdminDataService {
   ): Promise<{ id: string; action: "created" | "updated" }> {
     const resolvedInstance = this.resolveInstance(instanceId);
     const client = await this.createClient(resolvedInstance.id);
-    const sourceType = String(input.sourceType || "").toUpperCase();
-    const targetType = String(input.targetType || "").toUpperCase();
-    const usesFileSource = sourceType === "FILE_CSV" || sourceType === "FILE_EXCEL" || sourceType === "FILE_JSON";
-    const usesFileTarget = targetType === "FILE_CSV" || targetType === "FILE_EXCEL" || targetType === "FILE_JSON";
+    const sourceType = normalizeScheduleType(input.sourceType);
+    const targetType = normalizeScheduleType(input.targetType);
+    const usesFileSource = isFileScheduleType(sourceType);
+    const usesFileTarget = isFileScheduleType(targetType);
 
     if (usesFileSource && !String(input.sourceDefinition || "").trim()) {
       throw new Error("FILE SourceType erfordert eine SourceDefinition mit Dateiangaben");
@@ -3462,10 +3464,10 @@ export class AdminDataService {
 
     const fields: Record<string, any> = {
       Active__c: input.active,
-      SourceSystem__c: input.sourceSystem,
-      TargetSystem__c: input.targetSystem,
-      ObjectName__c: input.objectName,
-      Operation__c: input.operation,
+      SourceSystem__c: input.sourceSystem || (usesFileSource ? "File" : undefined),
+      TargetSystem__c: input.targetSystem || (usesFileTarget ? "File" : undefined),
+      ObjectName__c: input.objectName || (usesFileTarget ? "FileExport" : undefined),
+      Operation__c: input.operation || (usesFileTarget ? "Write" : undefined),
       MSD_Connector__c: input.connectorId,
       MSD_MappingDefinition__c: input.mappingDefinition,
       MSD_Direction__c: input.direction,
@@ -4178,7 +4180,7 @@ export class AdminDataService {
 
     const fileBuffer = Buffer.from(contentBase64, "base64");
     const analysis = analyzeUploadedFile(fileName, fileBuffer);
-    const sourceType: "FILE_CSV" | "FILE_EXCEL" | "FILE_JSON" =
+    const sourceType: FileScheduleType =
       analysis.format === "excel" ? "FILE_EXCEL" : analysis.format === "json" ? "FILE_JSON" : "FILE_CSV";
 
     // Save the uploaded file to the connector's importPath so that source preview works afterwards

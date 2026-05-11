@@ -1,6 +1,6 @@
 # Wartbarkeits-Review `app.ts`
 
-Stand: 2026-05-06
+Stand: 2026-05-11
 
 ## Ausgangslage
 
@@ -23,16 +23,23 @@ Stand: 2026-05-06
 - Extraktion von Auth-/Session-/CSRF-/OAuth-Helfern nach `src/server/admin-auth.ts`
 - Extraktion der Installer-Erzeugung nach `src/server/installer-generator.ts`
 - Anpassung von `src/main.ts` auf das neue `HealthSnapshot`-Modul
+- Extraktion statischer Asset-Auslieferung nach `src/server/asset-server.ts`
+- Extraktion Audit-Historie nach `src/server/audit-history-service.ts`
+- Extraktion HTML-Dokumentrahmen nach `src/server/ui-template.ts`
+- Extraktion Admin-UI-JavaScript nach `src/server/admin-ui-script.ts`
+- Einfuehrung einer App-Modulregistrierung in `src/server/app-modules.ts`
+- Auslagerung Login- und Callback-JavaScript nach `src/public/`
+- Auslagerung Login-CSS nach `src/css/login.css`
 
 Ergebnis:
 
-- `src/server/app.ts` wurde von `13.492` auf `12.823` Zeilen reduziert.
-- Nicht-HTTP-Fachlogik ist jetzt klarer gekapselt und separat testbar.
+- `src/server/app.ts` wurde von `13.492` auf unter `3.000` Zeilen reduziert.
+- Nicht-HTTP-Fachlogik, UI-Assets und wiederverwendbare Template-Bausteine sind klarer gekapselt und separat wartbar.
 
 ## Hauptbefunde
 
-1. `app.ts` ist weiterhin zu breit geschnitten.
-   Die Datei enthält noch immer Routing, HTML-Shell und große Mengen UI-JavaScript in einem einzigen Modul.
+1. `app.ts` ist weiterhin der zentrale HTTP-Einstieg.
+   Die Datei enthaelt noch Routing und Request-Orchestrierung, aber keine grosse Admin-UI-JavaScript-Implementierung mehr.
 
 2. Das HTML wird als sehr großer String gebaut.
    Das erschwert Navigation, Diff-Reviews und die Wiederverwendung einzelner UI-Bausteine.
@@ -40,15 +47,15 @@ Ergebnis:
 3. Das Routing ist linear und stark manuell.
    Viele `if (req.method === ... && requestUrl.pathname === ...)`-Blöcke machen Seiteneffekte und Regressionen wahrscheinlicher.
 
-4. Frontend-Verhalten liegt weitgehend inline in der Server-Datei.
-   Das erschwert fachliche Trennung zwischen Backend-Endpunkten, UI-State und DOM-Rendering.
+4. Frontend-Verhalten liegt noch in einem grossen Admin-UI-Script.
+   Es ist aus der Serverdatei geloest, sollte aber in weiteren Schritten nach UI-Domaenen geteilt werden.
 
 ## Empfohlene nächste Schritte
 
 ### Priorität 1
 
-- `htmlShell()` in ein eigenes Template-Modul auslagern, z. B. `src/server/app-shell-template.ts`
-- Login-, Callback- und Konfigurationsseiten als dedizierte Templates bündeln
+- weitere Shell-Teilbereiche aus `htmlShell()` in dedizierte Templates auslagern
+- Konfigurationsseiten als dedizierte Templates buendeln
 - Wiederkehrende HTML-Segmente als kleine Template-Funktionen kapseln:
   - Header
   - Modal-Shells

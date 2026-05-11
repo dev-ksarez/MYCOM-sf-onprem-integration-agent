@@ -4149,14 +4149,6 @@ body.tour-open .animated {
 .wizard > .content > .body {
   position: relative;
 }
-/* PDF js style */
-.pdf-toolbar {
-  max-width: 600px;
-  margin: 0 auto;
-}
-.pdf-toolbar .input-group {
-  width: 100px;
-}
 /* Dropzone */
 .dropzone {
   min-height: 140px;

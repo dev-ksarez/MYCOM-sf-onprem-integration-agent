@@ -1,0 +1,20 @@
+body {
+  min-height: 100vh;
+  margin: 0;
+  background: linear-gradient(135deg, #eef4f8 0%, #d9e7ef 100%);
+}
+
+.agent-login-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.agent-login-card {
+  width: min(100%, 28rem);
+  border: 0;
+  border-radius: 1.25rem;
+  box-shadow: 0 1.5rem 3rem rgba(31, 57, 76, 0.16);
+}

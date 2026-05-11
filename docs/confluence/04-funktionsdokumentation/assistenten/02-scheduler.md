@@ -38,6 +38,10 @@ Der Scheduler-Assistent verwaltet die zeitliche Ausfuehrung von Importen und Exp
 | Overlap-Schutz | Verhindert parallele Laeufe desselben Profils. |
 | Run-Protokoll | Schreibt Status, Zaehler, Fehler und Laufzeiten nach Salesforce. |
 
+## Typabhaengige Felder
+
+Bei Datei-Zielen (`FILE_CSV`, `FILE_EXCEL`, `FILE_JSON`) blendet der Assistent Zielobjekt, Operation, Zielsystem-Pflichtfeld und Mapping-Auswahl aus. Die Runtime verwendet dafuer konsistente Defaults und schreibt die Quelldaten direkt gemaess Target Definition in die Ausgabedatei.
+
 ## Technische Wirkung
 
 Ein aktiver Scheduler erzeugt faellige Runs, sobald Zeitfenster und Intervall passen. Die Runtime liest die zugeordneten Connectoren und Mapping-Regeln, startet den Job Runner und persistiert Ergebnisdaten als Runs, Logs und Checkpoints.

@@ -11,7 +11,7 @@ tags:
 
 ![Assistent Connector](../../assets/screenshots/08-assistent-connector.png)
 
-Der Connector-Assistent dient zur Pflege technischer Datenquellen und Zielsysteme. Er fuehrt Administratoren durch Typauswahl, Parameterpflege, Secret-Referenzen, Verbindungstest und Zuordnung zu Schedulern.
+Der Connector-Assistent dient zur Pflege technischer Datenquellen und Zielsysteme. Er fuehrt Administratoren durch Typauswahl, typabhaengige Parameterpflege, Verbindungstest und Zuordnung zu Schedulern.
 
 ## Ablauf
 
@@ -19,7 +19,7 @@ Der Connector-Assistent dient zur Pflege technischer Datenquellen und Zielsystem
 | --- | --- | --- |
 | 1 | Connector oeffnen | Bestehenden Connector bearbeiten oder neuen Connector anlegen. |
 | 2 | Connector-Typ waehlen | MSSQL, REST API, File oder Salesforce festlegen. |
-| 3 | Parameter und Secret Keys pflegen | Technische Verbindung wird vollstaendig beschrieben. |
+| 3 | Parameter und Secret Keys pflegen | Technische Verbindung wird typabhaengig beschrieben. |
 | 4 | Verbindung testen | Netzwerk, Authentifizierung und Berechtigungen werden geprueft. |
 | 5 | Fehlerdetails pruefen | Bei Fehlern werden Parameter korrigiert und der Test wiederholt. |
 | 6 | Connector speichern | Gueltige Konfiguration wird fuer die Runtime verfuegbar. |
@@ -38,6 +38,7 @@ Der Connector-Assistent dient zur Pflege technischer Datenquellen und Zielsystem
 ## Validierung
 
 - Pflichtfelder werden je Connector-Typ geprueft.
+- Secret-Key-Felder werden nur fuer SQL-Connectoren angezeigt und gespeichert.
 - Secrets werden nicht im Klartext dokumentiert, sondern ueber Secret Keys referenziert.
 - Verbindungstests liefern technische Fehlermeldungen fuer Netzwerk, Authentifizierung und Berechtigungen.
 - Zugeordnete Scheduler zeigen, welche Jobs von einer Connector-Aenderung betroffen sind.
