@@ -452,7 +452,10 @@ ${renderMenuModuleNavigation()}
             </div>
             <div class="col-lg-5">
               <div class="card soft-card mb-3">
-                <div class="card-header bg-white fw-semibold">Salesforce Org + Limits</div>
+                <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                  <span class="fw-semibold">Salesforce Org + Limits</span>
+                  <span id="sf-api-throttle-badge" class="badge rounded-pill bg-secondary">Adaptive Cache: -</span>
+                </div>
                 <div class="card-body">
                   <div class="stats-row"><span class="stats-label">Domain</span><span id="sf-domain" class="stats-value">-</span></div>
                   <div class="stats-row mb-3"><span class="stats-label">Umgebung</span><span id="sf-environment" class="stats-value">-</span></div>
@@ -1606,6 +1609,39 @@ ${renderMenuModuleNavigation()}
       </div>
     </div>
 
+    <div class="modal fade" id="failed-records-modal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 id="failed-records-modal-title" class="modal-title">Fehlgeschlagene Datensätze</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body p-0">
+            <div class="table-responsive">
+              <table class="table table-sm mb-0">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Key</th>
+                    <th>Status</th>
+                    <th>Fehler</th>
+                    <th>Quelle</th>
+                    <th>Mapped</th>
+                  </tr>
+                </thead>
+                <tbody id="failed-records-modal-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button id="failed-records-export-csv" type="button" class="btn btn-outline-primary btn-sm" disabled>CSV exportieren</button>
+            <button id="failed-records-export-json" type="button" class="btn btn-outline-secondary btn-sm" disabled>JSON exportieren</button>
+            <button type="button" class="btn btn-light btn-sm" data-bs-dismiss="modal">Schließen</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="modal fade" id="records-scheduler-modal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content">
@@ -1863,6 +1899,7 @@ export function createAppServer(
       const scheduleDuplicateMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/duplicate$/) : null;
       const scheduleDeleteMatch = req.method === "DELETE" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)$/) : null;
       const runLogsMatch = req.method === "GET" ? requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/logs$/) : null;
+      const runFailedRecordsMatch = req.method === "GET" ? requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/failed-records$/) : null;
       const logRangeParam = requestUrl.searchParams.get("range") || "last_24h";
       const logRange: LogChartRange =
         logRangeParam === "last_hour" || logRangeParam === "last_30d" || logRangeParam === "last_24h"
@@ -2378,6 +2415,13 @@ export function createAppServer(
         const runId = decodeURIComponent(runLogsMatch[1]);
         const logs = await adminDataService.listLogs(runId, 200, instanceId);
         sendJson(200, { items: logs, total: logs.length });
+        return;
+      }
+
+      if (runFailedRecordsMatch) {
+        const runId = decodeURIComponent(runFailedRecordsMatch[1]);
+        const failedRecords = adminDataService.getRunFailedRecords(runId);
+        sendJson(200, failedRecords);
         return;
       }
 

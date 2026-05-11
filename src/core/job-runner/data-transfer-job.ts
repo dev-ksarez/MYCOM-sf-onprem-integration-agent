@@ -5,6 +5,7 @@ import { MappingDefinitionEngine, LookupResolverFn } from "../mapping-dsl/mappin
 import { MappingDefinitionParser } from "../mapping-dsl/mapping-definition-parser";
 import { ConnectorResult } from "../../types/connector-result";
 import { GenericRecord } from "../../types/generic-record";
+import { FailedJobRecord } from "../../types/job-execution-result";
 import { JobExecutionResult } from "../../types/job-execution-result";
 import { SourceAdapter } from "../../types/source-adapter";
 import { TargetAdapter } from "../../types/target-adapter";
@@ -106,6 +107,18 @@ export class DataTransferJob {
     const errorCount = results.length - successCount;
     const status = resolveStatus(successCount, errorCount);
     const successfulSourceRecords = sourceRecords.filter((_record, index) => results[index]?.success);
+    const failedRecords: FailedJobRecord[] = sourceRecords
+      .map((sourceRecord, index) => ({ sourceRecord, mappedRecord: mappedRecords[index], result: results[index], index }))
+      .filter((entry) => Boolean(entry.result) && entry.result.success === false)
+      .map((entry) => ({
+        rowIndex: entry.index,
+        externalKey: entry.result?.externalKey,
+        statusCode: entry.result?.statusCode,
+        message: entry.result?.message,
+        retryable: entry.result?.retryable,
+        sourceRecord: entry.sourceRecord?.values,
+        mappedRecord: entry.mappedRecord?.values
+      }));
 
     this.logger.info(
       {
@@ -130,7 +143,8 @@ export class DataTransferJob {
       status,
       connectorResults: results,
       lastProcessedRecord: lastCheckpointRecord?.checkpoint,
-      successfulSourceRecords
+      successfulSourceRecords,
+      failedRecords
     };
   }
 }

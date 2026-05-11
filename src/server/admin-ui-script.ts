@@ -49,6 +49,7 @@ export function renderAdminUiScript(): string {
         selectedMappingRuleId: '',
         logSummary: null,
         salesforceOverview: null,
+        failedRunRecordsExport: null,
         installerSummary: null,
         installerGeneratedFiles: [],
         adminMe: null,
@@ -1495,6 +1496,7 @@ export function renderAdminUiScript(): string {
       const templatePickerModal = createModalController('template-picker-modal');
       const instanceModal = createModalController('instance-modal');
       const logsModal = createModalController('logs-modal');
+      const failedRecordsModal = createModalController('failed-records-modal');
       const recordsSchedulerModal = createModalController('records-scheduler-modal');
       const connectorNotificationErrorClassOptions = ['CONNECTION', 'AUTH', 'DATA', 'VALIDATION', 'UNKNOWN'];
 
@@ -2631,6 +2633,39 @@ export function renderAdminUiScript(): string {
         return Math.max(0, Math.min(100, Math.round((used / max) * 100)));
       }
 
+      function resolveApiThrottlePolicy(apiUsage) {
+        const percentage = resolveUsagePercentage(apiUsage);
+        if (!apiUsage || !Number.isFinite(apiUsage.max) || apiUsage.max <= 0) {
+          return { label: 'Adaptive Cache: -', badgeClass: 'bg-secondary' };
+        }
+
+        if (percentage >= 95) {
+          return { label: 'Adaptive Cache: 180s (kritisch)', badgeClass: 'bg-danger' };
+        }
+        if (percentage >= 90) {
+          return { label: 'Adaptive Cache: 120s (hoch)', badgeClass: 'bg-danger' };
+        }
+        if (percentage >= 80) {
+          return { label: 'Adaptive Cache: 60s (erhoeht)', badgeClass: 'bg-warning text-dark' };
+        }
+        if (percentage >= 65) {
+          return { label: 'Adaptive Cache: 30s (moderat)', badgeClass: 'bg-warning text-dark' };
+        }
+
+        return { label: 'Adaptive Cache: 10s (normal)', badgeClass: 'bg-success' };
+      }
+
+      function renderApiThrottleBadge(apiUsage) {
+        const badge = document.getElementById('sf-api-throttle-badge');
+        if (!badge) {
+          return;
+        }
+
+        const policy = resolveApiThrottlePolicy(apiUsage);
+        badge.textContent = policy.label;
+        badge.className = 'badge rounded-pill ' + policy.badgeClass;
+      }
+
       function renderLimitGauge(gaugeId, valueId, usage) {
         const gauge = document.getElementById(gaugeId);
         const valueEl = document.getElementById(valueId);
@@ -2668,6 +2703,7 @@ export function renderAdminUiScript(): string {
         setText('sf-data-storage', formatUsageBlock(overview?.dataStorageMb, 'MB'));
         setText('sf-file-storage', formatUsageBlock(overview?.fileStorageMb, 'MB'));
         setText('sf-licenses', formatUsageBlock(overview?.licenses));
+        renderApiThrottleBadge(overview?.apiUsage);
         renderLimitGauge('sf-api-gauge', 'sf-api-gauge-value', overview?.apiUsage);
         renderLimitGauge('sf-data-gauge', 'sf-data-gauge-value', overview?.dataStorageMb);
         renderLimitGauge('sf-file-gauge', 'sf-file-gauge-value', overview?.fileStorageMb);
@@ -6933,6 +6969,126 @@ export function renderAdminUiScript(): string {
         logsModal.show();
       }
 
+      async function openFailedRecordsForRun(runId) {
+        const normalizedRunId = String(runId || '').trim();
+        if (!normalizedRunId) {
+          return;
+        }
+
+        const result = await safeRequest('/api/runs/' + encodeURIComponent(normalizedRunId) + '/failed-records', {
+          runId: normalizedRunId,
+          total: 0,
+          items: []
+        });
+        const rows = Array.isArray(result?.items) ? result.items : [];
+        state.failedRunRecordsExport = {
+          runId: normalizedRunId,
+          scheduleName: String(result?.scheduleName || '').trim(),
+          items: rows
+        };
+        updateFailedRecordsExportButtons();
+
+        const title = document.getElementById('failed-records-modal-title');
+        if (title) {
+          const scheduleName = String(result?.scheduleName || '').trim();
+          title.textContent = scheduleName
+            ? 'Fehlgeschlagene Datensätze | ' + scheduleName + ' | Run ' + normalizedRunId
+            : 'Fehlgeschlagene Datensätze | Run ' + normalizedRunId;
+        }
+
+        const body = document.getElementById('failed-records-modal-body');
+        if (!body) {
+          return;
+        }
+
+        if (!rows.length) {
+          body.innerHTML = '<tr><td colspan="6" class="text-secondary p-3">Keine fehlgeschlagenen Datensätze für diesen Run gespeichert.</td></tr>';
+          failedRecordsModal.show();
+          return;
+        }
+
+        body.innerHTML = rows.map((item, idx) =>
+          '<tr>' +
+            '<td>' + esc(Number.isFinite(Number(item.rowIndex)) ? Number(item.rowIndex) + 1 : idx + 1) + '</td>' +
+            '<td>' + esc(item.externalKey || '-') + '</td>' +
+            '<td>' + esc(item.statusCode || '-') + '</td>' +
+            '<td style="white-space: normal; word-break: break-word; overflow-wrap: anywhere;">' + esc(item.message || '-') + '</td>' +
+            '<td><pre class="small mb-0" style="max-width: 320px; white-space: pre-wrap;">' + esc(item.sourceRecord ? JSON.stringify(item.sourceRecord, null, 2) : '-') + '</pre></td>' +
+            '<td><pre class="small mb-0" style="max-width: 320px; white-space: pre-wrap;">' + esc(item.mappedRecord ? JSON.stringify(item.mappedRecord, null, 2) : '-') + '</pre></td>' +
+          '</tr>'
+        ).join('');
+
+        failedRecordsModal.show();
+      }
+
+      function updateFailedRecordsExportButtons() {
+        const csvButton = document.getElementById('failed-records-export-csv');
+        const jsonButton = document.getElementById('failed-records-export-json');
+        const hasRows = Array.isArray(state.failedRunRecordsExport?.items) && state.failedRunRecordsExport.items.length > 0;
+        if (csvButton) {
+          csvButton.disabled = !hasRows;
+        }
+        if (jsonButton) {
+          jsonButton.disabled = !hasRows;
+        }
+      }
+
+      function downloadTextAsFile(content, fileName, mimeType) {
+        const blob = new Blob([content], { type: mimeType || 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+
+      function escapeCsvCell(value) {
+        const raw = String(value ?? '');
+        if (/[";\n\r]/.test(raw)) {
+          return '"' + raw.replaceAll('"', '""') + '"';
+        }
+        return raw;
+      }
+
+      function exportFailedRecordsAsJson() {
+        const payload = state.failedRunRecordsExport;
+        if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
+          showError('Keine fehlgeschlagenen Datensätze zum Exportieren vorhanden.');
+          return;
+        }
+
+        const fileName = 'failed-records-' + (payload.runId || 'run') + '.json';
+        downloadTextAsFile(JSON.stringify(payload, null, 2), fileName, 'application/json;charset=utf-8');
+      }
+
+      function exportFailedRecordsAsCsv() {
+        const payload = state.failedRunRecordsExport;
+        if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
+          showError('Keine fehlgeschlagenen Datensätze zum Exportieren vorhanden.');
+          return;
+        }
+
+        const header = ['rowIndex', 'externalKey', 'statusCode', 'message', 'retryable', 'sourceRecord', 'mappedRecord'];
+        const lines = [header.join(';')];
+        payload.items.forEach((item) => {
+          lines.push([
+            escapeCsvCell(Number.isFinite(Number(item.rowIndex)) ? Number(item.rowIndex) + 1 : ''),
+            escapeCsvCell(item.externalKey || ''),
+            escapeCsvCell(item.statusCode || ''),
+            escapeCsvCell(item.message || ''),
+            escapeCsvCell(item.retryable === true ? 'true' : 'false'),
+            escapeCsvCell(item.sourceRecord ? JSON.stringify(item.sourceRecord) : ''),
+            escapeCsvCell(item.mappedRecord ? JSON.stringify(item.mappedRecord) : '')
+          ].join(';'));
+        });
+
+        const fileName = 'failed-records-' + (payload.runId || 'run') + '.csv';
+        downloadTextAsFile(lines.join('\n'), fileName, 'text/csv;charset=utf-8');
+      }
+
       function updateServiceCpuSparkline(cpuPercent) {
         const sparklinePath = document.getElementById('kpi-service-cpu-sparkline-path');
         const sparklineDot = document.getElementById('kpi-service-cpu-sparkline-dot');
@@ -7661,6 +7817,8 @@ export function renderAdminUiScript(): string {
             const actionMarkup = canCancel
               ? '<button class="btn btn-sm btn-outline-danger" data-cancel-run="' + esc(item.id) + '">Abbrechen</button>'
               : '<span class="text-secondary small">-</span>';
+            const failedCount = Math.max(0, Number(item.recordsFailed || 0) || 0);
+            const failedButtonMarkup = '<button class="btn btn-sm ' + (failedCount > 0 ? 'btn-outline-danger' : 'btn-outline-secondary') + '" data-failed-run="' + esc(item.id) + '">Fehlerdaten' + (failedCount > 0 ? ' (' + failedCount + ')' : '') + '</button>';
             const durationMs = getRunDurationMs(item);
             return '<tr>' +
               '<td class="text-truncate" title="' + esc(item.scheduleName || item.scheduleId || '-') + '">' + esc(item.scheduleName || item.scheduleId || '-') + '</td>' +
@@ -7668,7 +7826,7 @@ export function renderAdminUiScript(): string {
               '<td>' + esc(formatDate(item.startedAt || item.finishedAt, 'short')) + '</td>' +
               '<td>' + esc(formatDurationMinSec(durationMs)) + '</td>' +
               '<td>' + renderRunProgressMarkup(item) + '</td>' +
-              '<td><button class="btn btn-sm btn-outline-primary" data-log-run="' + esc(item.id) + '">Logs</button></td>' +
+              '<td><div class="d-flex gap-1"><button class="btn btn-sm btn-outline-primary" data-log-run="' + esc(item.id) + '">Logs</button>' + failedButtonMarkup + '</div></td>' +
               '<td>' + actionMarkup + '</td>' +
               '</tr>';
           })()
@@ -7702,6 +7860,16 @@ export function renderAdminUiScript(): string {
             } catch (error) {
               showError(error.message || 'Run konnte nicht abgebrochen werden');
             }
+          });
+        });
+
+        body.querySelectorAll('button[data-failed-run]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            const runId = button.getAttribute('data-failed-run');
+            if (!runId) {
+              return;
+            }
+            await openFailedRecordsForRun(runId);
           });
         });
       }
@@ -9427,7 +9595,7 @@ export function renderAdminUiScript(): string {
         }
       }
 
-      const AUTO_REFRESH_INTERVAL_MS = 60000;
+      const AUTO_REFRESH_INTERVAL_MS = 7000;
 
       async function refresh(options = {}) {
         const shouldRefreshChart = options.refreshChart !== false;
@@ -9585,6 +9753,8 @@ export function renderAdminUiScript(): string {
       bindEventListenerOnce('admin-user-reset', 'click', resetAdminUserForm);
       bindEventListenerOnce('admin-users-refresh', 'click', loadAdminData);
       bindEventListenerOnce('admin-audit-refresh', 'click', loadAdminData);
+      bindEventListenerOnce('failed-records-export-csv', 'click', exportFailedRecordsAsCsv);
+      bindEventListenerOnce('failed-records-export-json', 'click', exportFailedRecordsAsJson);
       document.querySelectorAll('[data-menu-tab]').forEach((button) => {
         if (button.dataset.boundMenuTab === '1') {
           return;

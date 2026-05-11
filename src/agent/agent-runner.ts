@@ -25,6 +25,7 @@ import { IntegrationSchedule } from "../types/integration-schedule";
 import { isFileScheduleType } from "../types/file-schedule-type";
 import { SalesforceConfig } from "../infrastructure/config/salesforce-config";
 import { GenericRecord } from "../types/generic-record";
+import { FailedJobRecord } from "../types/job-execution-result";
 import { parseQuerySourceDefinition, resolveAfterExportValue } from "../utils/query-source-definition";
 
 export interface AgentRunSummary {
@@ -46,6 +47,29 @@ const AUTO_DISABLE_FAILURE_THRESHOLD = Math.max(
 );
 const LOCAL_SCHEDULE_HEALTH_FILE =
   process.env.SF_SCHEDULE_HEALTH_FILE || path.resolve(process.cwd(), "artifacts/schedule-health.json");
+const FAILED_RUN_RECORDS_DIR =
+  process.env.FAILED_RUN_RECORDS_DIR || path.resolve(process.cwd(), "artifacts/runtime/failed-run-records");
+
+interface FailedRunRecordEntry {
+  rowIndex: number;
+  externalKey?: string;
+  statusCode?: string;
+  message?: string;
+  retryable?: boolean;
+  sourceRecord?: Record<string, unknown>;
+  mappedRecord?: Record<string, unknown>;
+}
+
+interface FailedRunRecordsDocument {
+  runId: string;
+  scheduleId: string;
+  scheduleName: string;
+  connectorId?: string;
+  connectorName?: string;
+  createdAt: string;
+  total: number;
+  items: FailedRunRecordEntry[];
+}
 
 interface LocalScheduleHealthItem {
   consecutiveFailures: number;
@@ -197,6 +221,37 @@ function markScheduleAutoDisabled(scheduleId: string): void {
     autoDisabledAt: new Date().toISOString()
   };
   writeLocalScheduleHealth(store);
+}
+
+function persistFailedRunRecords(
+  runId: string,
+  schedule: IntegrationSchedule,
+  connectorConfig: ConnectorConfig,
+  failedRecords: FailedJobRecord[] | undefined
+): void {
+  const entries = Array.isArray(failedRecords) ? failedRecords : [];
+  const document: FailedRunRecordsDocument = {
+    runId,
+    scheduleId: schedule.id,
+    scheduleName: schedule.name,
+    connectorId: schedule.connectorId,
+    connectorName: connectorConfig.name,
+    createdAt: new Date().toISOString(),
+    total: entries.length,
+    items: entries.map((entry) => ({
+      rowIndex: entry.rowIndex,
+      externalKey: entry.externalKey,
+      statusCode: entry.statusCode,
+      message: entry.message,
+      retryable: entry.retryable,
+      sourceRecord: entry.sourceRecord,
+      mappedRecord: entry.mappedRecord
+    }))
+  };
+
+  fs.mkdirSync(FAILED_RUN_RECORDS_DIR, { recursive: true });
+  const filePath = path.join(FAILED_RUN_RECORDS_DIR, `${runId}.json`);
+  fs.writeFileSync(filePath, JSON.stringify(document, null, 2), "utf8");
 }
 
 type NotificationErrorClass = "CONNECTION" | "AUTH" | "DATA" | "VALIDATION" | "UNKNOWN";
@@ -955,6 +1010,8 @@ async function executeSchedule(
       const job = new AccountExportJob(logger, source, connector!);
       result = await job.execute(context, lastCheckpoint, lastRecordId, schedule.mappingDefinition);
     }
+
+    persistFailedRunRecords(runId, schedule, connectorConfig, result.failedRecords);
 
     for (const connectorResult of result.connectorResults) {
       if (connectorResult.success) {

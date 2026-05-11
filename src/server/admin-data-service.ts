@@ -183,6 +183,7 @@ const LOCAL_MIGRATION_INSTANCES_FILE = process.env.SF_MIGRATION_INSTANCES_FILE |
 const LOCAL_SCHEDULE_TIMING_FILE = process.env.SF_SCHEDULE_TIMING_FILE || path.resolve(process.cwd(), "artifacts/schedule-timing.json");
 const LOCAL_SCHEDULE_HEALTH_FILE = process.env.SF_SCHEDULE_HEALTH_FILE || path.resolve(process.cwd(), "artifacts/schedule-health.json");
 const LOCAL_MIGRATIONS_FILE = path.resolve(process.cwd(), "artifacts/migrations.json");
+const LOCAL_FAILED_RUN_RECORDS_DIR = path.resolve(process.cwd(), "artifacts/runtime/failed-run-records");
 const SALESFORCE_METADATA_DIR = path.resolve(process.cwd(), "salesforce/metadata");
 const LOCAL_SCHEDULE_TIMING_VERSION = 1;
 
@@ -678,6 +679,27 @@ export interface LogListItem {
   message?: string;
   recordKey?: string;
   createdAt?: string;
+}
+
+export interface RunFailedRecordItem {
+  rowIndex: number;
+  externalKey?: string;
+  statusCode?: string;
+  message?: string;
+  retryable?: boolean;
+  sourceRecord?: Record<string, unknown>;
+  mappedRecord?: Record<string, unknown>;
+}
+
+export interface RunFailedRecordsResult {
+  runId: string;
+  scheduleId?: string;
+  scheduleName?: string;
+  connectorId?: string;
+  connectorName?: string;
+  createdAt?: string;
+  total: number;
+  items: RunFailedRecordItem[];
 }
 
 export type LogChartRange = "last_hour" | "last_24h" | "last_30d";
@@ -1436,6 +1458,8 @@ function resolveInstances(): ResolvedInstance[] {
 
 export class AdminDataService {
   private readonly migrationStaging = new MigrationStagingSqlite();
+  private readonly adaptiveSalesforceCache = new Map<string, { expiresAt: number; value: unknown }>();
+  private readonly salesforceApiUsageByInstance = new Map<string, number>();
 
   private getMigrationInstanceLoginUrl(environment: "sandbox" | "production"): string {
     return environment === "sandbox"
@@ -2139,71 +2163,73 @@ export class AdminDataService {
 
   public async listSchedules(instanceId?: string): Promise<ScheduleListItem[]> {
     const resolvedInstance = this.resolveInstance(instanceId);
-    const client = await this.createClient(resolvedInstance.id);
-    const records = await client.querySchedules(false);
-    const runningRuns = await client.queryRunningRuns(200);
-    const localTiming = readLocalScheduleTimingStore()[resolvedInstance.id] || {};
-    const localHealth = readLocalScheduleHealthStore();
-    const runningScheduleIds = new Set(
-      runningRuns
-        .map((run) => String(run.MSD_Schedule__c || "").trim())
-        .filter(Boolean)
-    );
+    return this.withAdaptiveSalesforceCache(resolvedInstance.id, "listSchedules", async () => {
+      const client = await this.createClient(resolvedInstance.id);
+      const records = await client.querySchedules(false);
+      const runningRuns = await client.queryRunningRuns(200);
+      const localTiming = readLocalScheduleTimingStore()[resolvedInstance.id] || {};
+      const localHealth = readLocalScheduleHealthStore();
+      const runningScheduleIds = new Set(
+        runningRuns
+          .map((run) => String(run.MSD_Schedule__c || "").trim())
+          .filter(Boolean)
+      );
 
-    const checkpointEntries = await Promise.all(records.map(async (record) => {
-      const schedule = this.toIntegrationSchedule(record);
-      try {
-        const checkpoint = await client.getCheckpoint(schedule.id, schedule.objectName);
-        return [schedule.id, checkpoint] as const;
-      } catch {
-        return [schedule.id, null] as const;
-      }
-    }));
-    const checkpointsByScheduleId = new Map(checkpointEntries);
+      const checkpointEntries = await Promise.all(records.map(async (record) => {
+        const schedule = this.toIntegrationSchedule(record);
+        try {
+          const checkpoint = await client.getCheckpoint(schedule.id, schedule.objectName);
+          return [schedule.id, checkpoint] as const;
+        } catch {
+          return [schedule.id, null] as const;
+        }
+      }));
+      const checkpointsByScheduleId = new Map(checkpointEntries);
 
-    return records.map((record) => {
-      const schedule = this.toIntegrationSchedule(record);
-      const persistedTimingDefinition = localTiming[schedule.id] || schedule.timingDefinition;
-      const effectiveSchedule: IntegrationSchedule = {
-        ...schedule,
-        timingDefinition: persistedTimingDefinition
-      };
-      const checkpoint = checkpointsByScheduleId.get(schedule.id) || null;
+      return records.map((record) => {
+        const schedule = this.toIntegrationSchedule(record);
+        const persistedTimingDefinition = localTiming[schedule.id] || schedule.timingDefinition;
+        const effectiveSchedule: IntegrationSchedule = {
+          ...schedule,
+          timingDefinition: persistedTimingDefinition
+        };
+        const checkpoint = checkpointsByScheduleId.get(schedule.id) || null;
 
-      return {
-        id: schedule.id,
-        name: schedule.name,
-        createdAt: record.CreatedDate,
-        createdByName: record.CreatedBy?.Name,
-        createdByUsername: record.CreatedBy?.Username,
-        lastModifiedAt: record.LastModifiedDate,
-        lastModifiedByName: record.LastModifiedBy?.Name,
-        lastModifiedByUsername: record.LastModifiedBy?.Username,
-        active: schedule.active,
-        status: runningScheduleIds.has(schedule.id) ? "running" : this.getScheduleStatus(effectiveSchedule),
-        sourceSystem: schedule.sourceSystem,
-        targetSystem: schedule.targetSystem,
-        sourceType: schedule.sourceType,
-        targetType: schedule.targetType,
-        direction: schedule.direction,
-        objectName: schedule.objectName,
-        operation: schedule.operation,
-        connectorId: schedule.connectorId,
-        mappingDefinition: schedule.mappingDefinition,
-        sourceDefinition: schedule.sourceDefinition,
-        targetDefinition: schedule.targetDefinition,
-        nextRunAt: schedule.nextRunAt,
-        lastRunAt: schedule.lastRunAt,
-        batchSize: schedule.batchSize,
-        timingDefinition: persistedTimingDefinition,
-        parentScheduleId: schedule.parentScheduleId,
-        inheritTimingFromParent: schedule.inheritTimingFromParent,
-        autoDisabledDueToErrors: localHealth[schedule.id]?.autoDisabled === true,
-        autoDisabledAt: localHealth[schedule.id]?.autoDisabledAt,
-        currentDeltaCheckpoint: checkpoint?.lastCheckpoint,
-        currentDeltaRecordId: checkpoint?.lastRecordId,
-        currentDeltaRunId: checkpoint?.lastRunId
-      };
+        return {
+          id: schedule.id,
+          name: schedule.name,
+          createdAt: record.CreatedDate,
+          createdByName: record.CreatedBy?.Name,
+          createdByUsername: record.CreatedBy?.Username,
+          lastModifiedAt: record.LastModifiedDate,
+          lastModifiedByName: record.LastModifiedBy?.Name,
+          lastModifiedByUsername: record.LastModifiedBy?.Username,
+          active: schedule.active,
+          status: runningScheduleIds.has(schedule.id) ? "running" : this.getScheduleStatus(effectiveSchedule),
+          sourceSystem: schedule.sourceSystem,
+          targetSystem: schedule.targetSystem,
+          sourceType: schedule.sourceType,
+          targetType: schedule.targetType,
+          direction: schedule.direction,
+          objectName: schedule.objectName,
+          operation: schedule.operation,
+          connectorId: schedule.connectorId,
+          mappingDefinition: schedule.mappingDefinition,
+          sourceDefinition: schedule.sourceDefinition,
+          targetDefinition: schedule.targetDefinition,
+          nextRunAt: schedule.nextRunAt,
+          lastRunAt: schedule.lastRunAt,
+          batchSize: schedule.batchSize,
+          timingDefinition: persistedTimingDefinition,
+          parentScheduleId: schedule.parentScheduleId,
+          inheritTimingFromParent: schedule.inheritTimingFromParent,
+          autoDisabledDueToErrors: localHealth[schedule.id]?.autoDisabled === true,
+          autoDisabledAt: localHealth[schedule.id]?.autoDisabledAt,
+          currentDeltaCheckpoint: checkpoint?.lastCheckpoint,
+          currentDeltaRecordId: checkpoint?.lastRecordId,
+          currentDeltaRunId: checkpoint?.lastRunId
+        };
+      });
     });
   }
 
@@ -2257,7 +2283,9 @@ export class AdminDataService {
   }
 
   public async getScheduleFormOptions(instanceId?: string): Promise<ScheduleFormOptions> {
-    const client = await this.createClient(instanceId);
+    const resolvedInstance = this.resolveInstance(instanceId);
+    return this.withAdaptiveSalesforceCache(resolvedInstance.id, "scheduleFormOptions", async () => {
+    const client = await this.createClient(resolvedInstance.id);
     const records = await client.querySchedules(false);
 
     const collectUnique = (values: Array<string | undefined>, fallback: string[] = []): string[] => {
@@ -2311,36 +2339,40 @@ export class AdminDataService {
         "Bidirectional"
       ])
     };
+    });
   }
 
   public async listConnectors(instanceId?: string): Promise<ConnectorListItem[]> {
-    const client = await this.createClient(instanceId);
-    const connectors = await client.queryConnectors();
+    const resolvedInstance = this.resolveInstance(instanceId);
+    return this.withAdaptiveSalesforceCache(resolvedInstance.id, "listConnectors", async () => {
+      const client = await this.createClient(resolvedInstance.id);
+      const connectors = await client.queryConnectors();
 
-    return connectors.map((connector) => ({
-      id: connector.id,
-      name: connector.name,
-      createdAt: connector.createdAt,
-      createdByName: connector.createdByName,
-      createdByUsername: connector.createdByUsername,
-      lastModifiedAt: connector.lastModifiedAt,
-      lastModifiedByName: connector.lastModifiedByName,
-      lastModifiedByUsername: connector.lastModifiedByUsername,
-      active: connector.active,
-      connectorType: connector.connectorType,
-      targetSystem: connector.targetSystem,
-      direction: connector.direction,
-      secretKey: connector.secretKey,
-      timeoutMs: connector.timeoutMs,
-      maxRetries: connector.maxRetries,
-      description: connector.description,
-      parameters: connector.parameters,
-      filePaths: this.isFileConnectorType(connector.connectorType)
-        ? this.resolveFileConnectorPaths(connector.parameters || {})
-        : undefined,
-      hasSecret: Boolean(connector.secretKey),
-      parameterKeys: Object.keys(connector.parameters).sort()
-    }));
+      return connectors.map((connector) => ({
+        id: connector.id,
+        name: connector.name,
+        createdAt: connector.createdAt,
+        createdByName: connector.createdByName,
+        createdByUsername: connector.createdByUsername,
+        lastModifiedAt: connector.lastModifiedAt,
+        lastModifiedByName: connector.lastModifiedByName,
+        lastModifiedByUsername: connector.lastModifiedByUsername,
+        active: connector.active,
+        connectorType: connector.connectorType,
+        targetSystem: connector.targetSystem,
+        direction: connector.direction,
+        secretKey: connector.secretKey,
+        timeoutMs: connector.timeoutMs,
+        maxRetries: connector.maxRetries,
+        description: connector.description,
+        parameters: connector.parameters,
+        filePaths: this.isFileConnectorType(connector.connectorType)
+          ? this.resolveFileConnectorPaths(connector.parameters || {})
+          : undefined,
+        hasSecret: Boolean(connector.secretKey),
+        parameterKeys: Object.keys(connector.parameters).sort()
+      }));
+    });
   }
 
   public async testConnector(connectorId: string, instanceId?: string): Promise<ConnectorTestResult> {
@@ -2673,23 +2705,26 @@ export class AdminDataService {
   }
 
   public async listRuns(limit = 50, instanceId?: string): Promise<RunListItem[]> {
-    const client = await this.createClient(instanceId);
-    const runs = await client.queryRuns(limit);
-    return runs.map((run) => ({
-      id: run.Id,
-      scheduleId: run.MSD_Schedule__c,
-      scheduleName: run.MSD_Schedule__r?.Name,
-      connectorId: run.MSD_Schedule__r?.MSD_Connector__c,
-      connectorName: run.MSD_Schedule__r?.MSD_Connector__r?.Name,
-      status: run.MSD_Status__c || "Unknown",
-      startedAt: run.MSD_StartedAt__c,
-      finishedAt: run.MSD_FinishedAt__c,
-      recordsRead: run.MSD_RecordsRead__c,
-      recordsProcessed: run.MSD_RecordsProcessed__c,
-      recordsSucceeded: run.MSD_RecordsSucceeded__c,
-      recordsFailed: run.MSD_RecordsFailed__c,
-      errorMessage: run.MSD_ErrorMessage__c
-    }));
+    const resolvedInstance = this.resolveInstance(instanceId);
+    return this.withAdaptiveSalesforceCache(resolvedInstance.id, `listRuns:${limit}`, async () => {
+      const client = await this.createClient(resolvedInstance.id);
+      const runs = await client.queryRuns(limit);
+      return runs.map((run) => ({
+        id: run.Id,
+        scheduleId: run.MSD_Schedule__c,
+        scheduleName: run.MSD_Schedule__r?.Name,
+        connectorId: run.MSD_Schedule__r?.MSD_Connector__c,
+        connectorName: run.MSD_Schedule__r?.MSD_Connector__r?.Name,
+        status: run.MSD_Status__c || "Unknown",
+        startedAt: run.MSD_StartedAt__c,
+        finishedAt: run.MSD_FinishedAt__c,
+        recordsRead: run.MSD_RecordsRead__c,
+        recordsProcessed: run.MSD_RecordsProcessed__c,
+        recordsSucceeded: run.MSD_RecordsSucceeded__c,
+        recordsFailed: run.MSD_RecordsFailed__c,
+        errorMessage: run.MSD_ErrorMessage__c
+      }));
+    });
   }
 
   public async summarizeRecordsByRange(range: OverviewStatsRange, instanceId?: string): Promise<RecordsChartSummary> {
@@ -2794,13 +2829,15 @@ export class AdminDataService {
   }
 
   public async listStaleRuns(limit = 50, instanceId?: string): Promise<StaleRunListItem[]> {
-    const client = await this.createClient(instanceId);
-    const staleThresholdMinutes = this.getStaleRunThresholdMinutes();
-    const staleThresholdMs = staleThresholdMinutes * 60 * 1000;
-    const inactivityThresholdMinutes = this.getStaleRunInactivityThresholdMinutes();
-    const inactivityThresholdMs = inactivityThresholdMinutes * 60 * 1000;
-    const now = Date.now();
-    const runs = await client.queryRunningRuns(limit);
+    const resolvedInstance = this.resolveInstance(instanceId);
+    return this.withAdaptiveSalesforceCache(resolvedInstance.id, `listStaleRuns:${limit}`, async () => {
+      const client = await this.createClient(resolvedInstance.id);
+      const staleThresholdMinutes = this.getStaleRunThresholdMinutes();
+      const staleThresholdMs = staleThresholdMinutes * 60 * 1000;
+      const inactivityThresholdMinutes = this.getStaleRunInactivityThresholdMinutes();
+      const inactivityThresholdMs = inactivityThresholdMinutes * 60 * 1000;
+      const now = Date.now();
+      const runs = await client.queryRunningRuns(limit);
 
     const staleCandidates = await Promise.all(runs.map(async (run) => {
         const startedAt = run.MSD_StartedAt__c;
@@ -2843,24 +2880,25 @@ export class AdminDataService {
         };
       }));
 
-    return staleCandidates
-      .filter((run) => run.isStale)
-      .map((run) => ({
-        id: run.id,
-        scheduleId: run.scheduleId,
-        scheduleName: run.scheduleName,
-        status: run.status,
-        startedAt: run.startedAt,
-        finishedAt: run.finishedAt,
-        recordsRead: run.recordsRead,
-        recordsProcessed: run.recordsProcessed,
-        recordsSucceeded: run.recordsSucceeded,
-        recordsFailed: run.recordsFailed,
-        errorMessage: run.errorMessage,
-        ageMinutes: run.ageMinutes,
-        staleThresholdMinutes: run.staleThresholdMinutes,
-        inactivityThresholdMinutes: run.inactivityThresholdMinutes
-      }));
+      return staleCandidates
+        .filter((run) => run.isStale)
+        .map((run) => ({
+          id: run.id,
+          scheduleId: run.scheduleId,
+          scheduleName: run.scheduleName,
+          status: run.status,
+          startedAt: run.startedAt,
+          finishedAt: run.finishedAt,
+          recordsRead: run.recordsRead,
+          recordsProcessed: run.recordsProcessed,
+          recordsSucceeded: run.recordsSucceeded,
+          recordsFailed: run.recordsFailed,
+          errorMessage: run.errorMessage,
+          ageMinutes: run.ageMinutes,
+          staleThresholdMinutes: run.staleThresholdMinutes,
+          inactivityThresholdMinutes: run.inactivityThresholdMinutes
+        }));
+    });
   }
 
   public async releaseStaleRuns(runIds: string[] | undefined, instanceId?: string): Promise<ReleaseStaleRunsResult> {
@@ -2947,6 +2985,61 @@ export class AdminDataService {
       recordKey: log.MSD_RecordKey__c,
       createdAt: log.CreatedDate
     }));
+  }
+
+  public getRunFailedRecords(runId: string): RunFailedRecordsResult {
+    const normalizedRunId = String(runId || "").trim();
+    if (!normalizedRunId) {
+      throw new Error("Run-ID fehlt");
+    }
+
+    const filePath = path.join(LOCAL_FAILED_RUN_RECORDS_DIR, `${normalizedRunId}.json`);
+    if (!fs.existsSync(filePath)) {
+      return {
+        runId: normalizedRunId,
+        total: 0,
+        items: []
+      };
+    }
+
+    try {
+      const raw = fs.readFileSync(filePath, "utf8").trim();
+      if (!raw) {
+        return {
+          runId: normalizedRunId,
+          total: 0,
+          items: []
+        };
+      }
+
+      const parsed = JSON.parse(raw) as RunFailedRecordsResult;
+      return {
+        runId: normalizedRunId,
+        scheduleId: String(parsed.scheduleId || "").trim() || undefined,
+        scheduleName: String(parsed.scheduleName || "").trim() || undefined,
+        connectorId: String(parsed.connectorId || "").trim() || undefined,
+        connectorName: String(parsed.connectorName || "").trim() || undefined,
+        createdAt: String(parsed.createdAt || "").trim() || undefined,
+        total: Math.max(0, Number(parsed.total || 0) || 0),
+        items: Array.isArray(parsed.items)
+          ? parsed.items.map((item) => ({
+              rowIndex: Math.max(0, Number(item.rowIndex || 0) || 0),
+              externalKey: String(item.externalKey || "").trim() || undefined,
+              statusCode: String(item.statusCode || "").trim() || undefined,
+              message: String(item.message || "").trim() || undefined,
+              retryable: item.retryable === true,
+              sourceRecord: item.sourceRecord && typeof item.sourceRecord === "object" ? item.sourceRecord : undefined,
+              mappedRecord: item.mappedRecord && typeof item.mappedRecord === "object" ? item.mappedRecord : undefined
+            }))
+          : []
+      };
+    } catch {
+      return {
+        runId: normalizedRunId,
+        total: 0,
+        items: []
+      };
+    }
   }
 
   public async summarizeLogsByRange(range: LogChartRange, instanceId?: string): Promise<LogChartSummary> {
@@ -4461,6 +4554,56 @@ export class AdminDataService {
     return client;
   }
 
+  private getAdaptiveSalesforceCacheTtlMs(instanceId: string): number {
+    const usageRatio = this.salesforceApiUsageByInstance.get(instanceId);
+    if (usageRatio === undefined || Number.isNaN(usageRatio)) {
+      return 10_000;
+    }
+
+    if (usageRatio >= 0.95) {
+      return 3 * 60_000;
+    }
+    if (usageRatio >= 0.90) {
+      return 2 * 60_000;
+    }
+    if (usageRatio >= 0.80) {
+      return 60_000;
+    }
+    if (usageRatio >= 0.65) {
+      return 30_000;
+    }
+
+    return 10_000;
+  }
+
+  private updateApiUsageRatio(instanceId: string, overview?: SalesforceOrgOverview): void {
+    const used = Number(overview?.apiUsage?.used || 0);
+    const max = Number(overview?.apiUsage?.max || 0);
+    if (!Number.isFinite(used) || !Number.isFinite(max) || max <= 0) {
+      return;
+    }
+
+    const ratio = Math.max(0, Math.min(1, used / max));
+    this.salesforceApiUsageByInstance.set(instanceId, ratio);
+  }
+
+  private async withAdaptiveSalesforceCache<T>(instanceId: string, bucket: string, loader: () => Promise<T>): Promise<T> {
+    const key = `${instanceId}:${bucket}`;
+    const now = Date.now();
+    const cached = this.adaptiveSalesforceCache.get(key);
+    if (cached && cached.expiresAt > now) {
+      return cached.value as T;
+    }
+
+    const value = await loader();
+    const ttlMs = this.getAdaptiveSalesforceCacheTtlMs(instanceId);
+    this.adaptiveSalesforceCache.set(key, {
+      value,
+      expiresAt: now + ttlMs
+    });
+    return value;
+  }
+
   private extractSalesforceObjectName(sourceDefinition: string): string | undefined {
     const match = String(sourceDefinition || "").match(/\bFROM\s+([A-Za-z0-9_]+)/i);
     return match?.[1]?.trim();
@@ -5471,8 +5614,13 @@ export class AdminDataService {
   }
 
   public async getSalesforceOverview(instanceId?: string): Promise<SalesforceOrgOverview> {
-    const client = await this.createClient(instanceId);
-    return await client.getOrgOverview();
+    const resolvedInstance = this.resolveRuntimeInstance(instanceId);
+    return this.withAdaptiveSalesforceCache(resolvedInstance.id, "salesforceOverview", async () => {
+      const client = await this.createClient(resolvedInstance.id);
+      const overview = await client.getOrgOverview();
+      this.updateApiUsageRatio(resolvedInstance.id, overview);
+      return overview;
+    });
   }
 
   public async listSalesforceObjects(instanceId?: string): Promise<{ name: string; label: string }[]> {
