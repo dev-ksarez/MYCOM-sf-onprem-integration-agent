@@ -1430,10 +1430,24 @@ table tbody tr:hover {
   margin-bottom: 0.75rem;
 }
 
+.scheduler-mapping-toolbar {
+  min-height: 3.3rem;
+}
+
+.scheduler-mapping-toolbar > div:last-child,
+.scheduler-mapping-assistant-bar > div:last-child {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 .scheduler-mapping-assistant-bar {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  min-height: 4.3rem;
   padding: 0.6rem 0.85rem;
   border: 1px solid var(--ui-border, #d9e0e6);
   border-radius: 0.5rem;
@@ -1442,28 +1456,67 @@ table tbody tr:hover {
   flex-wrap: wrap;
 }
 
+.scheduler-mapping-assistant-bar > div:first-child {
+  flex: 1 1 22rem;
+  min-width: 16rem;
+}
+
+.scheduler-mapping-assistant-bar .form-select {
+  width: clamp(13rem, 24vw, 18rem);
+}
+
 .sch-mapping-manager-shell {
   position: relative;
 }
 
 .migration-mapping-search {
+  flex: 0 0 clamp(14rem, 22vw, 21rem);
   max-width: 21rem;
 }
 
 .sch-btn-iconized {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.38rem;
-  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+  min-height: 2.45rem;
+  white-space: nowrap;
+  transition: box-shadow 160ms ease, border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+}
+
+.scheduler-mapping-toolbar .sch-btn-iconized,
+.scheduler-mapping-assistant-bar .sch-btn-iconized {
+  width: 8rem;
+  padding-left: 0.7rem;
+  padding-right: 0.7rem;
+}
+
+.scheduler-mapping-toolbar #sch-automapping {
+  width: 7.7rem;
+}
+
+.scheduler-mapping-toolbar #sch-manager-load-fields {
+  width: 8.8rem;
+}
+
+.scheduler-mapping-assistant-bar #sch-mapping-assistant-apply,
+.scheduler-mapping-assistant-bar #mig-mapping-assistant-apply {
+  width: 9.4rem;
+}
+
+.sch-btn-iconized span {
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sch-btn-iconized:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 14px rgba(30, 48, 64, 0.14);
+  box-shadow: 0 0 0 0.18rem rgba(1, 118, 211, 0.12);
 }
 
 .sch-btn-iconized:active {
-  transform: translateY(0);
+  box-shadow: 0 0 0 0.12rem rgba(1, 118, 211, 0.16);
 }
 
 .sch-btn-svg {
