@@ -7047,7 +7047,7 @@ export function renderAdminUiScript(): string {
 
       function escapeCsvCell(value) {
         const raw = String(value ?? '');
-        if (/[";\n\r]/.test(raw)) {
+        if (/[";\\n\\r]/.test(raw)) {
           return '"' + raw.replaceAll('"', '""') + '"';
         }
         return raw;
@@ -7086,7 +7086,7 @@ export function renderAdminUiScript(): string {
         });
 
         const fileName = 'failed-records-' + (payload.runId || 'run') + '.csv';
-        downloadTextAsFile(lines.join('\n'), fileName, 'text/csv;charset=utf-8');
+        downloadTextAsFile(lines.join('\\n'), fileName, 'text/csv;charset=utf-8');
       }
 
       function updateServiceCpuSparkline(cpuPercent) {
