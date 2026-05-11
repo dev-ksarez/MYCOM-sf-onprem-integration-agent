@@ -155,6 +155,10 @@ async function main() {
     path.join(appRoot, "artifacts", "templates"),
     path.join(stagingAppRoot, "artifacts", "templates")
   );
+  await copyIfExists(
+    path.join(appRoot, "artifacts", "file-examples"),
+    path.join(stagingAppRoot, "artifacts", "file-examples")
+  );
   await copyIfExists(path.join(appRoot, "migrations"), path.join(stagingAppRoot, "migrations"));
   await copyIfExists(path.join(appRoot, "salesforce"), path.join(stagingAppRoot, "salesforce"));
   await fsp.cp(path.join(appRoot, "package.json"), path.join(stagingAppRoot, "package.json"), {
