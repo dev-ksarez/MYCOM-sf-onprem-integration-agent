@@ -2295,8 +2295,16 @@ export class AdminDataService {
         "Upsert",
         "Delete"
       ]),
-      sourceSystems: collectUnique(records.map((record) => record.SourceSystem__c), sourceSystems),
-      targetSystems: collectUnique(records.map((record) => record.TargetSystem__c), targetSystems),
+      sourceSystems: collectUnique(records.map((record) => record.SourceSystem__c), sourceSystems.length ? sourceSystems : [
+        "MS SQL",
+        "Salesforce",
+        "File"
+      ]),
+      targetSystems: collectUnique(records.map((record) => record.TargetSystem__c), targetSystems.length ? targetSystems : [
+        "Salesforce",
+        "MS SQL",
+        "File"
+      ]),
       directions: collectUnique(records.map((record) => record.MSD_Direction__c), directions.length ? directions : [
         "Outbound",
         "Inbound",
