@@ -653,5 +653,12 @@ $backupRoot = Join-Path $appRootResolved "backups\$runId"
   Write-Host "Update failed: $($_.Exception.Message)" -ForegroundColor Red
   Write-Error $_.Exception.Message
   Write-UpdateProgress -State "failed" -Message "Update fehlgeschlagen: $($_.Exception.Message)" -ProgressPercent 0 -Stage "error" -TargetVersion ""
+  
+  try {
+    Invoke-MaintenanceCleanup
+  } catch {
+    Write-Warning "Cleanup failed: $($_.Exception.Message)"
+  }
+  
   exit 1
 }
