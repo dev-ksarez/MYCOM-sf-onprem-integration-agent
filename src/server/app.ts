@@ -50,12 +50,14 @@ import { getDashboardUpdateStatus, triggerDashboardUpdate } from "./dashboard-up
 import { HealthSnapshot } from "./health-snapshot";
 import { generateInstallerFiles, getInstallerSummary, INSTALLER_OUTPUT_DIR, InstallerGenerationInput } from "./installer-generator";
 import { AISchedulerService } from "./ai-scheduler-service";
+import { AIErrorAnalyzer, type RunErrorData } from "./ai-error-analyzer";
 import { generateSalesforceMappingRules } from "../core/mapping-dsl/salesforce-mapping-generator";
 import { serveStaticAsset, UI_ASSET_VERSION } from "./asset-server";
 import { appendAuditHistory, listAuditHistory } from "./audit-history-service";
 import { renderAdminUiScript } from "./admin-ui-script";
 import { listAppModules, renderMenuModuleNavigation, renderSidebarModuleNavigation } from "./app-modules";
 import { renderHtmlDocument } from "./ui-template";
+import { renderAISchedulerAssistantModule } from "./ai-scheduler-ui-module";
 
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -619,6 +621,10 @@ ${renderMenuModuleNavigation()}
               <div id="connectors-panels" class="row g-3"></div>
             </div>
           </div>
+        </section>
+
+        <section class="tab-pane fade" id="tab-ai-assistant" role="tabpanel">
+${renderAISchedulerAssistantModule()}
         </section>
 
         <section class="tab-pane fade" id="tab-monitor" role="tabpanel">
@@ -2297,6 +2303,51 @@ export function createAppServer(
         });
 
         sendJson(200, result);
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/ai/analyze-error") {
+        const body = (await readJsonBody(req)) as {
+          runId?: string;
+          scheduleName?: string;
+          sourceSystem?: string;
+          targetSystem?: string;
+          errorLog?: string;
+          errorCode?: string;
+          recordsProcessed?: number;
+          failedRecords?: number;
+        };
+
+        const errorLog = String(body.errorLog || "").trim();
+        if (!errorLog) {
+          sendJson(400, { error: "errorLog ist erforderlich" });
+          return;
+        }
+
+        const errorAnalyzer = new AIErrorAnalyzer();
+        const analysis = await errorAnalyzer.analyzeRunError({
+          runId: body.runId || "unknown",
+          scheduleName: body.scheduleName || "Unknown Schedule",
+          sourceSystem: body.sourceSystem || "Unknown",
+          targetSystem: body.targetSystem || "Unknown",
+          errorLog,
+          errorCode: body.errorCode,
+          recordsProcessed: body.recordsProcessed,
+          failedRecords: body.failedRecords,
+          timestamp: new Date()
+        });
+
+        // Audit-Log für Fehleranalyse
+        await appendAuditHistory({
+          action: "AI_ERROR_ANALYSIS",
+          entityType: "run",
+          entityId: body.runId,
+          entityName: body.scheduleName,
+          status: analysis.severity === "critical" ? "error" : "success",
+          message: `${analysis.errorCategory}: ${analysis.rootCause.substring(0, 100)}`
+        });
+
+        sendJson(200, analysis);
         return;
       }
 
