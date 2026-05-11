@@ -42,7 +42,7 @@ jobs:
       - name: Create customer installer ZIP
         id: customer_zip
         run: |
-          RELEASE_DIR="release-assets"
+          RELEASE_DIR="artifacts"
           mkdir -p "$RELEASE_DIR"
           node scripts/windows/build-customer-package.js --output-dir "$RELEASE_DIR"
           echo "zip_path=$RELEASE_DIR/${{ steps.version.outputs.customer_zip_name }}" >> "$GITHUB_OUTPUT"
@@ -50,7 +50,7 @@ jobs:
       - name: Create runtime update package ZIP
         id: runtime_zip
         run: |
-          RELEASE_DIR="release-assets"
+          RELEASE_DIR="artifacts"
           RUNTIME_ZIP_PATH="$RELEASE_DIR/${{ steps.version.outputs.runtime_zip_name }}"
           cp "${{ steps.customer_zip.outputs.zip_path }}" "$RUNTIME_ZIP_PATH"
           echo "zip_path=$RUNTIME_ZIP_PATH" >> "$GITHUB_OUTPUT"
@@ -70,7 +70,7 @@ jobs:
           ZIP_NAME: ${{ steps.version.outputs.runtime_zip_name }}
           SHA256: ${{ steps.sha.outputs.sha256 }}
         run: |
-          RELEASE_DIR="release-assets"
+          RELEASE_DIR="artifacts"
           mkdir -p "$RELEASE_DIR"
           MANIFEST_FILE="$RELEASE_DIR/update-manifest.json"
           cat > "$MANIFEST_FILE" <<EOF
@@ -86,7 +86,7 @@ jobs:
       - name: Create initial installer ZIP
         id: installer_zip
         run: |
-          RELEASE_DIR="release-assets"
+          RELEASE_DIR="artifacts"
           INSTALLER="$RELEASE_DIR/${{ steps.version.outputs.installer_zip_name }}"
           zip -r "$INSTALLER" scripts/ .env.example
           echo "installer_path=$INSTALLER" >> "$GITHUB_OUTPUT"
