@@ -42,22 +42,34 @@ jobs:
       - name: Create customer installer ZIP
         id: customer_zip
         run: |
+          set -e
           RELEASE_DIR="artifacts"
           mkdir -p "$RELEASE_DIR"
           node scripts/windows/build-customer-package.js --output-dir "$RELEASE_DIR"
-          echo "zip_path=$RELEASE_DIR/${{ steps.version.outputs.customer_zip_name }}" >> "$GITHUB_OUTPUT"
+          ZIP_PATH="$RELEASE_DIR/${{ steps.version.outputs.customer_zip_name }}"
+          if [ ! -f "$ZIP_PATH" ]; then
+            echo "ERROR: Customer ZIP not created at $ZIP_PATH"
+            exit 1
+          fi
+          echo "zip_path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Create runtime update package ZIP
         id: runtime_zip
         run: |
+          set -e
           RELEASE_DIR="artifacts"
           RUNTIME_ZIP_PATH="$RELEASE_DIR/${{ steps.version.outputs.runtime_zip_name }}"
+          if [ ! -f "${{ steps.customer_zip.outputs.zip_path }}" ]; then
+            echo "ERROR: Customer ZIP not found: ${{ steps.customer_zip.outputs.zip_path }}"
+            exit 1
+          fi
           cp "${{ steps.customer_zip.outputs.zip_path }}" "$RUNTIME_ZIP_PATH"
           echo "zip_path=$RUNTIME_ZIP_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Compute SHA256 of package
         id: sha
         run: |
+          set -e
           HASH=$(sha256sum "${{ steps.runtime_zip.outputs.zip_path }}" | awk '{print $1}')
           echo "sha256=$HASH" >> "$GITHUB_OUTPUT"
 
