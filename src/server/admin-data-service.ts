@@ -492,6 +492,12 @@ export interface SalesforceInstanceOption {
 export interface ScheduleListItem {
   id: string;
   name: string;
+  createdAt?: string;
+  createdByName?: string;
+  createdByUsername?: string;
+  lastModifiedAt?: string;
+  lastModifiedByName?: string;
+  lastModifiedByUsername?: string;
   active: boolean;
   status: "due" | "scheduled" | "inactive" | "running";
   sourceSystem: string;
@@ -526,6 +532,12 @@ export interface ScheduleCheckpointMutationInput {
 export interface ConnectorListItem {
   id: string;
   name: string;
+  createdAt?: string;
+  createdByName?: string;
+  createdByUsername?: string;
+  lastModifiedAt?: string;
+  lastModifiedByName?: string;
+  lastModifiedByUsername?: string;
   active: boolean;
   connectorType: string;
   targetSystem?: string;
@@ -2161,6 +2173,12 @@ export class AdminDataService {
       return {
         id: schedule.id,
         name: schedule.name,
+        createdAt: record.CreatedDate,
+        createdByName: record.CreatedBy?.Name,
+        createdByUsername: record.CreatedBy?.Username,
+        lastModifiedAt: record.LastModifiedDate,
+        lastModifiedByName: record.LastModifiedBy?.Name,
+        lastModifiedByUsername: record.LastModifiedBy?.Username,
         active: schedule.active,
         status: runningScheduleIds.has(schedule.id) ? "running" : this.getScheduleStatus(effectiveSchedule),
         sourceSystem: schedule.sourceSystem,
@@ -2294,6 +2312,12 @@ export class AdminDataService {
     return connectors.map((connector) => ({
       id: connector.id,
       name: connector.name,
+      createdAt: connector.createdAt,
+      createdByName: connector.createdByName,
+      createdByUsername: connector.createdByUsername,
+      lastModifiedAt: connector.lastModifiedAt,
+      lastModifiedByName: connector.lastModifiedByName,
+      lastModifiedByUsername: connector.lastModifiedByUsername,
       active: connector.active,
       connectorType: connector.connectorType,
       targetSystem: connector.targetSystem,

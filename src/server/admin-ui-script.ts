@@ -97,6 +97,10 @@ export function renderAdminUiScript(): string {
         pendingImportInProgress: false,
         pendingImportSuggestions: [],
         pendingImportAnalysis: null,
+        createdAt: '',
+        updatedAt: '',
+        createdByName: '',
+        updatedByName: '',
         mappingAssistantProfilesByObjectId: {}
       };
 
@@ -2307,6 +2311,30 @@ export function renderAdminUiScript(): string {
         } catch {
           return String(dateString);
         }
+      }
+
+      function getWizardUserLabel(entry, prefix) {
+        if (!entry) return '-';
+        const name = String(entry[prefix + 'ByName'] || entry[prefix + 'ByUsername'] || entry[prefix + 'By'] || '').trim();
+        return name || '-';
+      }
+
+      function renderWizardMetadata(elementId, entry, emptyLabel) {
+        const element = document.getElementById(elementId);
+        if (!element) return;
+
+        const createdAt = entry?.createdAt || '';
+        const modifiedAt = entry?.lastModifiedAt || entry?.updatedAt || '';
+        if (!createdAt && !modifiedAt) {
+          element.textContent = emptyLabel || 'Noch nicht gespeichert';
+          return;
+        }
+
+        const createdBy = getWizardUserLabel(entry, 'created');
+        const modifiedBy = String(entry?.lastModifiedByName || entry?.lastModifiedByUsername || entry?.updatedByName || entry?.updatedBy || '').trim() || '-';
+        element.innerHTML =
+          '<span><strong>Erstellt:</strong> ' + esc(formatDate(createdAt, 'short')) + ' · ' + esc(createdBy) + '</span>' +
+          '<span><strong>Letzte Änderung:</strong> ' + esc(formatDate(modifiedAt, 'short')) + ' · ' + esc(modifiedBy) + '</span>';
       }
 
       function formatDurationMinSec(milliseconds) {
@@ -8441,6 +8469,7 @@ export function renderAdminUiScript(): string {
         }
 
         document.getElementById('sch-id').value = entry?.id || '';
+        renderWizardMetadata('sch-wizard-meta', entry, 'Neuer Scheduler · noch nicht gespeichert');
         document.getElementById('sch-name').value = entry?.name || '';
         renderScheduleConnectorOptions(entry?.connectorId || '');
         renderScheduleParentOptions(entry?.id || '', entry?.parentScheduleId || '');
@@ -8935,6 +8964,7 @@ export function renderAdminUiScript(): string {
           : (templateDraft || null);
         clearConnectorModalError();
         document.getElementById('con-id').value = entry?.id || '';
+        renderWizardMetadata('con-wizard-meta', entry, 'Neuer Connector · noch nicht gespeichert');
         document.getElementById('con-name').value = entry?.name || '';
         document.getElementById('con-type').value = entry?.connectorType || 'MSSQL';
         document.getElementById('con-wizard-type').value = getConnectorWizardTypeFromConnectorType(entry?.connectorType || 'MSSQL');
@@ -11311,6 +11341,9 @@ export function renderAdminUiScript(): string {
         const saved = await res.json();
         if (!migState.id) migState.id = saved.id;
         migState.status = String(saved.status || migState.status || 'draft');
+        migState.createdAt = String(saved.createdAt || migState.createdAt || '');
+        migState.updatedAt = String(saved.updatedAt || migState.updatedAt || '');
+        renderWizardMetadata('mig-wizard-meta', migState, 'Neue Migration · noch nicht gespeichert');
         return saved;
       }
 
@@ -11327,6 +11360,10 @@ export function renderAdminUiScript(): string {
         migState.activeRunVisible = migState.status === 'running' || hasLastRunResult || !!(options && options.showRunSummary);
         migState.name = migration ? migration.name : (options && options.name ? options.name : '');
         migState.description = migration ? (migration.description || '') : (options && options.description ? options.description : '');
+        migState.createdAt = migration ? String(migration.createdAt || '') : '';
+        migState.updatedAt = migration ? String(migration.updatedAt || '') : '';
+        migState.createdByName = migration ? String(migration.createdByName || migration.createdBy || '') : '';
+        migState.updatedByName = migration ? String(migration.updatedByName || migration.updatedBy || '') : '';
         migState.batchSize = migration ? Number(migration.batchSize || 200) : 200;
         if (!Number.isFinite(migState.batchSize) || migState.batchSize <= 0) {
           migState.batchSize = 200;
@@ -11394,6 +11431,7 @@ export function renderAdminUiScript(): string {
         if (migState.step === 5) renderMigOrderList();
         if (migState.step === 6) renderMigMissingFields();
         if (migState.step === 7) renderMigReview();
+        renderWizardMetadata('mig-wizard-meta', migState, 'Neue Migration · noch nicht gespeichert');
         void loadEntityHistory('migration', migState.id || '', 'mig-history-list', 'mig-history-meta', 'Migration noch nicht gespeichert.');
 
         const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('migration-modal'));

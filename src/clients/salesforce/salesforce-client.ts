@@ -66,6 +66,16 @@ export interface SalesforceAccountRecord {
 export interface SalesforceScheduleRecord {
   Id: string;
   Name: string;
+  CreatedDate?: string;
+  LastModifiedDate?: string;
+  CreatedBy?: {
+    Name?: string;
+    Username?: string;
+  };
+  LastModifiedBy?: {
+    Name?: string;
+    Username?: string;
+  };
   Active__c: boolean;
   SourceSystem__c?: string;
   TargetSystem__c?: string;
@@ -157,6 +167,16 @@ export interface SalesforceFieldMappingRecord {
 export interface SalesforceConnectorRecord {
   Id: string;
   Name: string;
+  CreatedDate?: string;
+  LastModifiedDate?: string;
+  CreatedBy?: {
+    Name?: string;
+    Username?: string;
+  };
+  LastModifiedBy?: {
+    Name?: string;
+    Username?: string;
+  };
   MSD_Active__c?: boolean;
   MSD_ConnectorType__c?: string;
   MSD_TargetSystem__c?: string;
@@ -171,6 +191,12 @@ export interface SalesforceConnectorRecord {
 export interface ConnectorConfig {
   id: string;
   name: string;
+  createdAt?: string;
+  createdByName?: string;
+  createdByUsername?: string;
+  lastModifiedAt?: string;
+  lastModifiedByName?: string;
+  lastModifiedByUsername?: string;
   active: boolean;
   connectorType: string;
   targetSystem?: string;
@@ -848,6 +874,12 @@ export class SalesforceClient {
       SELECT
         Id,
         Name,
+        CreatedDate,
+        CreatedBy.Name,
+        CreatedBy.Username,
+        LastModifiedDate,
+        LastModifiedBy.Name,
+        LastModifiedBy.Username,
         Active__c,
         SourceSystem__c,
         TargetSystem__c,
@@ -884,6 +916,12 @@ export class SalesforceClient {
       SELECT
         Id,
         Name,
+        CreatedDate,
+        CreatedBy.Name,
+        CreatedBy.Username,
+        LastModifiedDate,
+        LastModifiedBy.Name,
+        LastModifiedBy.Username,
         Active__c,
         SourceSystem__c,
         TargetSystem__c,
@@ -963,6 +1001,12 @@ export class SalesforceClient {
       SELECT
         Id,
         Name,
+        CreatedDate,
+        CreatedBy.Name,
+        CreatedBy.Username,
+        LastModifiedDate,
+        LastModifiedBy.Name,
+        LastModifiedBy.Username,
         MSD_Active__c,
         MSD_ConnectorType__c,
         MSD_TargetSystem__c,
@@ -992,6 +1036,12 @@ export class SalesforceClient {
       SELECT
         Id,
         Name,
+        CreatedDate,
+        CreatedBy.Name,
+        CreatedBy.Username,
+        LastModifiedDate,
+        LastModifiedBy.Name,
+        LastModifiedBy.Username,
         MSD_Active__c,
         MSD_ConnectorType__c,
         MSD_TargetSystem__c,
@@ -1084,6 +1134,12 @@ export class SalesforceClient {
     return {
       id: record.Id,
       name: record.Name,
+      createdAt: record.CreatedDate,
+      createdByName: record.CreatedBy?.Name,
+      createdByUsername: record.CreatedBy?.Username,
+      lastModifiedAt: record.LastModifiedDate,
+      lastModifiedByName: record.LastModifiedBy?.Name,
+      lastModifiedByUsername: record.LastModifiedBy?.Username,
       active: record.MSD_Active__c ?? false,
       connectorType: record.MSD_ConnectorType__c,
       targetSystem: record.MSD_TargetSystem__c,

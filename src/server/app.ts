@@ -776,7 +776,7 @@ ${renderMenuModuleNavigation()}
     <div class="modal fade" id="migration-modal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
-          <div class="modal-header">
+          <div class="modal-header connector-wizard-header">
             <h5 class="modal-title" id="migration-modal-title">Migrations-Assistent</h5>
             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
           </div>
@@ -994,6 +994,7 @@ ${renderMenuModuleNavigation()}
 
           </div>
           <div class="modal-footer connector-wizard-footer">
+            <div id="mig-wizard-meta" class="connector-wizard-meta">Erstellt: - · Letzte Änderung: -</div>
             <div class="connector-wizard-footer-group connector-wizard-footer-start">
               <button type="button" class="btn btn-outline-secondary" id="mig-wizard-prev" disabled>← Zurück</button>
               <button type="button" class="btn btn-primary" id="mig-wizard-next">Weiter →</button>
@@ -1053,7 +1054,7 @@ ${renderMenuModuleNavigation()}
     <div class="modal fade" id="schedule-modal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
-          <div class="modal-header">
+          <div class="modal-header connector-wizard-header">
             <h5 class="modal-title">Scheduler-Assistent</h5>
             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
           </div>
@@ -1353,6 +1354,7 @@ ${renderMenuModuleNavigation()}
             </div>
           </div>
           <div class="modal-footer connector-wizard-footer">
+            <div id="sch-wizard-meta" class="connector-wizard-meta">Erstellt: - · Letzte Änderung: -</div>
             <div class="connector-wizard-footer-group connector-wizard-footer-start">
               <button id="sch-wizard-back" type="button" class="btn btn-outline-secondary">← Zurück</button>
               <button id="sch-wizard-next" type="button" class="btn btn-primary">Weiter →</button>
@@ -1518,6 +1520,7 @@ ${renderMenuModuleNavigation()}
             </div>
           </div>
           <div class="modal-footer connector-wizard-footer">
+            <div id="con-wizard-meta" class="connector-wizard-meta">Erstellt: - · Letzte Änderung: -</div>
             <div class="connector-wizard-footer-group connector-wizard-footer-start">
               <button id="con-wizard-back" type="button" class="btn btn-outline-secondary">← Zurück</button>
               <button id="con-wizard-next" type="button" class="btn btn-primary">Weiter →</button>
