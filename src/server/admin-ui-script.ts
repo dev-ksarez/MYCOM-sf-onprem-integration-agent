@@ -9665,23 +9665,23 @@ export function renderAdminUiScript(): string {
           clearError();
           showInfo('Analysiere Datenquelle mit Datenschutz-Fokus...');
 
-          const sourceName = (document.getElementById('migration-source-name') as HTMLInputElement).value.trim();
-          const sourceType = (document.getElementById('migration-source-type') as HTMLSelectElement).value;
-          const fieldDefsStr = (document.getElementById('migration-field-defs') as HTMLTextAreaElement).value.trim();
-          const estimatedRecords = Number((document.getElementById('migration-est-records') as HTMLInputElement).value || 0);
-          const description = (document.getElementById('migration-description') as HTMLInputElement).value;
+          const sourceName = document.getElementById('migration-source-name').value.trim();
+          const sourceType = document.getElementById('migration-source-type').value;
+          const fieldDefsStr = document.getElementById('migration-field-defs').value.trim();
+          const estimatedRecords = Number(document.getElementById('migration-est-records').value || 0);
+          const description = document.getElementById('migration-description').value;
 
           if (!sourceName) {
             showError('Bitte gebe einen Quellnamen ein');
             return;
           }
 
-          let fieldDefinitions: any[] = [];
+          let fieldDefinitions = [];
           if (fieldDefsStr) {
             try {
               fieldDefinitions = JSON.parse(fieldDefsStr);
             } catch (e) {
-              showError('Feld-Definitionen sind kein gültiges JSON: ' + (e as Error).message);
+              showError('Feld-Definitionen sind kein gültiges JSON: ' + (e instanceof Error ? e.message : String(e)));
               return;
             }
           }
@@ -9722,13 +9722,13 @@ export function renderAdminUiScript(): string {
                       <div class="col-12">
                         <strong>🔒 Sensitive Felder (\${analysis.sensitiveFields.length}):</strong>
                         <ul class="small mb-0">
-                          \${analysis.sensitiveFields.map((f: any) => \`
+                          \${analysis.sensitiveFields.map(function(f) { return \`
                             <li>
                               <code>\${htmlEscape(f.fieldName)}</code>
                               <span class="badge bg-danger">\${f.category}</span>
                               <span class="badge bg-warning">Aktion: \${f.suggestedAction}</span>
                             </li>
-                          \`).join('')}
+                          \`; }).join('')}
                         </ul>
                       </div>
                     \` : ''}
@@ -9738,7 +9738,7 @@ export function renderAdminUiScript(): string {
                         <div class="alert alert-warning mb-0">
                           <strong>⚠️ Datenschutz-Hinweise:</strong>
                           <ul class="small mb-0">
-                            \${analysis.complianceIssues.map((issue: string) => \`<li>\${htmlEscape(issue)}</li>\`).join('')}
+                            \${analysis.complianceIssues.map(function(issue) { return \`<li>\${htmlEscape(issue)}</li>\`; }).join('')}
                           </ul>
                         </div>
                       </div>
@@ -9747,7 +9747,7 @@ export function renderAdminUiScript(): string {
                     <div class="col-12">
                       <strong>📋 Empfehlungen:</strong>
                       <ul class="small mb-0">
-                        \${analysis.recommendations.map((rec: string) => \`<li>\${htmlEscape(rec)}</li>\`).join('')}
+                        \${analysis.recommendations.map(function(rec) { return \`<li>\${htmlEscape(rec)}</li>\`; }).join('')}
                       </ul>
                     </div>
 
@@ -9757,14 +9757,14 @@ export function renderAdminUiScript(): string {
                         <table class="table table-sm mb-0">
                           <thead><tr><th>Source-Feld</th><th>Datentyp</th><th>Ziel-Feld</th><th>Privacy</th></tr></thead>
                           <tbody>
-                            \${analysis.suggestedMappings.slice(0, 10).map((m: any) => \`
+                            \${analysis.suggestedMappings.slice(0, 10).map(function(m) { return \`
                               <tr>
                                 <td><code>\${htmlEscape(m.sourceField)}</code></td>
                                 <td><small>\${htmlEscape(m.dataType)}</small></td>
                                 <td><code>\${m.targetField ? htmlEscape(m.targetField) : '-'}</code></td>
                                 <td>\${m.isSensitive ? '🔒 ' + (m.privacyAction || '-') : '✓'}</td>
                               </tr>
-                            \`).join('')}
+                            \`; }).join('')}
                           </tbody>
                         </table>
                         \${analysis.suggestedMappings.length > 10 ? \`<div class="small text-secondary mt-2">... und \${analysis.suggestedMappings.length - 10} weitere Felder</div>\` : ''}
