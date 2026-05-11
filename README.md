@@ -7,6 +7,10 @@ Der Agent holt Konfigurationen aus Salesforce, liest Daten aus Quellsystemen (z.
 ## Features
 
 - Salesforce als Steuerungsebene fuer Schedules, Runs und Logging
+- KI-gestuetzte Dashboard-Gesamtanalyse (Laufzeiten, Fehler, Datenwuchs, Health-Score, Empfehlungen)
+- KI-gestuetzte Migrationsanalyse mit Salesforce-Zielobjektvorschlaegen
+- Direktes Erstellen eines Migrationsprofils aus der KI-Analyse (als Draft im Wizard)
+- Pflichtfeld-Validierung fuer Salesforce-Zielobjekte mit Ampelstatus (GRUEN/GELB/ROT)
 - Flexible Import-Profile pro Ziel (Objekt oder Picklist)
 - Picklist-Unterstuetzung:
   - Global Value Set
@@ -20,6 +24,26 @@ Der Agent holt Konfigurationen aus Salesforce, liest Daten aus Quellsystemen (z.
 - Windows-Dienst-Installation
 - Auto-Update mit Manifest, SHA256-Pruefung, Backup und Rollback
 - Release-Paketerstellung fuer Kundeninstallation
+
+## KI-Unterstuetzung in der Web UI
+
+Die Web UI enthaelt einen KI-Assistenten fuer zwei Kernbereiche:
+
+1. Scheduler-Assistent
+- Generiert Scheduler-Konfigurationen aus natuerlicher Sprache.
+- Ermittelt Quelle, Ziel, Objekt, Richtung, Operation und Timing.
+
+2. Dashboard- und Migrationsanalyse
+- Dashboard: Gesamtbewertung des Agent-Zustands mit Score, Status, Zusammenfassung und Empfehlungen.
+- Migration: Salesforce-fokussierte Quellanalyse inkl. Mapping-Vorschlaegen und Datenschutz-Hinweisen.
+- Zielobjekte: Account, Contact, Lead, Opportunity, Order, Product (Product2), ProductPrice (PricebookEntry).
+- Ein Klick erstellt aus der Analyse direkt ein Migrationsprofil als Entwurf.
+- Vor Profilerstellung zeigt die UI einen Pflichtfeld-Check mit Ampelstatus und fehlenden Pflichtfeldern.
+
+Detaildokumentation zum Scheduler-Assistenten und den KI-Erweiterungen:
+
+- [FEATURE_AI_SCHEDULER_ASSISTANT.md](FEATURE_AI_SCHEDULER_ASSISTANT.md)
+- [RELEASE_NOTES_0.2.40.md](RELEASE_NOTES_0.2.40.md)
 
 ## Voraussetzungen
 

@@ -4,6 +4,11 @@
 
 Dieses Feature implementiert einen KI-basierten Assistenten zur **automatischen Generierung von Scheduler-Konfigurationen** aus natürlichsprachigen Benutzer-Anforderungen.
 
+Stand ab **v0.2.40**:
+- Der KI-Bereich wurde über den Scheduler-Assistenten hinaus erweitert.
+- Zusätzlich gibt es eine KI-gestützte Dashboard-Analyse und eine Salesforce-fokussierte KI-Migrationsanalyse.
+- Aus der Migrationsanalyse kann direkt ein Migrationsprofil als Entwurf erstellt werden.
+
 **Hybride Architektur:**
 - **Phase 1 (Rule-based)**: 100% kostenlos, läuft lokal
   - Keyword-Analyse des Prompts
@@ -23,8 +28,15 @@ Dieses Feature implementiert einen KI-basierten Assistenten zur **automatischen 
 src/server/
 ├── ai-scheduler-service.ts      # KI-Logik & Generierung (Rule-based)
 ├── ai-scheduler-ui-module.ts    # UI-Rendering für Frontend
+├── ai-dashboard-analyzer.ts      # KI-Analyse fuer Dashboard-Gesamtzustand
+├── ai-migration-analyzer.ts      # KI-Analyse fuer Migration + Salesforce-Mapping
 └── app.ts                        # API-Endpoint /api/ai/generate-scheduler
 ```
+
+Zusätzliche API-Endpoints:
+
+- `POST /api/ai/analyze-dashboard`
+- `POST /api/ai/analyze-migration-source`
 
 ### API-Endpoint
 
@@ -77,6 +89,39 @@ Der Assistent erkennt automatisch:
 - **Timing**: Täglich, stündlich, wöchentlich, monatlich mit Uhrzeitangabe
 - **Richtung**: Inbound/Outbound basierend auf Quelle und Ziel
 
+### Salesforce-fokussierte Migrationsanalyse (neu)
+
+Die KI-Migrationsanalyse unterstützt jetzt direkt mehrere Salesforce-Zielobjekte:
+
+- Account
+- Contact
+- Lead
+- Opportunity
+- Order
+- Product (technisch: Product2)
+- ProductPrice (technisch: PricebookEntry)
+
+Ergebnis der Analyse:
+
+- Vorschlag des passenden Salesforce-Zielobjekts
+- Feld-Mapping-Vorschläge auf Salesforce-Standardfelder
+- Datenschutzhinweise für sensitive Felder
+- Pflichtfeld-Check (Ampel: GRUEN/GELB/ROT)
+
+Bei der Übernahme in ein Profil:
+
+- Die UI erzeugt direkt eine Draft-Migration aus den KI-Vorschlägen.
+- Fehlende Pflichtfelder werden vorab angezeigt und bestätigt.
+
+### KI-Dashboardanalyse (neu)
+
+Die Dashboard-KI erzeugt aus den vorhandenen Betriebsmetriken:
+
+- Health-Score (0-100)
+- Zustand (Gesund, Stabil, Beobachten, Kritisch)
+- Kurz-Zusammenfassung
+- Konkrete Empfehlungen zu Laufzeiten, Fehlern und Datenwuchs
+
 ### Automatische Konfiguration
 
 ✅ **Connector-Auswahl**
@@ -120,6 +165,15 @@ Der Assistent ist im neuen Tab **"KI-Assistent"** verfügbar neben Connector/Sch
 3. "Konfiguration generieren" klicken
 4. Preview & Issues überprüfen
 5. "Speichern und verwenden" → Direct zur Scheduler-Nutzung
+
+### Migrationsanalyse-Workflow (neu)
+
+1. Im Migration-Tab Quelle und Zielobjekt (Salesforce) wählen.
+2. Optional Datei hochladen, um Felddefinitionen automatisch zu erkennen.
+3. KI-Analyse starten.
+4. Pflichtfeld-Ampel und Mapping-Vorschläge prüfen.
+5. "Migrationsprofil aus Analyse erstellen" klicken.
+6. Entwurf wird im Migrationswizard geöffnet und kann direkt verfeinert werden.
 
 ### Beispiel-Prompts
 
@@ -198,6 +252,8 @@ WEB_UI_ENABLED=1 npm run dev
 
 - [ai-scheduler-service.ts](./ai-scheduler-service.ts) - Core-Logik
 - [ai-scheduler-ui-module.ts](./ai-scheduler-ui-module.ts) - Frontend
+- [ai-dashboard-analyzer.ts](./src/server/ai-dashboard-analyzer.ts) - Dashboard-KI
+- [ai-migration-analyzer.ts](./src/server/ai-migration-analyzer.ts) - Migrations-KI
 - [app.ts](./app.ts) - API-Routing
 - [admin-data-service.ts](./admin-data-service.ts) - Daten-Persistierung
 
