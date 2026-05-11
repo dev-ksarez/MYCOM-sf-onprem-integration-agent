@@ -231,7 +231,7 @@ ${renderSidebarModuleNavigation()}
               ☰
               <span id="agent-menu-update-bullet" class="agent-update-bullet d-none" aria-hidden="true"></span>
             </button>
-            <div class="agent-topbar-brand">SF Integration Agent <span id="agent-version-label" class="agent-version-label">v-</span></div>
+            <div class="agent-topbar-brand">SF Integration Agent</div>
           </div>
           <div class="agent-navbar-actions offcanvas offcanvas-end" tabindex="-1" id="agent-header-menu" aria-labelledby="agent-header-menu-title">
             <div class="offcanvas-header agent-offcanvas-header">
