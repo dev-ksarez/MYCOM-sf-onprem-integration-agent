@@ -46,6 +46,8 @@ export function renderAdminUiScript(): string {
         schedulerLookupObjectsLoadPromise: null,
         schedulerLookupExternalIdFieldsByObject: {},
         schedulerLookupExternalIdFieldPromises: {},
+        scheduleTargetFileNameDirty: false,
+        scheduleTargetFileNameLastAuto: '',
         hasIncompatibleScheduleMappings: false,
         scheduleMappingAssistantProfile: 'standard',
         rawMappingEditorDirty: false,
@@ -2037,6 +2039,170 @@ export function renderAdminUiScript(): string {
 
       function isMssqlConnectorType(connectorType) {
         return normalizeConnectorType(connectorType) === 'MSSQL';
+      }
+
+      function pickFirstAvailableSelectValue(selectEl, candidates) {
+        if (!selectEl || !Array.isArray(candidates)) {
+          return '';
+        }
+
+        const normalizeComparable = (value) => String(value || '')
+          .trim()
+          .toLowerCase()
+          .replace(/[\s_-]+/g, '');
+
+        const options = Array.from(selectEl.options || []);
+        const normalizedCandidates = candidates
+          .map((candidate) => ({
+            raw: String(candidate || '').trim(),
+            normalized: normalizeComparable(candidate)
+          }))
+          .filter((item) => item.raw && item.normalized);
+
+        const exactByValue = normalizedCandidates.find((candidate) =>
+          options.some((option) => String(option.value || '').trim() === candidate.raw)
+        );
+        if (exactByValue) {
+          return exactByValue.raw;
+        }
+
+        const byComparable = normalizedCandidates.find((candidate) =>
+          options.some((option) => {
+            const optionValueComparable = normalizeComparable(option.value);
+            const optionTextComparable = normalizeComparable(option.textContent || '');
+            if (!optionValueComparable && !optionTextComparable) {
+              return false;
+            }
+            return optionValueComparable === candidate.normalized
+              || optionTextComparable === candidate.normalized
+              || optionTextComparable.includes(candidate.normalized)
+              || (optionTextComparable && candidate.normalized.includes(optionTextComparable));
+          })
+        );
+
+        if (!byComparable) {
+          return '';
+        }
+
+        const matchedOption = options.find((option) => {
+          const optionValueComparable = normalizeComparable(option.value);
+          const optionTextComparable = normalizeComparable(option.textContent || '');
+          if (!optionValueComparable && !optionTextComparable) {
+            return false;
+          }
+          return optionValueComparable === byComparable.normalized
+            || optionTextComparable === byComparable.normalized
+            || optionTextComparable.includes(byComparable.normalized)
+            || (optionTextComparable && byComparable.normalized.includes(optionTextComparable));
+        });
+
+        return String(matchedOption?.value || '').trim();
+      }
+
+      function inferScheduleSourceTypeFromConnector(connectorId) {
+        const normalizedConnectorId = String(connectorId || '').trim();
+        if (!normalizedConnectorId) {
+          return '';
+        }
+
+        const connector = (state.connectors || []).find((item) => String(item?.id || '').trim() === normalizedConnectorId);
+        if (!connector) {
+          return '';
+        }
+
+        const sourceTypeSelect = document.getElementById('sch-source-type');
+        const normalizedConnectorType = normalizeConnectorType(connector.connectorType);
+
+        if (normalizedConnectorType === 'REST_API') {
+          return pickFirstAvailableSelectValue(sourceTypeSelect, ['REST_API']);
+        }
+
+        if (normalizedConnectorType === 'FILE' || normalizedConnectorType === 'FILE_BINARY_SF_IMPORT') {
+          return pickFirstAvailableSelectValue(sourceTypeSelect, ['FILE_CSV', 'FILE_JSON', 'FILE_EXCEL', 'FILE_XLSX']);
+        }
+
+        if (isSqlConnectorType(normalizedConnectorType)) {
+          return pickFirstAvailableSelectValue(sourceTypeSelect, ['MSSQL_SQL', 'MSSQL']);
+        }
+
+        return '';
+      }
+
+      function inferScheduleSourceSystemFromConnector(connectorId) {
+        const normalizedConnectorId = String(connectorId || '').trim();
+        if (!normalizedConnectorId) {
+          return '';
+        }
+
+        const connector = (state.connectors || []).find((item) => String(item?.id || '').trim() === normalizedConnectorId);
+        if (!connector) {
+          return '';
+        }
+
+        const sourceSystemSelect = document.getElementById('sch-source-system');
+        const normalizedConnectorType = normalizeConnectorType(connector.connectorType);
+
+        if (normalizedConnectorType === 'REST_API') {
+          return pickFirstAvailableSelectValue(sourceSystemSelect, ['REST API', 'REST_API', 'REST', 'API']);
+        }
+
+        if (normalizedConnectorType === 'FILE' || normalizedConnectorType === 'FILE_BINARY_SF_IMPORT') {
+          return pickFirstAvailableSelectValue(sourceSystemSelect, ['File', 'FILE', 'Datei', 'Dateisystem']);
+        }
+
+        if (isSqlConnectorType(normalizedConnectorType)) {
+          return pickFirstAvailableSelectValue(sourceSystemSelect, ['MS SQL', 'MSSQL', 'SQL', 'MS-SQL', 'Datenbank']);
+        }
+
+        return '';
+      }
+
+      function applyScheduleSourceTypeFromConnector(connectorId, options) {
+        const sourceTypeSelect = document.getElementById('sch-source-type');
+        if (!sourceTypeSelect) {
+          return;
+        }
+
+        const nextSourceType = inferScheduleSourceTypeFromConnector(connectorId);
+        if (!nextSourceType) {
+          return;
+        }
+
+        const currentSourceType = String(sourceTypeSelect.value || '').trim();
+        const force = options?.force === true;
+        if (!force && currentSourceType) {
+          return;
+        }
+
+        if (currentSourceType === nextSourceType) {
+          return;
+        }
+
+        sourceTypeSelect.value = nextSourceType;
+      }
+
+      function applyScheduleSourceSystemFromConnector(connectorId, options) {
+        const sourceSystemSelect = document.getElementById('sch-source-system');
+        if (!sourceSystemSelect) {
+          return;
+        }
+
+        const nextSourceSystem = inferScheduleSourceSystemFromConnector(connectorId);
+        if (!nextSourceSystem) {
+          return;
+        }
+
+        const currentSourceSystem = String(sourceSystemSelect.value || '').trim();
+        const force = options?.force === true;
+        if (!force && currentSourceSystem) {
+          return;
+        }
+
+        if (currentSourceSystem === nextSourceSystem) {
+          return;
+        }
+
+        sourceSystemSelect.value = nextSourceSystem;
       }
 
       function getConnectorWizardTypeFromConnectorType(connectorType) {
@@ -4247,6 +4413,65 @@ export function renderAdminUiScript(): string {
         }
 
         const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
+        if (isFileScheduleTargetType(targetType)) {
+          const sources = getSchedulerMappingManagerSources();
+          const existingTargets = (Array.isArray(state.mappingRules) ? state.mappingRules : [])
+            .map((rule) => String(rule?.targetField || '').trim())
+            .filter(Boolean);
+          const sourceDerivedFields = sources.map((source) => ({
+            name: String(source?.name || '').trim(),
+            label: String(source?.label || source?.name || '').trim(),
+            requiredOnCreate: false,
+            createable: true,
+            updateable: true,
+            type: String(source?.type || 'string').trim() || 'string'
+          })).filter((field) => field.name);
+          const mergedFieldsByKey = new Map();
+          sourceDerivedFields.forEach((field) => {
+            mergedFieldsByKey.set(normalizeFieldKey(field.name), field);
+          });
+          existingTargets.forEach((name) => {
+            const key = normalizeFieldKey(name);
+            if (!key || mergedFieldsByKey.has(key)) {
+              return;
+            }
+            mergedFieldsByKey.set(key, {
+              name,
+              label: name,
+              requiredOnCreate: false,
+              createable: true,
+              updateable: true,
+              type: 'string'
+            });
+          });
+
+          const fields = Array.from(mergedFieldsByKey.values()).sort((a, b) =>
+            String(a?.label || a?.name || '').localeCompare(String(b?.label || b?.name || ''), 'de', { sensitivity: 'base', numeric: true })
+          );
+
+          state.targetFields = fields;
+          state.schedulerLookupObjects = [];
+          state.schedulerLookupObjectsLoaded = false;
+          state.schedulerLookupObjectsLoadPromise = null;
+          state.schedulerLookupExternalIdFieldsByObject = {};
+          state.schedulerLookupExternalIdFieldPromises = {};
+
+          const currentValue = preferredField || select.value;
+          select.innerHTML = '<option value="">- Wählen -</option>' + fields.map((field) =>
+            '<option value="' + esc(field.name) + '">' + esc(field.label || field.name) + '</option>'
+          ).join('');
+          if (currentValue && !fields.some((field) => field.name === currentValue)) {
+            select.innerHTML += '<option value="' + esc(currentValue) + '">' + esc(currentValue) + '</option>';
+          }
+          if (currentValue) {
+            select.value = currentValue;
+          }
+          refreshSchedulerMappingCompatibilityState();
+          renderRequiredSchedulerFieldStatus();
+          renderSchedulerMappingManager();
+          return;
+        }
+
         if (targetType === 'SALESFORCE_GLOBAL_PICKLIST') {
           const fields = getSchedulerGlobalPicklistTargetFields();
           state.targetFields = fields;
@@ -5458,6 +5683,7 @@ export function renderAdminUiScript(): string {
         const mappingManagerWrap = mappingManager?.closest('.col-md-12');
         const mappingDefinition = document.getElementById('sch-mapping');
         const mappingDefinitionWrap = mappingDefinition?.closest('.col-md-12');
+        const fileOptionsWrap = document.getElementById('sch-target-file-options-wrap');
         let fileTargetHint = document.getElementById('sch-file-target-mapping-hint');
         if (!fileTargetHint && mappingManagerWrap) {
           fileTargetHint = document.createElement('div');
@@ -5467,13 +5693,17 @@ export function renderAdminUiScript(): string {
           mappingManagerWrap.parentElement?.insertBefore(fileTargetHint, mappingManagerWrap);
         }
         if (mappingManagerWrap) {
-          mappingManagerWrap.classList.toggle('d-none', isFileTarget);
+          mappingManagerWrap.classList.toggle('d-none', false);
         }
         if (mappingDefinitionWrap) {
-          mappingDefinitionWrap.classList.toggle('d-none', isFileTarget);
+          mappingDefinitionWrap.classList.toggle('d-none', false);
         }
         if (fileTargetHint) {
           fileTargetHint.classList.toggle('d-none', !isFileTarget);
+          fileTargetHint.textContent = 'Datei-Ziele verwenden das Mapping für Spaltennamen (Header) und Reihenfolge. Datei-Optionen (Charset, Separator, Qualifier, Dateiname) sind oben konfigurierbar.';
+        }
+        if (fileOptionsWrap) {
+          fileOptionsWrap.classList.toggle('d-none', !isFileTarget);
         }
 
         if (isFileSource && !String(document.getElementById('sch-source-system')?.value || '').trim()) {
@@ -5481,6 +5711,40 @@ export function renderAdminUiScript(): string {
         }
         if (isFileTarget && !String(document.getElementById('sch-target-system')?.value || '').trim()) {
           document.getElementById('sch-target-system').value = 'File';
+        }
+
+        if (isFileTarget) {
+          const fileNameInput = document.getElementById('sch-target-file-name');
+          const charsetSelect = document.getElementById('sch-target-file-charset');
+          const delimiterInput = document.getElementById('sch-target-file-delimiter');
+          const qualifierInput = document.getElementById('sch-target-file-text-qualifier');
+          const sheetNameInput = document.getElementById('sch-target-file-sheet-name');
+          const defaultFileName = getDefaultScheduleTargetFileNameForType(targetType);
+          const currentFileName = String(fileNameInput?.value || '').trim();
+          const canAutoAdjustFileName = !state.scheduleTargetFileNameDirty
+            && (!currentFileName
+              || isDefaultScheduleTargetFileName(currentFileName)
+              || (String(state.scheduleTargetFileNameLastAuto || '').trim() === currentFileName));
+          if (charsetSelect && !String(charsetSelect.value || '').trim()) {
+            charsetSelect.value = 'utf8';
+          }
+          if (fileNameInput && canAutoAdjustFileName) {
+            fileNameInput.value = defaultFileName;
+            state.scheduleTargetFileNameLastAuto = defaultFileName;
+            state.scheduleTargetFileNameDirty = false;
+          }
+          if (targetType === 'FILE_EXCEL') {
+            if (sheetNameInput && !String(sheetNameInput.value || '').trim()) {
+              sheetNameInput.value = 'Sheet1';
+            }
+          } else {
+            if (delimiterInput && !String(delimiterInput.value || '').trim()) {
+              delimiterInput.value = ';';
+            }
+            if (qualifierInput && !String(qualifierInput.value || '').trim()) {
+              qualifierInput.value = '"';
+            }
+          }
         }
       }
 
@@ -5496,6 +5760,32 @@ export function renderAdminUiScript(): string {
           return 'csv';
         }
         return '';
+      }
+
+      function getDefaultScheduleTargetFileNameForType(targetType) {
+        const normalizedTargetType = String(targetType || '').trim().toUpperCase();
+        if (normalizedTargetType === 'FILE_EXCEL') {
+          return 'export_\${date}_\${time}.xlsx';
+        }
+        if (normalizedTargetType === 'FILE_JSON') {
+          return 'export_\${date}_\${time}.json';
+        }
+        return 'export_\${date}_\${time}.csv';
+      }
+
+      function isDefaultScheduleTargetFileName(fileName) {
+        const normalized = String(fileName || '').trim().toLowerCase();
+        if (!normalized) {
+          return false;
+        }
+        return [
+          'export_\${date}_\${time}.csv',
+          'export_\${date}_\${time}.xlsx',
+          'export_\${date}_\${time}.json',
+          'export_%date%_%time%.csv',
+          'export_%date%_%time%.xlsx',
+          'export_%date%_%time%.json'
+        ].includes(normalized);
       }
 
       function normalizeRelativeDirectoryInput(value) {
@@ -5835,25 +6125,107 @@ export function renderAdminUiScript(): string {
       function parseScheduleTargetDefinition(targetType, rawDefinition) {
         const trimmed = String(rawDefinition || '').trim();
         if (!isFileScheduleTargetType(String(targetType || '').trim().toUpperCase())) {
-          return { editorText: trimmed, relativeDirectory: '', archiveRelativeDirectory: '' };
+          return {
+            editorText: trimmed,
+            relativeDirectory: '',
+            archiveRelativeDirectory: '',
+            fileName: '',
+            charset: 'utf8',
+            delimiter: ';',
+            textQualifier: '"',
+            sheetName: ''
+          };
         }
 
         const fileDefinition = parseScheduleFileDefinition(trimmed);
+        const parsed = fileDefinition.parsed || {};
+        const normalizedTargetType = String(targetType || '').trim().toUpperCase();
+        const defaultFileName = normalizedTargetType === 'FILE_EXCEL'
+          ? 'export_\${date}_\${time}.xlsx'
+          : normalizedTargetType === 'FILE_JSON'
+            ? 'export_\${date}_\${time}.json'
+            : 'export_\${date}_\${time}.csv';
         return {
           editorText: fileDefinition.editorText,
           relativeDirectory: fileDefinition.relativeDirectory,
-          archiveRelativeDirectory: fileDefinition.archiveRelativeDirectory
+          archiveRelativeDirectory: fileDefinition.archiveRelativeDirectory,
+          fileName: String(parsed.fileName || '').trim() || defaultFileName,
+          charset: String(parsed.charset || 'utf8').trim() || 'utf8',
+          delimiter: String(parsed.delimiter || ';').trim() || ';',
+          textQualifier: String(parsed.textQualifier || '"').trim() || '"',
+          sheetName: String(parsed.sheetName || '').trim() || (normalizedTargetType === 'FILE_EXCEL' ? 'Sheet1' : '')
         };
       }
 
       function buildScheduleTargetDefinitionValue() {
         const targetType = document.getElementById('sch-target-type').value;
         if (isFileScheduleTargetType(String(targetType || '').trim().toUpperCase())) {
-          return buildScheduleFileDefinitionValue(
-            'sch-target-definition',
-            'sch-target-relative-directory',
-            'sch-target-archive-relative-directory'
-          );
+          const rawValue = String(document.getElementById('sch-target-definition')?.value || '').trim();
+          const parsed = tryParseJsonObject(rawValue);
+          const definition = parsed ? { ...parsed } : {};
+          const normalizedTargetType = String(targetType || '').trim().toUpperCase();
+          const relativeDirectory = normalizeRelativeDirectoryInput(document.getElementById('sch-target-relative-directory')?.value || '');
+          const archiveRelativeDirectory = normalizeRelativeDirectoryInput(document.getElementById('sch-target-archive-relative-directory')?.value || '');
+          const fileName = String(document.getElementById('sch-target-file-name')?.value || '').trim();
+          const charset = String(document.getElementById('sch-target-file-charset')?.value || '').trim();
+          const delimiter = String(document.getElementById('sch-target-file-delimiter')?.value || '').trim();
+          const textQualifier = String(document.getElementById('sch-target-file-text-qualifier')?.value || '').trim();
+          const sheetName = String(document.getElementById('sch-target-file-sheet-name')?.value || '').trim();
+
+          if (relativeDirectory) {
+            definition.relativeDirectory = relativeDirectory;
+          } else {
+            delete definition.relativeDirectory;
+          }
+          if (archiveRelativeDirectory) {
+            definition.archiveRelativeDirectory = archiveRelativeDirectory;
+          } else {
+            delete definition.archiveRelativeDirectory;
+          }
+
+          if (fileName) {
+            definition.fileName = fileName;
+          }
+          if (charset) {
+            definition.charset = charset;
+          }
+
+          if (normalizedTargetType === 'FILE_EXCEL') {
+            definition.format = 'excel';
+            if (sheetName) {
+              definition.sheetName = sheetName;
+            } else {
+              delete definition.sheetName;
+            }
+            delete definition.delimiter;
+            delete definition.textQualifier;
+          } else if (normalizedTargetType === 'FILE_JSON') {
+            definition.format = 'json';
+            delete definition.sheetName;
+            delete definition.delimiter;
+            delete definition.textQualifier;
+          } else {
+            definition.format = 'csv';
+            if (delimiter) {
+              definition.delimiter = delimiter;
+            } else {
+              delete definition.delimiter;
+            }
+            if (textQualifier) {
+              definition.textQualifier = textQualifier;
+            } else {
+              delete definition.textQualifier;
+            }
+            delete definition.sheetName;
+          }
+
+          definition.writeHeader = true;
+
+          if (!String(definition.fileName || definition.filePath || '').trim()) {
+            return undefined;
+          }
+
+          return JSON.stringify(definition, null, 2);
         }
 
         return String(document.getElementById('sch-target-definition').value || '').trim() || undefined;
@@ -6836,6 +7208,15 @@ export function renderAdminUiScript(): string {
       function renderScheduleWizardStep() {
         const currentStep = Math.max(1, Math.min(getScheduleWizardTotalSteps(), Number(state.scheduleWizardStep) || 1));
         state.scheduleWizardStep = currentStep;
+
+        if (currentStep === 2) {
+          const selectedConnectorId = String(document.getElementById('sch-connector')?.value || '').trim();
+          if (selectedConnectorId) {
+            applyScheduleSourceSystemFromConnector(selectedConnectorId, { force: false });
+            applyScheduleSourceTypeFromConnector(selectedConnectorId, { force: false });
+          }
+        }
+
         updateScheduleTypeUi();
 
         document.querySelectorAll('[data-sch-step-panel]').forEach((panel) => {
@@ -6911,7 +7292,7 @@ export function renderAdminUiScript(): string {
           if (!isFileScheduleTargetType(targetType) && !String(document.getElementById('sch-operation')?.value || '').trim()) {
             throw new Error('Bitte eine Operation wählen.');
           }
-          if (isFileScheduleTargetType(targetType) && !String(document.getElementById('sch-target-definition')?.value || '').trim()) {
+          if (isFileScheduleTargetType(targetType) && !String(buildScheduleTargetDefinitionValue() || '').trim()) {
             throw new Error('Bitte eine Target Definition mit Dateiname oder Datei-JSON angeben.');
           }
           return;
@@ -8943,7 +9324,7 @@ export function renderAdminUiScript(): string {
           lastRunAt: localDateTimeInputToIso(document.getElementById('sch-last-run').value),
           sourceDefinition: buildScheduleSourceDefinitionValue(),
           targetDefinition: buildScheduleTargetDefinitionValue(),
-          mappingDefinition: isFileTarget ? undefined : (document.getElementById('sch-mapping').value || undefined),
+          mappingDefinition: (document.getElementById('sch-mapping').value || undefined),
           timingDefinition: JSON.stringify(timingDefinition)
         };
       }
@@ -8972,7 +9353,43 @@ export function renderAdminUiScript(): string {
         window.alert('Vorlage gespeichert: ' + (result.name || name));
       }
 
-      async function openScheduleModal(scheduleId, templateDraft) {
+      function normalizeAffectedMappingField(rawFieldName) {
+        const raw = String(rawFieldName || '').trim();
+        if (!raw) {
+          return '';
+        }
+        const token = raw.includes('.') ? raw.split('.').pop() : raw;
+        return String(token || '').trim();
+      }
+
+      function focusScheduleMappingField(fieldName) {
+        const normalized = normalizeFieldKey(fieldName);
+        if (!normalized) {
+          return false;
+        }
+
+        const matchedRule = (Array.isArray(state.mappingRules) ? state.mappingRules : []).find((rule) => {
+          const targetMatch = normalizeFieldKey(rule?.targetField) === normalized;
+          const sourceMatch = normalizeFieldKey(rule?.sourceField) === normalized;
+          return targetMatch || sourceMatch;
+        });
+
+        if (!matchedRule?.id) {
+          return false;
+        }
+
+        state.selectedMappingRuleId = matchedRule.id;
+        renderMappingRulesTable();
+
+        const row = document.querySelector('#sch-mapping-rules tr[data-rule-id="' + matchedRule.id + '"]');
+        if (row && typeof row.scrollIntoView === 'function') {
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        return true;
+      }
+
+      async function openScheduleModal(scheduleId, templateDraft, options) {
+        const modalOptions = options && typeof options === 'object' ? options : {};
         const entry = scheduleId
           ? state.schedules.find((item) => item.id === scheduleId)
           : (templateDraft || null);
@@ -9010,6 +9427,19 @@ export function renderAdminUiScript(): string {
         document.getElementById('sch-pricebook2id').value = '';
         document.getElementById('sch-target-relative-directory').value = parsedTargetDefinition.relativeDirectory || '';
         document.getElementById('sch-target-archive-relative-directory').value = parsedTargetDefinition.archiveRelativeDirectory || '';
+        document.getElementById('sch-target-file-name').value = parsedTargetDefinition.fileName || '';
+        document.getElementById('sch-target-file-charset').value = parsedTargetDefinition.charset || 'utf8';
+        document.getElementById('sch-target-file-delimiter').value = parsedTargetDefinition.delimiter || ';';
+        document.getElementById('sch-target-file-text-qualifier').value = parsedTargetDefinition.textQualifier || '"';
+        document.getElementById('sch-target-file-sheet-name').value = parsedTargetDefinition.sheetName || '';
+        const initialTargetFileName = String(document.getElementById('sch-target-file-name').value || '').trim();
+        if (initialTargetFileName && isDefaultScheduleTargetFileName(initialTargetFileName)) {
+          state.scheduleTargetFileNameDirty = false;
+          state.scheduleTargetFileNameLastAuto = initialTargetFileName;
+        } else {
+          state.scheduleTargetFileNameDirty = !!initialTargetFileName;
+          state.scheduleTargetFileNameLastAuto = '';
+        }
         state.rawMappingEditorDirty = false;
         state.mappingFieldsLoadSeq = Number(state.mappingFieldsLoadSeq || 0) + 1;
         state.targetObjectsLoadSeq = Number(state.targetObjectsLoadSeq || 0) + 1;
@@ -9067,6 +9497,14 @@ export function renderAdminUiScript(): string {
         document.getElementById('sch-source-test-status').textContent = 'Es werden bis zu 10 Datensätze angezeigt.';
         renderGenericPreviewTable('sch-source-preview-header', 'sch-source-preview-body', []);
         clearModalError();
+        const initialConnectorId = String(entry?.connectorId || '').trim();
+        if (!String(entry?.sourceSystem || '').trim()) {
+          applyScheduleSourceSystemFromConnector(initialConnectorId, { force: true });
+        }
+        if (!String(entry?.sourceType || '').trim()) {
+          applyScheduleSourceTypeFromConnector(initialConnectorId, { force: true });
+        }
+
         updateSourceQueryAssist();
         updateScheduleFilePathSummaries();
         updateScheduleTypeUi();
@@ -9080,8 +9518,21 @@ export function renderAdminUiScript(): string {
         await loadTargetFields();
         renderSchedulerMappingAssistant();
         await syncSchedulerExternalIdUi();
-        state.scheduleWizardStep = 1;
+        const requestedStep = Number(modalOptions.wizardStep || 1);
+        state.scheduleWizardStep = Math.max(1, Math.min(getScheduleWizardTotalSteps(), requestedStep));
         renderScheduleWizardStep();
+        const focusField = normalizeAffectedMappingField(modalOptions.focusMappingField);
+        if (focusField) {
+          setTimeout(() => {
+            const focused = focusScheduleMappingField(focusField);
+            if (!focused) {
+              const status = document.getElementById('sch-source-test-status');
+              if (status) {
+                status.textContent = 'Hinweis: Betroffenes Feld "' + focusField + '" ist aktuell nicht im Mapping vorhanden.';
+              }
+            }
+          }, 0);
+        }
         // Load mapping fields from backend metadata API
         // Use setTimeout to ensure all DOM values (source-type, connector) are applied before fetching
         setTimeout(() => loadMappingFields(), 0);
@@ -9795,13 +10246,14 @@ export function renderAdminUiScript(): string {
           });
 
           // Zeige Analyse-Ergebnis in Modal
-          showErrorAnalysisModal(analysis);
+          showErrorAnalysisModal(analysis, selectedRun);
         } catch (error) {
           showError('Fehleranalyse fehlgeschlagen: ' + (error.message || String(error)));
         }
       }
 
-      function showErrorAnalysisModal(analysis) {
+      function showErrorAnalysisModal(analysis, selectedRun) {
+        const selectedScheduleId = String(selectedRun?.scheduleId || '').trim();
         const modalHtml = \`
           <div class="modal fade" id="error-analysis-modal" tabindex="-1">
             <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -9851,6 +10303,7 @@ export function renderAdminUiScript(): string {
                   </div>
                 </div>
                 <div class="modal-footer">
+                  \${selectedScheduleId ? '<button type="button" class="btn btn-primary" id="error-analysis-open-scheduler">Scheduler anpassen</button>' : ''}
                   <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Schließen</button>
                 </div>
               </div>
@@ -9868,7 +10321,21 @@ export function renderAdminUiScript(): string {
         document.body.appendChild(container);
 
         // Zeige Modal
-        const modal = new window.bootstrap.Modal(document.getElementById('error-analysis-modal'));
+        const modalElement = document.getElementById('error-analysis-modal');
+        const modal = new window.bootstrap.Modal(modalElement);
+        const openSchedulerButton = modalElement?.querySelector('#error-analysis-open-scheduler');
+        if (openSchedulerButton && selectedScheduleId) {
+          openSchedulerButton.addEventListener('click', async () => {
+            modal.hide();
+            const preferredField = Array.isArray(analysis?.affectedFields) && analysis.affectedFields.length > 0
+              ? String(analysis.affectedFields[0] || '').trim()
+              : '';
+            await openScheduleModal(selectedScheduleId, undefined, {
+              wizardStep: 5,
+              focusMappingField: preferredField
+            });
+          });
+        }
         modal.show();
       }
 
@@ -10693,6 +11160,7 @@ export function renderAdminUiScript(): string {
         applyOperationOptions('');
         toggleCreateObjectFromSourceUi();
         ensureSalesforceTargetDefinition();
+        await loadTargetFields();
         await syncSchedulerExternalIdUi();
         updateScheduleFilePathSummaries();
       });
@@ -10726,6 +11194,11 @@ export function renderAdminUiScript(): string {
         await syncSchedulerExternalIdUi();
       });
       bindEventListenerOnce('sch-connector', 'change', async () => {
+        const selectedConnectorId = String(document.getElementById('sch-connector')?.value || '').trim();
+        applyScheduleSourceSystemFromConnector(selectedConnectorId, { force: true });
+        applyScheduleSourceTypeFromConnector(selectedConnectorId, { force: true });
+        updateSourceQueryAssist();
+        updateScheduleTypeUi();
         await loadTargetObjects(document.getElementById('sch-object').value || '');
         await loadTargetFields();
         await syncSchedulerExternalIdUi();
@@ -10956,6 +11429,22 @@ export function renderAdminUiScript(): string {
       document.getElementById('sch-target-definition').addEventListener('input', updateScheduleFilePathSummaries);
       document.getElementById('sch-target-relative-directory').addEventListener('input', updateScheduleFilePathSummaries);
       document.getElementById('sch-target-archive-relative-directory').addEventListener('input', updateScheduleFilePathSummaries);
+      document.getElementById('sch-target-file-name').addEventListener('input', () => {
+        const currentValue = String(document.getElementById('sch-target-file-name')?.value || '').trim();
+        if (!currentValue) {
+          state.scheduleTargetFileNameDirty = false;
+          state.scheduleTargetFileNameLastAuto = '';
+        } else if (String(state.scheduleTargetFileNameLastAuto || '').trim() === currentValue) {
+          state.scheduleTargetFileNameDirty = false;
+        } else {
+          state.scheduleTargetFileNameDirty = true;
+        }
+        updateScheduleFilePathSummaries();
+      });
+      document.getElementById('sch-target-file-charset').addEventListener('change', updateScheduleFilePathSummaries);
+      document.getElementById('sch-target-file-delimiter').addEventListener('input', updateScheduleFilePathSummaries);
+      document.getElementById('sch-target-file-text-qualifier').addEventListener('input', updateScheduleFilePathSummaries);
+      document.getElementById('sch-target-file-sheet-name').addEventListener('input', updateScheduleFilePathSummaries);
       document.getElementById('sch-source-definition').addEventListener('input', updateSourceQueryAssist);
       document.getElementById('sch-source-delta-strategy').addEventListener('change', updateSourceQueryAssist);
       document.getElementById('sch-source-delta-field').addEventListener('input', updateSourceQueryAssist);
@@ -11046,6 +11535,7 @@ export function renderAdminUiScript(): string {
         updateScheduleTypeUi();
         toggleCreateObjectFromSourceUi();
         ensureSalesforceTargetDefinition();
+        await loadTargetFields();
         await syncSchedulerExternalIdUi();
       });
       bindEventListenerOnce('sch-object', 'change', async () => {
@@ -11077,6 +11567,11 @@ export function renderAdminUiScript(): string {
       });
       document.getElementById('sch-create-custom-object').addEventListener('click', createSalesforceCustomObjectFromSource);
       bindEventListenerOnce('sch-connector', 'change', async () => {
+        const selectedConnectorId = String(document.getElementById('sch-connector')?.value || '').trim();
+        applyScheduleSourceSystemFromConnector(selectedConnectorId, { force: true });
+        applyScheduleSourceTypeFromConnector(selectedConnectorId, { force: true });
+        updateSourceQueryAssist();
+        updateScheduleTypeUi();
         await loadTargetObjects(document.getElementById('sch-object').value || '');
         await loadTargetFields();
         await syncSchedulerExternalIdUi();

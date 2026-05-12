@@ -61,7 +61,7 @@ export class AIErrorAnalyzer {
       severity,
       rootCause,
       recommendations,
-      suggestedFix: this.generateSuggestedFix(category, sourceSystem, targetSystem),
+      suggestedFix: this.generateSuggestedFix(category, sourceSystem, targetSystem, rootCause, affectedFields),
       affectedFields,
       confidence
     };
@@ -75,6 +75,17 @@ export class AIErrorAnalyzer {
     errorCode?: string
   ): ErrorAnalysisResult["errorCategory"] {
     const logLower = errorLog.toLowerCase();
+
+    // Strukturierte Laufzeitfehler aus Monitor-Logs (z.B. RECORD_ERROR | TECHNICAL_ERROR)
+    if (
+      logLower.includes("record_error") ||
+      logLower.includes("technical_error") ||
+      logLower.includes("missing required") ||
+      logLower.includes("required ") && logLower.includes(" lookup") ||
+      logLower.includes("lookup for")
+    ) {
+      return "mapping_error";
+    }
 
     // Auth-Fehler
     if (logLower.includes("unauthorized") || logLower.includes("forbidden") || logLower.includes("401") || logLower.includes("403") || errorCode?.startsWith("AUTH_")) {
@@ -90,6 +101,7 @@ export class AIErrorAnalyzer {
     if (
       logLower.includes("mapping") ||
       logLower.includes("field") ||
+      logLower.includes("lookup") ||
       logLower.includes("invalid field") ||
       logLower.includes("no matching field") ||
       errorCode?.startsWith("MAP_")
@@ -157,11 +169,25 @@ export class AIErrorAnalyzer {
    * Extrahiert Root-Cause aus Error-Log
    */
   private extractRootCause(errorLog: string, category: ErrorAnalysisResult["errorCategory"]): string {
-    // Erste Fehlerzeile extrahieren
-    const firstErrorLine = errorLog.split("\n").find((line) => line.includes("Error") || line.includes("error"));
+    // Erste Fehlerzeile robust extrahieren (Error, ERROR, TECHNICAL_ERROR, RECORD_ERROR)
+    const firstErrorLine = errorLog
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => /\b(error|ERROR|technical_error|record_error|failed|exception)\b/.test(line));
 
     if (firstErrorLine) {
-      return firstErrorLine.replace(/^.*Error:?\s*/, "").substring(0, 150);
+      const cleaned = firstErrorLine
+        .replace(/^\[[^\]]+\]\s*/g, "")
+        .replace(/^\[[^\]]+\]\s*/g, "")
+        .replace(/^([^|]*\|\s*)?/, "")
+        .replace(/^[A-Z_]+\s*:\s*/, "")
+        .trim();
+
+      if (cleaned) {
+        return cleaned.substring(0, 180);
+      }
+
+      return firstErrorLine.substring(0, 180);
     }
 
     // Fallback basierend auf Kategorie
@@ -207,6 +233,12 @@ export class AIErrorAnalyzer {
         recommendations.push(`Überprüfe Feld-Mapping: Existieren alle Ziel-Felder im ${targetSystem}?`);
         recommendations.push(`Prüfe, ob Custom Fields korrekt gemappt sind`);
         recommendations.push(`Verifiziere Source-Feld-Namen aus ${sourceSystem}`);
+
+        if (rootCause.toLowerCase().includes("lookup") || rootCause.toLowerCase().includes("missing required")) {
+          recommendations.push("Lookup-Mapping prüfen: Ist für das betroffene Lookup-Feld eine gültige Ziel-ID/Referenz vorhanden?");
+          recommendations.push("Für Salesforce-Lookups bevorzugt External-ID Upsert verwenden (z. B. Account über AccountNumber/External Id auflösen).");
+          recommendations.push("Scheduler öffnen und Mapping-Regel für das Lookup-Feld (z. B. Contact.AccountId) auf LOOKUP/zugehörige Referenz prüfen.");
+        }
         break;
 
       case "data_validation":
@@ -249,7 +281,13 @@ export class AIErrorAnalyzer {
     const fields: string[] = [];
 
     // Suche nach Field-Fehler-Patterns
-    const fieldPatterns = [/field[:\s]+['"]?(\w+)['"]?/gi, /column[:\s]+['"]?(\w+)['"]?/gi, /attribute[:\s]+['"]?(\w+)['"]?/gi];
+    const fieldPatterns = [
+      /field[:\s]+['"]?([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)?)['"]?/gi,
+      /column[:\s]+['"]?([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)?)['"]?/gi,
+      /attribute[:\s]+['"]?([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)?)['"]?/gi,
+      /lookup\s+for\s+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+)/gi,
+      /for\s+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+)\s*\(retryable/gi
+    ];
 
     for (const pattern of fieldPatterns) {
       let match;
@@ -288,7 +326,9 @@ export class AIErrorAnalyzer {
   private generateSuggestedFix(
     category: ErrorAnalysisResult["errorCategory"],
     sourceSystem: string,
-    targetSystem: string
+    targetSystem: string,
+    rootCause?: string,
+    affectedFields?: string[]
   ): string | undefined {
     switch (category) {
       case "authentication_failed":
@@ -298,6 +338,12 @@ export class AIErrorAnalyzer {
         return `Überprüfe unter "Connectoren" > "${sourceSystem}", ob die Verbindung funktioniert`;
 
       case "mapping_error":
+        if (String(rootCause || "").toLowerCase().includes("lookup") || String(rootCause || "").toLowerCase().includes("missing required")) {
+          const firstAffectedField = Array.isArray(affectedFields) && affectedFields.length > 0
+            ? String(affectedFields[0])
+            : "Lookup-Feld";
+          return `Scheduler öffnen und ${firstAffectedField}-Mapping auf gültigen Lookup (External-ID/Referenzauflösung) anpassen.`;
+        }
         return `Öffne Scheduler und überprüfe die Feld-Mappings unter dem "Mapping"-Tab`;
 
       case "data_validation":

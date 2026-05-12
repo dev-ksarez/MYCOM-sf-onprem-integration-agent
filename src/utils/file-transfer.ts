@@ -13,6 +13,7 @@ export interface FileTransferDefinition {
   format?: FileDataFormat;
   charset?: string;
   delimiter?: string;
+  textQualifier?: string;
   hasHeader?: boolean;
   writeHeader?: boolean;
   sheetName?: string;
@@ -381,12 +382,43 @@ function rowsToObjects(rows: unknown[][], headers: string[]): Record<string, unk
   });
 }
 
-function escapeCsvValue(value: unknown, delimiter: string): string {
+function escapeCsvValue(value: unknown, delimiter: string, textQualifier: string): string {
   const text = value === null || value === undefined ? "" : String(value);
-  if (text.includes('"') || text.includes("\n") || text.includes("\r") || text.includes(delimiter)) {
-    return `"${text.replaceAll('"', '""')}"`;
+  if (!textQualifier) {
+    return text;
+  }
+  if (text.includes(textQualifier) || text.includes("\n") || text.includes("\r") || text.includes(delimiter)) {
+    const escapedQualifier = textQualifier + textQualifier;
+    return textQualifier + text.replaceAll(textQualifier, escapedQualifier) + textQualifier;
   }
   return text;
+}
+
+function resolveDateTimePlaceholders(value: string): string {
+  const now = new Date();
+  const pad = (num: number) => String(num).padStart(2, "0");
+  const dateToken = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const timeToken = `${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+  const dateTimeToken = `${dateToken}_${timeToken}`;
+
+  return String(value || "")
+    .replaceAll("${date}", dateToken)
+    .replaceAll("${time}", timeToken)
+    .replaceAll("${datetime}", dateTimeToken)
+    .replaceAll("%DATE%", dateToken)
+    .replaceAll("%TIME%", timeToken)
+    .replaceAll("%DATETIME%", dateTimeToken);
+}
+
+function applyWriteFilenamePlaceholders(definition: FileTransferDefinition): FileTransferDefinition {
+  const normalized: FileTransferDefinition = { ...definition };
+  if (typeof normalized.fileName === "string") {
+    normalized.fileName = resolveDateTimePlaceholders(normalized.fileName);
+  }
+  if (typeof normalized.filePath === "string") {
+    normalized.filePath = resolveDateTimePlaceholders(normalized.filePath);
+  }
+  return normalized;
 }
 
 function detectDelimiterFromHeader(headerLine: string): string {
@@ -553,7 +585,7 @@ export async function writeFileFromConnector(
   rawDefinition: string,
   rows: Record<string, unknown>[]
 ): Promise<{ format: FileDataFormat; filePath: string; fileName: string; rowCount: number }> {
-  const definition = parseDefinition(rawDefinition);
+  const definition = applyWriteFilenamePlaceholders(parseDefinition(rawDefinition));
   const runtime = resolveRuntimeConfig(connectorConfig);
   const { absolutePath, fileName } = buildAbsoluteFilePath(definition, runtime, "write");
   const archiveTargetPath = resolveArchiveTargetPath(definition, runtime);
@@ -577,14 +609,15 @@ export async function writeFileFromConnector(
     XLSX.writeFile(workbook, absolutePath);
   } else {
     const delimiter = String(definition.delimiter || runtime.defaultDelimiter || ";");
+    const textQualifier = String(definition.textQualifier || '"').slice(0, 1) || '"';
     const writeHeader = definition.writeHeader !== false;
     const lines: string[] = [];
     if (writeHeader && headers.length) {
-      lines.push(headers.map((header) => escapeCsvValue(header, delimiter)).join(delimiter));
+      lines.push(headers.map((header) => escapeCsvValue(header, delimiter, textQualifier)).join(delimiter));
     }
 
     rows.forEach((row) => {
-      const line = headers.map((header) => escapeCsvValue(row?.[header], delimiter)).join(delimiter);
+      const line = headers.map((header) => escapeCsvValue(row?.[header], delimiter, textQualifier)).join(delimiter);
       lines.push(line);
     });
 

@@ -115,11 +115,24 @@ export function renderAISchedulerAssistantModule(): string {
                   <div class="ai-config-preview p-3 bg-light rounded border" id="ai-config-preview"></div>
                 </div>
 
+                <!-- Source Preview -->
+                <div class="mb-3">
+                  <h6 class="fw-semibold mb-2">Quelle (SQL/Definition)</h6>
+                  <div class="ai-source-preview p-3 bg-light rounded border" id="ai-source-preview"></div>
+                  <div id="ai-sql-traffic-light" class="small mt-2 d-none"></div>
+                  <div class="mt-2 d-flex gap-2 flex-wrap">
+                    <button id="ai-sql-autofix-btn" type="button" class="btn btn-sm btn-outline-warning d-none">SQL Auto-Fix anwenden</button>
+                    <button id="ai-apply-delta-btn" type="button" class="btn btn-sm btn-outline-info d-none">Delta-Vorschlag übernehmen</button>
+                  </div>
+                </div>
+
                 <!-- Mapping Preview -->
                 <div class="mb-3">
                   <h6 class="fw-semibold mb-2">Feld-Zuordnung (Mapping)</h6>
                   <div class="ai-mapping-preview p-3 bg-light rounded border" id="ai-mapping-preview"></div>
                 </div>
+
+                <div id="ai-test-status" class="d-none"></div>
 
                 <!-- Buttons -->
                 <div class="d-grid gap-2 d-md-flex">
@@ -137,7 +150,7 @@ export function renderAISchedulerAssistantModule(): string {
                     type="button"
                     data-ai-action="refine"
                   >
-                    🔧 Verfeinern
+                    🔧 Abfrage testen + Mapping aufbauen
                   </button>
                   <button
                     id="ai-cancel-btn"
@@ -235,6 +248,19 @@ export function renderAISchedulerAssistantModule(): string {
         word-break: break-all;
       }
 
+      .ai-source-preview {
+        font-family: monospace;
+        font-size: 0.85rem;
+        max-height: 220px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      #ai-sql-traffic-light .badge {
+        min-width: 110px;
+      }
+
       .ai-example-btn {
         text-align: left !important;
         white-space: normal;
@@ -262,7 +288,9 @@ export function renderAISchedulerAssistantModule(): string {
       window.aiSchedulerState = {
         currentResult: null,
         existingConnectors: [],
-        isLoading: false
+        isLoading: false,
+        currentSqlAssessment: null,
+        currentDeltaSuggestion: null
       };
 
       function aiWithInstance(path) {
@@ -299,7 +327,7 @@ export function renderAISchedulerAssistantModule(): string {
 
       // Beispiel-Prompts
       const examplePrompts = {
-        "inbound-1": "Alle Accounts aus unserer MSSQL-Datenbank nach Salesforce synchronisieren. Email als eindeutige ID. Täglich um 08:00 Uhr.",
+        "inbound-1": "Alle Accounts aus unserer MSSQL-Datenbank nach Salesforce synchronisieren. Verwende diese SQL: SELECT Kundennummer AS ExternalKey, Name1 AS Name, Telefon AS Phone, Webseite AS Website FROM KHKAdressen WHERE Aktiv = 1. Täglich um 08:00 Uhr.",
         "inbound-2": "REST-API Kundenaktualisierungen nach Salesforce Contact Object. Stündliche Synchronisation.",
         "outbound-1": "Alle aktiven Salesforce Contacts mit Newsletter-Opt-in nach Brevo/Newsletter-System exportieren. Täglicher Export um 22 Uhr.",
         "outbound-2": "Abgeschlossene Opportunities aus Salesforce als Orders in unser ERP-System synchronisieren."
@@ -322,6 +350,8 @@ export function renderAISchedulerAssistantModule(): string {
         document.getElementById('ai-save-btn')?.addEventListener('click', saveScheduler);
         document.getElementById('ai-cancel-btn')?.addEventListener('click', hideResult);
         document.getElementById('ai-refine-btn')?.addEventListener('click', refineScheduler);
+        document.getElementById('ai-sql-autofix-btn')?.addEventListener('click', autoFixSqlQuery);
+        document.getElementById('ai-apply-delta-btn')?.addEventListener('click', applyDeltaSuggestion);
 
         // Beispiel-Buttons
         document.querySelectorAll('.ai-example-btn').forEach(btn => {
@@ -397,19 +427,20 @@ export function renderAISchedulerAssistantModule(): string {
         const reasoningAlert = document.getElementById('ai-reasoning-alert');
         const issuesContainer = document.getElementById('ai-issues-container');
         const configPreview = document.getElementById('ai-config-preview');
+        const sourcePreview = document.getElementById('ai-source-preview');
+        const sqlTrafficLight = document.getElementById('ai-sql-traffic-light');
+        const sqlAutofixButton = document.getElementById('ai-sql-autofix-btn');
+        const applyDeltaButton = document.getElementById('ai-apply-delta-btn');
         const mappingPreview = document.getElementById('ai-mapping-preview');
         const confidenceBadge = document.getElementById('ai-confidence-badge');
 
-        // Confidence Badge
         const confidence = (result.confidence * 100).toFixed(0);
         const confidenceClass = result.confidence > 0.75 ? 'bg-success' : result.confidence > 0.5 ? 'bg-warning' : 'bg-danger';
         confidenceBadge.className = 'badge ' + confidenceClass;
         confidenceBadge.textContent = confidence + '%';
 
-        // Reasoning
         reasoningAlert.innerHTML = '✓ ' + esc(result.reasoning);
 
-        // Issues
         if (result.issues && result.issues.length > 0) {
           issuesContainer.innerHTML = result.issues
             .map(issue => '<div class="alert alert-' + (issue.severity === 'error' ? 'danger' : 'warning') + ' py-2 mb-2">' +
@@ -419,9 +450,8 @@ export function renderAISchedulerAssistantModule(): string {
           issuesContainer.innerHTML = '';
         }
 
-        // Config Preview
         const schedule = result.schedule;
-        configPreview.textContent = 
+        configPreview.textContent =
           'Name: ' + esc(schedule.name) + '\\n' +
           'Quelle: ' + esc(schedule.sourceSystem) + ' (' + esc(schedule.sourceType) + ')\\n' +
           'Ziel: ' + esc(schedule.targetSystem) + ' (' + esc(schedule.targetType) + ')\\n' +
@@ -430,10 +460,247 @@ export function renderAISchedulerAssistantModule(): string {
           'Batch-Size: ' + (schedule.batchSize || 100) + '\\n' +
           'Timing: ' + esc(schedule.timingDefinition || '-');
 
-        // Mapping Preview
-        mappingPreview.textContent = esc(schedule.mappingDefinition || 'Keine Zuordnung definiert');
+        const rawSourceDefinition = String(schedule.sourceDefinition || '').trim();
+        let sourceQueryText = '';
+        if (!rawSourceDefinition) {
+          sourcePreview.textContent = 'Keine Source-Definition vorhanden';
+        } else {
+          try {
+            const parsedSource = JSON.parse(rawSourceDefinition);
+            if (parsedSource && typeof parsedSource === 'object' && typeof parsedSource.queryText === 'string' && parsedSource.queryText.trim()) {
+              sourceQueryText = String(parsedSource.queryText).trim();
+              sourcePreview.textContent = sourceQueryText;
+            } else {
+              sourcePreview.textContent = JSON.stringify(parsedSource, null, 2);
+            }
+          } catch {
+            sourcePreview.textContent = rawSourceDefinition;
+            sourceQueryText = rawSourceDefinition;
+          }
+        }
 
+        const sqlStatus = evaluateSqlTrafficLight(schedule.sourceType, sourceQueryText);
+        if (!sqlStatus || !sqlTrafficLight) {
+          if (sqlTrafficLight) {
+            sqlTrafficLight.className = 'small mt-2 d-none';
+            sqlTrafficLight.innerHTML = '';
+          }
+          if (sqlAutofixButton) {
+            sqlAutofixButton.classList.add('d-none');
+            sqlAutofixButton.disabled = true;
+          }
+          window.aiSchedulerState.currentSqlAssessment = null;
+        } else {
+          const badgeClass = sqlStatus.level === 'green'
+            ? 'bg-success'
+            : sqlStatus.level === 'yellow'
+              ? 'bg-warning text-dark'
+              : 'bg-danger';
+          sqlTrafficLight.className = 'small mt-2';
+          sqlTrafficLight.innerHTML = '<span class="badge ' + badgeClass + '">SQL Ampel: ' + esc(sqlStatus.label) + '</span>'
+            + '<span class="ms-2 text-secondary">' + esc(sqlStatus.message) + '</span>';
+
+          window.aiSchedulerState.currentSqlAssessment = {
+            ...sqlStatus,
+            sourceQueryText,
+            sourceType: schedule.sourceType
+          };
+
+          if (sqlAutofixButton) {
+            const canAutofix = sqlStatus.canAutoFix === true;
+            sqlAutofixButton.classList.toggle('d-none', !canAutofix);
+            sqlAutofixButton.disabled = !canAutofix;
+          }
+        }
+
+        const deltaSuggestion = window.aiSchedulerState.currentDeltaSuggestion;
+        if (applyDeltaButton) {
+          const canApplyDelta = !!deltaSuggestion && !hasDeltaConfig(schedule.sourceDefinition);
+          applyDeltaButton.classList.toggle('d-none', !canApplyDelta);
+          applyDeltaButton.disabled = !canApplyDelta;
+          if (canApplyDelta) {
+            applyDeltaButton.textContent = 'Delta übernehmen: ' + deltaSuggestion.field + ' (' + deltaSuggestion.strategy + ')';
+          } else {
+            applyDeltaButton.textContent = 'Delta-Vorschlag übernehmen';
+          }
+        }
+
+        mappingPreview.textContent = esc(schedule.mappingDefinition || 'Keine Zuordnung definiert');
         container.classList.remove('d-none');
+      }
+
+      function hasDeltaConfig(sourceDefinition) {
+        const raw = String(sourceDefinition || '').trim();
+        if (!raw) {
+          return false;
+        }
+        try {
+          const parsed = JSON.parse(raw);
+          return !!(parsed && typeof parsed === 'object' && parsed.delta && typeof parsed.delta === 'object' && parsed.delta.field);
+        } catch {
+          return false;
+        }
+      }
+
+      function detectDeltaSuggestionFromFields(fields) {
+        const candidates = Array.isArray(fields) ? fields : [];
+        if (!candidates.length) {
+          return null;
+        }
+
+        const priorityPatterns = [
+          { pattern: /(lastmodifieddate|lastmodified|systemmodstamp|updatedat|modifiedat)/i, strategy: 'datetime' },
+          { pattern: /(timestamp|rowversion)/i, strategy: 'timestamp' }
+        ];
+
+        for (const rule of priorityPatterns) {
+          const match = candidates.find((field) => rule.pattern.test(String(field?.name || '')));
+          if (match?.name) {
+            return {
+              field: String(match.name).trim(),
+              strategy: rule.strategy
+            };
+          }
+        }
+
+        return null;
+      }
+
+      async function autoFixSqlQuery() {
+        const result = window.aiSchedulerState.currentResult;
+        const assessment = window.aiSchedulerState.currentSqlAssessment;
+        const btn = document.getElementById('ai-sql-autofix-btn');
+
+        if (!result?.schedule || !assessment?.canAutoFix) {
+          return;
+        }
+
+        const schedule = result.schedule;
+        const originalLabel = btn ? btn.textContent : '';
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = 'Auto-Fix läuft...';
+        }
+
+        try {
+          if (assessment.reason !== 'select_star' && assessment.reason !== 'missing_where') {
+            setAiTestStatus('warning', 'Für diese SQL-Warnung ist aktuell kein Auto-Fix definiert.');
+            return;
+          }
+
+          const fieldsResult = await aiRequestJson('/api/sources/fields', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sourceType: schedule.sourceType,
+              sourceDefinition: schedule.sourceDefinition,
+              objectName: schedule.objectName,
+              connectorId: schedule.connectorId
+            })
+          });
+
+          const fields = Array.isArray(fieldsResult?.fields) ? fieldsResult.fields : [];
+          const columnNames = fields.map((field) => String(field?.name || '').trim()).filter(Boolean);
+
+          if (!columnNames.length) {
+            setAiTestStatus('warning', 'Auto-Fix konnte keine Quellfelder laden.');
+            return;
+          }
+
+          const selectClause = 'SELECT ' + columnNames.join(', ');
+          const rawSourceDefinition = String(schedule.sourceDefinition || '').trim();
+          let currentQueryText = String(assessment.sourceQueryText || '').trim();
+          let parsedAsJson = false;
+          let parsedObject = null;
+
+          try {
+            parsedObject = JSON.parse(rawSourceDefinition);
+            parsedAsJson = !!(parsedObject && typeof parsedObject === 'object' && !Array.isArray(parsedObject));
+            if (parsedAsJson && typeof parsedObject.queryText === 'string') {
+              currentQueryText = String(parsedObject.queryText || '').trim();
+            }
+          } catch {
+            parsedAsJson = false;
+          }
+
+          let updatedQuery = currentQueryText;
+          if (assessment.reason === 'select_star') {
+            if (!/SELECT\s+\*/i.test(currentQueryText)) {
+              setAiTestStatus('warning', 'Auto-Fix konnte kein SELECT * mehr finden. Bitte neu generieren/testen.');
+              return;
+            }
+            updatedQuery = currentQueryText.replace(/SELECT\s+\*/i, selectClause);
+          }
+
+          if (assessment.reason === 'missing_where') {
+            if (/\bWHERE\b/i.test(currentQueryText)) {
+              setAiTestStatus('warning', 'Die Abfrage enthält bereits ein WHERE. Bitte neu generieren/testen.');
+              return;
+            }
+            const baseQuery = currentQueryText.replace(/;\s*$/, '').trim();
+            updatedQuery = baseQuery + ' WHERE 1=1';
+          }
+
+          if (parsedAsJson && parsedObject) {
+            parsedObject.queryText = updatedQuery;
+            schedule.sourceDefinition = JSON.stringify(parsedObject, null, 2);
+          } else {
+            schedule.sourceDefinition = updatedQuery;
+          }
+
+          window.aiSchedulerState.currentResult.schedule = schedule;
+          displayResult(window.aiSchedulerState.currentResult);
+          const successMessage = assessment.reason === 'select_star'
+            ? 'SQL Auto-Fix angewendet: SELECT * wurde durch explizite Spalten ersetzt.'
+            : 'SQL Auto-Fix angewendet: Standard-WHERE ergänzt (WHERE 1=1). Delta-/Fachfilter bitte ergänzen.';
+          setAiTestStatus('success', successMessage);
+        } catch (error) {
+          setAiTestStatus('error', 'SQL Auto-Fix fehlgeschlagen: ' + (error?.message || 'Unbekannter Fehler'));
+        } finally {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = originalLabel || 'SQL Auto-Fix anwenden';
+          }
+        }
+      }
+
+      function applyDeltaSuggestion() {
+        const result = window.aiSchedulerState.currentResult;
+        const suggestion = window.aiSchedulerState.currentDeltaSuggestion;
+        if (!result?.schedule || !suggestion?.field || !suggestion?.strategy) {
+          return;
+        }
+
+        const schedule = result.schedule;
+        const rawSourceDefinition = String(schedule.sourceDefinition || '').trim();
+        let queryText = rawSourceDefinition;
+        let nextDefinition = {};
+
+        try {
+          const parsed = JSON.parse(rawSourceDefinition);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            nextDefinition = { ...parsed };
+            queryText = String(parsed.queryText || parsed.query || parsed.soql || rawSourceDefinition).trim();
+          }
+        } catch {
+          nextDefinition = {};
+        }
+
+        if (!queryText) {
+          setAiTestStatus('warning', 'Delta konnte nicht übernommen werden: keine Abfrage vorhanden.');
+          return;
+        }
+
+        nextDefinition.queryText = queryText;
+        nextDefinition.delta = {
+          strategy: suggestion.strategy,
+          field: suggestion.field
+        };
+
+        schedule.sourceDefinition = JSON.stringify(nextDefinition, null, 2);
+        window.aiSchedulerState.currentResult.schedule = schedule;
+        displayResult(window.aiSchedulerState.currentResult);
+        setAiTestStatus('success', 'Delta-Vorschlag übernommen: ' + suggestion.strategy + ' auf Feld ' + suggestion.field + '.');
       }
 
       function showLoading(loading) {
@@ -483,8 +750,238 @@ export function renderAISchedulerAssistantModule(): string {
         }
       }
 
-      function refineScheduler() {
-        alert('Verfeinerungs-Dialog kommt bald...');
+      function toMappingDataType(rawType) {
+        const normalized = String(rawType || '').trim().toLowerCase();
+        if (!normalized) return 'string';
+        if (normalized === 'integer' || normalized === 'int') return 'integer';
+        if (normalized === 'number' || normalized === 'double' || normalized === 'currency' || normalized === 'percent' || normalized === 'decimal') return 'number';
+        if (normalized === 'boolean') return 'boolean';
+        if (normalized === 'date' || normalized === 'datetime') return 'datetime';
+        return 'string';
+      }
+
+      function buildMappingDefinitionFromGeneratedItems(items) {
+        const safeItems = Array.isArray(items) ? items : [];
+        return safeItems
+          .map((item) => {
+            const targetField = String(item?.targetField || '').trim();
+            const sourceField = String(item?.sourceField || '').trim();
+            if (!targetField || !sourceField) {
+              return '';
+            }
+            const targetType = toMappingDataType(item?.targetType || item?.targetFieldType || 'string');
+            const transform = String(item?.transformFunction || 'NONE').trim().toUpperCase() || 'NONE';
+            return targetField + ';' + targetType + '=' + sourceField + ';' + transform;
+          })
+          .filter(Boolean)
+          .join('\n');
+      }
+
+      function setAiTestStatus(kind, message) {
+        const box = document.getElementById('ai-test-status');
+        if (!box) {
+          return;
+        }
+        const cssClass = kind === 'success'
+          ? 'alert-success'
+          : kind === 'error'
+            ? 'alert-danger'
+            : 'alert-warning';
+        box.className = 'alert ' + cssClass + ' mb-3';
+        box.textContent = String(message || '');
+      }
+
+      function evaluateSqlTrafficLight(sourceType, queryText) {
+        const type = String(sourceType || '').trim().toUpperCase();
+        const query = String(queryText || '').trim();
+        const isSqlLike = type === 'MSSQL_SQL' || type === 'SALESFORCE_SOQL';
+
+        if (!isSqlLike) {
+          return null;
+        }
+
+        if (!query) {
+          return {
+            level: 'red',
+            label: 'ROT',
+            message: 'Keine Abfrage erkannt.'
+          };
+        }
+
+        const upper = query.toUpperCase();
+        const startsWithRead = /^\s*(SELECT|WITH)\b/i.test(query);
+        const dangerousPattern = /\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|EXEC|MERGE)\b/i;
+
+        if (dangerousPattern.test(upper)) {
+          return {
+            level: 'red',
+            label: 'ROT',
+            message: 'Abfrage enthält schreibende/gefährliche SQL-Befehle.'
+          };
+        }
+
+        if (!startsWithRead) {
+          return {
+            level: 'red',
+            label: 'ROT',
+            message: 'Erwartet SELECT/WITH als Start der Abfrage.'
+          };
+        }
+
+        const hasSelectStar = /SELECT\s+\*/i.test(query);
+        const hasWhere = /\bWHERE\b/i.test(query);
+
+        if (hasSelectStar || !hasWhere) {
+          return {
+            level: 'yellow',
+            label: 'GELB',
+              canAutoFix: hasSelectStar,
+              reason: hasSelectStar ? 'select_star' : 'missing_where',
+            message: hasSelectStar
+              ? 'SELECT * erkannt - besser explizite Spalten wählen.'
+              : 'Kein WHERE erkannt - prüfe Datenmenge/Delta-Filter.'
+          };
+        }
+
+        return {
+          level: 'green',
+          label: 'GRÜN',
+            canAutoFix: false,
+            reason: 'ok',
+          message: 'Abfrage wirkt syntaktisch plausibel für den Scheduler-Lesezugriff.'
+        };
+      }
+
+      async function refineScheduler() {
+        const result = window.aiSchedulerState.currentResult;
+        if (!result || !result.schedule) {
+          alert('Bitte zuerst eine Konfiguration generieren.');
+          return;
+        }
+
+        const refineBtn = document.getElementById('ai-refine-btn');
+        const originalLabel = refineBtn ? refineBtn.textContent : '';
+        if (refineBtn) {
+          refineBtn.disabled = true;
+          refineBtn.textContent = 'Teste...';
+        }
+
+        try {
+          const schedule = result.schedule;
+
+          const validation = await aiRequestJson('/api/schedules/validate-config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(schedule)
+          });
+
+          const validationIssues = Array.isArray(validation?.issues) ? validation.issues : [];
+          const validationErrors = validationIssues.filter((issue) => String(issue?.severity || '').toLowerCase() === 'error');
+
+          if (validationErrors.length > 0) {
+            setAiTestStatus('error', 'Konfigurationsfehler: ' + validationErrors.map((issue) => String(issue.message || '')).filter(Boolean).join(' | '));
+            return;
+          }
+
+          const previewResult = await aiRequestJson('/api/sources/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sourceType: schedule.sourceType,
+              sourceDefinition: schedule.sourceDefinition,
+              connectorId: schedule.connectorId,
+              limit: 5
+            })
+          });
+
+          const previewRows = Array.isArray(previewResult?.rows) ? previewResult.rows : [];
+
+          let sourceFields = [];
+          const sourceType = String(schedule.sourceType || '').trim().toUpperCase();
+          if (sourceType === 'MSSQL_SQL' || sourceType === 'SALESFORCE_SOQL') {
+            try {
+              const sourceFieldsResult = await aiRequestJson('/api/sources/fields', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  sourceType: schedule.sourceType,
+                  sourceDefinition: schedule.sourceDefinition,
+                  objectName: schedule.objectName,
+                  connectorId: schedule.connectorId
+                })
+              });
+              sourceFields = Array.isArray(sourceFieldsResult?.fields) ? sourceFieldsResult.fields : [];
+            } catch {
+              sourceFields = [];
+            }
+          }
+
+          const deltaSuggestion = detectDeltaSuggestionFromFields(sourceFields);
+          window.aiSchedulerState.currentDeltaSuggestion = hasDeltaConfig(schedule.sourceDefinition) ? null : deltaSuggestion;
+
+          let generatedMappings = [];
+          const targetType = String(schedule.targetType || '').trim().toUpperCase();
+          if (targetType === 'SALESFORCE' || targetType === 'SALESFORCE_GLOBAL_PICKLIST') {
+            const targetFieldsResult = await aiRequestJson('/api/mapping/target-fields', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                targetSystem: schedule.targetSystem,
+                targetObject: schedule.objectName,
+                connectorId: schedule.connectorId
+              })
+            });
+
+            const targetFields = Array.isArray(targetFieldsResult?.fields) ? targetFieldsResult.fields : [];
+
+            if (sourceFields.length && targetFields.length) {
+              const mappingResult = await aiRequestJson('/api/salesforce/generate-mapping', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  sourceFields: sourceFields.map((field) => ({
+                    name: String(field?.name || '').trim(),
+                    type: String(field?.type || 'string').trim()
+                  })),
+                  targetFields: targetFields.map((field) => ({
+                    name: String(field?.name || '').trim(),
+                    label: String(field?.label || '').trim(),
+                    type: String(field?.type || '').trim(),
+                    isExternalId: field?.isExternalId === true
+                  })),
+                  targetObjectApiName: String(schedule.objectName || '').trim() || 'Contact',
+                  profile: 'standard'
+                })
+              });
+
+              generatedMappings = Array.isArray(mappingResult?.items) ? mappingResult.items : [];
+              if (generatedMappings.length > 0) {
+                schedule.mappingDefinition = buildMappingDefinitionFromGeneratedItems(generatedMappings);
+                window.aiSchedulerState.currentResult.schedule = schedule;
+              }
+            }
+          }
+
+          displayResult(window.aiSchedulerState.currentResult);
+
+          const warningCount = validationIssues.filter((issue) => String(issue?.severity || '').toLowerCase() === 'warning').length;
+          const summary = 'Abfrage erfolgreich getestet (' + previewRows.length + ' Vorschau-Zeilen). '
+            + (generatedMappings.length > 0
+              ? 'Mapping aufgebaut: ' + generatedMappings.length + ' Regeln.'
+              : 'Kein zusaetzliches Auto-Mapping erzeugt.')
+            + (window.aiSchedulerState.currentDeltaSuggestion
+              ? ' Delta-Vorschlag: ' + window.aiSchedulerState.currentDeltaSuggestion.field + ' (' + window.aiSchedulerState.currentDeltaSuggestion.strategy + ').'
+              : '')
+            + (warningCount > 0 ? ' Warnungen: ' + warningCount + '.' : '');
+          setAiTestStatus('success', summary);
+        } catch (error) {
+          setAiTestStatus('error', 'Test fehlgeschlagen: ' + (error?.message || 'Unbekannter Fehler'));
+        } finally {
+          if (refineBtn) {
+            refineBtn.disabled = false;
+            refineBtn.textContent = originalLabel || '🔧 Abfrage testen + Mapping aufbauen';
+          }
+        }
       }
 
       function esc(str) {

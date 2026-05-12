@@ -1324,6 +1324,19 @@ ${renderAISchedulerAssistantModule()}
                   <div id="sch-target-relative-directory-wrap" class="col-md-6 d-none"><label class="form-label">Target Unterverzeichnis relativ zum Connector-Exportpfad</label><input id="sch-target-relative-directory" class="form-control" placeholder="z. B. kunden/export" /></div>
                   <div id="sch-target-archive-relative-directory-wrap" class="col-md-6 d-none"><label class="form-label">Archiv-Unterverzeichnis relativ zum Connector-Archivpfad</label><input id="sch-target-archive-relative-directory" class="form-control" placeholder="optional, sonst gleiches Unterverzeichnis" /></div>
                   <div id="sch-target-path-summary-wrap" class="col-md-12 d-none"><div id="sch-target-path-summary" class="small text-secondary border rounded p-2 bg-light">Keine Agent-Pfade berechnet.</div></div>
+                  <div id="sch-target-file-options-wrap" class="col-md-12 d-none">
+                    <div class="border rounded p-2 bg-light">
+                      <div class="fw-semibold mb-2">Datei-Optionen</div>
+                      <div class="row g-2">
+                        <div class="col-md-4"><label class="form-label">Dateiname</label><input id="sch-target-file-name" class="form-control" placeholder="z. B. export_\${date}_\${time}.csv" /><div class="form-text">Platzhalter: \${date}, \${time}, \${datetime} oder %DATE%, %TIME%, %DATETIME%</div></div>
+                        <div class="col-md-3"><label class="form-label">Charset</label><select id="sch-target-file-charset" class="form-select"><option value="utf8">UTF-8</option><option value="windows-1252">Windows-1252</option><option value="latin1">Latin-1</option><option value="utf16le">UTF-16 LE</option></select></div>
+                        <div class="col-md-2"><label class="form-label">Separator</label><input id="sch-target-file-delimiter" class="form-control" placeholder=";" maxlength="1" /></div>
+                        <div class="col-md-3"><label class="form-label">Textqualifier</label><input id="sch-target-file-text-qualifier" class="form-control" placeholder='"' maxlength="1" /></div>
+                        <div class="col-md-4"><label class="form-label">Excel Sheet</label><input id="sch-target-file-sheet-name" class="form-control" placeholder="Sheet1" /></div>
+                        <div class="col-md-8"><div class="small text-secondary mt-4">Die Datei-Header werden über die Mapping-Zielfelder definiert (Tab Mapping).</div></div>
+                      </div>
+                    </div>
+                  </div>
                   <div id="sch-create-object-wrap" class="col-md-12 d-none">
                     <div class="border rounded p-2 bg-light">
                       <div class="fw-semibold mb-1">Custom-Objekt aus Quelle erzeugen</div>

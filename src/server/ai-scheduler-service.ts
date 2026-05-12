@@ -92,6 +92,7 @@ export class AISchedulerService {
     targetSystem?: string;
     objectName?: string;
     operation?: string;
+    sqlQuery?: string;
     upsertTargetField?: string;
     upsertSourceField?: string;
     direction?: "Inbound" | "Outbound";
@@ -114,6 +115,9 @@ export class AISchedulerService {
     // Operation erkennen
     const operation = this.detectOperation(lower, keywords);
 
+    // SQL-Abfrage erkennen (z.B. SQL: SELECT ... oder ```sql ... ```)
+    const sqlQuery = this.extractSqlQuery(prompt);
+
     // Upsert-Feld (Target/Source) erkennen, z.B. "Upsert Feld external_id zu ERP_adressnummer"
     const upsertKey = this.extractUpsertKey(prompt);
 
@@ -133,6 +137,7 @@ export class AISchedulerService {
       targetSystem,
       objectName,
       operation,
+      sqlQuery,
       upsertTargetField: upsertKey.targetField,
       upsertSourceField: upsertKey.sourceField,
       direction,
@@ -256,6 +261,44 @@ export class AISchedulerService {
     if (lower.includes("aktualisier") || keywords.includes("update")) return "Update";
     // Upsert ist sicherer Default für die meisten Use-Cases
     return "Upsert";
+  }
+
+  /**
+   * Extrahiert eine explizite SQL-Abfrage aus dem Prompt.
+   * Unterstuetzt SQL-Codeblocks, "SQL:"-Praefix und freie SELECT/WITH-Abfragen.
+   */
+  private extractSqlQuery(prompt: string): string | undefined {
+    const raw = String(prompt || "").trim();
+    if (!raw) {
+      return undefined;
+    }
+
+    const sqlBlockMatch = raw.match(/```sql\s*([\s\S]*?)```/i);
+    if (sqlBlockMatch?.[1]) {
+      const fromBlock = sqlBlockMatch[1].trim();
+      if (/^(select|with)\b/i.test(fromBlock)) {
+        return fromBlock;
+      }
+    }
+
+    const sqlPrefixMatch = raw.match(/(?:^|\n)\s*sql\s*:\s*([\s\S]+)/i);
+    if (sqlPrefixMatch?.[1]) {
+      const candidate = sqlPrefixMatch[1].trim();
+      const selectMatch = candidate.match(/\b(select|with)\b[\s\S]*/i);
+      if (selectMatch?.[0]) {
+        return selectMatch[0].trim();
+      }
+    }
+
+    const inlineSelectMatch = raw.match(/\b(select|with)\b[\s\S]*?(?:;|$)/i);
+    if (inlineSelectMatch?.[0]) {
+      const candidate = inlineSelectMatch[0].trim();
+      if (/^(select|with)\b/i.test(candidate)) {
+        return candidate;
+      }
+    }
+
+    return undefined;
   }
 
   /**
@@ -450,12 +493,17 @@ export class AISchedulerService {
         responseType: "json",
         pagination: { type: "offset", pageSize: 100 }
       });
-    } else if (connector.connectorType?.includes("MSSQL")) {
-      Object.assign(baseDefinition, {
-        table: analysis.objectName || "Contacts",
-        query: `SELECT * FROM ${analysis.objectName || "Contacts"} WHERE LastModifiedDate > @lastSync`,
-        parameters: { lastSync: "@lastSync" }
-      });
+    } else if (connector.connectorType?.toUpperCase().includes("MSSQL")) {
+      if (analysis.sqlQuery) {
+        Object.assign(baseDefinition, {
+          queryText: analysis.sqlQuery
+        });
+      } else {
+        const tableName = this.resolveDefaultMssqlTableName(analysis.objectName);
+        Object.assign(baseDefinition, {
+          queryText: `SELECT * FROM ${tableName}`
+        });
+      }
     } else if (connector.connectorType?.includes("FILE")) {
       Object.assign(baseDefinition, {
         filePath: "./import",
@@ -513,6 +561,20 @@ export class AISchedulerService {
       return "Name";
     }
     return "Name";
+  }
+
+  private resolveDefaultMssqlTableName(objectName?: string): string {
+    const normalized = String(objectName || "").trim();
+    if (!normalized) {
+      return "[Contacts]";
+    }
+
+    // Nur sichere Zeichen zulassen und in [] quoten.
+    const safe = normalized.replace(/[^a-zA-Z0-9_]/g, "");
+    if (!safe) {
+      return "[Contacts]";
+    }
+    return `[${safe}]`;
   }
 
   /**
