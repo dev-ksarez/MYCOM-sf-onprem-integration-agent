@@ -2205,6 +2205,51 @@ export function renderAdminUiScript(): string {
         sourceSystemSelect.value = nextSourceSystem;
       }
 
+      function applyScheduleSourceFieldPolicy(connectorId) {
+        const sourceSystemSelect = document.getElementById('sch-source-system');
+        const sourceTypeSelect = document.getElementById('sch-source-type');
+        const sourceSystemLabel = document.querySelector('label[for="sch-source-system"]');
+        const sourceTypeLabel = document.querySelector('label[for="sch-source-type"]');
+
+        if (!sourceSystemSelect || !sourceTypeSelect) {
+          return;
+        }
+
+        const connector = (state.connectors || []).find((item) => String(item?.id || '').trim() === String(connectorId || '').trim());
+        if (!connector) {
+          sourceSystemSelect.disabled = false;
+          sourceTypeSelect.disabled = false;
+          if (sourceSystemLabel) sourceSystemLabel.innerHTML = sourceSystemLabel.innerHTML.replace(' <small class="text-muted">(vom Connector abgeleitet)</small>', '');
+          if (sourceTypeLabel) sourceTypeLabel.innerHTML = sourceTypeLabel.innerHTML.replace(' <small class="text-muted">(nur für File-Quellen editierbar)</small>', '');
+          return;
+        }
+
+        const normalizedConnectorType = normalizeConnectorType(connector.connectorType);
+        const isFileConnector = normalizedConnectorType === 'FILE' || normalizedConnectorType === 'FILE_BINARY_SF_IMPORT';
+
+        sourceSystemSelect.disabled = true;
+        if (sourceSystemLabel && !sourceSystemLabel.innerHTML.includes('(vom Connector abgeleitet)')) {
+          sourceSystemLabel.innerHTML += ' <small class="text-muted">(vom Connector abgeleitet)</small>';
+        }
+
+        sourceTypeSelect.disabled = !isFileConnector;
+        if (isFileConnector) {
+          if (sourceTypeLabel && sourceTypeLabel.innerHTML.includes('(vom Connector abgeleitet)')) {
+            sourceTypeLabel.innerHTML = sourceTypeLabel.innerHTML.replace(' <small class="text-muted">(vom Connector abgeleitet)</small>', '');
+          }
+          if (sourceTypeLabel && !sourceTypeLabel.innerHTML.includes('(nur für File-Quellen editierbar)')) {
+            sourceTypeLabel.innerHTML += ' <small class="text-muted">(nur für File-Quellen editierbar)</small>';
+          }
+        } else {
+          if (sourceTypeLabel && sourceTypeLabel.innerHTML.includes('(nur für File-Quellen editierbar)')) {
+            sourceTypeLabel.innerHTML = sourceTypeLabel.innerHTML.replace(' <small class="text-muted">(nur für File-Quellen editierbar)</small>', '');
+          }
+          if (sourceTypeLabel && !sourceTypeLabel.innerHTML.includes('(vom Connector abgeleitet)')) {
+            sourceTypeLabel.innerHTML += ' <small class="text-muted">(vom Connector abgeleitet)</small>';
+          }
+        }
+      }
+
       function getConnectorWizardTypeFromConnectorType(connectorType) {
         const normalized = normalizeConnectorType(connectorType);
         if (!normalized) {
@@ -7214,6 +7259,7 @@ export function renderAdminUiScript(): string {
           if (selectedConnectorId) {
             applyScheduleSourceSystemFromConnector(selectedConnectorId, { force: false });
             applyScheduleSourceTypeFromConnector(selectedConnectorId, { force: false });
+            applyScheduleSourceFieldPolicy(selectedConnectorId);
           }
         }
 
@@ -9504,6 +9550,8 @@ export function renderAdminUiScript(): string {
         if (!String(entry?.sourceType || '').trim()) {
           applyScheduleSourceTypeFromConnector(initialConnectorId, { force: true });
         }
+        applyScheduleSourceFieldPolicy(initialConnectorId);
+        }
 
         updateSourceQueryAssist();
         updateScheduleFilePathSummaries();
@@ -11197,6 +11245,7 @@ export function renderAdminUiScript(): string {
         const selectedConnectorId = String(document.getElementById('sch-connector')?.value || '').trim();
         applyScheduleSourceSystemFromConnector(selectedConnectorId, { force: true });
         applyScheduleSourceTypeFromConnector(selectedConnectorId, { force: true });
+        applyScheduleSourceFieldPolicy(selectedConnectorId);
         updateSourceQueryAssist();
         updateScheduleTypeUi();
         await loadTargetObjects(document.getElementById('sch-object').value || '');
@@ -11570,6 +11619,7 @@ export function renderAdminUiScript(): string {
         const selectedConnectorId = String(document.getElementById('sch-connector')?.value || '').trim();
         applyScheduleSourceSystemFromConnector(selectedConnectorId, { force: true });
         applyScheduleSourceTypeFromConnector(selectedConnectorId, { force: true });
+        applyScheduleSourceFieldPolicy(selectedConnectorId);
         updateSourceQueryAssist();
         updateScheduleTypeUi();
         await loadTargetObjects(document.getElementById('sch-object').value || '');
