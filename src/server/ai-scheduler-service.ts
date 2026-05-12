@@ -418,7 +418,7 @@ export class AISchedulerService {
       objectName: analysis.objectName || request.objectName || "Contact",
       operation: analysis.operation || "Upsert",
       direction: analysis.direction || "Inbound",
-      sourceType: connector.connectorType || "REST_API",
+      sourceType: this.resolveSourceTypeFromConnector(connector.connectorType),
       targetType: analysis.targetSystem?.toUpperCase() === "SALESFORCE" ? "SALESFORCE" : "REST_API",
       batchSize: this.inferBatchSize(connector),
       connectorId: connector.id,
@@ -427,6 +427,17 @@ export class AISchedulerService {
       targetDefinition: this.generateTargetDefinition(analysis),
       mappingDefinition: this.generateMappingDefinition(analysis)
     };
+  }
+
+  private resolveSourceTypeFromConnector(connectorType?: string): string {
+    const normalized = String(connectorType || "").trim().toUpperCase();
+    if (!normalized) {
+      return "REST_API";
+    }
+    if (normalized.includes("MSSQL")) {
+      return "MSSQL_SQL";
+    }
+    return normalized;
   }
 
   /**

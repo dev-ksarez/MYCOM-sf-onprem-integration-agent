@@ -363,8 +363,8 @@ export function parseDelimitedRows(raw: string, delimiter: string, textQualifier
   return rows;
 }
 
-function parseCsvRows(raw: string, delimiter: string): string[][] {
-  return parseDelimitedRows(raw, delimiter, '"');
+function parseCsvRows(raw: string, delimiter: string, textQualifier = '"'): string[][] {
+  return parseDelimitedRows(raw, delimiter, textQualifier);
 }
 
 function normalizeHeader(value: unknown, fallbackIndex: number): string {
@@ -410,7 +410,7 @@ function resolveDateTimePlaceholders(value: string): string {
     .replaceAll("%DATETIME%", dateTimeToken);
 }
 
-function applyWriteFilenamePlaceholders(definition: FileTransferDefinition): FileTransferDefinition {
+function applyFilenamePlaceholders(definition: FileTransferDefinition): FileTransferDefinition {
   const normalized: FileTransferDefinition = { ...definition };
   if (typeof normalized.fileName === "string") {
     normalized.fileName = resolveDateTimePlaceholders(normalized.fileName);
@@ -482,7 +482,7 @@ export async function parseFileFromConnector(
   rawDefinition: string,
   options?: { archiveOnRead?: boolean }
 ): Promise<ParsedFilePayload> {
-  const definition = parseDefinition(rawDefinition);
+  const definition = applyFilenamePlaceholders(parseDefinition(rawDefinition));
   const runtime = resolveRuntimeConfig(connectorConfig);
   const { absolutePath, fileName } = buildAbsoluteFilePath(definition, runtime, "read");
   const archiveTargetPath = resolveArchiveTargetPath(definition, runtime);
@@ -555,8 +555,9 @@ export async function parseFileFromConnector(
   }
 
   const delimiter = String(definition.delimiter || runtime.defaultDelimiter || ";");
+  const textQualifier = String(definition.textQualifier || '"').slice(0, 1);
   const raw = await fs.readFile(absolutePath, { encoding: charset as BufferEncoding });
-  const rowValues = parseCsvRows(raw, delimiter);
+  const rowValues = parseCsvRows(raw, delimiter, textQualifier);
   const hasHeader = definition.hasHeader !== false;
   const headers = hasHeader
     ? (rowValues[0] || []).map((value, index) => normalizeHeader(value, index))
@@ -585,7 +586,7 @@ export async function writeFileFromConnector(
   rawDefinition: string,
   rows: Record<string, unknown>[]
 ): Promise<{ format: FileDataFormat; filePath: string; fileName: string; rowCount: number }> {
-  const definition = applyWriteFilenamePlaceholders(parseDefinition(rawDefinition));
+  const definition = applyFilenamePlaceholders(parseDefinition(rawDefinition));
   const runtime = resolveRuntimeConfig(connectorConfig);
   const { absolutePath, fileName } = buildAbsoluteFilePath(definition, runtime, "write");
   const archiveTargetPath = resolveArchiveTargetPath(definition, runtime);

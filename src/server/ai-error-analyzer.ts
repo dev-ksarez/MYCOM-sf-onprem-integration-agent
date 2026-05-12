@@ -215,24 +215,26 @@ export class AIErrorAnalyzer {
     targetSystem: string
   ): string[] {
     const recommendations: string[] = [];
+    const sourceLabel = this.resolveSystemLabel(sourceSystem, "Quellsystem");
+    const targetLabel = this.resolveSystemLabel(targetSystem, "Zielsystem");
 
     switch (category) {
       case "authentication_failed":
-        recommendations.push(`Überprüfe ${sourceSystem}-Zugangsdaten (API-Key, Username, Passwort)`);
-        recommendations.push(`Stelle sicher, dass der ${sourceSystem}-Benutzer notwendige Berechtigungen hat`);
+        recommendations.push(`Überprüfe ${sourceLabel}-Zugangsdaten (API-Key, Username, Passwort)`);
+        recommendations.push(`Stelle sicher, dass der ${sourceLabel}-Benutzer notwendige Berechtigungen hat`);
         recommendations.push(`Überprüfe, ob Zugangsdaten abgelaufen sind`);
         break;
 
       case "connector_unavailable":
-        recommendations.push(`Überprüfe, ob der ${sourceSystem}-Server erreichbar ist`);
+        recommendations.push(`Überprüfe, ob der ${sourceLabel}-Server erreichbar ist`);
         recommendations.push(`Überprüfe Netzwerkverbindung & Firewall-Regeln`);
         recommendations.push(`Versuche Connector-Verbindung zu testen`);
         break;
 
       case "mapping_error":
-        recommendations.push(`Überprüfe Feld-Mapping: Existieren alle Ziel-Felder im ${targetSystem}?`);
+        recommendations.push(`Überprüfe Feld-Mapping: Existieren alle Ziel-Felder im ${targetLabel}?`);
         recommendations.push(`Prüfe, ob Custom Fields korrekt gemappt sind`);
-        recommendations.push(`Verifiziere Source-Feld-Namen aus ${sourceSystem}`);
+        recommendations.push(`Verifiziere Source-Feld-Namen aus ${sourceLabel}`);
 
         if (rootCause.toLowerCase().includes("lookup") || rootCause.toLowerCase().includes("missing required")) {
           recommendations.push("Lookup-Mapping prüfen: Ist für das betroffene Lookup-Feld eine gültige Ziel-ID/Referenz vorhanden?");
@@ -249,20 +251,20 @@ export class AIErrorAnalyzer {
 
       case "network_issue":
         recommendations.push(`Überprüfe Netzwerkverbindung`);
-        recommendations.push(`Stelle sicher, dass Firewall ${sourceSystem} erlaubt`);
+        recommendations.push(`Stelle sicher, dass Firewall ${sourceLabel} erlaubt`);
         recommendations.push(`Versuche mit VPN/Proxy zu verbinden (falls nötig)`);
         break;
 
       case "timeout":
         recommendations.push(`Erhöhe Timeout-Einstellung in der Scheduler-Konfiguration`);
-        recommendations.push(`Überprüfe ${sourceSystem}-Performance/Last`);
+        recommendations.push(`Überprüfe ${sourceLabel}-Performance/Last`);
         recommendations.push(`Teile Sync in kleinere Batches auf`);
         break;
 
       case "quota_exceeded":
         recommendations.push(`Warte auf Rate-Limit Zurücksetzen (normalerweise nach 1h)`);
         recommendations.push(`Erhöhe Batch-Größe (macht 1 Request statt vielen)`);
-        recommendations.push(`Berücksichtige ${targetSystem}-API-Limits in Timing`);
+        recommendations.push(`Berücksichtige ${targetLabel}-API-Limits in Timing`);
         break;
 
       default:
@@ -330,12 +332,13 @@ export class AIErrorAnalyzer {
     rootCause?: string,
     affectedFields?: string[]
   ): string | undefined {
+    const sourceLabel = this.resolveSystemLabel(sourceSystem, "Quellsystem");
     switch (category) {
       case "authentication_failed":
-        return `Überprüfe und erneuere die Zugangsdaten für ${sourceSystem} im Connector-Editor`;
+        return `Überprüfe und erneuere die Zugangsdaten für ${sourceLabel} im Connector-Editor`;
 
       case "connector_unavailable":
-        return `Überprüfe unter "Connectoren" > "${sourceSystem}", ob die Verbindung funktioniert`;
+        return `Überprüfe unter "Connectoren" > "${sourceLabel}", ob die Verbindung funktioniert`;
 
       case "mapping_error":
         if (String(rootCause || "").toLowerCase().includes("lookup") || String(rootCause || "").toLowerCase().includes("missing required")) {
@@ -347,7 +350,7 @@ export class AIErrorAnalyzer {
         return `Öffne Scheduler und überprüfe die Feld-Mappings unter dem "Mapping"-Tab`;
 
       case "data_validation":
-        return `Überprüfe die Source-Daten in ${sourceSystem} auf ungültige/unvollständige Werte`;
+        return `Überprüfe die Source-Daten in ${sourceLabel} auf ungültige/unvollständige Werte`;
 
       case "timeout":
         return `Erhöhe unter Scheduler > Timing die Timeout-Einstellung oder reduziere Batch-Size`;
@@ -358,6 +361,20 @@ export class AIErrorAnalyzer {
       default:
         return undefined;
     }
+  }
+
+  private resolveSystemLabel(value: string, fallback: string): string {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return fallback;
+    }
+
+    const normalized = raw.toLowerCase();
+    if (["unknown", "unbekannt", "n/a", "na", "-", "none", "null", "undefined"].includes(normalized)) {
+      return fallback;
+    }
+
+    return raw;
   }
 
   /**

@@ -3171,7 +3171,8 @@ export class AdminDataService {
     limit = 10,
     instanceId?: string
   ): Promise<SourcePreviewResult> {
-    const normalizedType = String(sourceType || "").trim().toUpperCase();
+    const rawType = String(sourceType || "").trim().toUpperCase();
+    const normalizedType = rawType === "MSSQL" ? "MSSQL_SQL" : rawType;
     const normalizedLimit = Math.max(1, Math.min(limit, 100));
     const trimmedDefinition = String(sourceDefinition || "").trim();
 
@@ -3252,7 +3253,8 @@ export class AdminDataService {
     connectorId: string | undefined,
     instanceId?: string
   ): Promise<SourceFieldMetadata[]> {
-    const normalizedType = String(sourceType || "").trim().toUpperCase();
+    const rawType = String(sourceType || "").trim().toUpperCase();
+    const normalizedType = rawType === "MSSQL" ? "MSSQL_SQL" : rawType;
 
     if (normalizedType === "SALESFORCE_SOQL") {
       const client = await this.createClient(instanceId);

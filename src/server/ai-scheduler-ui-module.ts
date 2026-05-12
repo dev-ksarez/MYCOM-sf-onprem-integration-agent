@@ -625,11 +625,11 @@ export function renderAISchedulerAssistantModule(): string {
 
           let updatedQuery = currentQueryText;
           if (assessment.reason === 'select_star') {
-            if (!/SELECT\s+\*/i.test(currentQueryText)) {
+            if (!/SELECT\\s+\\*/i.test(currentQueryText)) {
               setAiTestStatus('warning', 'Auto-Fix konnte kein SELECT * mehr finden. Bitte neu generieren/testen.');
               return;
             }
-            updatedQuery = currentQueryText.replace(/SELECT\s+\*/i, selectClause);
+            updatedQuery = currentQueryText.replace(/SELECT\\s+\\*/i, selectClause);
           }
 
           if (assessment.reason === 'missing_where') {
@@ -774,7 +774,7 @@ export function renderAISchedulerAssistantModule(): string {
             return targetField + ';' + targetType + '=' + sourceField + ';' + transform;
           })
           .filter(Boolean)
-          .join('\n');
+          .join('\\n');
       }
 
       function setAiTestStatus(kind, message) {
@@ -794,7 +794,7 @@ export function renderAISchedulerAssistantModule(): string {
       function evaluateSqlTrafficLight(sourceType, queryText) {
         const type = String(sourceType || '').trim().toUpperCase();
         const query = String(queryText || '').trim();
-        const isSqlLike = type === 'MSSQL_SQL' || type === 'SALESFORCE_SOQL';
+        const isSqlLike = type === 'MSSQL_SQL' || type === 'MSSQL' || type === 'SALESFORCE_SOQL';
 
         if (!isSqlLike) {
           return null;
@@ -828,7 +828,7 @@ export function renderAISchedulerAssistantModule(): string {
           };
         }
 
-        const hasSelectStar = /SELECT\s+\*/i.test(query);
+        const hasSelectStar = /SELECT\\s+\\*/i.test(query);
         const hasWhere = /\bWHERE\b/i.test(query);
 
         if (hasSelectStar || !hasWhere) {
@@ -898,7 +898,7 @@ export function renderAISchedulerAssistantModule(): string {
 
           let sourceFields = [];
           const sourceType = String(schedule.sourceType || '').trim().toUpperCase();
-          if (sourceType === 'MSSQL_SQL' || sourceType === 'SALESFORCE_SOQL') {
+          if (sourceType === 'MSSQL_SQL' || sourceType === 'MSSQL' || sourceType === 'SALESFORCE_SOQL') {
             try {
               const sourceFieldsResult = await aiRequestJson('/api/sources/fields', {
                 method: 'POST',

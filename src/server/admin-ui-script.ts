@@ -9551,7 +9551,6 @@ export function renderAdminUiScript(): string {
           applyScheduleSourceTypeFromConnector(initialConnectorId, { force: true });
         }
         applyScheduleSourceFieldPolicy(initialConnectorId);
-        }
 
         updateSourceQueryAssist();
         updateScheduleFilePathSummaries();
@@ -10274,6 +10273,13 @@ export function renderAdminUiScript(): string {
             showError('Run-Details nicht gefunden');
             return;
           }
+          const selectedScheduleId = String(selectedRun.scheduleId || '').trim();
+          const selectedSchedule = selectedScheduleId
+            ? (state.schedules || []).find((schedule) => String(schedule.id || '').trim() === selectedScheduleId)
+            : null;
+          const resolvedSourceSystem = String(selectedRun.sourceSystem || selectedSchedule?.sourceSystem || '').trim();
+          const resolvedTargetSystem = String(selectedRun.targetSystem || selectedSchedule?.targetSystem || '').trim();
+          const resolvedScheduleName = String(selectedRun.scheduleName || selectedSchedule?.name || '').trim();
 
           // Zeige Analyse-Status
           showInfo('Analysiere Fehler mit KI...');
@@ -10283,9 +10289,9 @@ export function renderAdminUiScript(): string {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               runId: runId,
-              scheduleName: selectedRun.scheduleName || 'Unknown',
-              sourceSystem: selectedRun.sourceSystem || 'Unknown',
-              targetSystem: selectedRun.targetSystem || 'Unknown',
+              scheduleName: resolvedScheduleName || 'Unbekannter Scheduler',
+              sourceSystem: resolvedSourceSystem || 'Quellsystem',
+              targetSystem: resolvedTargetSystem || 'Zielsystem',
               errorLog: logsOutput,
               errorCode: selectedRun.errorCode,
               recordsProcessed: selectedRun.recordsProcessed,
@@ -10301,6 +10307,17 @@ export function renderAdminUiScript(): string {
       }
 
       function showErrorAnalysisModal(analysis, selectedRun) {
+        const errorCategoryLabels = {
+          connector_unavailable: 'Connector nicht erreichbar',
+          authentication_failed: 'Authentifizierungsfehler',
+          mapping_error: 'Mapping-Fehler',
+          data_validation: 'Datenvalidierung',
+          network_issue: 'Netzwerkproblem',
+          timeout: 'Timeout',
+          quota_exceeded: 'Quota überschritten',
+          unknown: 'Unbekannt'
+        };
+        const errorCategoryLabel = errorCategoryLabels[String(analysis?.errorCategory || '').trim()] || String(analysis?.errorCategory || 'Unbekannt');
         const selectedScheduleId = String(selectedRun?.scheduleId || '').trim();
         const modalHtml = \`
           <div class="modal fade" id="error-analysis-modal" tabindex="-1">
@@ -10315,7 +10332,7 @@ export function renderAdminUiScript(): string {
                     <div class="col-12">
                       <div class="d-flex align-items-center gap-2">
                         <span class="badge bg-\${analysis.severity === 'critical' ? 'danger' : analysis.severity === 'error' ? 'warning' : 'info'}">\${analysis.severity.toUpperCase()}</span>
-                        <span class="badge bg-secondary">\${analysis.errorCategory}</span>
+                        <span class="badge bg-secondary">\${htmlEscape(errorCategoryLabel)}</span>
                         <span class="badge bg-light text-dark">\${Math.round(analysis.confidence * 100)}% Konfidenz</span>
                       </div>
                     </div>

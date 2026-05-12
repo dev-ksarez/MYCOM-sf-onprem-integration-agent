@@ -43,7 +43,7 @@ Die Web UI enthaelt einen KI-Assistenten fuer zwei Kernbereiche:
 Detaildokumentation zum Scheduler-Assistenten und den KI-Erweiterungen:
 
 - [FEATURE_AI_SCHEDULER_ASSISTANT.md](FEATURE_AI_SCHEDULER_ASSISTANT.md)
-- [RELEASE_NOTES_0.2.40.md](RELEASE_NOTES_0.2.40.md)
+- [RELEASE_NOTES_0.2.44.md](RELEASE_NOTES_0.2.44.md)
 
 ## Voraussetzungen
 
