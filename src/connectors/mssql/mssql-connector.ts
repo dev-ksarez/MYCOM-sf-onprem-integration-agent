@@ -95,6 +95,16 @@ function getRequiredUpsertKey(config: ConnectorConfig): string {
   return upsertKey.trim();
 }
 
+function getOptionalUpsertKey(config: ConnectorConfig): string | undefined {
+  const upsertKey = config.parameters.upsertKey;
+
+  if (typeof upsertKey !== "string" || upsertKey.trim() === "") {
+    return undefined;
+  }
+
+  return upsertKey.trim();
+}
+
 function normalizeFieldKey(value: string): string {
   return String(value)
     .trim()
@@ -154,9 +164,9 @@ function resolvePassword(config: ConnectorConfig): string {
 
 export class MssqlConnector implements TargetConnector {
   private readonly config: ConnectorConfig;
-  private readonly repository: MssqlRepository;
+  private readonly repository?: MssqlRepository;
   private readonly database: MssqlDatabase;
-  private readonly upsertKey: string;
+  private readonly upsertKey?: string;
   private initializationPromise?: Promise<void>;
 
   public constructor(config: ConnectorConfig) {
@@ -166,8 +176,8 @@ export class MssqlConnector implements TargetConnector {
     const databaseName = getRequiredString(config.parameters, "database");
     // Backward compatibility: older connector definitions used schemaName/tableName.
     const schemaName = getStringWithAliases(config.parameters, ["schema", "schemaName"], { defaultValue: "dbo" });
-    const tableName = getStringWithAliases(config.parameters, ["table", "tableName"], { required: true });
-    const upsertKey = getRequiredUpsertKey(config);
+    const tableName = getStringWithAliases(config.parameters, ["table", "tableName"]);
+    const upsertKey = getOptionalUpsertKey(config);
     const user = getRequiredString(config.parameters, "user");
     const password = resolvePassword(config);
 
@@ -183,11 +193,35 @@ export class MssqlConnector implements TargetConnector {
       requestTimeout: config.timeoutMs
     });
 
-    this.repository = new MssqlRepository(this.database, schemaName, tableName);
+    if (tableName) {
+      this.repository = new MssqlRepository(this.database, schemaName, tableName);
+    }
     this.upsertKey = upsertKey;
   }
 
+  private ensureRepositoryConfigured(): MssqlRepository {
+    if (!this.repository) {
+      throw new Error(
+        "Missing required MSSQL connector parameter: table (or tableName)"
+      );
+    }
+
+    return this.repository;
+  }
+
+  private ensureUpsertKeyConfigured(): string {
+    if (!this.upsertKey) {
+      throw new Error("Missing required MSSQL connector parameter: upsertKey");
+    }
+
+    return this.upsertKey;
+  }
+
   private async initialize(): Promise<void> {
+    if (!this.repository) {
+      return;
+    }
+
     if (!this.initializationPromise) {
       this.initializationPromise = this.repository.ensureSchema();
     }
@@ -214,6 +248,7 @@ export class MssqlConnector implements TargetConnector {
     records: CanonicalAccount[],
     context: JobContext
   ): Promise<ConnectorResult[]> {
+    const repository = this.ensureRepositoryConfigured();
     await this.initialize();
 
     const results: ConnectorResult[] = [];
@@ -223,7 +258,7 @@ export class MssqlConnector implements TargetConnector {
         if (!record.externalKey || !record.name) {
           const validationMessage = "externalKey and name are required";
 
-          await this.repository.writeOperationLog(
+          await repository.writeOperationLog(
             context,
             record.externalKey || "UNKNOWN",
             "VALIDATION",
@@ -241,12 +276,12 @@ export class MssqlConnector implements TargetConnector {
           continue;
         }
 
-        const operation = await this.repository.upsertAccount(record);
+        const operation = await repository.upsertAccount(record);
         const statusCode = operation === "INSERTED" ? "UPSERT_INSERTED" : "UPSERT_UPDATED";
         const targetId = `MSSQL-${randomUUID()}`;
         const message = `Account ${operation.toLowerCase()} in run ${context.runId}`;
 
-        await this.repository.writeOperationLog(
+        await repository.writeOperationLog(
           context,
           record.externalKey,
           operation,
@@ -265,7 +300,7 @@ export class MssqlConnector implements TargetConnector {
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
 
-        await this.repository.writeOperationLog(
+        await repository.writeOperationLog(
           context,
           record.externalKey || "UNKNOWN",
           "EXCEPTION",
@@ -290,24 +325,25 @@ export class MssqlConnector implements TargetConnector {
     context: JobContext,
     upsertKeyOverride?: string
   ): Promise<ConnectorResult[]> {
+    const repository = this.ensureRepositoryConfigured();
     await this.initialize();
 
     const results: ConnectorResult[] = [];
     const upsertKey = typeof upsertKeyOverride === "string" && upsertKeyOverride.trim()
       ? upsertKeyOverride.trim()
-      : this.upsertKey;
+      : this.ensureUpsertKeyConfigured();
 
     for (const record of records) {
       const externalKeyValue = getMappedValueByEquivalentKey(record.values, upsertKey);
       const externalKey = typeof externalKeyValue === "string" ? externalKeyValue : String(externalKeyValue ?? "UNKNOWN");
 
       try {
-        const operation = await this.repository.upsertMappedRecord(record, upsertKey);
+        const operation = await repository.upsertMappedRecord(record, upsertKey);
         const statusCode = operation === "INSERTED" ? "UPSERT_INSERTED" : "UPSERT_UPDATED";
         const targetId = `MSSQL-${randomUUID()}`;
         const message = `Mapped record ${operation.toLowerCase()} in run ${context.runId}`;
 
-        await this.repository.writeOperationLog(
+        await repository.writeOperationLog(
           context,
           externalKey,
           operation,
@@ -327,7 +363,7 @@ export class MssqlConnector implements TargetConnector {
         const message = error instanceof Error ? error.message : "Unknown error";
         const isConfigurationError = isMappedRecordConfigurationError(message);
 
-        await this.repository.writeOperationLog(
+        await repository.writeOperationLog(
           context,
           externalKey,
           "EXCEPTION",

@@ -8455,8 +8455,13 @@ export function renderAdminUiScript(): string {
 
         body.querySelectorAll('button[data-run-now]').forEach((button) => {
           button.addEventListener('click', async () => {
-            await requestJson('/api/schedules/' + encodeURIComponent(button.getAttribute('data-run-now')) + '/run', { method: 'POST' });
-            await refresh();
+            try {
+              const result = await requestJson('/api/schedules/' + encodeURIComponent(button.getAttribute('data-run-now')) + '/run', { method: 'POST' });
+              showToast(result.message || 'Manueller Lauf gestartet.');
+              await refresh();
+            } catch (error) {
+              showError(error.message || 'Manueller Lauf konnte nicht gestartet werden.');
+            }
           });
         });
 
