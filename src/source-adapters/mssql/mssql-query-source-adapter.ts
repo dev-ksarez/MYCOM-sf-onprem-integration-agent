@@ -137,7 +137,7 @@ export class MssqlQuerySourceAdapter implements SourceAdapter {
     const delta = this.definition.delta;
     const checkpointCursor = delta?.strategy === "datetime"
       ? context.checkpoint?.value
-      : context.checkpoint?.recordId || context.checkpoint?.value;
+      : context.checkpoint?.value || context.checkpoint?.recordId;
     const queryText = delta && checkpointCursor
       ? this.appendDeltaFilter(this.definition.queryText, delta, checkpointCursor)
       : this.definition.queryText;

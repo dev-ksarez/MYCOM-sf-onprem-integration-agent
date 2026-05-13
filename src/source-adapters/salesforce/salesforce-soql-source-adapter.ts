@@ -63,7 +63,7 @@ export class SalesforceSoqlSourceAdapter implements SourceAdapter {
     const delta = this.definition.delta;
     const checkpointCursor = delta?.strategy === "datetime"
       ? context.checkpoint?.value
-      : context.checkpoint?.recordId || context.checkpoint?.value;
+      : context.checkpoint?.value || context.checkpoint?.recordId;
     const checkpointRecordId = delta?.strategy === "datetime" ? context.checkpoint?.recordId : undefined;
     const queryText = delta
       ? buildDeltaOrderedSoql(this.definition.queryText, delta, checkpointCursor, checkpointRecordId)

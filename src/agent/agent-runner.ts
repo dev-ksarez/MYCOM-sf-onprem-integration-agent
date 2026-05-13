@@ -1,9 +1,9 @@
 import pino from "pino";
 import fs from "node:fs";
 import path from "node:path";
-import { ConnectorConfig, SalesforceClient, SalesforceScheduleRecord } from "../clients/salesforce/salesforce-client";
+import { ConnectorConfig, CreateLogInput, SalesforceClient, SalesforceScheduleRecord } from "../clients/salesforce/salesforce-client";
 import { ConnectorRegistry } from "../core/connector-registry/connector-registry";
-import { DataTransferJob } from "../core/job-runner/data-transfer-job";
+import { BulkLookupResolverFn, DataTransferJob } from "../core/job-runner/data-transfer-job";
 import { LookupResolverFn } from "../core/mapping-dsl/mapping-definition-engine";
 import { AccountExportJob } from "../core/job-runner/account-export-job";
 import { isScheduleDue } from "../core/scheduler/is-schedule-due";
@@ -755,6 +755,10 @@ function mapSchedule(record: SalesforceScheduleRecord): IntegrationSchedule {
   };
 }
 
+function isValidSalesforceIdentifier(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_.]*$/.test(value);
+}
+
 async function executeSchedule(
   salesforceClient: SalesforceClient,
   logger: pino.Logger,
@@ -995,6 +999,70 @@ async function executeSchedule(
         }
       };
 
+      const salesforceBulkLookupResolver: BulkLookupResolverFn = async (requests) => {
+        const cache = new Map<string, string | null>();
+        const chunkSize = Math.max(1, Math.min(200, Math.trunc(context.batchSize || 100)));
+
+        for (const request of requests) {
+          const objectName = String(request.objectName || "").trim();
+          const field = String(request.field || "").trim();
+          if (!objectName || !field || !isValidSalesforceIdentifier(objectName) || !isValidSalesforceIdentifier(field)) {
+            continue;
+          }
+
+          const values = Array.from(new Set((request.values || [])
+            .map((value) => String(value ?? "").trim())
+            .filter((value) => value.length > 0)));
+
+          if (values.length === 0) {
+            continue;
+          }
+
+          for (const value of values) {
+            cache.set(`${objectName}|${field}|${value}`, null);
+          }
+
+          for (let index = 0; index < values.length; index += chunkSize) {
+            const chunk = values.slice(index, index + chunkSize);
+            const inClause = chunk.map((value) => `'${value.replace(/'/g, "\\'")}'`).join(", ");
+            const soql = `SELECT Id, ${field} FROM ${objectName} WHERE ${field} IN (${inClause})`;
+
+            try {
+              const records = await salesforceClient.queryGeneric(soql);
+              for (const record of records) {
+                const rawLookupValue = record[field];
+                if (rawLookupValue === undefined || rawLookupValue === null || rawLookupValue === "") {
+                  continue;
+                }
+
+                const normalizedLookupValue = String(rawLookupValue).trim();
+                const id = String(record.Id || "").trim();
+                if (!id) {
+                  continue;
+                }
+
+                cache.set(`${objectName}|${field}|${normalizedLookupValue}`, id);
+              }
+            } catch (err) {
+              logger.error(
+                {
+                  scheduleId: schedule.id,
+                  runId,
+                  objectName,
+                  field,
+                  chunkStart: index,
+                  chunkSize: chunk.length,
+                  error: err instanceof Error ? err.message : String(err)
+                },
+                "Bulk lookup preload failed for chunk"
+              );
+            }
+          }
+        }
+
+        return cache;
+      };
+
       if (
         !forceRun &&
         (targetAdapter instanceof SalesforceTargetAdapter || targetAdapter instanceof SalesforceGlobalPicklistTargetAdapter) &&
@@ -1025,7 +1093,13 @@ async function executeSchedule(
         return false;
       }
 
-      const job = new DataTransferJob(logger, sourceAdapter, targetAdapter, salesforceLookupResolver);
+      const job = new DataTransferJob(
+        logger,
+        sourceAdapter,
+        targetAdapter,
+        salesforceLookupResolver,
+        salesforceBulkLookupResolver
+      );
       result = await job.execute(transferContext, schedule.mappingDefinition);
     } else {
       const source = new SalesforceAccountSource(salesforceClient);
@@ -1035,26 +1109,42 @@ async function executeSchedule(
 
     persistFailedRunRecords(runId, schedule, connectorConfig, result.failedRecords);
 
-    for (const connectorResult of result.connectorResults) {
-      if (connectorResult.success) {
-        continue;
-      }
+    const failedConnectorResults = result.connectorResults.filter((connectorResult) => !connectorResult.success);
+    if (failedConnectorResults.length > 0) {
+      const errorLogInputs: CreateLogInput[] = failedConnectorResults.map((connectorResult) => {
+        const statusCode = connectorResult.statusCode || "UNKNOWN_STATUS";
+        const message = connectorResult.message || "Unknown connector error";
+        const retryableText = connectorResult.retryable ? "retryable=true" : "retryable=false";
 
-      const statusCode = connectorResult.statusCode || "UNKNOWN_STATUS";
-      const message = connectorResult.message || "Unknown connector error";
-      const retryableText = connectorResult.retryable ? "retryable=true" : "retryable=false";
-
-      await salesforceClient.createLog({
-        runId,
-        level: "ERROR",
-        step: "RECORD_ERROR",
-        message: `${statusCode}: ${message} (${retryableText})`,
-        correlationId: context.correlationId,
-        recordKey: connectorResult.externalKey
+        return {
+          runId,
+          level: "ERROR",
+          step: "RECORD_ERROR",
+          message: `${statusCode}: ${message} (${retryableText})`,
+          correlationId: context.correlationId,
+          recordKey: connectorResult.externalKey
+        };
       });
+
+      try {
+        await salesforceClient.createLogsBulk(errorLogInputs);
+      } catch (bulkError) {
+        logger.warn(
+          {
+            scheduleId: schedule.id,
+            runId,
+            failedCount: errorLogInputs.length,
+            error: bulkError instanceof Error ? bulkError.message : String(bulkError)
+          },
+          "Bulk error log write failed. Falling back to single inserts."
+        );
+
+        for (const logInput of errorLogInputs) {
+          await salesforceClient.createLog(logInput);
+        }
+      }
     }
 
-    const failedConnectorResults = result.connectorResults.filter((connectorResult) => !connectorResult.success);
     if (failedConnectorResults.length > 0) {
       const primaryFailure = failedConnectorResults[0];
       await maybeCreateConnectorNotificationTask(logger, salesforceClient, connectorConfig, schedule, {
@@ -1113,12 +1203,10 @@ async function executeSchedule(
     if (result.lastProcessedRecord) {
       const parsedSourceDefinition = parseQuerySourceDefinition(schedule.sourceDefinition || "");
       const deltaStrategy = parsedSourceDefinition.delta?.strategy;
-      const checkpointValue = deltaStrategy === "datetime"
-        ? result.lastProcessedRecord.value
-        : undefined;
+      const checkpointValue = result.lastProcessedRecord.value;
       const checkpointRecordId = deltaStrategy === "datetime"
         ? result.lastProcessedRecord.recordId
-        : result.lastProcessedRecord.value;
+        : undefined;
 
       await salesforceClient.upsertCheckpoint({
         checkpointId: checkpoint?.id,
