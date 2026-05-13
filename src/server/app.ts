@@ -558,6 +558,9 @@ ${renderSidebarModuleNavigation()}
       <div class="agent-main">
         <nav class="agent-topbar">
           <div class="agent-topbar-primary">
+            <div class="agent-topbar-brand">SF Integration Agent <span id="agent-version-label" class="agent-version-label">v${escapeHtml(APP_VERSION)}</span></div>
+          </div>
+          <div class="agent-topbar-actions">
             <button
               class="btn btn-outline-secondary agent-topbar-menu"
               type="button"
@@ -569,13 +572,12 @@ ${renderSidebarModuleNavigation()}
               ☰
               <span id="agent-menu-update-bullet" class="agent-update-bullet d-none" aria-hidden="true"></span>
             </button>
-            <div class="agent-topbar-brand">SF Integration Agent <span id="agent-version-label" class="agent-version-label">v${escapeHtml(APP_VERSION)}</span></div>
           </div>
           <div class="agent-navbar-actions offcanvas offcanvas-end" tabindex="-1" id="agent-header-menu" aria-labelledby="agent-header-menu-title">
             <div class="offcanvas-header agent-offcanvas-header">
               <div class="agent-offcanvas-title-wrap">
                 <div id="agent-header-menu-title" class="fw-semibold">Menü</div>
-                <div id="agent-header-menu-subtitle" class="agent-offcanvas-subtitle">Navigation und Arbeitsbereich</div>
+                <div id="agent-header-menu-subtitle" class="agent-offcanvas-subtitle">Navigation, Kontext und Schnellzugriff</div>
               </div>
               <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Schließen"></button>
             </div>
@@ -588,7 +590,7 @@ ${renderMenuModuleNavigation()}
               </section>
 
               <section class="agent-menu-panel">
-                <div class="agent-menu-section-label">Arbeitsbereich</div>
+                <div class="agent-menu-section-label">Kontext</div>
                 <div class="agent-menu-control-grid">
                   <div class="agent-menu-control-card">
                     <label class="small text-secondary" for="instance-select">Instanz</label>
@@ -606,16 +608,16 @@ ${renderMenuModuleNavigation()}
               </section>
 
               <section class="agent-menu-panel">
-                <div id="agent-menu-actions-label" class="agent-menu-section-label">Aktionen</div>
+                <div id="agent-menu-actions-label" class="agent-menu-section-label">Schnellzugriff</div>
                 <div id="agent-menu-auth-hint" class="agent-menu-inline-note d-none"></div>
                 <div class="agent-menu-status-card">
                   <div class="agent-menu-status-head">
                     <span class="small text-secondary">Updates</span>
-                    <div id="overview-update-status" class="small text-secondary">Update-Status wird geladen...</div>
+                    <div id="overview-update-status" class="small text-secondary">Status wird geladen...</div>
                   </div>
                   <div id="overview-update-progress-wrap" class="mt-2 d-none">
                     <div class="d-flex justify-content-between gap-2 small text-secondary">
-                      <span id="overview-update-progress-stage">Update wird vorbereitet...</span>
+                      <span id="overview-update-progress-stage">Vorbereitung...</span>
                       <span id="overview-update-progress-percent">0%</span>
                     </div>
                     <div class="progress mt-1" style="height: 6px;">
@@ -625,23 +627,32 @@ ${renderMenuModuleNavigation()}
                   </div>
                   <div id="overview-log-retention-status" class="small text-secondary mt-2">Log-Retention wird geladen...</div>
                   <div class="agent-menu-action-grid">
-                    <button id="overview-check-update" type="button" class="btn btn-sm btn-outline-secondary">Update prüfen</button>
-                    <button id="overview-run-update" type="button" class="btn btn-sm btn-outline-primary">Update starten</button>
+                    <button id="overview-check-update" type="button" class="btn btn-sm btn-outline-secondary">Check</button>
+                    <button id="overview-run-update" type="button" class="btn btn-sm btn-outline-primary">Start</button>
                   </div>
                 </div>
-                <div class="agent-menu-action-grid agent-menu-action-grid-compact">
-                  <button id="export-setup" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Setup exportieren"><span class="agent-btn-icon" aria-hidden="true">⭳</span><span>Export</span></button>
-                  <button id="import-setup" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Setup importieren"><span class="agent-btn-icon" aria-hidden="true">⭱</span><span>Import</span></button>
+                <div class="agent-menu-group">
+                  <div class="agent-menu-group-title">Projektbereich</div>
+                  <div class="agent-menu-action-grid agent-menu-action-grid-compact">
+                    <button id="manage-projects" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Projekte verwalten"><span class="agent-btn-icon" aria-hidden="true">▦</span><span>Projekt</span></button>
+                    <button id="publish-project-documentation" class="btn btn-outline-primary agent-btn-subtle" aria-label="Projekt-Dokumentation publizieren"><span class="agent-btn-icon" aria-hidden="true">✎</span><span>Doku</span></button>
+                  </div>
                 </div>
-                <div class="agent-menu-action-grid agent-menu-action-grid-compact">
-                  <button id="publish-project-documentation" class="btn btn-outline-primary agent-btn-subtle" aria-label="Projekt-Dokumentation publizieren"><span class="agent-btn-icon" aria-hidden="true">✎</span><span>Doku</span></button>
+                <div class="agent-menu-group">
+                  <div class="agent-menu-group-title">Setup</div>
+                  <div class="agent-menu-action-grid agent-menu-action-grid-compact">
+                    <button id="export-setup" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Setup exportieren"><span class="agent-btn-icon" aria-hidden="true">⭳</span><span>Export</span></button>
+                    <button id="import-setup" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Setup importieren"><span class="agent-btn-icon" aria-hidden="true">⭱</span><span>Import</span></button>
+                  </div>
+                </div>
+                <div class="agent-menu-group">
+                  <div class="agent-menu-group-title">Admin</div>
+                  <div class="agent-menu-action-grid agent-menu-action-grid-compact">
+                    <button id="add-instance" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Instanz hinzufügen"><span class="agent-btn-icon" aria-hidden="true">＋</span><span>Instanz</span></button>
+                    <button id="refresh-all" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Aktualisieren"><span class="agent-btn-icon" aria-hidden="true">↻</span><span>Neu laden</span></button>
+                  </div>
                 </div>
                 <input id="setup-import-input" type="file" accept="application/json" class="d-none" />
-                <div class="agent-menu-action-grid agent-menu-action-grid-compact">
-                  <button id="manage-projects" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Projekte verwalten"><span class="agent-btn-icon" aria-hidden="true">▦</span><span>Projekte</span></button>
-                  <button id="add-instance" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Instanz hinzufügen"><span class="agent-btn-icon" aria-hidden="true">＋</span><span>Instanz</span></button>
-                  <button id="refresh-all" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Aktualisieren"><span class="agent-btn-icon" aria-hidden="true">↻</span><span>Refresh</span></button>
-                </div>
               </section>
 
               <section id="agent-menu-auth-panel" class="agent-menu-panel agent-menu-panel-footer">

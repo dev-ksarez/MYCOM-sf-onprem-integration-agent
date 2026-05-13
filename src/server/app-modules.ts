@@ -11,13 +11,13 @@ export interface AppModuleDefinition {
 }
 
 const REGISTERED_APP_MODULES: AppModuleDefinition[] = [
-  { id: "overview", label: "Übersicht", icon: "▦", tabId: "tab-overview" },
-  { id: "installer", label: "Installation", icon: "⚙", tabId: "tab-installer", sidebarButtonId: "tab-installer-trigger", hiddenInSidebar: true, showInstallUpdateBullet: true },
-  { id: "schedulers", label: "Scheduler", icon: "◷", tabId: "tab-schedulers" },
-  { id: "connectors", label: "Connectoren", icon: "◫", tabId: "tab-connectors" },
-  { id: "ai-assistant", label: "KI-Assistent", icon: "⚡", tabId: "tab-ai-assistant" },
-  { id: "monitor", label: "Monitoring", icon: "◉", tabId: "tab-monitor" },
-  { id: "migration", label: "Migration", icon: "⊞", tabId: "tab-migration" },
+  { id: "overview", label: "Start", icon: "▦", tabId: "tab-overview" },
+  { id: "installer", label: "Setup", icon: "⚙", tabId: "tab-installer", sidebarButtonId: "tab-installer-trigger", hiddenInSidebar: true, showInstallUpdateBullet: true },
+  { id: "schedulers", label: "Sched.", icon: "◷", tabId: "tab-schedulers" },
+  { id: "connectors", label: "Conn.", icon: "◫", tabId: "tab-connectors" },
+  { id: "ai-assistant", label: "KI", icon: "⚡", tabId: "tab-ai-assistant" },
+  { id: "monitor", label: "Monitor", icon: "◉", tabId: "tab-monitor" },
+  { id: "migration", label: "Mig.", icon: "⊞", tabId: "tab-migration" },
   { id: "admin", label: "Admin", icon: "☷", sidebarButtonId: "open-admin-modal-sidebar", menuButtonId: "open-admin-modal-menu" }
 ];
 
