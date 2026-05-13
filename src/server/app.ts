@@ -2580,6 +2580,91 @@ export function createAppServer(
           if (String(testInstance.name || "").trim() !== String(prodInstance.name || "").trim()) {
             diffs.push({ severity: "info", code: "instance-name-diff", message: "Test- und Produktionsinstanz haben unterschiedliche Namen." });
           }
+
+          const sourceRole = direction === "test-to-production" ? "test" : "production";
+          const targetRole = direction === "test-to-production" ? "production" : "test";
+          const sourceInstance = sourceRole === "test" ? testInstance : prodInstance;
+          const targetInstance = targetRole === "test" ? testInstance : prodInstance;
+
+          const [sourceConnectors, targetConnectors, sourceSchedules, targetSchedules] = await Promise.all([
+            adminDataService.listConnectors(sourceInstance.id),
+            adminDataService.listConnectors(targetInstance.id),
+            adminDataService.listSchedules(sourceInstance.id),
+            adminDataService.listSchedules(targetInstance.id)
+          ]);
+
+          const connectorSig = (item: { name?: string; connectorType?: string; targetSystem?: string; direction?: string }) => {
+            return [
+              String(item.name || "").trim().toLowerCase(),
+              String(item.connectorType || "").trim().toUpperCase(),
+              String(item.targetSystem || "").trim().toLowerCase(),
+              String(item.direction || "").trim().toLowerCase()
+            ].join("|");
+          };
+          const scheduleSig = (item: { name?: string; sourceType?: string; targetType?: string; objectName?: string; operation?: string; direction?: string; connectorId?: string }) => {
+            return [
+              String(item.name || "").trim().toLowerCase(),
+              String(item.sourceType || "").trim().toUpperCase(),
+              String(item.targetType || "").trim().toUpperCase(),
+              String(item.objectName || "").trim().toLowerCase(),
+              String(item.operation || "").trim().toLowerCase(),
+              String(item.direction || "").trim().toLowerCase(),
+              String(item.connectorId || "").trim().toLowerCase()
+            ].join("|");
+          };
+
+          const sourceConnectorMap = new Map(sourceConnectors.map((item) => [connectorSig(item), item]));
+          const targetConnectorMap = new Map(targetConnectors.map((item) => [connectorSig(item), item]));
+          const sourceScheduleMap = new Map(sourceSchedules.map((item) => [scheduleSig(item), item]));
+          const targetScheduleMap = new Map(targetSchedules.map((item) => [scheduleSig(item), item]));
+
+          for (const [key, sourceConnector] of sourceConnectorMap.entries()) {
+            if (!targetConnectorMap.has(key)) {
+              diffs.push({
+                severity: "warning",
+                code: "connector-missing-in-target",
+                message: `Connector fehlt in Zielumgebung: ${sourceConnector.name || sourceConnector.id}`
+              });
+            }
+          }
+          for (const [key, targetConnector] of targetConnectorMap.entries()) {
+            if (!sourceConnectorMap.has(key)) {
+              diffs.push({
+                severity: "info",
+                code: "connector-extra-in-target",
+                message: `Connector nur in Zielumgebung vorhanden: ${targetConnector.name || targetConnector.id}`
+              });
+            }
+          }
+
+          for (const [key, sourceSchedule] of sourceScheduleMap.entries()) {
+            if (!targetScheduleMap.has(key)) {
+              diffs.push({
+                severity: sourceSchedule.active ? "critical" : "warning",
+                code: "schedule-missing-in-target",
+                message: `Scheduler fehlt in Zielumgebung: ${sourceSchedule.name || sourceSchedule.id}`
+              });
+            }
+          }
+          for (const [key, targetSchedule] of targetScheduleMap.entries()) {
+            if (!sourceScheduleMap.has(key)) {
+              diffs.push({
+                severity: "info",
+                code: "schedule-extra-in-target",
+                message: `Scheduler nur in Zielumgebung vorhanden: ${targetSchedule.name || targetSchedule.id}`
+              });
+            }
+          }
+
+          const sourceActive = sourceSchedules.filter((item) => item.active).length;
+          const targetActive = targetSchedules.filter((item) => item.active).length;
+          if (sourceActive !== targetActive) {
+            diffs.push({
+              severity: "warning",
+              code: "active-schedule-count-diff",
+              message: `Anzahl aktiver Scheduler unterschiedlich (${sourceRole}: ${sourceActive}, ${targetRole}: ${targetActive}).`
+            });
+          }
         }
 
         const summary = {
@@ -2630,33 +2715,103 @@ export function createAppServer(
         const now = new Date().toISOString();
         const id = `pre-${Date.now()}`;
         const expectedRole = targetEnv === "production" ? "production" : "test";
-        const hasRoleInstance = adminDataService
+        const targetInstance = adminDataService
           .listInstances()
-          .some((item) => String(item.projectId || "default-project").trim() === projectId && String(item.role || "test") === expectedRole);
+          .find((item) => String(item.projectId || "default-project").trim() === projectId && String(item.role || "test") === expectedRole);
 
-        const checks: DeploymentPrecheckRunRecord["checks"] = [
-          {
+        const checks: DeploymentPrecheckRunRecord["checks"] = [];
+        if (!targetInstance) {
+          checks.push({
             group: "localResourceConnectivity",
-            status: hasRoleInstance ? "passed" : "failed",
-            message: hasRoleInstance
-              ? `Lokale Ressourcen-Pruefung fuer Zielumgebung ${targetEnv} gestartet und technisch vorbereitet.`
-              : `Keine passende ${targetEnv}-Instanz fuer Projekt gefunden.`
-          },
-          {
+            status: "failed",
+            message: `Keine passende ${targetEnv}-Instanz fuer Projekt gefunden.`
+          });
+          checks.push({
             group: "schedulerConnectorQueries",
-            status: hasRoleInstance ? "passed" : "failed",
-            message: hasRoleInstance
-              ? "Scheduler/Connector-Testabfragen wurden vorbereitet."
-              : "Scheduler/Connector-Testabfragen konnten ohne Zielinstanz nicht gestartet werden."
-          },
-          {
+            status: "failed",
+            message: "Scheduler/Connector-Testabfragen konnten ohne Zielinstanz nicht gestartet werden."
+          });
+          checks.push({
             group: "salesforceObjectFieldValidation",
-            status: hasRoleInstance ? "passed" : "failed",
-            message: hasRoleInstance
-              ? "Salesforce-Objekt/Feldvalidierung wurde vorbereitet."
-              : "Salesforce-Objekt/Feldvalidierung ohne Zielinstanz nicht moeglich."
-          }
-        ];
+            status: "failed",
+            message: "Salesforce-Objekt/Feldvalidierung ohne Zielinstanz nicht moeglich."
+          });
+        } else {
+          const schedules = await adminDataService.listSchedules(targetInstance.id);
+          const activeSchedules = schedules.filter((item) => item.active);
+          const connectorIds = Array.from(new Set(activeSchedules.map((item) => String(item.connectorId || "").trim()).filter(Boolean)));
+
+          const connectorResults = await Promise.all(connectorIds.map(async (connectorId) => {
+            try {
+              const result = await adminDataService.testConnector(connectorId, targetInstance.id);
+              return { connectorId, ok: result.ok, message: result.message };
+            } catch (error) {
+              return { connectorId, ok: false, message: error instanceof Error ? error.message : String(error) };
+            }
+          }));
+          const connectorFailures = connectorResults.filter((item) => !item.ok);
+          checks.push({
+            group: "localResourceConnectivity",
+            status: connectorFailures.length ? "failed" : "passed",
+            message: connectorFailures.length
+              ? `Fehlgeschlagene Connector-Checks (${connectorFailures.length}): ${connectorFailures.slice(0, 3).map((item) => item.connectorId).join(", ")}`
+              : `Connector-Connectivity erfolgreich (${connectorResults.length} geprueft).`
+          });
+
+          const dryRunResults = await Promise.all(activeSchedules.map(async (schedule) => {
+            try {
+              const result = await adminDataService.dryRunScheduleSource(schedule.id, targetInstance.id);
+              return { scheduleName: schedule.name, ok: result.ok, message: result.message };
+            } catch (error) {
+              return { scheduleName: schedule.name, ok: false, message: error instanceof Error ? error.message : String(error) };
+            }
+          }));
+          const dryRunFailures = dryRunResults.filter((item) => !item.ok);
+          checks.push({
+            group: "schedulerConnectorQueries",
+            status: dryRunFailures.length ? "failed" : "passed",
+            message: dryRunFailures.length
+              ? `Scheduler-Testabfragen fehlgeschlagen (${dryRunFailures.length}): ${dryRunFailures.slice(0, 3).map((item) => item.scheduleName).join(", ")}`
+              : `Scheduler-Testabfragen erfolgreich (${dryRunResults.length} geprueft).`
+          });
+
+          const validationResults = await Promise.all(activeSchedules.map(async (schedule) => {
+            const validation = await adminDataService.validateScheduleConfiguration({
+              id: schedule.id,
+              name: schedule.name,
+              active: schedule.active,
+              sourceSystem: schedule.sourceSystem,
+              targetSystem: schedule.targetSystem,
+              sourceType: schedule.sourceType,
+              targetType: schedule.targetType,
+              direction: schedule.direction,
+              objectName: schedule.objectName,
+              operation: schedule.operation,
+              connectorId: schedule.connectorId,
+              mappingDefinition: schedule.mappingDefinition,
+              sourceDefinition: schedule.sourceDefinition,
+              targetDefinition: schedule.targetDefinition,
+              nextRunAt: schedule.nextRunAt,
+              batchSize: schedule.batchSize,
+              timingDefinition: schedule.timingDefinition,
+              parentScheduleId: schedule.parentScheduleId,
+              inheritTimingFromParent: schedule.inheritTimingFromParent
+            }, targetInstance.id);
+            return {
+              scheduleName: schedule.name,
+              ok: validation.ok,
+              issues: validation.issues || []
+            };
+          }));
+          const validationFailures = validationResults.filter((item) => !item.ok);
+          checks.push({
+            group: "salesforceObjectFieldValidation",
+            status: validationFailures.length ? "failed" : "passed",
+            message: validationFailures.length
+              ? `Salesforce-Objekt/Feldvalidierung fehlgeschlagen (${validationFailures.length}): ${validationFailures.slice(0, 3).map((item) => item.scheduleName).join(", ")}`
+              : `Salesforce-Objekt/Feldvalidierung erfolgreich (${validationResults.length} geprueft).`
+          });
+        }
 
         const failedCount = checks.filter((item) => item.status === "failed").length;
         const run: DeploymentPrecheckRunRecord = {
