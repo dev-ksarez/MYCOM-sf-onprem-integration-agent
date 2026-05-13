@@ -1,6 +1,6 @@
 
 import http from "node:http";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -38,8 +38,12 @@ import {
   getOrCreateCsrfToken,
   deleteAdminUser,
   listAdminUsers,
+  listProjectMembers,
+  saveProjectMember,
+  deleteProjectMember,
   saveAdminUser,
   hasPermission,
+  hasProjectAccess,
   hasModuleAccess,
   hasAllowedRequestOrigin,
   hasValidAdminSession,
@@ -61,6 +65,68 @@ import { renderAdminUiScript } from "./admin-ui-script";
 import { listAppModules, renderMenuModuleNavigation, renderSidebarModuleNavigation } from "./app-modules";
 import { renderHtmlDocument } from "./ui-template";
 import { renderAISchedulerAssistantModule } from "./ai-scheduler-ui-module";
+
+const LOCAL_DEPLOYMENT_COMPARE_RUNS_FILE = path.resolve(process.cwd(), "artifacts/deployment-compare-runs.json");
+const LOCAL_DEPLOYMENT_PRECHECKS_FILE = path.resolve(process.cwd(), "artifacts/deployment-prechecks.json");
+
+type DeploymentCompareDirection = "test-to-production" | "production-to-test";
+
+interface DeploymentCompareDiff {
+  severity: "critical" | "warning" | "info";
+  code: string;
+  message: string;
+}
+
+interface DeploymentCompareRunRecord {
+  id: string;
+  projectId: string;
+  direction: DeploymentCompareDirection;
+  status: "running" | "finished" | "failed";
+  summary: {
+    critical: number;
+    warning: number;
+    info: number;
+  };
+  diffs: DeploymentCompareDiff[];
+  startedAt: string;
+  finishedAt?: string;
+  initiatedBy?: string;
+}
+
+interface DeploymentPrecheckRunRecord {
+  id: string;
+  projectId: string;
+  targetEnv: "test" | "production";
+  agentId: string;
+  status: "running" | "passed" | "failed";
+  checks: Array<{
+    group: "localResourceConnectivity" | "schedulerConnectorQueries" | "salesforceObjectFieldValidation";
+    status: "passed" | "failed";
+    message: string;
+  }>;
+  startedAt: string;
+  finishedAt?: string;
+  initiatedBy?: string;
+}
+
+function readJsonArrayFile<T>(filePath: string): T[] {
+  try {
+    if (!existsSync(filePath)) {
+      return [];
+    }
+    const raw = readFileSync(filePath, "utf8").trim();
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeJsonArrayFile<T>(filePath: string, items: T[]): void {
+  const directory = path.dirname(filePath);
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(filePath, JSON.stringify(items, null, 2), "utf8");
+}
 
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -889,6 +955,42 @@ ${renderAISchedulerAssistantModule()}
                       <table class="table table-sm mb-0">
                         <thead><tr><th>Benutzer</th><th>Rechte</th><th>Module</th><th>Aktionen</th></tr></thead>
                         <tbody id="admin-users-body"></tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+                <div class="card soft-card mb-3">
+                  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                    <span class="fw-semibold">Projektzuordnungen</span>
+                    <button id="admin-memberships-refresh" class="btn btn-sm btn-outline-secondary" type="button">Aktualisieren</button>
+                  </div>
+                  <div class="card-body">
+                    <div class="row g-2 mb-2">
+                      <div class="col-md-5">
+                        <label class="form-label">Projekt</label>
+                        <select id="admin-membership-project" class="form-select form-select-sm"></select>
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label">Benutzer</label>
+                        <select id="admin-membership-user" class="form-select form-select-sm"></select>
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Rolle</label>
+                        <select id="admin-membership-role" class="form-select form-select-sm">
+                          <option value="viewer">viewer</option>
+                          <option value="operator">operator</option>
+                          <option value="release-manager">release-manager</option>
+                          <option value="owner">owner</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="d-flex gap-2 mb-2">
+                      <button id="admin-membership-assign" class="btn btn-sm btn-primary" type="button">Zuweisen</button>
+                    </div>
+                    <div class="table-responsive">
+                      <table class="table table-sm mb-0">
+                        <thead><tr><th>Benutzer</th><th>Projektrolle</th><th>Zugeordnet</th><th>Aktionen</th></tr></thead>
+                        <tbody id="admin-memberships-body"></tbody>
                       </table>
                     </div>
                   </div>
@@ -2079,6 +2181,15 @@ export function createAppServer(
       const projectDeleteMatch = req.method === "DELETE" ? requestUrl.pathname.match(/^\/api\/projects\/([^/]+)$/) : null;
       const runLogsMatch = req.method === "GET" ? requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/logs$/) : null;
       const runFailedRecordsMatch = req.method === "GET" ? requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/failed-records$/) : null;
+      const adminProjectMembersMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/members$/);
+      const adminProjectMemberItemMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/members\/([^/]+)$/);
+      const adminProjectMigrationsMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/migrations$/);
+      const adminProjectMigrationRunMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/migrations\/([^/]+)\/run$/);
+      const adminProjectDeployCompareMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/compare$/);
+      const adminProjectDeployCompareByIdMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/compare\/([^/]+)$/);
+      const adminProjectDeployPrecheckMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/precheck$/);
+      const adminProjectDeployPrecheckByIdMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/precheck\/([^/]+)$/);
+      const adminProjectDeployStartMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/start$/);
       const requiresInstanceWriteCheck = (() => {
         if (!instanceId) {
           return false;
@@ -2268,6 +2379,48 @@ export function createAppServer(
         return;
       }
 
+      if (adminProjectMembersMatch && req.method === "GET") {
+        const projectId = decodeURIComponent(adminProjectMembersMatch[1]);
+        sendJson(200, { items: listProjectMembers(projectId) });
+        return;
+      }
+
+      if (adminProjectMemberItemMatch && req.method === "PUT") {
+        const projectId = decodeURIComponent(adminProjectMemberItemMatch[1]);
+        const userId = decodeURIComponent(adminProjectMemberItemMatch[2]);
+        const body = (await readJsonBody(req)) as { roleInProject?: "viewer" | "operator" | "release-manager" | "owner" };
+        const item = saveProjectMember({
+          projectId,
+          userId,
+          roleInProject: body.roleInProject,
+          assignedBy: session?.username
+        });
+        await appendAuditHistory({
+          actor: auditActor,
+          action: "assign",
+          entityType: "project-membership",
+          entityId: `${item.projectId}:${item.userId}`,
+          entityName: item.roleInProject
+        });
+        sendJson(200, item);
+        return;
+      }
+
+      if (adminProjectMemberItemMatch && req.method === "DELETE") {
+        const projectId = decodeURIComponent(adminProjectMemberItemMatch[1]);
+        const userId = decodeURIComponent(adminProjectMemberItemMatch[2]);
+        const deleted = deleteProjectMember(projectId, userId);
+        await appendAuditHistory({
+          actor: auditActor,
+          action: "revoke",
+          entityType: "project-membership",
+          entityId: `${projectId}:${userId}`,
+          status: deleted ? "success" : "error"
+        });
+        sendJson(deleted ? 200 : 404, { ok: deleted });
+        return;
+      }
+
       if (req.method === "GET" && requestUrl.pathname === "/api/admin/audit-history") {
         const limit = Number(requestUrl.searchParams.get("limit") || 100) || 100;
         sendJson(200, {
@@ -2275,6 +2428,305 @@ export function createAppServer(
             entityType: requestUrl.searchParams.get("entityType") || undefined,
             entityId: requestUrl.searchParams.get("entityId") || undefined
           })
+        });
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/admin/projects") {
+        const items = adminDataService.listProjects();
+        sendJson(200, { items, total: items.length });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/admin/projects") {
+        const body = (await readJsonBody(req)) as SalesforceProjectMutationInput;
+        const item = adminDataService.saveProject(body);
+        await appendAuditHistory({ actor: auditActor, action: body.id ? "update" : "create", entityType: "project", entityId: item.id, entityName: item.name });
+        sendJson(200, item);
+        return;
+      }
+
+      const adminProjectIdMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)$/);
+      if (adminProjectIdMatch && req.method === "PATCH") {
+        const projectId = decodeURIComponent(adminProjectIdMatch[1]);
+        const body = (await readJsonBody(req)) as SalesforceProjectMutationInput;
+        const item = adminDataService.saveProject({ ...body, id: projectId });
+        await appendAuditHistory({ actor: auditActor, action: "update", entityType: "project", entityId: item.id, entityName: item.name });
+        sendJson(200, item);
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/admin/sf-instances") {
+        const items = adminDataService.listInstances();
+        sendJson(200, { items, total: items.length });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/admin/sf-instances") {
+        const body = (await readJsonBody(req)) as SalesforceInstanceMutationInput;
+        const item = adminDataService.saveInstance(body);
+        await appendAuditHistory({ actor: auditActor, action: body.id ? "update" : "create", entityType: "salesforce-instance", entityId: item.id, entityName: item.name || item.id });
+        if (isRemoteAgentConfigured()) {
+          await syncRemoteAgentInstances(adminDataService.listConfiguredInstanceConfigs());
+        }
+        sendJson(200, item);
+        return;
+      }
+
+      const adminSfInstanceIdMatch = requestUrl.pathname.match(/^\/api\/admin\/sf-instances\/([^/]+)$/);
+      if (adminSfInstanceIdMatch && req.method === "PATCH") {
+        const body = (await readJsonBody(req)) as SalesforceInstanceMutationInput;
+        const instanceIdForPatch = decodeURIComponent(adminSfInstanceIdMatch[1]);
+        const item = adminDataService.saveInstance({ ...body, id: instanceIdForPatch });
+        await appendAuditHistory({ actor: auditActor, action: "update", entityType: "salesforce-instance", entityId: item.id, entityName: item.name || item.id });
+        if (isRemoteAgentConfigured()) {
+          await syncRemoteAgentInstances(adminDataService.listConfiguredInstanceConfigs());
+        }
+        sendJson(200, item);
+        return;
+      }
+
+      if (adminProjectMigrationsMatch && req.method === "GET") {
+        const projectId = decodeURIComponent(adminProjectMigrationsMatch[1]);
+        const items = adminDataService.listMigrationsForUi().filter((item) => String(item.projectId || "").trim() === projectId);
+        sendJson(200, { items, total: items.length });
+        return;
+      }
+
+      if (adminProjectMigrationsMatch && req.method === "POST") {
+        const projectId = decodeURIComponent(adminProjectMigrationsMatch[1]);
+        const body = (await readJsonBody(req)) as Partial<MigrationConfig>;
+        if (body.salesforceLogin) {
+          sendJson(400, { error: "salesforceLogin ist nicht mehr zulaessig. Verwende projectId und Projektinstanzen." });
+          return;
+        }
+        const id = body.id || `mig-${Date.now()}`;
+        const saved = adminDataService.saveMigration({
+          id,
+          name: String(body.name || "Neue Migration"),
+          description: body.description,
+          batchSize: Number.isFinite(Number(body.batchSize)) ? Number(body.batchSize) : 200,
+          projectId,
+          instanceId: body.instanceId || instanceId || undefined,
+          status: body.status || "draft",
+          objects: body.objects || [],
+          dependencies: body.dependencies || [],
+          executionPlan: body.executionPlan || []
+        });
+        await appendAuditHistory({ actor: auditActor, action: "create", entityType: "migration", entityId: saved.id, entityName: saved.name });
+        sendJson(201, adminDataService.getMigrationForUi(saved.id));
+        return;
+      }
+
+      if (adminProjectMigrationRunMatch && req.method === "POST") {
+        const projectId = decodeURIComponent(adminProjectMigrationRunMatch[1]);
+        const migrationId = decodeURIComponent(adminProjectMigrationRunMatch[2]);
+        const migration = adminDataService.getMigration(migrationId);
+        if (!migration) {
+          sendJson(404, { error: "Migration not found" });
+          return;
+        }
+        if (String(migration.projectId || "").trim() !== projectId) {
+          sendJson(400, { error: "Migration gehoert nicht zum Projekt" });
+          return;
+        }
+        if (String(migration.status || "") === "running") {
+          sendJson(202, {
+            accepted: true,
+            migrationId,
+            status: "running",
+            lastRunResult: migration.lastRunResult || null
+          });
+          return;
+        }
+        void adminDataService.runMigration(migrationId, instanceId || undefined).catch((err) => {
+          console.error("Migration run failed", {
+            migrationId,
+            error: err instanceof Error ? err.message : String(err)
+          });
+        });
+        await appendAuditHistory({ actor: auditActor, action: "run", entityType: "migration", entityId: migrationId, entityName: migration.name });
+        sendJson(202, {
+          accepted: true,
+          migrationId,
+          status: "running",
+          lastRunResult: migration.lastRunResult || null
+        });
+        return;
+      }
+
+      if (adminProjectDeployCompareMatch && req.method === "POST") {
+        const projectId = decodeURIComponent(adminProjectDeployCompareMatch[1]);
+        const body = (await readJsonBody(req)) as { direction?: DeploymentCompareDirection };
+        const direction: DeploymentCompareDirection = body.direction === "production-to-test" ? "production-to-test" : "test-to-production";
+        const now = new Date().toISOString();
+        const id = `cmp-${Date.now()}`;
+
+        const instances = adminDataService.listInstances().filter((item) => String(item.projectId || "default-project").trim() === projectId);
+        const testInstance = instances.find((item) => item.role === "test");
+        const prodInstance = instances.find((item) => item.role === "production");
+
+        const diffs: DeploymentCompareDiff[] = [];
+        if (!testInstance) {
+          diffs.push({ severity: "critical", code: "missing-test-instance", message: "Projekt hat keine Test-Instanz." });
+        }
+        if (!prodInstance) {
+          diffs.push({ severity: "critical", code: "missing-production-instance", message: "Projekt hat keine Produktions-Instanz." });
+        }
+        if (testInstance && prodInstance) {
+          if (String(testInstance.id || "") === String(prodInstance.id || "")) {
+            diffs.push({ severity: "warning", code: "same-instance", message: "Test- und Produktions-Instanz sind identisch konfiguriert." });
+          }
+          if (String(testInstance.name || "").trim() !== String(prodInstance.name || "").trim()) {
+            diffs.push({ severity: "info", code: "instance-name-diff", message: "Test- und Produktionsinstanz haben unterschiedliche Namen." });
+          }
+        }
+
+        const summary = {
+          critical: diffs.filter((item) => item.severity === "critical").length,
+          warning: diffs.filter((item) => item.severity === "warning").length,
+          info: diffs.filter((item) => item.severity === "info").length
+        };
+
+        const run: DeploymentCompareRunRecord = {
+          id,
+          projectId,
+          direction,
+          status: "finished",
+          summary,
+          diffs,
+          startedAt: now,
+          finishedAt: now,
+          initiatedBy: session?.username
+        };
+
+        const compareRuns = readJsonArrayFile<DeploymentCompareRunRecord>(LOCAL_DEPLOYMENT_COMPARE_RUNS_FILE);
+        compareRuns.push(run);
+        writeJsonArrayFile(LOCAL_DEPLOYMENT_COMPARE_RUNS_FILE, compareRuns);
+        await appendAuditHistory({ actor: auditActor, action: "deploy.compare.started", entityType: "deploy-compare", entityId: run.id, entityName: projectId });
+        await appendAuditHistory({ actor: auditActor, action: "deploy.compare.finished", entityType: "deploy-compare", entityId: run.id, entityName: projectId, status: summary.critical > 0 ? "error" : "success" });
+
+        sendJson(200, run);
+        return;
+      }
+
+      if (adminProjectDeployCompareByIdMatch && req.method === "GET") {
+        const projectId = decodeURIComponent(adminProjectDeployCompareByIdMatch[1]);
+        const compareRunId = decodeURIComponent(adminProjectDeployCompareByIdMatch[2]);
+        const compareRun = readJsonArrayFile<DeploymentCompareRunRecord>(LOCAL_DEPLOYMENT_COMPARE_RUNS_FILE)
+          .find((item) => item.id === compareRunId && item.projectId === projectId);
+        if (!compareRun) {
+          sendJson(404, { error: "Compare-Run nicht gefunden" });
+          return;
+        }
+        sendJson(200, compareRun);
+        return;
+      }
+
+      if (adminProjectDeployPrecheckMatch && req.method === "POST") {
+        const projectId = decodeURIComponent(adminProjectDeployPrecheckMatch[1]);
+        const body = (await readJsonBody(req)) as { targetEnv?: "test" | "production"; agentId?: string };
+        const targetEnv = body.targetEnv === "test" ? "test" : "production";
+        const now = new Date().toISOString();
+        const id = `pre-${Date.now()}`;
+        const expectedRole = targetEnv === "production" ? "production" : "test";
+        const hasRoleInstance = adminDataService
+          .listInstances()
+          .some((item) => String(item.projectId || "default-project").trim() === projectId && String(item.role || "test") === expectedRole);
+
+        const checks: DeploymentPrecheckRunRecord["checks"] = [
+          {
+            group: "localResourceConnectivity",
+            status: hasRoleInstance ? "passed" : "failed",
+            message: hasRoleInstance
+              ? `Lokale Ressourcen-Pruefung fuer Zielumgebung ${targetEnv} gestartet und technisch vorbereitet.`
+              : `Keine passende ${targetEnv}-Instanz fuer Projekt gefunden.`
+          },
+          {
+            group: "schedulerConnectorQueries",
+            status: hasRoleInstance ? "passed" : "failed",
+            message: hasRoleInstance
+              ? "Scheduler/Connector-Testabfragen wurden vorbereitet."
+              : "Scheduler/Connector-Testabfragen konnten ohne Zielinstanz nicht gestartet werden."
+          },
+          {
+            group: "salesforceObjectFieldValidation",
+            status: hasRoleInstance ? "passed" : "failed",
+            message: hasRoleInstance
+              ? "Salesforce-Objekt/Feldvalidierung wurde vorbereitet."
+              : "Salesforce-Objekt/Feldvalidierung ohne Zielinstanz nicht moeglich."
+          }
+        ];
+
+        const failedCount = checks.filter((item) => item.status === "failed").length;
+        const run: DeploymentPrecheckRunRecord = {
+          id,
+          projectId,
+          targetEnv,
+          agentId: String(body.agentId || process.env.AGENT_ID || "local-agent").trim() || "local-agent",
+          status: failedCount > 0 ? "failed" : "passed",
+          checks,
+          startedAt: now,
+          finishedAt: now,
+          initiatedBy: session?.username
+        };
+
+        const prechecks = readJsonArrayFile<DeploymentPrecheckRunRecord>(LOCAL_DEPLOYMENT_PRECHECKS_FILE);
+        prechecks.push(run);
+        writeJsonArrayFile(LOCAL_DEPLOYMENT_PRECHECKS_FILE, prechecks);
+        await appendAuditHistory({ actor: auditActor, action: "deploy.precheck.started", entityType: "deploy-precheck", entityId: run.id, entityName: projectId });
+        await appendAuditHistory({ actor: auditActor, action: failedCount > 0 ? "deploy.precheck.failed" : "deploy.precheck.passed", entityType: "deploy-precheck", entityId: run.id, entityName: projectId, status: failedCount > 0 ? "error" : "success" });
+
+        sendJson(200, run);
+        return;
+      }
+
+      if (adminProjectDeployPrecheckByIdMatch && req.method === "GET") {
+        const projectId = decodeURIComponent(adminProjectDeployPrecheckByIdMatch[1]);
+        const precheckRunId = decodeURIComponent(adminProjectDeployPrecheckByIdMatch[2]);
+        const precheckRun = readJsonArrayFile<DeploymentPrecheckRunRecord>(LOCAL_DEPLOYMENT_PRECHECKS_FILE)
+          .find((item) => item.id === precheckRunId && item.projectId === projectId);
+        if (!precheckRun) {
+          sendJson(404, { error: "Precheck-Run nicht gefunden" });
+          return;
+        }
+        sendJson(200, precheckRun);
+        return;
+      }
+
+      if (adminProjectDeployStartMatch && req.method === "POST") {
+        const projectId = decodeURIComponent(adminProjectDeployStartMatch[1]);
+        const compareRuns = readJsonArrayFile<DeploymentCompareRunRecord>(LOCAL_DEPLOYMENT_COMPARE_RUNS_FILE)
+          .filter((item) => item.projectId === projectId)
+          .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || ""), "de"));
+        const prechecks = readJsonArrayFile<DeploymentPrecheckRunRecord>(LOCAL_DEPLOYMENT_PRECHECKS_FILE)
+          .filter((item) => item.projectId === projectId)
+          .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || ""), "de"));
+
+        const latestCompare = compareRuns[0];
+        const latestPrecheck = prechecks[0];
+
+        if (!latestCompare) {
+          sendJson(409, { error: "Deployment blockiert: Kein Compare-Run vorhanden." });
+          return;
+        }
+        if ((latestCompare.summary?.critical || 0) > 0) {
+          await appendAuditHistory({ actor: auditActor, action: "deploy.blocked.critical-diff", entityType: "deploy", entityId: projectId, status: "error" });
+          sendJson(409, { error: "Deployment blockiert: Kritische Abweichungen im Compare-Run." });
+          return;
+        }
+        if (!latestPrecheck || latestPrecheck.status !== "passed") {
+          sendJson(409, { error: "Deployment blockiert: Letzter Precheck ist nicht erfolgreich." });
+          return;
+        }
+
+        sendJson(202, {
+          accepted: true,
+          projectId,
+          status: "started",
+          compareRunId: latestCompare.id,
+          precheckRunId: latestPrecheck.id,
+          startedAt: new Date().toISOString()
         });
         return;
       }
@@ -2361,13 +2813,25 @@ export function createAppServer(
       }
 
       if (req.method === "GET" && requestUrl.pathname === "/api/projects") {
-        const items = adminDataService.listProjects();
+        const items = adminDataService.listProjects().filter((item) => {
+          if (!session || hasPermission(session, "admin")) {
+            return true;
+          }
+          return hasProjectAccess(session, item.id, "read");
+        });
         sendJson(200, { items, total: items.length });
         return;
       }
 
       if (req.method === "POST" && requestUrl.pathname === "/api/projects") {
         const body = (await readJsonBody(req)) as SalesforceProjectMutationInput;
+        if (session && !hasPermission(session, "admin")) {
+          const candidateId = String(body.id || "").trim();
+          if (!candidateId || !hasProjectAccess(session, candidateId, "write")) {
+            sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+            return;
+          }
+        }
         const item = adminDataService.saveProject(body);
         await appendAuditHistory({ actor: auditActor, action: body.id ? "update" : "create", entityType: "project", entityId: item.id, entityName: item.name });
         sendJson(200, item);
@@ -2376,6 +2840,10 @@ export function createAppServer(
 
       if (projectArchiveMatch) {
         const projectId = decodeURIComponent(projectArchiveMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
         const body = (await readJsonBody(req)) as { archived?: boolean };
         const archived = body.archived === true;
         const item = adminDataService.setProjectArchived(projectId, archived);
@@ -2386,6 +2854,10 @@ export function createAppServer(
 
       if (projectDeleteMatch) {
         const projectId = decodeURIComponent(projectDeleteMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
         const result = adminDataService.deleteProject(projectId);
         await appendAuditHistory({ actor: auditActor, action: result.deleted ? "delete" : "delete-noop", entityType: "project", entityId: projectId });
         sendJson(result.deleted ? 200 : 404, result);
@@ -3052,7 +3524,17 @@ export function createAppServer(
       // ─── Migration API ──────────────────────────────────────────────────────
 
       if (req.method === "GET" && requestUrl.pathname === "/api/migrations") {
-        sendJson(200, { items: adminDataService.listMigrationsForUi() });
+        const items = adminDataService.listMigrationsForUi().filter((item) => {
+          if (!session || hasPermission(session, "admin")) {
+            return true;
+          }
+          const projectId = String(item.projectId || "").trim();
+          if (!projectId) {
+            return true;
+          }
+          return hasProjectAccess(session, projectId, "read");
+        });
+        sendJson(200, { items });
         return;
       }
 
@@ -3060,46 +3542,22 @@ export function createAppServer(
       const migrationInstanceConnectMatch = requestUrl.pathname.match(/^\/api\/migration-instances\/([^/]+)\/connect$/);
 
       if (req.method === "GET" && requestUrl.pathname === "/api/migration-instances") {
-        sendJson(200, { items: adminDataService.listMigrationInstances() });
+        sendJson(410, { error: "Migration-Instanzen werden nicht mehr separat verwaltet. Migrationen sind projektgebunden." });
         return;
       }
 
       if (req.method === "POST" && requestUrl.pathname === "/api/migration-instances") {
-        const body = (await readJsonBody(req)) as {
-          id?: string;
-          name?: string;
-          environment?: "sandbox" | "production";
-          loginUrl?: string;
-          queryLimit?: number;
-        };
-        const item = adminDataService.saveMigrationInstance({
-          id: body.id,
-          name: String(body.name || ""),
-          environment: body.environment === "production" ? "production" : "sandbox",
-          loginUrl: String(body.loginUrl || ""),
-          queryLimit: body.queryLimit
-        });
-        await appendAuditHistory({ actor: auditActor, action: body.id ? "update" : "create", entityType: "migration-instance", entityId: item.id, entityName: item.name });
-        sendJson(201, item);
+        sendJson(410, { error: "Migration-Instanzen werden nicht mehr separat verwaltet. Migrationen sind projektgebunden." });
         return;
       }
 
       if (migrationInstanceConnectMatch && req.method === "POST") {
-        const migrationInstanceId = decodeURIComponent(migrationInstanceConnectMatch[1]);
-        const item = await adminDataService.connectMigrationInstance(migrationInstanceId);
-        await appendAuditHistory({ actor: auditActor, action: "connect", entityType: "migration-instance", entityId: item.id, entityName: item.name, status: item.connectionStatus === "connected" ? "success" : "error", message: item.lastConnectionError });
-        sendJson(200, item);
+        sendJson(410, { error: "Migration-Instanzen werden nicht mehr separat verwaltet. Migrationen sind projektgebunden." });
         return;
       }
 
       if (migrationInstanceIdMatch && req.method === "GET") {
-        const migrationInstanceId = decodeURIComponent(migrationInstanceIdMatch[1]);
-        const item = adminDataService.listMigrationInstances().find((entry) => entry.id === migrationInstanceId);
-        if (!item) {
-          sendJson(404, { error: "Migration instance not found" });
-          return;
-        }
-        sendJson(200, item);
+        sendJson(410, { error: "Migration-Instanzen werden nicht mehr separat verwaltet. Migrationen sind projektgebunden." });
         return;
       }
 
@@ -3332,9 +3790,22 @@ export function createAppServer(
         }
         if (req.method === "PUT" || req.method === "PATCH") {
           const body = (await readJsonBody(req)) as Partial<MigrationConfig>;
+          if (body.salesforceLogin) {
+            sendJson(400, { error: "salesforceLogin ist nicht mehr zulaessig. Verwende projectId und Projektinstanzen." });
+            return;
+          }
           const existing = adminDataService.getMigration(migId);
           if (!existing) {
             sendJson(404, { error: "Migration not found" });
+            return;
+          }
+          const projectId = String(body.projectId || existing.projectId || "").trim();
+          if (!projectId) {
+            sendJson(400, { error: "projectId ist erforderlich" });
+            return;
+          }
+          if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+            sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
             return;
           }
           const updated = adminDataService.saveMigration({ ...existing, ...body, id: migId });
@@ -3352,13 +3823,26 @@ export function createAppServer(
 
       if (req.method === "POST" && requestUrl.pathname === "/api/migrations") {
         const body = (await readJsonBody(req)) as Partial<MigrationConfig>;
+        if (body.salesforceLogin) {
+          sendJson(400, { error: "salesforceLogin ist nicht mehr zulaessig. Verwende projectId und Projektinstanzen." });
+          return;
+        }
+        const projectId = String(body.projectId || "").trim();
+        if (!projectId) {
+          sendJson(400, { error: "projectId ist erforderlich" });
+          return;
+        }
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
         const id = body.id || `mig-${Date.now()}`;
         const saved = adminDataService.saveMigration({
           id,
           name: String(body.name || "Neue Migration"),
           description: body.description,
           batchSize: Number.isFinite(Number(body.batchSize)) ? Number(body.batchSize) : 200,
-          salesforceLogin: body.salesforceLogin,
+          projectId,
           instanceId: body.instanceId || instanceId || undefined,
           status: body.status || "draft",
           objects: body.objects || [],

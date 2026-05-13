@@ -61,6 +61,8 @@ export function renderAdminUiScript(): string {
         installerGeneratedFiles: [],
         adminMe: null,
         adminUsers: [],
+        projectMemberships: [],
+        selectedMembershipProjectId: '',
         auditHistory: [],
         customObjectFieldOverrides: {},
         scheduleOptions: {
@@ -169,8 +171,11 @@ export function renderAdminUiScript(): string {
           return;
         }
 
-        const instanceSource = String(instanceSourceEl && instanceSourceEl.value || (migState.salesforceLogin ? 'embedded' : 'existing'));
-        const isExistingInstanceMode = instanceSource === 'existing';
+        const instanceSource = 'existing';
+        if (instanceSourceEl) {
+          instanceSourceEl.value = 'existing';
+        }
+        const isExistingInstanceMode = true;
         if (existingInstanceWrap) existingInstanceWrap.classList.toggle('d-none', !isExistingInstanceMode);
         if (environmentWrap) environmentWrap.classList.toggle('d-none', isExistingInstanceMode);
         if (authTypeWrap) authTypeWrap.classList.toggle('d-none', isExistingInstanceMode);
@@ -180,8 +185,7 @@ export function renderAdminUiScript(): string {
           populateMigExistingInstanceOptions();
           if (usernameWrap) usernameWrap.classList.add('d-none');
           if (passwordWrap) passwordWrap.classList.add('d-none');
-          if (securityTokenWrap) securityTokenWrap.classList.add('d-none');
-          if (clientIdWrap) clientIdWrap.classList.add('d-none');
+          if (instanceSourceEl) instanceSourceEl.value = 'existing';
           if (clientSecretWrap) clientSecretWrap.classList.add('d-none');
           if (statusWrap) statusWrap.classList.remove('d-none');
           const selectedLabel = String(existingInstanceEl && existingInstanceEl.selectedOptions && existingInstanceEl.selectedOptions[0] && existingInstanceEl.selectedOptions[0].textContent || '').trim();
@@ -240,94 +244,19 @@ export function renderAdminUiScript(): string {
       }
 
       function syncMigSalesforceLoginFromForm() {
-        const instanceSourceEl = document.getElementById('mig-instance-source');
         const existingInstanceEl = document.getElementById('mig-existing-instance');
-        const environmentEl = document.getElementById('mig-login-environment');
-        const authTypeEl = document.getElementById('mig-login-auth-type');
-        const loginUrlEl = document.getElementById('mig-login-url');
-        const usernameEl = document.getElementById('mig-login-username');
-        const passwordEl = document.getElementById('mig-login-password');
-        const securityTokenEl = document.getElementById('mig-login-security-token');
-        const clientIdEl = document.getElementById('mig-login-client-id');
-        const clientSecretEl = document.getElementById('mig-login-client-secret');
-        const instanceSource = String(instanceSourceEl && instanceSourceEl.value || (migState.salesforceLogin ? 'embedded' : 'existing'));
-        if (instanceSource === 'existing') {
-          migState.instanceId = String(existingInstanceEl && existingInstanceEl.value || migState.instanceId || state.instanceId || '').trim();
+        migState.instanceId = String(existingInstanceEl && existingInstanceEl.value || migState.instanceId || state.instanceId || '').trim();
           migState.salesforceLogin = null;
-          renderMigSalesforceLoginStatus();
-          return;
-        }
-        migState.instanceId = '';
-        const environment = String(environmentEl && environmentEl.value || 'sandbox') === 'production' ? 'production' : 'sandbox';
-        const rawAuthType = String(authTypeEl && authTypeEl.value || migState.salesforceLogin && migState.salesforceLogin.authType || 'password');
-        const authType = rawAuthType === 'oauth_refresh_token'
-          ? 'oauth_refresh_token'
-          : (rawAuthType === 'client_credentials' ? 'client_credentials' : 'password');
-        const defaultLoginUrl = getMigLoginUrlForEnvironment(environment);
-        const previousEnvironment = String(migState.salesforceLogin && migState.salesforceLogin.environment || environment) === 'production' ? 'production' : 'sandbox';
-        const previousDefaultLoginUrl = getMigLoginUrlForEnvironment(previousEnvironment);
-        const currentLoginUrlValue = String(loginUrlEl && loginUrlEl.value || migState.salesforceLogin && migState.salesforceLogin.loginUrl || '').trim();
-        const loginUrl = currentLoginUrlValue && currentLoginUrlValue !== previousDefaultLoginUrl
-          ? currentLoginUrlValue
-          : defaultLoginUrl;
-        if (loginUrlEl) {
-          loginUrlEl.value = loginUrl;
-        }
-        const username = String(usernameEl && usernameEl.value || '').trim();
-        const password = String(passwordEl && passwordEl.value || '');
-        const securityToken = String(securityTokenEl && securityTokenEl.value || '').trim();
-        const clientId = String(clientIdEl && clientIdEl.value || '').trim();
-        const clientSecret = String(clientSecretEl && clientSecretEl.value || '').trim();
-        const previousAuthType = String(migState.salesforceLogin && migState.salesforceLogin.authType || '');
-        const authTypeChanged = previousAuthType && previousAuthType !== authType;
-        migState.salesforceLogin = {
-          id: migState.id || '',
-          name: (migState.name || '').trim(),
-          environment,
-          loginUrl,
-          authType,
-          username: authType === 'password' ? username : undefined,
-          password: authType === 'password' ? password : undefined,
-          securityToken: authType === 'password' ? (securityToken || undefined) : undefined,
-          clientId: authType === 'client_credentials' ? (clientId || undefined) : undefined,
-          clientSecret: authType === 'client_credentials' ? (clientSecret || undefined) : undefined,
-          instanceUrl: migState.salesforceLogin && migState.salesforceLogin.instanceUrl,
-          queryLimit: undefined,
-          lastConnectionStatus: authTypeChanged ? 'never' : (migState.salesforceLogin && migState.salesforceLogin.lastConnectionStatus || 'never'),
-          lastConnectedAt: authTypeChanged ? undefined : (migState.salesforceLogin && migState.salesforceLogin.lastConnectedAt),
-          lastConnectionError: authTypeChanged ? undefined : (migState.salesforceLogin && migState.salesforceLogin.lastConnectionError),
-          orgOverview: migState.salesforceLogin && migState.salesforceLogin.orgOverview,
-          objectCount: migState.salesforceLogin && migState.salesforceLogin.objectCount
-        };
         renderMigSalesforceLoginStatus();
       }
 
       async function ensureMigRuntimeInstanceId() {
         syncMigSalesforceLoginFromForm();
-        if (migState.salesforceLogin) {
-          if (!migState.id) {
-            await migSave();
-          }
-          const isPasswordMode = String(migState.salesforceLogin.authType || 'password') === 'password';
-          const isClientCredentialsMode = String(migState.salesforceLogin.authType || 'password') === 'client_credentials';
-          if (isPasswordMode) {
-            if (!String(migState.salesforceLogin.username || '').trim() || !String(migState.salesforceLogin.password || '')) {
-              throw new Error('Bitte zuerst Benutzername und Passwort fuer diese Migration hinterlegen.');
-            }
-            return migState.id ? 'migration:' + migState.id : '';
-          }
-          if (isClientCredentialsMode) {
-            if (!String(migState.salesforceLogin.clientId || '').trim() || !String(migState.salesforceLogin.clientSecret || '').trim()) {
-              throw new Error('Bitte zuerst Client ID und Client Secret fuer diese Migration hinterlegen.');
-            }
-            return migState.id ? 'migration:' + migState.id : '';
-          }
-          if (!migState.salesforceLogin.instanceUrl && String(migState.salesforceLogin.lastConnectionStatus || 'never') !== 'connected') {
-            throw new Error('Bitte zuerst den Salesforce-Login fuer diese Migration ueber die Login-Seite abschliessen.');
-          }
-          return migState.id ? 'migration:' + migState.id : '';
+        const instanceId = String(migState.instanceId || state.instanceId || '').trim();
+        if (!instanceId) {
+          throw new Error('Bitte zuerst eine bestehende Projektinstanz auswaehlen.');
         }
-        return String(migState.instanceId || state.instanceId || '').trim();
+        return instanceId;
       }
 
       async function startMigrationSalesforceOAuth(migrationId, options) {
@@ -6402,6 +6331,111 @@ export function renderAdminUiScript(): string {
         });
       }
 
+      function renderProjectMembershipControls() {
+        const projectSelect = document.getElementById('admin-membership-project');
+        const userSelect = document.getElementById('admin-membership-user');
+        if (!projectSelect || !userSelect) {
+          return;
+        }
+
+        const activeProjects = (state.projects || []).filter((item) => item.archived !== true);
+        if (!activeProjects.length) {
+          projectSelect.innerHTML = '<option value="">Keine Projekte verfügbar</option>';
+          projectSelect.value = '';
+          state.selectedMembershipProjectId = '';
+        } else {
+          projectSelect.innerHTML = activeProjects.map((item) =>
+            '<option value="' + esc(String(item.id || '')) + '">' + esc(String(item.name || item.id)) + '</option>'
+          ).join('');
+          const hasSelected = activeProjects.some((item) => String(item.id || '') === String(state.selectedMembershipProjectId || ''));
+          state.selectedMembershipProjectId = hasSelected
+            ? String(state.selectedMembershipProjectId || '')
+            : String((activeProjects[0] && activeProjects[0].id) || '');
+          projectSelect.value = state.selectedMembershipProjectId;
+        }
+
+        const users = state.adminUsers || [];
+        if (!users.length) {
+          userSelect.innerHTML = '<option value="">Keine Benutzer verfügbar</option>';
+          userSelect.value = '';
+        } else {
+          userSelect.innerHTML = users.map((user) =>
+            '<option value="' + esc(String(user.id || '')) + '">' + esc(String(user.displayName || user.username || user.id)) + '</option>'
+          ).join('');
+          userSelect.value = String((users[0] && users[0].id) || '');
+        }
+      }
+
+      function renderProjectMemberships() {
+        const body = document.getElementById('admin-memberships-body');
+        if (!body) return;
+        const items = state.projectMemberships || [];
+        if (!items.length) {
+          body.innerHTML = '<tr><td colspan="4" class="text-secondary">Keine Zuordnungen für dieses Projekt.</td></tr>';
+          return;
+        }
+
+        body.innerHTML = items.map((item) => {
+          return '<tr>' +
+            '<td><div class="fw-semibold">' + esc(String(item.displayName || item.username || item.userId || '-')) + '</div><div class="small text-secondary">' + esc(String(item.username || item.userId || '-')) + '</div></td>' +
+            '<td>' + esc(String(item.roleInProject || '-')) + '</td>' +
+            '<td>' + esc(formatDate(item.assignedAt, 'short')) + '</td>' +
+            '<td class="text-nowrap"><button class="btn btn-sm btn-outline-danger" data-membership-revoke="' + esc(String(item.userId || '')) + '">Entziehen</button></td>' +
+          '</tr>';
+        }).join('');
+
+        body.querySelectorAll('[data-membership-revoke]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const userId = String(btn.getAttribute('data-membership-revoke') || '').trim();
+            const projectId = String(state.selectedMembershipProjectId || '').trim();
+            if (!projectId || !userId) {
+              return;
+            }
+            if (!window.confirm('Projektzuordnung wirklich entziehen?')) {
+              return;
+            }
+            await requestJson('/api/admin/projects/' + encodeURIComponent(projectId) + '/members/' + encodeURIComponent(userId), {
+              method: 'DELETE'
+            });
+            await loadProjectMemberships();
+          });
+        });
+      }
+
+      async function loadProjectMemberships() {
+        renderProjectMembershipControls();
+        const projectId = String(state.selectedMembershipProjectId || '').trim();
+        if (!projectId) {
+          state.projectMemberships = [];
+          renderProjectMemberships();
+          return;
+        }
+
+        const result = await safeRequest('/api/admin/projects/' + encodeURIComponent(projectId) + '/members', { items: [] });
+        state.projectMemberships = Array.isArray(result.items) ? result.items : [];
+        renderProjectMemberships();
+      }
+
+      async function assignProjectMembershipFromForm() {
+        const projectId = String(document.getElementById('admin-membership-project') && document.getElementById('admin-membership-project').value || '').trim();
+        const userId = String(document.getElementById('admin-membership-user') && document.getElementById('admin-membership-user').value || '').trim();
+        const roleInProject = String(document.getElementById('admin-membership-role') && document.getElementById('admin-membership-role').value || 'viewer').trim();
+        if (!projectId) {
+          throw new Error('Projekt ist erforderlich');
+        }
+        if (!userId) {
+          throw new Error('Benutzer ist erforderlich');
+        }
+
+        await requestJson('/api/admin/projects/' + encodeURIComponent(projectId) + '/members/' + encodeURIComponent(userId), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ roleInProject })
+        });
+        state.selectedMembershipProjectId = projectId;
+        await loadProjectMemberships();
+      }
+
       function renderAuditHistory() {
         const body = document.getElementById('admin-audit-body');
         if (!body) return;
@@ -6432,6 +6466,7 @@ export function renderAdminUiScript(): string {
           state.adminUsers = users.items || [];
           state.auditHistory = audit.items || [];
           renderAdminUsers();
+          await loadProjectMemberships();
           renderAuditHistory();
         }
       }
@@ -10571,6 +10606,8 @@ export function renderAdminUiScript(): string {
 
           const migrationObjectId = 'obj-' + String(effectiveTargetObject).toLowerCase() + '-' + Date.now();
           const migrationName = 'KI-Profil: ' + String(payload.sourceName || analysis.sourceName || 'Quelle') + ' → ' + effectiveTargetObject;
+          const selectedInstance = (state.instances || []).find((item) => String(item.id || '') === String(state.instanceId || ''));
+          const inferredProjectId = String(selectedInstance && selectedInstance.projectId || 'default-project');
 
           const migrationPayload = {
             name: migrationName,
@@ -10579,6 +10616,7 @@ export function renderAdminUiScript(): string {
               payload.description ? String(payload.description) : ''
             ].filter(Boolean).join(' · '),
             batchSize: 200,
+            projectId: inferredProjectId,
             instanceId: state.instanceId || undefined,
             status: 'draft',
             objects: [
@@ -11353,6 +11391,18 @@ export function renderAdminUiScript(): string {
       });
       bindEventListenerOnce('admin-user-reset', 'click', resetAdminUserForm);
       bindEventListenerOnce('admin-users-refresh', 'click', loadAdminData);
+      bindEventListenerOnce('admin-memberships-refresh', 'click', loadProjectMemberships);
+      bindEventListenerOnce('admin-membership-assign', 'click', async () => {
+        try {
+          await assignProjectMembershipFromForm();
+        } catch (error) {
+          showError(error.message || 'Projektzuordnung konnte nicht gespeichert werden');
+        }
+      });
+      bindEventListenerOnce('admin-membership-project', 'change', async (event) => {
+        state.selectedMembershipProjectId = String(event && event.target && 'value' in event.target ? event.target.value : '').trim();
+        await loadProjectMemberships();
+      });
       bindEventListenerOnce('admin-audit-refresh', 'click', loadAdminData);
       bindEventListenerOnce('failed-records-export-csv', 'click', exportFailedRecordsAsCsv);
       bindEventListenerOnce('failed-records-export-json', 'click', exportFailedRecordsAsJson);
@@ -13238,21 +13288,20 @@ export function renderAdminUiScript(): string {
             : 200;
           batchSizeEl.value = String(migState.batchSize);
         }
-        syncMigSalesforceLoginFromForm();
-        if (migState.salesforceLogin) {
-          migState.salesforceLogin.name = migState.name || migState.salesforceLogin.name;
-          migState.salesforceLogin.id = migState.id || migState.salesforceLogin.id || '';
-        }
-
         migState.objects = sanitizeMigObjects(migState.objects);
+
+        const effectiveInstanceId = String(migState.instanceId || state.instanceId || '').trim() || undefined;
+        const selectedInstance = (state.instances || []).find((item) => String(item.id || '') === String(effectiveInstanceId || ''));
+        const projectId = String(migState.projectId || (selectedInstance && selectedInstance.projectId) || 'default-project').trim() || 'default-project';
+        migState.projectId = projectId;
 
         const payload = {
           id: migState.id,
           name: migState.name,
           description: migState.description,
           batchSize: migState.batchSize || 200,
-          instanceId: migState.salesforceLogin ? undefined : (migState.instanceId || state.instanceId || undefined),
-          salesforceLogin: migState.salesforceLogin || null,
+          projectId: projectId,
+          instanceId: effectiveInstanceId,
           status: 'draft',
           objects: sanitizeMigObjects(migState.objects),
           dependencies: migState.dependencies,
@@ -13293,7 +13342,10 @@ export function renderAdminUiScript(): string {
         }
         migState.batchSize = Math.max(1, Math.min(200, Math.trunc(migState.batchSize)));
         migState.instanceId = migration ? String(migration.instanceId || '') : String(state.instanceId || '');
-        migState.salesforceLogin = migration ? JSON.parse(JSON.stringify(migration.salesforceLogin || null)) : null;
+        migState.projectId = migration
+          ? String(migration.projectId || '')
+          : String(((state.instances || []).find((item) => String(item.id || '') === String(migState.instanceId || '')) || {}).projectId || 'default-project');
+        migState.salesforceLogin = null;
         migState.objects = migration ? sanitizeMigObjects(migration.objects || []) : [];
         migState.dependencies = migration ? JSON.parse(JSON.stringify(migration.dependencies || [])) : [];
         migState.executionPlan = migration ? JSON.parse(JSON.stringify(migration.executionPlan || [])) : [];
@@ -13329,7 +13381,7 @@ export function renderAdminUiScript(): string {
         if (nameEl) nameEl.value = migState.name;
         if (descEl) descEl.value = migState.description;
         if (batchSizeEl) batchSizeEl.value = String(migState.batchSize || 200);
-        if (instanceSourceEl) instanceSourceEl.value = migration ? (migration.salesforceLogin ? 'embedded' : 'existing') : 'embedded';
+        if (instanceSourceEl) instanceSourceEl.value = 'existing';
         populateMigExistingInstanceOptions();
         if (existingInstanceEl) existingInstanceEl.value = String(migState.instanceId || state.instanceId || existingInstanceEl.value || '');
         if (loginEnvironmentEl) loginEnvironmentEl.value = String(migState.salesforceLogin && migState.salesforceLogin.environment || 'sandbox');
@@ -13760,31 +13812,7 @@ ${renderMigrationRunResultModule()}
       });
 
       document.getElementById('mig-login-authorize')?.addEventListener('click', async () => {
-        const nameEl = document.getElementById('mig-name');
-        if (nameEl) {
-          migState.name = String(nameEl.value || '').trim();
-        }
-        if (!migState.name.trim()) {
-          showMigrationModalError('Bitte zuerst einen Migrationsnamen vergeben.');
-          return;
-        }
-        try {
-          clearMigrationModalError();
-          syncMigSalesforceLoginFromForm();
-          await migSave();
-          if (String(migState.salesforceLogin && migState.salesforceLogin.authType || 'password') !== 'oauth_refresh_token') {
-            await requestJson('/api/migration-instances/' + encodeURIComponent(String(migState.id || '')) + '/connect', { method: 'POST' });
-            const refreshedMigration = await requestJson('/api/migrations/' + encodeURIComponent(String(migState.id || '')));
-            migState.salesforceLogin = refreshedMigration && refreshedMigration.salesforceLogin ? JSON.parse(JSON.stringify(refreshedMigration.salesforceLogin)) : migState.salesforceLogin;
-            renderMigSalesforceLoginStatus();
-            await renderMigrationInstances();
-            showToast('Salesforce-Login erfolgreich getestet.');
-            return;
-          }
-          await startMigrationSalesforceOAuth(String(migState.id || ''));
-        } catch (error) {
-          showMigrationModalError(error.message || 'Salesforce-Login konnte nicht gestartet werden.');
-        }
+        showToast('Migrationen nutzen Projektinstanzen. Ein separater Salesforce-Login ist nicht mehr erforderlich.');
       });
 
       // SF Objects loading
