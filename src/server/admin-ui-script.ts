@@ -2222,6 +2222,29 @@ export function renderAdminUiScript(): string {
         URL.revokeObjectURL(href);
       }
 
+      async function publishProjectDocumentation() {
+        const selectedInstance = (state.instances || []).find((item) => String(item.id || '') === String(state.instanceId || ''));
+        const projectId = String((selectedInstance && selectedInstance.projectId) || '').trim();
+        if (!projectId) {
+          throw new Error('Für die Dokumentationspublikation muss zuerst eine Projektinstanz ausgewählt sein.');
+        }
+
+        const result = await requestJson('/api/admin/projects/' + encodeURIComponent(projectId) + '/documentation/publish-confluence', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instanceId: state.instanceId || undefined })
+        });
+
+        const mode = result && result.publishResult ? String(result.publishResult.mode || 'dry-run') : 'dry-run';
+        const pageId = result && result.publishResult ? String(result.publishResult.pageId || '') : '';
+        window.alert(
+          mode === 'dry-run'
+            ? 'Dokumentation vorbereitet. Confluence ist nicht konfiguriert, deshalb wurde nur die Vorschau erzeugt.'
+            : 'Dokumentation veröffentlicht' + (pageId ? ' (Seite ' + pageId + ')' : '') + '.'
+        );
+        return result;
+      }
+
       async function importSetupDocument(documentBody) {
         const result = await requestJson('/api/setup/import', {
           method: 'POST',
@@ -11568,6 +11591,14 @@ export function renderAdminUiScript(): string {
         if (input) {
           input.value = '';
           input.click();
+        }
+      });
+      document.getElementById('publish-project-documentation').addEventListener('click', async () => {
+        try {
+          clearError();
+          await publishProjectDocumentation();
+        } catch (error) {
+          showError(error.message || 'Dokumentation konnte nicht veröffentlicht werden');
         }
       });
       document.getElementById('setup-import-input').addEventListener('change', async (event) => {

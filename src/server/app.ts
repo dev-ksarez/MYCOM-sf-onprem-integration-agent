@@ -68,6 +68,9 @@ import { renderAISchedulerAssistantModule } from "./ai-scheduler-ui-module";
 
 const LOCAL_DEPLOYMENT_COMPARE_RUNS_FILE = path.resolve(process.cwd(), "artifacts/deployment-compare-runs.json");
 const LOCAL_DEPLOYMENT_PRECHECKS_FILE = path.resolve(process.cwd(), "artifacts/deployment-prechecks.json");
+const LOCAL_PROJECT_SETUP_VERSIONS_FILE = path.resolve(process.cwd(), "artifacts/project-setup-versions.json");
+const LOCAL_DEPLOYMENT_RUNS_FILE = path.resolve(process.cwd(), "artifacts/deployment-runs.json");
+const LOCAL_PROJECT_DOCUMENTATION_PAGES_FILE = path.resolve(process.cwd(), "artifacts/project-documentation-pages.json");
 
 type DeploymentCompareDirection = "test-to-production" | "production-to-test";
 
@@ -109,6 +112,34 @@ interface DeploymentPrecheckRunRecord {
   initiatedBy?: string;
 }
 
+interface ProjectSetupVersionRecord {
+  id: string;
+  projectId: string;
+  version: number;
+  artifactRef: string;
+  author?: string;
+  note?: string;
+  createdAt: string;
+}
+
+interface DeploymentRunRecord {
+  id: string;
+  projectId: string;
+  sourceVersionId?: string;
+  compareRunId?: string;
+  precheckRunId?: string;
+  status: "started" | "finished" | "blocked";
+  approvedBy?: string;
+  startedAt: string;
+  finishedAt?: string;
+}
+
+interface ProjectDocumentationPageRecord {
+  projectId: string;
+  pageId: string;
+  updatedAt: string;
+}
+
 function readJsonArrayFile<T>(filePath: string): T[] {
   try {
     if (!existsSync(filePath)) {
@@ -126,6 +157,218 @@ function writeJsonArrayFile<T>(filePath: string, items: T[]): void {
   const directory = path.dirname(filePath);
   mkdirSync(directory, { recursive: true });
   writeFileSync(filePath, JSON.stringify(items, null, 2), "utf8");
+}
+
+function writeJsonFile<T>(filePath: string, value: T): void {
+  const directory = path.dirname(filePath);
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(filePath, JSON.stringify(value, null, 2), "utf8");
+}
+
+function readJsonFile<T>(filePath: string, fallback: T): T {
+  try {
+    if (!existsSync(filePath)) {
+      return fallback;
+    }
+    const raw = readFileSync(filePath, "utf8").trim();
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function getProjectInstances(projectId: string, instances: Array<{ id: string; name: string; projectId?: string; role?: string; projectName?: string }>): Array<{ id: string; name: string; projectId?: string; role?: string; projectName?: string }> {
+  return instances.filter((item) => String(item.projectId || "default-project").trim() === String(projectId || "").trim());
+}
+
+function getProjectPrimaryInstance(projectId: string, instances: Array<{ id: string; name: string; projectId?: string; role?: string; projectName?: string }>): { id: string; name: string; projectId?: string; role?: string; projectName?: string } | null {
+  const projectInstances = getProjectInstances(projectId, instances);
+  return projectInstances.find((item) => item.role === "production") || projectInstances[0] || null;
+}
+
+function getProjectDocumentationPageMap(): Record<string, ProjectDocumentationPageRecord> {
+  const items = readJsonArrayFile<ProjectDocumentationPageRecord>(LOCAL_PROJECT_DOCUMENTATION_PAGES_FILE);
+  return items.reduce<Record<string, ProjectDocumentationPageRecord>>((acc, item) => {
+    if (item && item.projectId && item.pageId) {
+      acc[item.projectId] = item;
+    }
+    return acc;
+  }, {});
+}
+
+function saveProjectDocumentationPageRecord(record: ProjectDocumentationPageRecord): void {
+  const items = readJsonArrayFile<ProjectDocumentationPageRecord>(LOCAL_PROJECT_DOCUMENTATION_PAGES_FILE);
+  const next = items.filter((item) => item.projectId !== record.projectId);
+  next.push(record);
+  writeJsonArrayFile(LOCAL_PROJECT_DOCUMENTATION_PAGES_FILE, next);
+}
+
+function readProjectSetupVersions(projectId: string): ProjectSetupVersionRecord[] {
+  return readJsonArrayFile<ProjectSetupVersionRecord>(LOCAL_PROJECT_SETUP_VERSIONS_FILE)
+    .filter((item) => item.projectId === projectId)
+    .sort((a, b) => Number(a.version || 0) - Number(b.version || 0));
+}
+
+function saveProjectSetupVersion(record: ProjectSetupVersionRecord): void {
+  const items = readJsonArrayFile<ProjectSetupVersionRecord>(LOCAL_PROJECT_SETUP_VERSIONS_FILE);
+  items.push(record);
+  writeJsonArrayFile(LOCAL_PROJECT_SETUP_VERSIONS_FILE, items);
+}
+
+function readDeploymentRuns(projectId: string): DeploymentRunRecord[] {
+  return readJsonArrayFile<DeploymentRunRecord>(LOCAL_DEPLOYMENT_RUNS_FILE)
+    .filter((item) => item.projectId === projectId)
+    .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || ""), "de"));
+}
+
+function saveDeploymentRun(record: DeploymentRunRecord): void {
+  const items = readJsonArrayFile<DeploymentRunRecord>(LOCAL_DEPLOYMENT_RUNS_FILE);
+  items.push(record);
+  writeJsonArrayFile(LOCAL_DEPLOYMENT_RUNS_FILE, items);
+}
+
+function escapeXml(value: string): string {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderKeyValueTable(rows: Array<[string, string]>): string {
+  return `<table><tbody>${rows.map(([key, value]) => `<tr><th>${escapeXml(key)}</th><td>${escapeXml(value)}</td></tr>`).join("")}</tbody></table>`;
+}
+
+function renderList(items: string[]): string {
+  if (!items.length) {
+    return "<p><em>Keine Eintraege vorhanden.</em></p>";
+  }
+  return `<ul>${items.map((item) => `<li>${escapeXml(item)}</li>`).join("")}</ul>`;
+}
+
+function buildProjectDocumentationHtml(input: {
+  project: { id: string; name: string; description?: string; archived?: boolean; productionWriteProtection: boolean };
+  instances: Array<{ id: string; name: string; role?: string; projectName?: string }>;
+  members: Array<{ username: string; displayName?: string; roleInProject?: string }>;
+  setupVersion?: ProjectSetupVersionRecord;
+  setupDocument?: SetupExportDocument;
+  compareRun?: DeploymentCompareRunRecord;
+  precheckRun?: DeploymentPrecheckRunRecord;
+}): string {
+  const connectorCount = input.setupDocument?.connectors?.length || 0;
+  const scheduleCount = input.setupDocument?.schedules?.length || 0;
+  const compareSummary = input.compareRun
+    ? `Critical: ${input.compareRun.summary.critical}, Warning: ${input.compareRun.summary.warning}, Info: ${input.compareRun.summary.info}`
+    : "Kein Compare-Run vorhanden";
+  const precheckSummary = input.precheckRun
+    ? `${input.precheckRun.status.toUpperCase()} (${input.precheckRun.targetEnv})`
+    : "Kein Precheck-Run vorhanden";
+
+  return `
+    <h1>${escapeXml(input.project.name)} - Projektdokumentation</h1>
+    <p>${escapeXml(input.project.description || "")}</p>
+    ${renderKeyValueTable([
+      ["Projekt-ID", input.project.id],
+      ["Archiviert", input.project.archived ? "Ja" : "Nein"],
+      ["Produktionsschutz", input.project.productionWriteProtection ? "Aktiv" : "Inaktiv"],
+      ["Connectoren", String(connectorCount)],
+      ["Scheduler", String(scheduleCount)],
+      ["Compare", compareSummary],
+      ["Precheck", precheckSummary]
+    ])}
+    <h2>Instanzen</h2>
+    ${renderList(input.instances.map((item) => `${item.name || item.id} (${item.role || "test"})`))}
+    <h2>Projektmitglieder</h2>
+    ${renderList(input.members.map((item) => `${item.displayName || item.username} (${item.roleInProject || "viewer"})`))}
+    <h2>Setup-Version</h2>
+    ${input.setupVersion ? renderKeyValueTable([
+      ["Version", String(input.setupVersion.version)],
+      ["Artefakt", input.setupVersion.artifactRef],
+      ["Autor", input.setupVersion.author || "-"],
+      ["Notiz", input.setupVersion.note || "-"]
+    ]) : "<p><em>Keine Setup-Version vorhanden.</em></p>"}
+  `;
+}
+
+async function publishProjectDocumentationToConfluence(input: {
+  projectId: string;
+  title: string;
+  html: string;
+}): Promise<{ published: boolean; pageId?: string; url?: string; mode: "created" | "updated" | "dry-run" }> {
+  const baseUrl = String(process.env.CONFLUENCE_BASE_URL || "").trim().replace(/\/wiki\/?$/, "");
+  const username = String(process.env.ATLASSIAN_USERNAME || "").trim();
+  const apiToken = String(process.env.ATLASSIAN_API_TOKEN || "").trim();
+  const spaceKey = String(process.env.CONFLUENCE_SPACE_KEY || "").trim();
+  const parentId = String(process.env.CONFLUENCE_PARENT_ID || "").trim();
+
+  if (!baseUrl || !username || !apiToken) {
+    return { published: false, mode: "dry-run" };
+  }
+
+  const auth = Buffer.from(`${username}:${apiToken}`).toString("base64");
+  const pageMap = getProjectDocumentationPageMap();
+  const existing = pageMap[input.projectId];
+  const headers = {
+    Authorization: `Basic ${auth}`,
+    Accept: "application/json",
+    "Content-Type": "application/json"
+  };
+
+  if (existing?.pageId) {
+    const lookupResponse = await fetch(`${baseUrl}/wiki/rest/api/content/${encodeURIComponent(existing.pageId)}?expand=version` , { headers });
+    if (!lookupResponse.ok) {
+      throw new Error(`Confluence-Seite ${existing.pageId} konnte nicht geladen werden (${lookupResponse.status})`);
+    }
+    const content = await lookupResponse.json() as { version?: { number?: number } };
+    const version = Number(content?.version?.number || 1) + 1;
+    const updateResponse = await fetch(`${baseUrl}/wiki/rest/api/content/${encodeURIComponent(existing.pageId)}`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({
+        id: existing.pageId,
+        type: "page",
+        title: input.title,
+        version: { number: version },
+        body: {
+          storage: {
+            value: input.html,
+            representation: "storage"
+          }
+        }
+      })
+    });
+    if (!updateResponse.ok) {
+      throw new Error(`Confluence-Update fehlgeschlagen (${updateResponse.status})`);
+    }
+    return { published: true, mode: "updated", pageId: existing.pageId, url: `${baseUrl}/wiki/spaces/${spaceKey}/pages/${existing.pageId}` };
+  }
+
+  const createResponse = await fetch(`${baseUrl}/wiki/rest/api/content`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      type: "page",
+      title: input.title,
+      space: spaceKey ? { key: spaceKey } : undefined,
+      ancestors: parentId ? [{ id: parentId }] : undefined,
+      body: {
+        storage: {
+          value: input.html,
+          representation: "storage"
+        }
+      }
+    })
+  });
+  if (!createResponse.ok) {
+    throw new Error(`Confluence-Erstellung fehlgeschlagen (${createResponse.status})`);
+  }
+  const created = await createResponse.json() as { id?: string };
+  const pageId = String(created.id || "").trim();
+  if (pageId) {
+    saveProjectDocumentationPageRecord({ projectId: input.projectId, pageId, updatedAt: new Date().toISOString() });
+  }
+  return { published: true, mode: "created", pageId: pageId || undefined, url: pageId ? `${baseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}` : undefined };
 }
 
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
@@ -383,6 +626,9 @@ ${renderMenuModuleNavigation()}
                 <div class="agent-menu-action-grid agent-menu-action-grid-compact">
                   <button id="export-setup" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Setup exportieren"><span class="agent-btn-icon" aria-hidden="true">⭳</span><span>Export</span></button>
                   <button id="import-setup" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Setup importieren"><span class="agent-btn-icon" aria-hidden="true">⭱</span><span>Import</span></button>
+                </div>
+                <div class="agent-menu-action-grid agent-menu-action-grid-compact">
+                  <button id="publish-project-documentation" class="btn btn-outline-primary agent-btn-subtle" aria-label="Projekt-Dokumentation publizieren"><span class="agent-btn-icon" aria-hidden="true">✎</span><span>Doku</span></button>
                 </div>
                 <input id="setup-import-input" type="file" accept="application/json" class="d-none" />
                 <div class="agent-menu-action-grid agent-menu-action-grid-compact">
@@ -2185,11 +2431,14 @@ export function createAppServer(
       const adminProjectMemberItemMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/members\/([^/]+)$/);
       const adminProjectMigrationsMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/migrations$/);
       const adminProjectMigrationRunMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/migrations\/([^/]+)\/run$/);
+      const adminProjectSetupVersionsMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/setup\/versions$/);
       const adminProjectDeployCompareMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/compare$/);
       const adminProjectDeployCompareByIdMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/compare\/([^/]+)$/);
       const adminProjectDeployPrecheckMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/precheck$/);
       const adminProjectDeployPrecheckByIdMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/precheck\/([^/]+)$/);
+      const adminProjectDeployRunsMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/runs$/);
       const adminProjectDeployStartMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/start$/);
+      const adminProjectDocumentationPublishMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/documentation\/publish-confluence$/);
       const requiresInstanceWriteCheck = (() => {
         if (!instanceId) {
           return false;
@@ -2555,6 +2804,93 @@ export function createAppServer(
         return;
       }
 
+      if (adminProjectSetupVersionsMatch && req.method === "GET") {
+        const projectId = decodeURIComponent(adminProjectSetupVersionsMatch[1]);
+        sendJson(200, {
+          items: readProjectSetupVersions(projectId),
+          total: readProjectSetupVersions(projectId).length
+        });
+        return;
+      }
+
+      if (adminProjectSetupVersionsMatch && req.method === "POST") {
+        const projectId = decodeURIComponent(adminProjectSetupVersionsMatch[1]);
+        const body = (await readJsonBody(req)) as { instanceId?: string; note?: string; artifactRef?: string; author?: string };
+        const project = adminDataService.listProjects().find((item) => item.id === projectId);
+        if (!project) {
+          sendJson(404, { error: "Projekt nicht gefunden" });
+          return;
+        }
+
+        const instances = adminDataService.listInstances();
+        const selectedInstanceId = String(body.instanceId || "").trim() || String(getProjectPrimaryInstance(projectId, instances)?.id || "").trim();
+        const selectedInstance = getProjectInstances(projectId, instances).find((item) => item.id === selectedInstanceId) || getProjectPrimaryInstance(projectId, instances);
+        if (!selectedInstance) {
+          sendJson(409, { error: "Projekt hat keine zugeordnete Instanz fuer den Setup-Export." });
+          return;
+        }
+
+        const setupDocument = await adminDataService.exportSetup(selectedInstance.id);
+        const existingVersions = readProjectSetupVersions(projectId);
+        const nextVersion = existingVersions.length ? Math.max(...existingVersions.map((item) => Number(item.version || 0))) + 1 : 1;
+        const record: ProjectSetupVersionRecord = {
+          id: `setup-${projectId}-${nextVersion}-${Date.now()}`,
+          projectId,
+          version: nextVersion,
+          artifactRef: String(body.artifactRef || `setup:${projectId}:${nextVersion}`).trim(),
+          author: String(body.author || session?.username || "").trim() || undefined,
+          note: String(body.note || "").trim() || undefined,
+          createdAt: new Date().toISOString()
+        };
+        saveProjectSetupVersion(record);
+        await appendAuditHistory({ actor: auditActor, action: "setup.version.create", entityType: "project-setup-version", entityId: record.id, entityName: `${project.name} v${record.version}` });
+        sendJson(201, { record, setupDocument });
+        return;
+      }
+
+      if (adminProjectDeployRunsMatch && req.method === "GET") {
+        const projectId = decodeURIComponent(adminProjectDeployRunsMatch[1]);
+        const items = readDeploymentRuns(projectId);
+        sendJson(200, { items, total: items.length });
+        return;
+      }
+
+      if (adminProjectDocumentationPublishMatch && req.method === "POST") {
+        const projectId = decodeURIComponent(adminProjectDocumentationPublishMatch[1]);
+        const project = adminDataService.listProjects().find((item) => item.id === projectId);
+        if (!project) {
+          sendJson(404, { error: "Projekt nicht gefunden" });
+          return;
+        }
+
+        const instances = adminDataService.listInstances();
+        const projectInstances = getProjectInstances(projectId, instances);
+        const members = listProjectMembers(projectId);
+        const versions = readProjectSetupVersions(projectId);
+        const setupVersion = versions[versions.length - 1];
+        const setupInstanceId = getProjectPrimaryInstance(projectId, instances)?.id || projectInstances[0]?.id;
+        const setupDocument = setupVersion && setupInstanceId ? await adminDataService.exportSetup(setupInstanceId) : undefined;
+        const compareRuns = readJsonArrayFile<DeploymentCompareRunRecord>(LOCAL_DEPLOYMENT_COMPARE_RUNS_FILE).filter((item) => item.projectId === projectId);
+        const precheckRuns = readJsonArrayFile<DeploymentPrecheckRunRecord>(LOCAL_DEPLOYMENT_PRECHECKS_FILE).filter((item) => item.projectId === projectId);
+        const html = buildProjectDocumentationHtml({
+          project,
+          instances: projectInstances,
+          members,
+          setupVersion,
+          setupDocument,
+          compareRun: compareRuns.sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || ""), "de"))[0],
+          precheckRun: precheckRuns.sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || ""), "de"))[0]
+        });
+        const publishResult = await publishProjectDocumentationToConfluence({
+          projectId,
+          title: `${project.name} - Projektdokumentation`,
+          html
+        });
+        await appendAuditHistory({ actor: auditActor, action: publishResult.published ? `documentation.publish.${publishResult.mode}` : "documentation.publish.dry-run", entityType: "project-documentation", entityId: projectId, entityName: project.name });
+        sendJson(200, { ok: true, projectId, publishResult, html });
+        return;
+      }
+
       if (adminProjectDeployCompareMatch && req.method === "POST") {
         const projectId = decodeURIComponent(adminProjectDeployCompareMatch[1]);
         const body = (await readJsonBody(req)) as { direction?: DeploymentCompareDirection };
@@ -2896,12 +3232,28 @@ export function createAppServer(
           return;
         }
 
+        const latestSetupVersion = readProjectSetupVersions(projectId).at(-1);
+        const deploymentRun: DeploymentRunRecord = {
+          id: `dep-${Date.now()}`,
+          projectId,
+          sourceVersionId: latestSetupVersion?.id,
+          compareRunId: latestCompare.id,
+          precheckRunId: latestPrecheck.id,
+          status: "started",
+          approvedBy: session?.username,
+          startedAt: new Date().toISOString()
+        };
+        saveDeploymentRun(deploymentRun);
+        await appendAuditHistory({ actor: auditActor, action: "deploy.started", entityType: "deploy-run", entityId: deploymentRun.id, entityName: projectId });
+
         sendJson(202, {
           accepted: true,
           projectId,
           status: "started",
           compareRunId: latestCompare.id,
           precheckRunId: latestPrecheck.id,
+          deploymentRunId: deploymentRun.id,
+          sourceVersionId: deploymentRun.sourceVersionId,
           startedAt: new Date().toISOString()
         });
         return;
