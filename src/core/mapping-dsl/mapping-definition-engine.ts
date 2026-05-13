@@ -325,6 +325,12 @@ export class MappingDefinitionEngine {
     this.lookupCache = new Map();
   }
 
+  public seedLookupCache(entries: Map<string, string | null>): void {
+    for (const [key, value] of entries.entries()) {
+      this.lookupCache.set(key, value);
+    }
+  }
+
   public async mapRecord(
     record: MappingSourceRecord,
     lines: MappingDefinitionLine[]
