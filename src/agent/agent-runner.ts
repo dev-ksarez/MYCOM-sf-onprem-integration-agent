@@ -1,7 +1,7 @@
 import pino from "pino";
 import fs from "node:fs";
 import path from "node:path";
-import { ConnectorConfig, SalesforceClient, SalesforceScheduleRecord } from "../clients/salesforce/salesforce-client";
+import { ConnectorConfig, CreateLogInput, SalesforceClient, SalesforceScheduleRecord } from "../clients/salesforce/salesforce-client";
 import { ConnectorRegistry } from "../core/connector-registry/connector-registry";
 import { BulkLookupResolverFn, DataTransferJob } from "../core/job-runner/data-transfer-job";
 import { LookupResolverFn } from "../core/mapping-dsl/mapping-definition-engine";
@@ -1109,26 +1109,42 @@ async function executeSchedule(
 
     persistFailedRunRecords(runId, schedule, connectorConfig, result.failedRecords);
 
-    for (const connectorResult of result.connectorResults) {
-      if (connectorResult.success) {
-        continue;
-      }
+    const failedConnectorResults = result.connectorResults.filter((connectorResult) => !connectorResult.success);
+    if (failedConnectorResults.length > 0) {
+      const errorLogInputs: CreateLogInput[] = failedConnectorResults.map((connectorResult) => {
+        const statusCode = connectorResult.statusCode || "UNKNOWN_STATUS";
+        const message = connectorResult.message || "Unknown connector error";
+        const retryableText = connectorResult.retryable ? "retryable=true" : "retryable=false";
 
-      const statusCode = connectorResult.statusCode || "UNKNOWN_STATUS";
-      const message = connectorResult.message || "Unknown connector error";
-      const retryableText = connectorResult.retryable ? "retryable=true" : "retryable=false";
-
-      await salesforceClient.createLog({
-        runId,
-        level: "ERROR",
-        step: "RECORD_ERROR",
-        message: `${statusCode}: ${message} (${retryableText})`,
-        correlationId: context.correlationId,
-        recordKey: connectorResult.externalKey
+        return {
+          runId,
+          level: "ERROR",
+          step: "RECORD_ERROR",
+          message: `${statusCode}: ${message} (${retryableText})`,
+          correlationId: context.correlationId,
+          recordKey: connectorResult.externalKey
+        };
       });
+
+      try {
+        await salesforceClient.createLogsBulk(errorLogInputs);
+      } catch (bulkError) {
+        logger.warn(
+          {
+            scheduleId: schedule.id,
+            runId,
+            failedCount: errorLogInputs.length,
+            error: bulkError instanceof Error ? bulkError.message : String(bulkError)
+          },
+          "Bulk error log write failed. Falling back to single inserts."
+        );
+
+        for (const logInput of errorLogInputs) {
+          await salesforceClient.createLog(logInput);
+        }
+      }
     }
 
-    const failedConnectorResults = result.connectorResults.filter((connectorResult) => !connectorResult.success);
     if (failedConnectorResults.length > 0) {
       const primaryFailure = failedConnectorResults[0];
       await maybeCreateConnectorNotificationTask(logger, salesforceClient, connectorConfig, schedule, {

@@ -5963,8 +5963,11 @@ export class AdminDataService {
   }
 
   public async listSalesforceObjects(instanceId?: string): Promise<{ name: string; label: string }[]> {
-    const client = await this.createClient(instanceId);
-    return await client.listObjectMetadata();
+    const resolvedInstance = this.resolveRuntimeInstance(instanceId);
+    return this.withAdaptiveSalesforceCache(resolvedInstance.id, "listSalesforceObjects", async () => {
+      const client = await this.createClient(resolvedInstance.id);
+      return await client.listObjectMetadata();
+    });
   }
 
   public async listSalesforcePricebooks(instanceId?: string): Promise<Array<{ id: string; name: string; isActive: boolean; isStandard: boolean }>> {
@@ -5978,8 +5981,16 @@ export class AdminDataService {
   }
 
   public async describeSalesforceObjectFields(objectApiName: string, instanceId?: string): Promise<{ name: string; label: string; type: string; nillable: boolean; isExternalId: boolean; createable: boolean; updateable: boolean; defaultedOnCreate: boolean; calculated: boolean; autoNumber: boolean; requiredOnCreate: boolean }[]> {
-    const client = await this.createClient(instanceId);
-    return await client.describeObjectFields(objectApiName);
+    const resolvedInstance = this.resolveRuntimeInstance(instanceId);
+    const normalizedObjectApiName = String(objectApiName || "").trim();
+    return this.withAdaptiveSalesforceCache(
+      resolvedInstance.id,
+      `describeSalesforceObjectFields:${normalizedObjectApiName.toLowerCase()}`,
+      async () => {
+        const client = await this.createClient(resolvedInstance.id);
+        return await client.describeObjectFields(normalizedObjectApiName);
+      }
+    );
   }
 
   public async createSalesforceCustomField(

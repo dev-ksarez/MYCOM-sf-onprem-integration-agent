@@ -300,6 +300,20 @@ export interface SalesforceObjectFieldMetadata {
   requiredOnCreate: boolean;
 }
 
+interface SalesforceDescribeField {
+  name?: string;
+  label?: string;
+  type?: string;
+  nillable?: boolean;
+  externalId?: boolean;
+  createable?: boolean;
+  updateable?: boolean;
+  defaultedOnCreate?: boolean;
+  calculated?: boolean;
+  autoNumber?: boolean;
+  picklistValues?: Array<{ value?: string; label?: string; active?: boolean }>;
+}
+
 export interface SalesforceObjectMetadata {
   name: string;
   label: string;
@@ -457,6 +471,10 @@ export class SalesforceClient {
   private static readonly sessionCache = new Map<string, CachedSalesforceSession>();
   private static readonly loginInFlight = new Map<string, Promise<CachedSalesforceSession>>();
   private static readonly lastLogCleanupAt = new Map<string, number>();
+  private static readonly objectDescribeFieldsCache = new Map<string, {
+    expiresAt: number;
+    fields: SalesforceDescribeField[];
+  }>();
   private static readonly staleRunTimeoutMs = (() => {
     const configuredMinutes = Number(process.env.SF_STALE_RUN_TIMEOUT_MINUTES?.trim() || "360");
     if (!Number.isFinite(configuredMinutes) || configuredMinutes <= 0) {
@@ -489,6 +507,14 @@ export class SalesforceClient {
     }
 
     return Math.max(1, Math.min(Math.floor(configuredMaxBatches), 100));
+  })();
+  private static readonly describeCacheTtlMs = (() => {
+    const configuredTtlMs = Number(process.env.SF_DESCRIBE_CACHE_TTL_MS?.trim() || "60000");
+    if (!Number.isFinite(configuredTtlMs) || configuredTtlMs <= 0) {
+      return 60_000;
+    }
+
+    return Math.max(5_000, Math.min(Math.floor(configuredTtlMs), 10 * 60_000));
   })();
 
   private readonly config: SalesforceConfig;
@@ -1694,6 +1720,77 @@ export class SalesforceClient {
     return result.id;
   }
 
+  public async createLogsBulk(inputs: CreateLogInput[]): Promise<string[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const payloads = (Array.isArray(inputs) ? inputs : [])
+      .map((input) => ({
+        MSD_Run__c: input.runId,
+        MSD_Level__c: input.level,
+        MSD_Step__c: input.step,
+        MSD_Message__c: input.message,
+        MSD_RecordKey__c: input.recordKey,
+        MSD_CorrelationId__c: input.correlationId
+      }));
+
+    if (!payloads.length) {
+      return [];
+    }
+
+    const createdIds: string[] = [];
+    const chunkSize = 200;
+
+    for (let index = 0; index < payloads.length; index += chunkSize) {
+      const chunk = payloads.slice(index, index + chunkSize);
+      const result = await this.connection.sobject("MSD_Log__c").create(chunk);
+      const results = Array.isArray(result) ? result : [result];
+
+      for (const entry of results) {
+        if (!entry?.success || !entry?.id) {
+          const details = "errors" in entry ? JSON.stringify(entry.errors) : "unknown bulk create error";
+          throw new Error(`Failed to create MSD_Log__c records in bulk: ${details}`);
+        }
+        createdIds.push(entry.id);
+      }
+    }
+
+    return createdIds;
+  }
+
+  private async describeObjectFieldsRaw(
+    objectApiName: string,
+    options?: { forceRefresh?: boolean }
+  ): Promise<SalesforceDescribeField[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const cacheKey = `${this.getCacheKey()}|describe|${objectApiName}`;
+    const forceRefresh = options?.forceRefresh === true;
+    const now = Date.now();
+
+    if (!forceRefresh) {
+      const cached = SalesforceClient.objectDescribeFieldsCache.get(cacheKey);
+      if (cached && cached.expiresAt > now) {
+        return cached.fields;
+      }
+    }
+
+    const describeResult = await this.connection.sobject(objectApiName).describe();
+    const fields = Array.isArray(describeResult?.fields)
+      ? (describeResult.fields as SalesforceDescribeField[])
+      : [];
+
+    SalesforceClient.objectDescribeFieldsCache.set(cacheKey, {
+      fields,
+      expiresAt: now + SalesforceClient.describeCacheTtlMs
+    });
+
+    return fields;
+  }
+
   public async createTask(input: CreateTaskInput): Promise<string> {
     if (!this.connection) {
       throw new Error("Salesforce connection not initialized. Call login() first.");
@@ -2216,8 +2313,8 @@ export class SalesforceClient {
       return cachedValues;
     }
 
-    const describeResult = await this.connection.sobject(objectApiName).describe();
-    const fieldDefinition = describeResult.fields.find((field) => field.name === fieldApiName);
+    const fields = await this.describeObjectFieldsRaw(objectApiName);
+    const fieldDefinition = fields.find((field) => field.name === fieldApiName);
 
     if (!fieldDefinition) {
       throw new Error(`Field ${fieldApiName} does not exist on Salesforce object ${objectApiName}`);
@@ -2243,13 +2340,16 @@ export class SalesforceClient {
     return values;
   }
 
-  public async describeObjectFields(objectApiName: string): Promise<SalesforceObjectFieldMetadata[]> {
+  public async describeObjectFields(
+    objectApiName: string,
+    options?: { forceRefresh?: boolean }
+  ): Promise<SalesforceObjectFieldMetadata[]> {
     if (!this.connection) {
       throw new Error("Salesforce connection not initialized. Call login() first.");
     }
 
-    const describeResult = await this.connection.sobject(objectApiName).describe();
-    return (describeResult.fields || [])
+    const fields = await this.describeObjectFieldsRaw(objectApiName, options);
+    return fields
       .map((field) => ({
         name: String(field.name ?? "").trim(),
         label: String(field.label ?? field.name ?? "").trim(),
@@ -2284,7 +2384,7 @@ export class SalesforceClient {
     }
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const fields = await this.describeObjectFields(objectApiName);
+      const fields = await this.describeObjectFields(objectApiName, { forceRefresh: true });
       if (fields.some((field) => field.name.toLowerCase() === normalizedFieldName)) {
         return true;
       }
