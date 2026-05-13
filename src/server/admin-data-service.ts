@@ -202,6 +202,7 @@ interface ResolvedInstance {
 
 const LOCAL_INSTANCES_FILE = process.env.SF_INSTANCES_FILE || path.resolve(process.cwd(), "artifacts/sf-instances.json");
 const LOCAL_PROJECTS_FILE = process.env.SF_PROJECTS_FILE || path.resolve(process.cwd(), "artifacts/projects.json");
+const PROJECTS_SQLITE_FILE = process.env.PROJECTS_SQLITE_FILE || path.resolve(process.cwd(), "data/projects.sqlite");
 const LOCAL_MIGRATION_INSTANCES_FILE = process.env.SF_MIGRATION_INSTANCES_FILE || path.resolve(process.cwd(), "artifacts/migration-instances.json");
 const LOCAL_SCHEDULE_TIMING_FILE = process.env.SF_SCHEDULE_TIMING_FILE || path.resolve(process.cwd(), "artifacts/schedule-timing.json");
 const LOCAL_SCHEDULE_HEALTH_FILE = process.env.SF_SCHEDULE_HEALTH_FILE || path.resolve(process.cwd(), "artifacts/schedule-health.json");
@@ -411,7 +412,136 @@ function defaultProjectConfig(): SalesforceProjectConfig {
   };
 }
 
+function openProjectsSqliteSync(): any | null {
+  try {
+    // Use node builtin SQLite when available (Node 22+).
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const sqlite = require("node:sqlite");
+    const DatabaseSync = sqlite?.DatabaseSync;
+    if (!DatabaseSync) {
+      return null;
+    }
+
+    const directory = path.dirname(PROJECTS_SQLITE_FILE);
+    fs.mkdirSync(directory, { recursive: true });
+
+    const db = new DatabaseSync(PROJECTS_SQLITE_FILE);
+    db.exec(`CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      archived INTEGER NOT NULL DEFAULT 0,
+      production_write_protection INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`);
+
+    return db;
+  } catch {
+    return null;
+  }
+}
+
+function readProjectsFromSqliteSync(): SalesforceProjectConfig[] | null {
+  const db = openProjectsSqliteSync();
+  if (!db) {
+    return null;
+  }
+
+  try {
+    const rows = db
+      .prepare(`SELECT id, name, description, archived, production_write_protection, created_at, updated_at FROM projects`)
+      .all() as Array<{
+      id: string;
+      name: string;
+      description?: string;
+      archived: number;
+      production_write_protection: number;
+      created_at: string;
+      updated_at: string;
+    }>;
+
+    return rows
+      .map((row) => ({
+        id: String(row.id || "").trim(),
+        name: String(row.name || "").trim(),
+        description: String(row.description || "").trim() || undefined,
+        archived: Number(row.archived || 0) === 1,
+        productionWriteProtection: Number(row.production_write_protection || 0) !== 0,
+        createdAt: String(row.created_at || "").trim() || new Date().toISOString(),
+        updatedAt: String(row.updated_at || "").trim() || new Date().toISOString()
+      }))
+      .filter((item) => item.id && item.name);
+  } catch {
+    return null;
+  } finally {
+    try {
+      db.close();
+    } catch {
+      // ignore close errors
+    }
+  }
+}
+
+function writeProjectsToSqliteSync(projects: SalesforceProjectConfig[]): void {
+  const db = openProjectsSqliteSync();
+  if (!db) {
+    return;
+  }
+
+  try {
+    db.exec("BEGIN");
+    db.exec("DELETE FROM projects");
+
+    const insert = db.prepare(
+      `INSERT INTO projects (id, name, description, archived, production_write_protection, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    for (const project of projects) {
+      insert.run(
+        project.id,
+        project.name,
+        project.description || "",
+        project.archived === true ? 1 : 0,
+        project.productionWriteProtection === false ? 0 : 1,
+        project.createdAt,
+        project.updatedAt
+      );
+    }
+
+    db.exec("COMMIT");
+  } catch {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // ignore rollback errors
+    }
+  } finally {
+    try {
+      db.close();
+    } catch {
+      // ignore close errors
+    }
+  }
+}
+
 function readLocalProjects(): SalesforceProjectConfig[] {
+  const sqliteItems = readProjectsFromSqliteSync();
+  if (sqliteItems) {
+    const items = [...sqliteItems];
+    if (!items.some((entry) => entry.id === "default-project")) {
+      items.unshift(defaultProjectConfig());
+      writeProjectsToSqliteSync(items);
+    }
+
+    // Keep JSON mirror in sync for backward compatibility tools.
+    const directory = path.dirname(LOCAL_PROJECTS_FILE);
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(LOCAL_PROJECTS_FILE, JSON.stringify(items, null, 2), "utf8");
+    return items;
+  }
+
   try {
     if (!fs.existsSync(LOCAL_PROJECTS_FILE)) {
       return [defaultProjectConfig()];
@@ -457,6 +587,8 @@ function readLocalProjects(): SalesforceProjectConfig[] {
       items.unshift(defaultProjectConfig());
     }
 
+    writeProjectsToSqliteSync(items);
+
     return items;
   } catch {
     return [defaultProjectConfig()];
@@ -464,6 +596,7 @@ function readLocalProjects(): SalesforceProjectConfig[] {
 }
 
 function writeLocalProjects(projects: SalesforceProjectConfig[]): void {
+  writeProjectsToSqliteSync(projects);
   const directory = path.dirname(LOCAL_PROJECTS_FILE);
   fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(LOCAL_PROJECTS_FILE, JSON.stringify(projects, null, 2), "utf8");
@@ -1416,6 +1549,7 @@ export interface MigrationConfig {
   name: string;
   description?: string;
   batchSize?: number;
+  projectId?: string;
   instanceId?: string;
   salesforceLogin?: MigrationSalesforceInstanceConfig;
   status: "draft" | "ready" | "running" | "done" | "error";
@@ -2277,225 +2411,23 @@ export class AdminDataService {
   }
 
   public listMigrationInstances(): MigrationSalesforceInstanceSummary[] {
-    const migrations = this.readMigrationsStore();
-    return migrations
-      .filter((migration) => migration.salesforceLogin)
-      .map((migration) => {
-        const instance = {
-          ...(migration.salesforceLogin as MigrationSalesforceInstanceConfig),
-          id: migration.id,
-          name: migration.salesforceLogin?.name || migration.name
-        } as MigrationSalesforceInstanceConfig;
-        return this.toMigrationInstanceSummary(instance, migrations);
-      })
-      .sort((left, right) => left.name.localeCompare(right.name, "de"));
+    return [];
   }
 
   public saveMigrationInstance(input: MigrationSalesforceInstanceMutationInput): MigrationSalesforceInstanceSummary {
-    const name = String(input.name || "").trim();
-    const environment = input.environment === "sandbox" ? "sandbox" : "production";
-    const loginUrl = String(input.loginUrl || this.getMigrationInstanceLoginUrl(environment)).trim() || this.getMigrationInstanceLoginUrl(environment);
-    const authType = input.authType === "password"
-      ? "password"
-      : (input.authType === "client_credentials" ? "client_credentials" : "oauth_refresh_token");
-    const username = String(input.username || "").trim();
-    const password = String(input.password || "");
-    const securityToken = String(input.securityToken || "").trim() || undefined;
-    const clientId = String(input.clientId || "").trim() || undefined;
-    const clientSecret = String(input.clientSecret || "").trim() || undefined;
-
-    if (!input.id) {
-      throw new Error("Migration ID ist fuer eingebettete Migrations-Logins erforderlich");
-    }
-
-    const migration = this.getMigration(String(input.id));
-    if (!migration) {
-      throw new Error(`Migration ${input.id} nicht gefunden`);
-    }
-    const authTypeChanged = String(migration.salesforceLogin?.authType || "") !== authType;
-
-    const nextItem: MigrationSalesforceInstanceConfig = {
-      id: migration.id,
-      name: name || migration.name,
-      environment,
-      loginUrl,
-      authType,
-      username: authType === "password" ? username : undefined,
-      password: authType === "password" ? password : undefined,
-      securityToken: authType === "password" ? securityToken : undefined,
-      clientId: authType === "client_credentials" ? clientId : undefined,
-      clientSecret: authType === "client_credentials" ? clientSecret : undefined,
-      instanceUrl: migration.salesforceLogin?.instanceUrl,
-      accessToken: authType === "oauth_refresh_token" ? migration.salesforceLogin?.accessToken : undefined,
-      refreshToken: authType === "oauth_refresh_token" ? migration.salesforceLogin?.refreshToken : undefined,
-      tokenIssuedAt: authType === "oauth_refresh_token" ? migration.salesforceLogin?.tokenIssuedAt : undefined,
-      queryLimit: input.queryLimit,
-      lastConnectionStatus: authTypeChanged ? "never" : (migration.salesforceLogin?.lastConnectionStatus || "never"),
-      lastConnectedAt: authTypeChanged ? undefined : migration.salesforceLogin?.lastConnectedAt,
-      lastConnectionError: authTypeChanged ? undefined : migration.salesforceLogin?.lastConnectionError,
-      orgOverview: migration.salesforceLogin?.orgOverview,
-      objectCount: migration.salesforceLogin?.objectCount,
-      updatedAt: new Date().toISOString()
-    };
-
-    const savedMigration = this.saveMigration({
-      ...migration,
-      salesforceLogin: nextItem
-    });
-
-    return this.toMigrationInstanceSummary(nextItem, this.readMigrationsStore().filter((entry) => entry.id === savedMigration.id));
+    throw new Error("Migration-Instanzen werden nicht mehr separat verwaltet. Nutze Projektzuordnung und Projektinstanzen.");
   }
 
   public getMigrationOAuthAuthorizationUrl(instanceId: string, state: string, redirectUri: string): string {
-    const migration = this.getMigration(instanceId);
-    if (!migration?.salesforceLogin) {
-      throw new Error(`Migration ${instanceId} hat keinen konfigurierten Salesforce-Login`);
-    }
-
-    if (migration.salesforceLogin.authType === "password") {
-      throw new Error("Diese Migration verwendet Benutzername/Passwort. Ein OAuth-Allow-Flow ist dafuer nicht erforderlich.");
-    }
-
-    const { clientId } = this.getMigrationOAuthClientCredentials();
-    const authorizationUrl = new URL(`${normalizeMigrationSalesforceLoginUrl(migration.salesforceLogin.loginUrl, migration.salesforceLogin.environment)}/services/oauth2/authorize`);
-    authorizationUrl.searchParams.set("response_type", "code");
-    authorizationUrl.searchParams.set("client_id", clientId);
-    authorizationUrl.searchParams.set("redirect_uri", redirectUri);
-    authorizationUrl.searchParams.set("state", state);
-    authorizationUrl.searchParams.set("scope", String(process.env.SF_MIGRATION_OAUTH_SCOPE || "api refresh_token").trim() || "api refresh_token");
-    authorizationUrl.searchParams.set("display", "popup");
-    return authorizationUrl.toString();
+    throw new Error("OAuth fuer separate Migration-Instanzen ist nicht mehr verfuegbar.");
   }
 
   public async completeMigrationOAuth(instanceId: string, code: string, redirectUri: string): Promise<MigrationSalesforceInstanceSummary> {
-    const migration = this.getMigration(instanceId);
-    if (!migration?.salesforceLogin) {
-      throw new Error(`Migration ${instanceId} hat keinen konfigurierten Salesforce-Login`);
-    }
-
-    const oauthClient = this.getMigrationOAuthClientCredentials();
-    const tokenUrl = `${normalizeMigrationSalesforceLoginUrl(migration.salesforceLogin.loginUrl, migration.salesforceLogin.environment)}/services/oauth2/token`;
-    const body = new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: oauthClient.clientId,
-      client_secret: oauthClient.clientSecret,
-      redirect_uri: redirectUri,
-      code: String(code || "").trim()
-    });
-
-    try {
-      const response = await fetch(tokenUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded"
-        },
-        body
-      });
-      const rawText = await response.text();
-      let tokenData: MigrationOAuthTokenResponse = {};
-
-      try {
-        tokenData = JSON.parse(rawText) as MigrationOAuthTokenResponse;
-      } catch {
-        tokenData = {};
-      }
-
-      if (!response.ok) {
-        throw new Error(
-          formatSalesforceOauthError(
-            tokenData.error,
-            tokenData.error_description,
-            migration.salesforceLogin.loginUrl
-          ) || rawText || `Salesforce OAuth Callback fehlgeschlagen (${response.status})`
-        );
-      }
-
-      const accessToken = String(tokenData.access_token || "").trim();
-      const refreshToken = String(tokenData.refresh_token || migration.salesforceLogin.refreshToken || "").trim();
-      const instanceUrl = String(tokenData.instance_url || migration.salesforceLogin.instanceUrl || "").trim();
-      if (!accessToken || !refreshToken || !instanceUrl) {
-        throw new Error("Salesforce OAuth Antwort enthaelt kein access_token, refresh_token oder instance_url");
-      }
-
-      migration.salesforceLogin = {
-        ...migration.salesforceLogin,
-        authType: "oauth_refresh_token",
-        accessToken,
-        refreshToken,
-        instanceUrl,
-        tokenIssuedAt: tokenData.issued_at && Number.isFinite(Number(tokenData.issued_at))
-          ? new Date(Number(tokenData.issued_at)).toISOString()
-          : new Date().toISOString(),
-        lastConnectionStatus: "connected",
-        lastConnectedAt: new Date().toISOString(),
-        lastConnectionError: undefined,
-        updatedAt: new Date().toISOString()
-      };
-
-      this.saveMigration(migration);
-      return this.connectMigrationInstance(instanceId);
-    } catch (error) {
-      migration.salesforceLogin = {
-        ...migration.salesforceLogin,
-        lastConnectionStatus: "error",
-        lastConnectionError: error instanceof Error ? error.message : String(error),
-        updatedAt: new Date().toISOString()
-      };
-      this.saveMigration(migration);
-      throw error;
-    }
+    throw new Error("OAuth fuer separate Migration-Instanzen ist nicht mehr verfuegbar.");
   }
 
   public async connectMigrationInstance(instanceId: string): Promise<MigrationSalesforceInstanceSummary> {
-    const migration = this.getMigration(instanceId);
-    if (!migration?.salesforceLogin) {
-      throw new Error(`Migration ${instanceId} hat keinen gespeicherten Salesforce-Login`);
-    }
-
-    if (migration.salesforceLogin.authType === "oauth_refresh_token" && !String(migration.salesforceLogin.refreshToken || "").trim()) {
-      throw new Error(`Migration ${instanceId} hat noch keine Salesforce-Freigabe. Bitte den Login ueber die Salesforce-Login-Seite starten.`);
-    }
-
-    const fallbackQueryLimit = this.getFallbackQueryLimit();
-    const resolved = toResolvedMigrationInstance(
-      migration.salesforceLogin,
-      fallbackQueryLimit,
-      this.getMigrationOAuthClientCredentials()
-    );
-    if (!resolved) {
-      throw new Error(`Migration instance ${instanceId} ist unvollstaendig konfiguriert`);
-    }
-
-    try {
-      const client = new SalesforceClient(resolved.config);
-      await client.login();
-      const [orgOverview, objectMetadata] = await Promise.all([
-        client.getOrgOverview(),
-        client.listObjectMetadata()
-      ]);
-
-      migration.salesforceLogin = {
-        ...migration.salesforceLogin,
-        lastConnectionStatus: "connected",
-        lastConnectedAt: new Date().toISOString(),
-        lastConnectionError: undefined,
-        orgOverview,
-        objectCount: objectMetadata.length,
-        updatedAt: new Date().toISOString()
-      };
-    } catch (error) {
-      migration.salesforceLogin = {
-        ...migration.salesforceLogin,
-        lastConnectionStatus: "error",
-        lastConnectionError: error instanceof Error ? error.message : String(error),
-        updatedAt: new Date().toISOString()
-      };
-      this.saveMigration(migration);
-      throw error;
-    }
-
-    const savedMigration = this.saveMigration(migration);
-    return this.toMigrationInstanceSummary(savedMigration.salesforceLogin!, this.readMigrationsStore().filter((entry) => entry.id === savedMigration.id));
+    throw new Error("Migration-Instanzen werden nicht mehr separat verwaltet. Nutze Projektzuordnung und Projektinstanzen.");
   }
 
   public async listSchedules(instanceId?: string): Promise<ScheduleListItem[]> {
@@ -7492,66 +7424,72 @@ export class AdminDataService {
   private sanitizeMigrationForUi(migration: MigrationConfig): MigrationConfig {
     return {
       ...migration,
-      salesforceLogin: migration.salesforceLogin
-        ? {
-            ...migration.salesforceLogin,
-            accessToken: undefined,
-            refreshToken: undefined
-          }
-        : undefined
+      salesforceLogin: undefined
     };
+  }
+
+  private resolveProjectContextForMigration(input: {
+    projectId?: string;
+    instanceId?: string;
+    existing?: MigrationConfig;
+  }): { projectId: string; instanceId: string } {
+    let projectId = String(input.projectId || input.existing?.projectId || "").trim();
+    const preferredInstanceId = String(input.instanceId || input.existing?.instanceId || "").trim();
+
+    if (!projectId && preferredInstanceId && !preferredInstanceId.startsWith("migration:")) {
+      const configured = readConfiguredInstancesWithMetadata().find((item) => item.id === preferredInstanceId);
+      projectId = String(configured?.projectId || "").trim();
+    }
+
+    if (!projectId) {
+      throw new Error("projectId ist erforderlich");
+    }
+
+    const projects = readLocalProjects();
+    if (!projects.some((item) => item.id === projectId)) {
+      throw new Error(`Projekt ${projectId} nicht gefunden`);
+    }
+
+    const projectInstances = readConfiguredInstancesWithMetadata()
+      .filter((item) => String(item.projectId || "default-project").trim() === projectId);
+
+    if (!projectInstances.length) {
+      throw new Error(`Projekt ${projectId} hat keine zugeordnete Salesforce-Instanz`);
+    }
+
+    if (preferredInstanceId && !preferredInstanceId.startsWith("migration:")) {
+      const belongsToProject = projectInstances.some((item) => item.id === preferredInstanceId);
+      if (!belongsToProject) {
+        throw new Error(`Instanz ${preferredInstanceId} gehoert nicht zum Projekt ${projectId}`);
+      }
+      return { projectId, instanceId: preferredInstanceId };
+    }
+
+    const production = projectInstances.find((item) => item.role === "production");
+    return { projectId, instanceId: (production || projectInstances[0]).id };
   }
 
   public saveMigration(input: Omit<MigrationConfig, "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string }): MigrationConfig {
     const migrations = this.readMigrationsStore();
     const now = new Date().toISOString();
     const existing = migrations.find((m) => m.id === input.id);
-    const normalizedLogin = input.salesforceLogin && String(input.salesforceLogin.loginUrl || "").trim()
-      ? {
-          ...input.salesforceLogin,
-          id: input.id,
-          name: String(input.salesforceLogin.name || input.name || input.id).trim() || input.id,
-          loginUrl: normalizeMigrationSalesforceLoginUrl(
-            String(input.salesforceLogin.loginUrl || this.getMigrationInstanceLoginUrl(input.salesforceLogin.environment)).trim(),
-            input.salesforceLogin.environment
-          ),
-          authType: input.salesforceLogin.authType === "password"
-            ? "password"
-            : (input.salesforceLogin.authType === "client_credentials"
-              ? "client_credentials"
-              : (input.salesforceLogin.authType || existing?.salesforceLogin?.authType || "oauth_refresh_token")),
-          username: input.salesforceLogin.authType === "password"
-            ? String(input.salesforceLogin.username || existing?.salesforceLogin?.username || "").trim() || undefined
-            : undefined,
-          password: input.salesforceLogin.authType === "password"
-            ? String(input.salesforceLogin.password || existing?.salesforceLogin?.password || "") || undefined
-            : undefined,
-          securityToken: input.salesforceLogin.authType === "password"
-            ? String(input.salesforceLogin.securityToken || existing?.salesforceLogin?.securityToken || "").trim() || undefined
-            : undefined,
-          clientId: input.salesforceLogin.authType === "client_credentials"
-            ? String(input.salesforceLogin.clientId || existing?.salesforceLogin?.clientId || "").trim() || undefined
-            : undefined,
-          clientSecret: input.salesforceLogin.authType === "client_credentials"
-            ? String(input.salesforceLogin.clientSecret || existing?.salesforceLogin?.clientSecret || "").trim() || undefined
-            : undefined,
-          instanceUrl: input.salesforceLogin.instanceUrl || existing?.salesforceLogin?.instanceUrl,
-          accessToken: input.salesforceLogin.authType === "oauth_refresh_token" ? (input.salesforceLogin.accessToken || existing?.salesforceLogin?.accessToken) : undefined,
-          refreshToken: input.salesforceLogin.authType === "oauth_refresh_token" ? (input.salesforceLogin.refreshToken || existing?.salesforceLogin?.refreshToken) : undefined,
-          tokenIssuedAt: input.salesforceLogin.authType === "oauth_refresh_token" ? (input.salesforceLogin.tokenIssuedAt || existing?.salesforceLogin?.tokenIssuedAt) : undefined,
-          lastConnectionStatus: input.salesforceLogin.lastConnectionStatus || existing?.salesforceLogin?.lastConnectionStatus || "never",
-          lastConnectedAt: input.salesforceLogin.lastConnectedAt || existing?.salesforceLogin?.lastConnectedAt,
-          lastConnectionError: input.salesforceLogin.lastConnectionError || existing?.salesforceLogin?.lastConnectionError,
-          orgOverview: input.salesforceLogin.orgOverview || existing?.salesforceLogin?.orgOverview,
-          objectCount: input.salesforceLogin.objectCount ?? existing?.salesforceLogin?.objectCount,
-          updatedAt: now
-        }
-      : undefined;
+
+    if (input.salesforceLogin && String(input.salesforceLogin.loginUrl || "").trim()) {
+      throw new Error("Eigenstaendige Salesforce-Anbindung fuer Migrationen ist nicht mehr zulaessig. Nutze die Projektzuordnung.");
+    }
+
+    const resolvedContext = this.resolveProjectContextForMigration({
+      projectId: input.projectId,
+      instanceId: input.instanceId,
+      existing
+    });
+
     const saved: MigrationConfig = {
       ...input,
       batchSize: this.resolveMigrationBatchSize(input.batchSize),
-      instanceId: normalizedLogin ? `migration:${input.id}` : (String(input.instanceId || "").trim() || undefined),
-      salesforceLogin: normalizedLogin,
+      projectId: resolvedContext.projectId,
+      instanceId: resolvedContext.instanceId,
+      salesforceLogin: undefined,
       createdAt: existing?.createdAt ?? input.createdAt ?? now,
       updatedAt: now
     };

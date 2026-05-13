@@ -3,6 +3,9 @@
   "version": "0.2.52",
   "private": true,
   "description": "Salesforce controlled on-prem integration agent",
+  "engines": {
+    "node": ">=22"
+  },
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc",
@@ -32,6 +35,7 @@
     "win:build-package:with-node-modules": "node scripts/windows/build-customer-package.js --include-node-modules",
     "init:installation": "node scripts/salesforce/init-installation.js",
     "sf:seed-dev-sandbox-scenarios": "node scripts/salesforce/seed-dev-sandbox-scenarios.js",
+    "projects:migrate-to-sqlite": "node scripts/migrate-projects-to-sqlite.js",
     "sf:deploy-metadata": "ts-node scripts/salesforce/deploy-metadata.ts",
     "sf:debug-oauth": "node scripts/salesforce/debug-oauth.js"
   },

@@ -69,7 +69,25 @@ export type AdminUserMutationInput = {
   modules?: AdminModule[];
 };
 
+export type ProjectMembershipRole = "viewer" | "operator" | "release-manager" | "owner";
+
+export interface ProjectMembershipRecord {
+  projectId: string;
+  userId: string;
+  roleInProject: ProjectMembershipRole;
+  assignedAt: string;
+  assignedBy?: string;
+}
+
+export interface ProjectMembershipDetail extends ProjectMembershipRecord {
+  username: string;
+  displayName?: string;
+  userRoles: string[];
+  userPermissions: AdminPermission[];
+}
+
 const DEFAULT_ADMIN_USERS_FILE = path.resolve(process.cwd(), "artifacts/admin-users.json");
+const DEFAULT_PROJECT_MEMBERSHIPS_FILE = path.resolve(process.cwd(), "artifacts/project-memberships.json");
 
 function formatSalesforceOauthError(error?: string, description?: string, loginUrl?: string): string {
   const normalizedError = String(error || "").trim();
@@ -237,6 +255,78 @@ function loadUsersFromConfig(): AdminUserRecord[] {
     permissions: ["admin", "read", "write", "delete"],
     modules: ["migration"]
   }];
+}
+
+function normalizeProjectRole(value: unknown): ProjectMembershipRole {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "owner") {
+    return "owner";
+  }
+  if (normalized === "release-manager") {
+    return "release-manager";
+  }
+  if (normalized === "operator") {
+    return "operator";
+  }
+  return "viewer";
+}
+
+function getProjectMembershipsFilePath(): string {
+  const configured = String(process.env.ADMIN_UI_PROJECT_MEMBERSHIPS_FILE || "").trim();
+  return path.resolve(configured || DEFAULT_PROJECT_MEMBERSHIPS_FILE);
+}
+
+function normalizeProjectMemberships(input: unknown): ProjectMembershipRecord[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const items: ProjectMembershipRecord[] = [];
+
+  input.forEach((rawItem) => {
+    if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) {
+      return;
+    }
+    const item = rawItem as Record<string, unknown>;
+    const projectId = String(item.projectId || "").trim();
+    const userId = String(item.userId || "").trim();
+    if (!projectId || !userId) {
+      return;
+    }
+
+    const dedupeKey = `${projectId}::${userId}`;
+    if (seen.has(dedupeKey)) {
+      return;
+    }
+    seen.add(dedupeKey);
+
+    items.push({
+      projectId,
+      userId,
+      roleInProject: normalizeProjectRole(item.roleInProject),
+      assignedAt: String(item.assignedAt || "").trim() || new Date().toISOString(),
+      assignedBy: String(item.assignedBy || "").trim() || undefined
+    });
+  });
+
+  return items;
+}
+
+function readProjectMembershipsFile(filePath = getProjectMembershipsFilePath()): ProjectMembershipRecord[] {
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+  try {
+    return normalizeProjectMemberships(JSON.parse(fs.readFileSync(filePath, "utf8")));
+  } catch {
+    return [];
+  }
+}
+
+function writeProjectMembershipsFile(items: ProjectMembershipRecord[], filePath = getProjectMembershipsFilePath()): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(items, null, 2), "utf8");
 }
 
 function getSalesforceOidcConfig(): SalesforceOidcConfig | undefined {
@@ -533,6 +623,147 @@ export function listAdminUsers(): AdminUserRecord[] {
     ...user,
     password: undefined
   }));
+}
+
+export function isProjectMembershipRestricted(): boolean {
+  return readProjectMembershipsFile().length > 0;
+}
+
+export function listProjectIdsForUser(userId: string): string[] {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) {
+    return [];
+  }
+
+  return readProjectMembershipsFile()
+    .filter((item) => item.userId === normalizedUserId)
+    .map((item) => item.projectId);
+}
+
+export function hasProjectAccess(
+  session: AdminSession | null | undefined,
+  projectId: string,
+  access: "read" | "write" = "read"
+): boolean {
+  if (!session) {
+    return false;
+  }
+
+  if (hasPermission(session, "admin")) {
+    return true;
+  }
+
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) {
+    return false;
+  }
+
+  const memberships = readProjectMembershipsFile();
+  if (!memberships.length) {
+    return true;
+  }
+
+  const membership = memberships.find((item) => item.projectId === normalizedProjectId && item.userId === session.userId);
+  if (!membership) {
+    return false;
+  }
+
+  if (access === "read") {
+    return true;
+  }
+
+  return membership.roleInProject === "operator"
+    || membership.roleInProject === "release-manager"
+    || membership.roleInProject === "owner";
+}
+
+export function listProjectMembers(projectId: string): ProjectMembershipDetail[] {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) {
+    throw new Error("projectId ist erforderlich");
+  }
+
+  const users = readUsersFile().length ? readUsersFile() : getAdminAuthConfig().users;
+  const usersById = new Map(users.map((user) => [user.id, user]));
+  return readProjectMembershipsFile()
+    .filter((item) => item.projectId === normalizedProjectId)
+    .map((item) => {
+      const user = usersById.get(item.userId);
+      return {
+        ...item,
+        username: user?.username || item.userId,
+        displayName: user?.displayName,
+        userRoles: user?.roles || [],
+        userPermissions: user?.permissions || []
+      };
+    })
+    .sort((a, b) => a.username.localeCompare(b.username, "de"));
+}
+
+export function saveProjectMember(input: {
+  projectId: string;
+  userId: string;
+  roleInProject?: ProjectMembershipRole | string;
+  assignedBy?: string;
+}): ProjectMembershipRecord {
+  const projectId = String(input.projectId || "").trim();
+  const userId = String(input.userId || "").trim();
+  if (!projectId) {
+    throw new Error("projectId ist erforderlich");
+  }
+  if (!userId) {
+    throw new Error("userId ist erforderlich");
+  }
+
+  const users = readUsersFile().length ? readUsersFile() : getAdminAuthConfig().users;
+  if (!users.some((item) => item.id === userId)) {
+    throw new Error(`Benutzer ${userId} nicht gefunden`);
+  }
+
+  const now = new Date().toISOString();
+  const roleInProject = normalizeProjectRole(input.roleInProject);
+  const memberships = readProjectMembershipsFile();
+  const existing = memberships.find((item) => item.projectId === projectId && item.userId === userId);
+  const saved: ProjectMembershipRecord = existing
+    ? {
+        ...existing,
+        roleInProject,
+        assignedBy: String(input.assignedBy || "").trim() || existing.assignedBy,
+        assignedAt: now
+      }
+    : {
+        projectId,
+        userId,
+        roleInProject,
+        assignedAt: now,
+        assignedBy: String(input.assignedBy || "").trim() || undefined
+      };
+
+  const next = existing
+    ? memberships.map((item) => (item.projectId === projectId && item.userId === userId ? saved : item))
+    : [...memberships, saved];
+
+  writeProjectMembershipsFile(next);
+  return saved;
+}
+
+export function deleteProjectMember(projectId: string, userId: string): boolean {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedProjectId) {
+    throw new Error("projectId ist erforderlich");
+  }
+  if (!normalizedUserId) {
+    throw new Error("userId ist erforderlich");
+  }
+
+  const memberships = readProjectMembershipsFile();
+  const next = memberships.filter((item) => !(item.projectId === normalizedProjectId && item.userId === normalizedUserId));
+  if (next.length === memberships.length) {
+    return false;
+  }
+  writeProjectMembershipsFile(next);
+  return true;
 }
 
 export function saveAdminUser(input: AdminUserMutationInput): AdminUserRecord {
