@@ -2101,7 +2101,6 @@ export function createAppServer(
           requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/active$/)
           || requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/checkpoint$/)
           || requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/duplicate$/)
-          || requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/run$/)
           || requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/cancel$/)
         )) {
           return true;
