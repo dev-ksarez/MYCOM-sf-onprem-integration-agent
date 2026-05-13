@@ -2865,6 +2865,10 @@ export function createAppServer(
           sendJson(409, { error: "Deployment blockiert: Kein Compare-Run vorhanden." });
           return;
         }
+        if (latestCompare.status !== "finished") {
+          sendJson(409, { error: "Deployment blockiert: Letzter Compare-Run ist nicht abgeschlossen." });
+          return;
+        }
         if ((latestCompare.summary?.critical || 0) > 0) {
           await appendAuditHistory({ actor: auditActor, action: "deploy.blocked.critical-diff", entityType: "deploy", entityId: projectId, status: "error" });
           sendJson(409, { error: "Deployment blockiert: Kritische Abweichungen im Compare-Run." });
@@ -2872,6 +2876,23 @@ export function createAppServer(
         }
         if (!latestPrecheck || latestPrecheck.status !== "passed") {
           sendJson(409, { error: "Deployment blockiert: Letzter Precheck ist nicht erfolgreich." });
+          return;
+        }
+
+        const requiredTargetEnv = latestCompare.direction === "test-to-production" ? "production" : "test";
+        if (latestPrecheck.targetEnv !== requiredTargetEnv) {
+          await appendAuditHistory({ actor: auditActor, action: "deploy.blocked.precheck-target-mismatch", entityType: "deploy", entityId: projectId, status: "error" });
+          sendJson(409, {
+            error: `Deployment blockiert: Precheck-Zielumgebung (${latestPrecheck.targetEnv}) passt nicht zur Compare-Richtung (${latestCompare.direction}).`
+          });
+          return;
+        }
+
+        const compareTime = Date.parse(String(latestCompare.finishedAt || latestCompare.startedAt || ""));
+        const precheckTime = Date.parse(String(latestPrecheck.finishedAt || latestPrecheck.startedAt || ""));
+        if (Number.isFinite(compareTime) && Number.isFinite(precheckTime) && precheckTime < compareTime) {
+          await appendAuditHistory({ actor: auditActor, action: "deploy.blocked.precheck-outdated", entityType: "deploy", entityId: projectId, status: "error" });
+          sendJson(409, { error: "Deployment blockiert: Letzter erfolgreicher Precheck ist aelter als der Compare-Run." });
           return;
         }
 
