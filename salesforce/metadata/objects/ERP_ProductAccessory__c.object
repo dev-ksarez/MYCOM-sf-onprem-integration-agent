@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <label>ERP Product Accessory</label>
+    <nameField>
+        <displayFormat>PAC-{000000}</displayFormat>
+        <label>Product Accessory Number</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <pluralLabel>ERP Product Accessories</pluralLabel>
+    <sharingModel>ReadWrite</sharingModel>
+    <fields>
+        <fullName>ERP_ExternalKey__c</fullName>
+        <description>Composite SAGE100 key, for example MainProduct|AccessoryProduct.</description>
+        <externalId>true</externalId>
+        <label>External Key</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>true</unique>
+    </fields>
+    <fields>
+        <fullName>ERP_MainProduct__c</fullName>
+        <label>Main Product</label>
+        <referenceTo>Product2</referenceTo>
+        <relationshipLabel>Main Product Accessories</relationshipLabel>
+        <relationshipName>MainProductAccessories</relationshipName>
+        <required>false</required>
+        <type>Lookup</type>
+    </fields>
+    <fields>
+        <fullName>ERP_AccessoryProduct__c</fullName>
+        <label>Accessory Product</label>
+        <referenceTo>Product2</referenceTo>
+        <relationshipLabel>Accessory Product Links</relationshipLabel>
+        <relationshipName>AccessoryProductLinks</relationshipName>
+        <required>false</required>
+        <type>Lookup</type>
+    </fields>
+    <fields>
+        <fullName>ERP_Quantity__c</fullName>
+        <label>Quantity</label>
+        <precision>18</precision>
+        <required>false</required>
+        <scale>4</scale>
+        <type>Number</type>
+    </fields>
+</CustomObject>

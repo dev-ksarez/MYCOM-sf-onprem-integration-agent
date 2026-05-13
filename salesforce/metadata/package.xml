@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Package xmlns="http://soap.sforce.com/2006/04/metadata">
     <types>
+        <members>Account</members>
+        <members>Contact</members>
+        <members>ERP_OpenItems__c</members>
+        <members>ERP_ProductAccessory__c</members>
+        <members>ERP_ProductDescription__c</members>
         <members>EZB__c</members>
         <members>MSD_Connector__c</members>
         <members>MSD_Schedule__c</members>
@@ -9,13 +14,25 @@
         <members>MSD_Log__c</members>
         <members>MSD_ObjectMapping__mdt</members>
         <members>MSD_FieldMapping__mdt</members>
+        <members>Opportunity</members>
+        <members>Quote</members>
         <name>CustomObject</name>
+    </types>
+    <types>
+        <members>Account_Set_Post_Status_On_Change</members>
+        <members>Contact_Set_Post_Status_On_Change</members>
+        <members>Opportunity_Set_Post_Status_On_Change</members>
+        <members>Quote_Set_Post_Status_On_Change</members>
+        <name>Flow</name>
     </types>
     <types>
         <members>MSD_Integration_Agent</members>
         <name>PermissionSet</name>
     </types>
     <types>
+        <members>ERP_OpenItems__c</members>
+        <members>ERP_ProductAccessory__c</members>
+        <members>ERP_ProductDescription__c</members>
         <members>EZB__c</members>
         <members>MSD_Connector__c</members>
         <members>MSD_Schedule__c</members>

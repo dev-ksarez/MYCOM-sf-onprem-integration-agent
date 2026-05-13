@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <label>ERP Open Item</label>
+    <nameField>
+        <displayFormat>OI-{000000}</displayFormat>
+        <label>Open Item Number</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <pluralLabel>ERP Open Items</pluralLabel>
+    <sharingModel>ReadWrite</sharingModel>
+    <fields>
+        <fullName>ERP_InvoiceNumber__c</fullName>
+        <description>SAGE100 invoice or account key used for upsert.</description>
+        <externalId>true</externalId>
+        <label>Invoice Number</label>
+        <length>80</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>true</unique>
+    </fields>
+    <fields>
+        <fullName>ERP_CustomerAccount__c</fullName>
+        <label>Customer Account</label>
+        <referenceTo>Account</referenceTo>
+        <relationshipLabel>Open Items</relationshipLabel>
+        <relationshipName>OpenItems</relationshipName>
+        <required>false</required>
+        <type>Lookup</type>
+    </fields>
+    <fields>
+        <fullName>ERP_InvoiceDate__c</fullName>
+        <label>Invoice Date</label>
+        <required>false</required>
+        <type>DateTime</type>
+    </fields>
+    <fields>
+        <fullName>ERP_DueDate__c</fullName>
+        <label>Due Date</label>
+        <required>false</required>
+        <type>DateTime</type>
+    </fields>
+    <fields>
+        <fullName>ERP_Amount__c</fullName>
+        <label>Amount</label>
+        <precision>18</precision>
+        <required>false</required>
+        <scale>2</scale>
+        <type>Number</type>
+    </fields>
+    <fields>
+        <fullName>ERP_Status__c</fullName>
+        <label>Status</label>
+        <length>80</length>
+        <required>false</required>
+        <type>Text</type>
+    </fields>
+</CustomObject>

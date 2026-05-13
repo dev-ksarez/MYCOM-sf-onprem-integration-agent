@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <label>ERP Product Description</label>
+    <nameField>
+        <displayFormat>PDS-{000000}</displayFormat>
+        <label>Product Description Number</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <pluralLabel>ERP Product Descriptions</pluralLabel>
+    <sharingModel>ReadWrite</sharingModel>
+    <fields>
+        <fullName>ERP_ExternalKey__c</fullName>
+        <description>Composite SAGE100 key, for example ProductNumber|Language.</description>
+        <externalId>true</externalId>
+        <label>External Key</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+        <unique>true</unique>
+    </fields>
+    <fields>
+        <fullName>ERP_Product__c</fullName>
+        <label>Product</label>
+        <referenceTo>Product2</referenceTo>
+        <relationshipLabel>ERP Descriptions</relationshipLabel>
+        <relationshipName>ERPDescriptions</relationshipName>
+        <required>false</required>
+        <type>Lookup</type>
+    </fields>
+    <fields>
+        <fullName>ERP_Language__c</fullName>
+        <label>Language</label>
+        <length>20</length>
+        <required>false</required>
+        <type>Text</type>
+    </fields>
+    <fields>
+        <fullName>ERP_Description1__c</fullName>
+        <label>Description 1</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+    </fields>
+    <fields>
+        <fullName>ERP_Description2__c</fullName>
+        <label>Description 2</label>
+        <length>255</length>
+        <required>false</required>
+        <type>Text</type>
+    </fields>
+    <fields>
+        <fullName>ERP_LongText__c</fullName>
+        <label>Long Text</label>
+        <length>32768</length>
+        <required>false</required>
+        <type>LongTextArea</type>
+        <visibleLines>5</visibleLines>
+    </fields>
+</CustomObject>
