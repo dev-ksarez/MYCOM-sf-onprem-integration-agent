@@ -29,6 +29,10 @@ Thumbs.db
 .vscode/settings.json
 .idea/
 
+# Salesforce CLI / Extension cache
+.sfdx/
+.sf/
+
 # Temp
 temp/
 tmp/
