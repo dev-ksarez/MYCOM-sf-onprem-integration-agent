@@ -302,6 +302,76 @@ npm run win:update-existing -- -AppRoot "C:\apps\sf-onprem-integration-agent" -R
 - Dienst starten und Running prüfen
 - Bei Fehler: automatischer Rollback
 
+## Incident-Runbook: Annaburger Production (Missing MSSQL parameter schema)
+
+Symptom im Log:
+
+- `Missing required MSSQL connector parameter: schema`
+
+Dieses Vorgehen ist fuer den produktiven Hotfix auf dem Kundenserver gedacht.
+
+### A) Sofortmassnahme ohne Release (Connector konfigurieren)
+
+Wenn ein MSSQL-Connector noch alte Felder nutzt, im Connector sicherstellen:
+
+- `schema` gesetzt (typisch `dbo`)
+- `table` gesetzt
+
+Danach Dienst neu starten:
+
+```powershell
+Restart-Service -Name "SfOnpremIntegrationAgent" -Force
+Get-Service "SfOnpremIntegrationAgent"
+```
+
+### B) Empfohlen: Fix-Release deployen
+
+Das Fix-Release enthaelt Rueckwaertskompatibilitaet fuer `schemaName`/`tableName` plus Fallback `schema=dbo`.
+
+```powershell
+$AppRoot = "C:\apps\sf-onprem-integration-agent"
+$ReleaseVersion = "0.2.45"
+
+cd $AppRoot
+npm run win:update-existing -- -AppRoot "$AppRoot" -ReleaseVersion "$ReleaseVersion"
+```
+
+Alternativ mit erneuter Updater-Registrierung:
+
+```powershell
+$AppRoot = "C:\apps\sf-onprem-integration-agent"
+$ReleaseVersion = "0.2.45"
+
+cd $AppRoot
+npm run win:update-existing -- -AppRoot "$AppRoot" -ReleaseVersion "$ReleaseVersion" -ReRegisterUpdaterTask
+```
+
+### C) Verifikation nach Deployment
+
+```powershell
+Get-Service "SfOnpremIntegrationAgent"
+Get-ScheduledTask -TaskName "SfOnpremIntegrationAgent-Updater"
+```
+
+Erwartung:
+
+- Service ist `Running`
+- Geplante Updater-Task ist vorhanden
+- In den Agent-Logs erscheint kein `Missing required MSSQL connector parameter: schema` mehr
+
+### D) Schneller Rollback (falls noetig)
+
+Wenn ein Update wider Erwarten fehlschlaegt, fuehrt das Updater-Skript bereits automatisch ein Rollback aus.
+Manuell kann bei Bedarf auf die letzte stabile Version zurueckgestellt werden:
+
+```powershell
+$AppRoot = "C:\apps\sf-onprem-integration-agent"
+$PreviousReleaseVersion = "0.2.44"
+
+cd $AppRoot
+npm run win:update-existing -- -AppRoot "$AppRoot" -ReleaseVersion "$PreviousReleaseVersion"
+```
+
 ## Betriebschecks nach Installation
 
 ```powershell
