@@ -18,6 +18,29 @@ function getRequiredString(parameters: Record<string, unknown>, key: string): st
   return value.trim();
 }
 
+function getStringWithAliases(
+  parameters: Record<string, unknown>,
+  keys: string[],
+  options?: { required?: boolean; defaultValue?: string }
+): string {
+  for (const key of keys) {
+    const value = parameters[key];
+    if (typeof value === "string" && value.trim() !== "") {
+      return value.trim();
+    }
+  }
+
+  if (options?.defaultValue !== undefined) {
+    return options.defaultValue;
+  }
+
+  if (options?.required) {
+    throw new Error(`Missing required MSSQL connector parameter: ${keys[0]}`);
+  }
+
+  return "";
+}
+
 function getOptionalNumber(parameters: Record<string, unknown>, key: string): number | undefined {
   const value = parameters[key];
 
@@ -141,8 +164,9 @@ export class MssqlConnector implements TargetConnector {
 
     const server = getRequiredString(config.parameters, "server");
     const databaseName = getRequiredString(config.parameters, "database");
-    const schemaName = getRequiredString(config.parameters, "schema");
-    const tableName = getRequiredString(config.parameters, "table");
+    // Backward compatibility: older connector definitions used schemaName/tableName.
+    const schemaName = getStringWithAliases(config.parameters, ["schema", "schemaName"], { defaultValue: "dbo" });
+    const tableName = getStringWithAliases(config.parameters, ["table", "tableName"], { required: true });
     const upsertKey = getRequiredUpsertKey(config);
     const user = getRequiredString(config.parameters, "user");
     const password = resolvePassword(config);

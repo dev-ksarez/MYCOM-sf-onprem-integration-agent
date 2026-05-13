@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   AdminDataService,
   SalesforceInstanceMutationInput,
+  SalesforceProjectMutationInput,
   ConnectorMutationInput,
   ScheduleMutationInput,
   ScheduleCheckpointMutationInput,
@@ -319,6 +320,7 @@ ${renderMenuModuleNavigation()}
                 </div>
                 <input id="setup-import-input" type="file" accept="application/json" class="d-none" />
                 <div class="agent-menu-action-grid agent-menu-action-grid-compact">
+                  <button id="manage-projects" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Projekte verwalten"><span class="agent-btn-icon" aria-hidden="true">▦</span><span>Projekte</span></button>
                   <button id="add-instance" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Instanz hinzufügen"><span class="agent-btn-icon" aria-hidden="true">＋</span><span>Instanz</span></button>
                   <button id="refresh-all" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Aktualisieren"><span class="agent-btn-icon" aria-hidden="true">↻</span><span>Refresh</span></button>
                 </div>
@@ -1155,6 +1157,8 @@ ${renderAISchedulerAssistantModule()}
             <div class="row g-2">
               <div class="col-12"><label class="form-label">Instanz-ID</label><input id="ins-id" class="form-control" placeholder="z. B. sandbox-1" /></div>
               <div class="col-12"><label class="form-label">Name</label><input id="ins-name" class="form-control" placeholder="z. B. Sandbox Team A" /></div>
+              <div class="col-md-8"><label class="form-label">Projekt</label><select id="ins-project-id" class="form-select"></select></div>
+              <div class="col-md-4"><label class="form-label">Rolle</label><select id="ins-role" class="form-select"><option value="test">Test</option><option value="production">Produktion</option></select></div>
               <div class="col-12"><label class="form-label">Login URL</label><input id="ins-login-url" class="form-control" placeholder="https://login.salesforce.com" /></div>
               <div class="col-12"><label class="form-label">Client ID</label><input id="ins-client-id" class="form-control" /></div>
               <div class="col-12"><label class="form-label">Client Secret</label><input id="ins-client-secret" class="form-control" type="password" /></div>
@@ -1164,6 +1168,45 @@ ${renderAISchedulerAssistantModule()}
           <div class="modal-footer">
             <button type="button" class="btn btn-light" data-bs-dismiss="modal">Abbrechen</button>
             <button id="save-instance" type="button" class="btn btn-primary">Instanz speichern</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="project-modal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header"><h5 class="modal-title">Projekte verwalten</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+          <div class="modal-body">
+            <div class="table-responsive mb-3">
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Schreibschutz Produktion</th>
+                    <th>Status</th>
+                    <th>Aktion</th>
+                  </tr>
+                </thead>
+                <tbody id="project-table-body"></tbody>
+              </table>
+            </div>
+            <hr class="my-3" />
+            <div class="row g-2">
+              <div class="col-12"><label class="form-label">Projekt-ID (optional)</label><input id="prj-id" class="form-control" placeholder="leer = automatisch aus Name" /></div>
+              <div class="col-12"><label class="form-label">Name</label><input id="prj-name" class="form-control" placeholder="z. B. Annaburger Rollout" /></div>
+              <div class="col-12"><label class="form-label">Beschreibung (optional)</label><input id="prj-description" class="form-control" /></div>
+              <div class="col-12">
+                <div class="form-check mt-1">
+                  <input id="prj-production-write-protection" class="form-check-input" type="checkbox" checked />
+                  <label class="form-check-label" for="prj-production-write-protection">Produktions-Schreibschutz aktiv</label>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-light" data-bs-dismiss="modal">Schließen</button>
+            <button id="save-project" type="button" class="btn btn-primary">Projekt speichern</button>
           </div>
         </div>
       </div>
@@ -2032,8 +2075,52 @@ export function createAppServer(
       const scheduleDryRunMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/dry-run$/) : null;
       const scheduleDuplicateMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/duplicate$/) : null;
       const scheduleDeleteMatch = req.method === "DELETE" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)$/) : null;
+      const projectArchiveMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/archive$/) : null;
+      const projectDeleteMatch = req.method === "DELETE" ? requestUrl.pathname.match(/^\/api\/projects\/([^/]+)$/) : null;
       const runLogsMatch = req.method === "GET" ? requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/logs$/) : null;
       const runFailedRecordsMatch = req.method === "GET" ? requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/failed-records$/) : null;
+      const requiresInstanceWriteCheck = (() => {
+        if (!instanceId) {
+          return false;
+        }
+
+        if (req.method === "POST" && (
+          requestUrl.pathname === "/api/setup/import"
+          || requestUrl.pathname === "/api/setup/deploy-ezb"
+          || requestUrl.pathname === "/api/setup/create-custom-object-from-source"
+          || requestUrl.pathname === "/api/schedules"
+          || requestUrl.pathname === "/api/schedules/validate-config"
+          || requestUrl.pathname === "/api/connectors"
+          || requestUrl.pathname === "/api/runs/release-stale"
+          || requestUrl.pathname === "/api/salesforce/create-field"
+        )) {
+          return true;
+        }
+
+        if (req.method === "POST" && (
+          requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/active$/)
+          || requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/checkpoint$/)
+          || requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/duplicate$/)
+          || requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/run$/)
+          || requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/cancel$/)
+        )) {
+          return true;
+        }
+
+        if (req.method === "DELETE" && (
+          requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)$/)
+          || requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)$/)
+        )) {
+          return true;
+        }
+
+        return false;
+      })();
+
+      if (requiresInstanceWriteCheck) {
+        adminDataService.assertInstanceWriteAllowed(instanceId, `${req.method} ${requestUrl.pathname}`);
+      }
+
       const logRangeParam = requestUrl.searchParams.get("range") || "last_24h";
       const logRange: LogChartRange =
         logRangeParam === "last_hour" || logRangeParam === "last_30d" || logRangeParam === "last_24h"
@@ -2271,6 +2358,38 @@ export function createAppServer(
       if (req.method === "GET" && requestUrl.pathname === "/api/instances") {
         const items = adminDataService.listInstances();
         sendJson(200, { items, total: items.length });
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/projects") {
+        const items = adminDataService.listProjects();
+        sendJson(200, { items, total: items.length });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/projects") {
+        const body = (await readJsonBody(req)) as SalesforceProjectMutationInput;
+        const item = adminDataService.saveProject(body);
+        await appendAuditHistory({ actor: auditActor, action: body.id ? "update" : "create", entityType: "project", entityId: item.id, entityName: item.name });
+        sendJson(200, item);
+        return;
+      }
+
+      if (projectArchiveMatch) {
+        const projectId = decodeURIComponent(projectArchiveMatch[1]);
+        const body = (await readJsonBody(req)) as { archived?: boolean };
+        const archived = body.archived === true;
+        const item = adminDataService.setProjectArchived(projectId, archived);
+        await appendAuditHistory({ actor: auditActor, action: archived ? "archive" : "unarchive", entityType: "project", entityId: item.id, entityName: item.name });
+        sendJson(200, item);
+        return;
+      }
+
+      if (projectDeleteMatch) {
+        const projectId = decodeURIComponent(projectDeleteMatch[1]);
+        const result = adminDataService.deleteProject(projectId);
+        await appendAuditHistory({ actor: auditActor, action: result.deleted ? "delete" : "delete-noop", entityType: "project", entityId: projectId });
+        sendJson(result.deleted ? 200 : 404, result);
         return;
       }
 

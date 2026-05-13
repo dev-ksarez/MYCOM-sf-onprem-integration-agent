@@ -46,11 +46,23 @@ export interface SalesforceInstanceEnvConfig {
   id: string;
   name?: string;
   loginUrl: string;
+  projectId?: string;
+  role?: "test" | "production";
   clientId?: string;
   clientSecret?: string;
   clientIdEnv?: string;
   clientSecretEnv?: string;
   queryLimit?: number;
+}
+
+export interface SalesforceProjectConfig {
+  id: string;
+  name: string;
+  description?: string;
+  archived?: boolean;
+  productionWriteProtection: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface MigrationSalesforceInstanceConfig {
@@ -81,9 +93,19 @@ export interface SalesforceInstanceMutationInput {
   id: string;
   name?: string;
   loginUrl: string;
+  projectId?: string;
+  role?: "test" | "production";
   clientId: string;
   clientSecret: string;
   queryLimit?: number;
+}
+
+export interface SalesforceProjectMutationInput {
+  id?: string;
+  name: string;
+  description?: string;
+  archived?: boolean;
+  productionWriteProtection?: boolean;
 }
 
 export interface MigrationSalesforceInstanceMutationInput {
@@ -179,6 +201,7 @@ interface ResolvedInstance {
 }
 
 const LOCAL_INSTANCES_FILE = process.env.SF_INSTANCES_FILE || path.resolve(process.cwd(), "artifacts/sf-instances.json");
+const LOCAL_PROJECTS_FILE = process.env.SF_PROJECTS_FILE || path.resolve(process.cwd(), "artifacts/projects.json");
 const LOCAL_MIGRATION_INSTANCES_FILE = process.env.SF_MIGRATION_INSTANCES_FILE || path.resolve(process.cwd(), "artifacts/migration-instances.json");
 const LOCAL_SCHEDULE_TIMING_FILE = process.env.SF_SCHEDULE_TIMING_FILE || path.resolve(process.cwd(), "artifacts/schedule-timing.json");
 const LOCAL_SCHEDULE_HEALTH_FILE = process.env.SF_SCHEDULE_HEALTH_FILE || path.resolve(process.cwd(), "artifacts/schedule-health.json");
@@ -336,7 +359,26 @@ function readLocalInstances(): SalesforceInstanceEnvConfig[] {
       return [];
     }
 
-    return parsed as SalesforceInstanceEnvConfig[];
+    let changed = false;
+    const items = (parsed as SalesforceInstanceEnvConfig[]).map((item) => {
+      const projectId = String(item.projectId || "").trim() || "default-project";
+      const role: "test" | "production" = item.role === "production" ? "production" : "test";
+      if (item.projectId !== projectId || item.role !== role) {
+        changed = true;
+      }
+
+      return {
+        ...item,
+        projectId,
+        role
+      };
+    });
+
+    if (changed) {
+      writeLocalInstances(items);
+    }
+
+    return items;
   } catch {
     return [];
   }
@@ -346,6 +388,129 @@ function writeLocalInstances(instances: SalesforceInstanceEnvConfig[]): void {
   const directory = path.dirname(LOCAL_INSTANCES_FILE);
   fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(LOCAL_INSTANCES_FILE, JSON.stringify(instances, null, 2), "utf8");
+}
+
+function buildProjectIdFromName(name: string): string {
+  const slug = String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+  return slug || "project";
+}
+
+function defaultProjectConfig(): SalesforceProjectConfig {
+  const now = new Date().toISOString();
+  return {
+    id: "default-project",
+    name: "Default-Projekt",
+    archived: false,
+    productionWriteProtection: true,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function readLocalProjects(): SalesforceProjectConfig[] {
+  try {
+    if (!fs.existsSync(LOCAL_PROJECTS_FILE)) {
+      return [defaultProjectConfig()];
+    }
+
+    const raw = fs.readFileSync(LOCAL_PROJECTS_FILE, "utf8").trim();
+    if (!raw) {
+      return [defaultProjectConfig()];
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [defaultProjectConfig()];
+    }
+
+    const items = parsed
+      .filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry))
+      .map((entry): SalesforceProjectConfig | null => {
+        const candidate = entry as Record<string, unknown>;
+        const id = String(candidate.id || "").trim();
+        const name = String(candidate.name || "").trim();
+        if (!id || !name) {
+          return null;
+        }
+
+        return {
+          id,
+          name,
+          description: typeof candidate.description === "string" ? candidate.description.trim() || undefined : undefined,
+          archived: candidate.archived === true,
+          productionWriteProtection: candidate.productionWriteProtection !== false,
+          createdAt: typeof candidate.createdAt === "string" && candidate.createdAt.trim()
+            ? candidate.createdAt
+            : new Date().toISOString(),
+          updatedAt: typeof candidate.updatedAt === "string" && candidate.updatedAt.trim()
+            ? candidate.updatedAt
+            : new Date().toISOString()
+        };
+      })
+      .filter((entry): entry is SalesforceProjectConfig => entry !== null);
+
+    if (!items.some((entry) => entry.id === "default-project")) {
+      items.unshift(defaultProjectConfig());
+    }
+
+    return items;
+  } catch {
+    return [defaultProjectConfig()];
+  }
+}
+
+function writeLocalProjects(projects: SalesforceProjectConfig[]): void {
+  const directory = path.dirname(LOCAL_PROJECTS_FILE);
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(LOCAL_PROJECTS_FILE, JSON.stringify(projects, null, 2), "utf8");
+}
+
+function readEnvInstances(): SalesforceInstanceEnvConfig[] {
+  const raw = process.env.SF_INSTANCES_JSON?.trim();
+  if (!raw) {
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+
+  return (parsed as SalesforceInstanceEnvConfig[])
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      ...item,
+      projectId: String(item.projectId || "").trim() || "default-project",
+      role: item.role === "production" ? "production" : "test"
+    }));
+}
+
+function readConfiguredInstancesWithMetadata(): SalesforceInstanceEnvConfig[] {
+  const deduped = new Map<string, SalesforceInstanceEnvConfig>();
+
+  for (const item of readEnvInstances()) {
+    if (item.id) {
+      deduped.set(item.id, item);
+    }
+  }
+
+  for (const item of readLocalInstances()) {
+    if (item.id) {
+      deduped.set(item.id, item);
+    }
+  }
+
+  return [...deduped.values()];
 }
 
 export function readConfiguredSalesforceInstances(): SalesforceInstanceEnvConfig[] {
@@ -488,6 +653,19 @@ export interface SalesforceInstanceOption {
   id: string;
   name: string;
   isDefault: boolean;
+  projectId: string;
+  projectName: string;
+  role: "test" | "production";
+}
+
+export interface SalesforceProjectOption {
+  id: string;
+  name: string;
+  description?: string;
+  archived?: boolean;
+  productionWriteProtection: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ScheduleListItem {
@@ -1896,21 +2074,152 @@ export class AdminDataService {
   }
 
   public listInstances(): SalesforceInstanceOption[] {
+    const projectById = new Map(readLocalProjects().map((project) => [project.id, project]));
+    const configById = new Map(readConfiguredInstancesWithMetadata().map((instance) => [instance.id, instance]));
     const instances = resolveInstances();
-    return instances.map((instance, index) => ({
-      id: instance.id,
-      name: instance.name,
-      isDefault: index === 0
-    }));
+    return instances.map((instance, index) => {
+      const configured = configById.get(instance.id);
+      const projectId = String(configured?.projectId || "default-project").trim() || "default-project";
+      const projectName = projectById.get(projectId)?.name || projectById.get("default-project")?.name || "Default-Projekt";
+      const role = configured?.role === "production" ? "production" : "test";
+
+      return {
+        id: instance.id,
+        name: instance.name,
+        isDefault: index === 0,
+        projectId,
+        projectName,
+        role
+      };
+    });
+  }
+
+  public assertInstanceWriteAllowed(instanceId?: string, operation?: string): void {
+    const resolved = this.resolveRuntimeInstance(instanceId);
+    const metadataById = new Map(readConfiguredInstancesWithMetadata().map((item) => [item.id, item]));
+    const instanceMeta = metadataById.get(resolved.id);
+
+    const role: "test" | "production" = instanceMeta?.role === "production"
+      ? "production"
+      : (resolved.id === "default" ? "production" : "test");
+    if (role !== "production") {
+      return;
+    }
+
+    const projects = readLocalProjects();
+    const projectById = new Map(projects.map((project) => [project.id, project]));
+    const projectId = String(instanceMeta?.projectId || "default-project").trim() || "default-project";
+    const project = projectById.get(projectId) || projectById.get("default-project") || defaultProjectConfig();
+
+    if (project.productionWriteProtection) {
+      const details = operation ? ` (${operation})` : "";
+      throw new Error(`Schreibzugriff blockiert: Instanz ${resolved.name} (${resolved.id}) ist als Produktion im Projekt ${project.name} mit aktivem Produktionsschutz konfiguriert${details}.`);
+    }
   }
 
   public listConfiguredInstanceConfigs(): SalesforceInstanceEnvConfig[] {
     return readConfiguredSalesforceInstances();
   }
 
+  public listProjects(): SalesforceProjectOption[] {
+    return readLocalProjects()
+      .map((project) => ({ ...project }))
+      .sort((left, right) => left.name.localeCompare(right.name, "de"));
+  }
+
+  public saveProject(input: SalesforceProjectMutationInput): SalesforceProjectOption {
+    const name = String(input.name || "").trim();
+    if (!name) {
+      throw new Error("name ist erforderlich");
+    }
+
+    const projects = readLocalProjects();
+    const now = new Date().toISOString();
+    const desiredId = String(input.id || "").trim() || buildProjectIdFromName(name);
+
+    const existingByName = projects.find((project) => project.name.toLowerCase() === name.toLowerCase());
+    const id = existingByName && !input.id ? existingByName.id : desiredId;
+    const existingProject = projects.find((project) => project.id === id);
+
+    const nextItem: SalesforceProjectConfig = {
+      id,
+      name,
+      description: String(input.description || "").trim() || undefined,
+      archived: input.archived === undefined ? (existingProject?.archived === true) : input.archived === true,
+      productionWriteProtection: input.productionWriteProtection !== false,
+      createdAt: existingProject?.createdAt || now,
+      updatedAt: now
+    };
+
+    const existingIndex = projects.findIndex((project) => project.id === id);
+    if (existingIndex >= 0) {
+      projects[existingIndex] = nextItem;
+    } else {
+      projects.push(nextItem);
+    }
+
+    writeLocalProjects(projects);
+    return { ...nextItem };
+  }
+
+  public setProjectArchived(projectId: string, archived: boolean): SalesforceProjectOption {
+    const normalizedProjectId = String(projectId || "").trim();
+    if (!normalizedProjectId) {
+      throw new Error("projectId ist erforderlich");
+    }
+    if (normalizedProjectId === "default-project" && archived) {
+      throw new Error("Default-Projekt kann nicht archiviert werden");
+    }
+
+    const projects = readLocalProjects();
+    const projectIndex = projects.findIndex((entry) => entry.id === normalizedProjectId);
+    if (projectIndex < 0) {
+      throw new Error(`Projekt ${normalizedProjectId} nicht gefunden`);
+    }
+
+    const updated: SalesforceProjectConfig = {
+      ...projects[projectIndex],
+      archived,
+      updatedAt: new Date().toISOString()
+    };
+    projects[projectIndex] = updated;
+    writeLocalProjects(projects);
+
+    return { ...updated };
+  }
+
+  public deleteProject(projectId: string): { deleted: boolean; projectId: string } {
+    const normalizedProjectId = String(projectId || "").trim();
+    if (!normalizedProjectId) {
+      throw new Error("projectId ist erforderlich");
+    }
+    if (normalizedProjectId === "default-project") {
+      throw new Error("Default-Projekt kann nicht geloescht werden");
+    }
+
+    const assignedInstances = readConfiguredInstancesWithMetadata().filter((instance) =>
+      String(instance.projectId || "default-project").trim() === normalizedProjectId
+    );
+    if (assignedInstances.length) {
+      throw new Error(`Projekt ${normalizedProjectId} kann nicht geloescht werden, da noch ${assignedInstances.length} Instanz(en) zugeordnet sind.`);
+    }
+
+    const projects = readLocalProjects();
+    const filtered = projects.filter((entry) => entry.id !== normalizedProjectId);
+    const deleted = filtered.length < projects.length;
+
+    if (deleted) {
+      writeLocalProjects(filtered);
+    }
+
+    return { deleted, projectId: normalizedProjectId };
+  }
+
   public saveInstance(input: SalesforceInstanceMutationInput): SalesforceInstanceOption {
     const id = input.id.trim();
     const loginUrl = input.loginUrl.trim();
+    const projectId = String(input.projectId || "default-project").trim() || "default-project";
+    const role = input.role === "production" ? "production" : "test";
     const clientId = input.clientId.trim();
     const clientSecret = input.clientSecret.trim();
 
@@ -1918,11 +2227,32 @@ export class AdminDataService {
       throw new Error("id, loginUrl, clientId und clientSecret sind erforderlich");
     }
 
+    const projects = readLocalProjects();
+    const project = projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error(`Projekt ${projectId} nicht gefunden`);
+    }
+
     const localInstances = readLocalInstances();
+    const configuredInstances = readConfiguredInstancesWithMetadata();
+
+    if (role === "production") {
+      const conflictingProduction = configuredInstances.find((item) => (
+        item.projectId === projectId
+        && item.role === "production"
+        && item.id !== id
+      ));
+      if (conflictingProduction) {
+        throw new Error(`Projekt ${project.name} hat bereits eine Produktionsinstanz (${conflictingProduction.id}).`);
+      }
+    }
+
     const nextItem: SalesforceInstanceEnvConfig = {
       id,
       name: input.name?.trim() || id,
       loginUrl,
+      projectId,
+      role,
       clientId,
       clientSecret,
       queryLimit: input.queryLimit
@@ -1936,7 +2266,14 @@ export class AdminDataService {
     }
 
     writeLocalInstances(localInstances);
-    return { id: nextItem.id, name: nextItem.name || nextItem.id, isDefault: false };
+    return {
+      id: nextItem.id,
+      name: nextItem.name || nextItem.id,
+      isDefault: false,
+      projectId,
+      projectName: project.name,
+      role
+    };
   }
 
   public listMigrationInstances(): MigrationSalesforceInstanceSummary[] {

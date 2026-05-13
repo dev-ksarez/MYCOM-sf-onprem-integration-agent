@@ -36,10 +36,12 @@ export function renderConnectorUiModule(): string {
           const parameters = item && typeof item.parameters === 'object' && !Array.isArray(item.parameters) ? item.parameters : {};
           const filePaths = item && item.filePaths && typeof item.filePaths === 'object' ? item.filePaths : null;
           if (String(item.connectorType || '').toLowerCase() === 'mssql') {
+            const schemaName = parameters.schema || parameters.schemaName;
+            const tableName = parameters.table || parameters.tableName;
             return [
               'Server: ' + esc(parameters.server || '-'),
               'DB: ' + esc(parameters.database || '-'),
-              'Schema/Tabelle: ' + esc([parameters.schemaName, parameters.tableName].filter(Boolean).join('.') || '-')
+              'Schema/Tabelle: ' + esc([schemaName, tableName].filter(Boolean).join('.') || '-')
             ];
           }
           if (isRestConnectorType(item.connectorType)) {

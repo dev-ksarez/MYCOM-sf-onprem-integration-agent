@@ -11,6 +11,8 @@ export function renderAdminUiScript(): string {
       const nativeFetch = window.fetch.bind(window);
       const state = {
         instanceId: '',
+        projects: [],
+        editingProjectId: '',
         schedules: [],
         connectors: [],
         connectorTestResults: {},
@@ -1502,6 +1504,7 @@ export function renderAdminUiScript(): string {
       const connectorModal = createModalController('connector-modal');
       const templatePickerModal = createModalController('template-picker-modal');
       const instanceModal = createModalController('instance-modal');
+      const projectModal = createModalController('project-modal');
       const logsModal = createModalController('logs-modal');
       const failedRecordsModal = createModalController('failed-records-modal');
       const recordsSchedulerModal = createModalController('records-scheduler-modal');
@@ -10977,8 +10980,10 @@ export function renderAdminUiScript(): string {
         }
 
         select.innerHTML = items.map((item) => {
+          const projectPart = item.projectName ? (' [' + String(item.projectName) + ']') : '';
+          const rolePart = item.role === 'production' ? ' (Produktion)' : ' (Test)';
           const label = item.isDefault ? (String(item.name || item.id) + ' (Default aus .env)') : String(item.name || item.id);
-          return '<option value="' + esc(item.id) + '">' + esc(label) + '</option>';
+          return '<option value="' + esc(item.id) + '">' + esc(label + projectPart + rolePart) + '</option>';
         }).join('');
 
         const hasCurrent = items.some((item) => item.id === state.instanceId);
@@ -10990,12 +10995,180 @@ export function renderAdminUiScript(): string {
         select.value = state.instanceId;
       }
 
+      async function loadProjects() {
+        const response = await safeRequest('/api/projects', { items: [] });
+        state.projects = Array.isArray(response.items) ? response.items : [];
+        const select = document.getElementById('ins-project-id');
+        if (!select) {
+          return;
+        }
+
+        const activeProjects = state.projects.filter((item) => item.archived !== true);
+
+        if (!activeProjects.length) {
+          select.innerHTML = '<option value="default-project">Default-Projekt</option>';
+          select.value = 'default-project';
+          renderProjectTable();
+          return;
+        }
+
+        select.innerHTML = activeProjects.map((item) =>
+          '<option value="' + esc(item.id) + '">' + esc(String(item.name || item.id)) + '</option>'
+        ).join('');
+
+        const hasDefault = activeProjects.some((item) => String(item.id || '') === 'default-project');
+        select.value = hasDefault ? 'default-project' : String(activeProjects[0].id || 'default-project');
+
+        renderProjectTable();
+      }
+
+      function resetProjectForm() {
+        state.editingProjectId = '';
+        document.getElementById('prj-id').value = '';
+        document.getElementById('prj-name').value = '';
+        document.getElementById('prj-description').value = '';
+        document.getElementById('prj-production-write-protection').checked = true;
+      }
+
+      function renderProjectTable() {
+        const tableBody = document.getElementById('project-table-body');
+        if (!tableBody) {
+          return;
+        }
+
+        if (!state.projects.length) {
+          tableBody.innerHTML = '<tr><td colspan="4" class="text-secondary small">Keine Projekte vorhanden.</td></tr>';
+          return;
+        }
+
+        tableBody.innerHTML = state.projects.map((item) => {
+          const protection = item.productionWriteProtection === false
+            ? '<span class="badge text-bg-warning">Aus</span>'
+            : '<span class="badge text-bg-success">Aktiv</span>';
+          const archived = item.archived === true;
+          const status = archived
+            ? '<span class="badge text-bg-secondary">Archiviert</span>'
+            : '<span class="badge text-bg-primary">Aktiv</span>';
+          const isDefault = String(item.id || '') === 'default-project';
+
+          return '<tr>' +
+            '<td><div class="fw-semibold">' + esc(String(item.name || item.id)) + '</div><div class="small text-secondary">' + esc(String(item.id || '')) + '</div></td>' +
+            '<td>' + protection + '</td>' +
+            '<td>' + status + '</td>' +
+            '<td class="text-nowrap">' +
+              '<button type="button" class="btn btn-sm btn-outline-secondary me-1" data-project-edit="' + esc(String(item.id || '')) + '">Bearbeiten</button>' +
+              '<button type="button" class="btn btn-sm btn-outline-warning me-1" data-project-archive="' + esc(String(item.id || '')) + '" data-project-archived="' + (archived ? '1' : '0') + '"' + (isDefault ? ' disabled' : '') + '>' + (archived ? 'Aktivieren' : 'Archivieren') + '</button>' +
+              '<button type="button" class="btn btn-sm btn-outline-danger" data-project-delete="' + esc(String(item.id || '')) + '"' + (isDefault ? ' disabled' : '') + '>Löschen</button>' +
+            '</td>' +
+          '</tr>';
+        }).join('');
+
+        tableBody.querySelectorAll('[data-project-edit]').forEach((button) => {
+          button.addEventListener('click', () => {
+            const projectId = String(button.getAttribute('data-project-edit') || '').trim();
+            const project = state.projects.find((item) => String(item.id || '').trim() === projectId);
+            if (!project) {
+              return;
+            }
+
+            state.editingProjectId = projectId;
+            document.getElementById('prj-id').value = String(project.id || '');
+            document.getElementById('prj-name').value = String(project.name || '');
+            document.getElementById('prj-description').value = String(project.description || '');
+            document.getElementById('prj-production-write-protection').checked = project.productionWriteProtection !== false;
+          });
+        });
+
+        tableBody.querySelectorAll('[data-project-archive]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            const projectId = String(button.getAttribute('data-project-archive') || '').trim();
+            const archived = String(button.getAttribute('data-project-archived') || '') === '1';
+            const nextArchived = !archived;
+            const question = nextArchived
+              ? 'Projekt wirklich archivieren?'
+              : 'Projekt wirklich reaktivieren?';
+
+            if (!window.confirm(question)) {
+              return;
+            }
+
+            try {
+              await requestJson('/api/projects/' + encodeURIComponent(projectId) + '/archive', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ archived: nextArchived })
+              });
+              await loadProjects();
+              await loadInstances();
+            } catch (error) {
+              showError(error.message || 'Projektstatus konnte nicht geändert werden');
+            }
+          });
+        });
+
+        tableBody.querySelectorAll('[data-project-delete]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            const projectId = String(button.getAttribute('data-project-delete') || '').trim();
+            if (!window.confirm('Projekt wirklich löschen?')) {
+              return;
+            }
+
+            try {
+              await requestJson('/api/projects/' + encodeURIComponent(projectId), {
+                method: 'DELETE'
+              });
+              await loadProjects();
+              await loadInstances();
+              if (state.editingProjectId === projectId) {
+                resetProjectForm();
+              }
+            } catch (error) {
+              showError(error.message || 'Projekt konnte nicht gelöscht werden');
+            }
+          });
+        });
+      }
+
+      async function saveProject() {
+        clearError();
+
+        const id = String(document.getElementById('prj-id').value || '').trim();
+        const name = String(document.getElementById('prj-name').value || '').trim();
+        const description = String(document.getElementById('prj-description').value || '').trim();
+        const productionWriteProtection = document.getElementById('prj-production-write-protection').checked;
+
+        if (!name) {
+          showError('Projektname ist erforderlich');
+          return;
+        }
+
+        const payload = {
+          id: id || (state.editingProjectId || undefined),
+          name,
+          description: description || undefined,
+          archived: state.projects.find((item) => String(item.id || '') === String(id || state.editingProjectId || ''))?.archived === true,
+          productionWriteProtection
+        };
+
+        await requestJson('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        await loadProjects();
+        await loadInstances();
+        resetProjectForm();
+      }
+
       async function saveInstance() {
         clearError();
         try {
           const payload = {
             id: document.getElementById('ins-id').value,
             name: document.getElementById('ins-name').value || undefined,
+            projectId: document.getElementById('ins-project-id').value || 'default-project',
+            role: document.getElementById('ins-role').value === 'production' ? 'production' : 'test',
             loginUrl: document.getElementById('ins-login-url').value,
             clientId: document.getElementById('ins-client-id').value,
             clientSecret: document.getElementById('ins-client-secret').value,
@@ -11139,6 +11312,7 @@ export function renderAdminUiScript(): string {
           }
           restoreLogChartRange();
           restoreOverviewStatsRange();
+          await loadProjects();
           await loadInstances();
           await refresh();
           updateWeekdayChips();
@@ -11289,6 +11463,18 @@ export function renderAdminUiScript(): string {
       document.getElementById('add-instance').addEventListener('click', () => {
         document.getElementById('ins-id').value = '';
         document.getElementById('ins-name').value = '';
+        const projectSelect = document.getElementById('ins-project-id');
+        if (projectSelect) {
+          if (!state.projects.length) {
+            projectSelect.innerHTML = '<option value="default-project">Default-Projekt</option>';
+          }
+          const hasDefault = (state.projects || []).some((item) => String(item.id || '') === 'default-project');
+          projectSelect.value = hasDefault ? 'default-project' : String((state.projects[0] && state.projects[0].id) || 'default-project');
+        }
+        const roleSelect = document.getElementById('ins-role');
+        if (roleSelect) {
+          roleSelect.value = 'test';
+        }
         document.getElementById('ins-login-url').value = 'https://login.salesforce.com';
         document.getElementById('ins-client-id').value = '';
         document.getElementById('ins-client-secret').value = '';
@@ -11297,6 +11483,23 @@ export function renderAdminUiScript(): string {
         instanceModal.show();
       });
       document.getElementById('save-instance').addEventListener('click', saveInstance);
+      document.getElementById('manage-projects').addEventListener('click', async () => {
+        try {
+          clearError();
+          await loadProjects();
+          resetProjectForm();
+          projectModal.show();
+        } catch (error) {
+          showError(error.message || 'Projekte konnten nicht geladen werden');
+        }
+      });
+      document.getElementById('save-project').addEventListener('click', async () => {
+        try {
+          await saveProject();
+        } catch (error) {
+          showError(error.message || 'Projekt konnte nicht gespeichert werden');
+        }
+      });
       document.getElementById('export-setup').addEventListener('click', async () => {
         try {
           clearError();
