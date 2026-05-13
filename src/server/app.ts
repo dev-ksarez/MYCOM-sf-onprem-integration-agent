@@ -248,7 +248,7 @@ function renderList(items: string[]): string {
 }
 
 function buildProjectDocumentationHtml(input: {
-  project: { id: string; name: string; description?: string; archived?: boolean; productionWriteProtection: boolean };
+  project: { id: string; name: string; description?: string; archived?: boolean; productionWriteProtection: boolean; confluenceSpaceKey?: string; confluenceParentPageId?: string; confluencePageTitlePrefix?: string };
   instances: Array<{ id: string; name: string; role?: string; projectName?: string }>;
   members: Array<{ username: string; displayName?: string; roleInProject?: string }>;
   setupVersion?: ProjectSetupVersionRecord;
@@ -272,6 +272,9 @@ function buildProjectDocumentationHtml(input: {
       ["Projekt-ID", input.project.id],
       ["Archiviert", input.project.archived ? "Ja" : "Nein"],
       ["Produktionsschutz", input.project.productionWriteProtection ? "Aktiv" : "Inaktiv"],
+      ["Confluence Space", input.project.confluenceSpaceKey || "-"],
+      ["Confluence Parent", input.project.confluenceParentPageId || "-"],
+      ["Confluence Präfix", input.project.confluencePageTitlePrefix || "-"],
       ["Connectoren", String(connectorCount)],
       ["Scheduler", String(scheduleCount)],
       ["Compare", compareSummary],
@@ -295,12 +298,15 @@ async function publishProjectDocumentationToConfluence(input: {
   projectId: string;
   title: string;
   html: string;
+  project?: { confluenceSpaceKey?: string; confluenceParentPageId?: string; confluencePageTitlePrefix?: string };
 }): Promise<{ published: boolean; pageId?: string; url?: string; mode: "created" | "updated" | "dry-run" }> {
   const baseUrl = String(process.env.CONFLUENCE_BASE_URL || "").trim().replace(/\/wiki\/?$/, "");
   const username = String(process.env.ATLASSIAN_USERNAME || "").trim();
   const apiToken = String(process.env.ATLASSIAN_API_TOKEN || "").trim();
-  const spaceKey = String(process.env.CONFLUENCE_SPACE_KEY || "").trim();
-  const parentId = String(process.env.CONFLUENCE_PARENT_ID || "").trim();
+  const spaceKey = String(input.project?.confluenceSpaceKey || process.env.CONFLUENCE_SPACE_KEY || "").trim();
+  const parentId = String(input.project?.confluenceParentPageId || process.env.CONFLUENCE_PARENT_ID || "").trim();
+  const titlePrefix = String(input.project?.confluencePageTitlePrefix || "").trim();
+  const pageTitle = titlePrefix ? `${titlePrefix} ${input.title}` : input.title;
 
   if (!baseUrl || !username || !apiToken) {
     return { published: false, mode: "dry-run" };
@@ -328,7 +334,7 @@ async function publishProjectDocumentationToConfluence(input: {
       body: JSON.stringify({
         id: existing.pageId,
         type: "page",
-        title: input.title,
+        title: pageTitle,
         version: { number: version },
         body: {
           storage: {
@@ -349,7 +355,7 @@ async function publishProjectDocumentationToConfluence(input: {
     headers,
     body: JSON.stringify({
       type: "page",
-      title: input.title,
+      title: pageTitle,
       space: spaceKey ? { key: spaceKey } : undefined,
       ancestors: parentId ? [{ id: parentId }] : undefined,
       body: {
@@ -1531,6 +1537,7 @@ ${renderAISchedulerAssistantModule()}
                 <thead>
                   <tr>
                     <th>Name</th>
+                      <th>Confluence</th>
                     <th>Schreibschutz Produktion</th>
                     <th>Status</th>
                     <th>Aktion</th>
@@ -1544,6 +1551,9 @@ ${renderAISchedulerAssistantModule()}
               <div class="col-12"><label class="form-label">Projekt-ID (optional)</label><input id="prj-id" class="form-control" placeholder="leer = automatisch aus Name" /></div>
               <div class="col-12"><label class="form-label">Name</label><input id="prj-name" class="form-control" placeholder="z. B. Annaburger Rollout" /></div>
               <div class="col-12"><label class="form-label">Beschreibung (optional)</label><input id="prj-description" class="form-control" /></div>
+              <div class="col-md-4"><label class="form-label">Confluence Space Key</label><input id="prj-confluence-space-key" class="form-control" placeholder="z. B. PRJ" /></div>
+              <div class="col-md-4"><label class="form-label">Confluence Parent Page ID</label><input id="prj-confluence-parent-page-id" class="form-control" placeholder="z. B. 123456789" /></div>
+              <div class="col-md-4"><label class="form-label">Confluence Titel-Präfix</label><input id="prj-confluence-title-prefix" class="form-control" placeholder="z. B. Projekt A" /></div>
               <div class="col-12">
                 <div class="form-check mt-1">
                   <input id="prj-production-write-protection" class="form-check-input" type="checkbox" checked />
@@ -2884,7 +2894,12 @@ export function createAppServer(
         const publishResult = await publishProjectDocumentationToConfluence({
           projectId,
           title: `${project.name} - Projektdokumentation`,
-          html
+          html,
+          project: {
+            confluenceSpaceKey: project.confluenceSpaceKey,
+            confluenceParentPageId: project.confluenceParentPageId,
+            confluencePageTitlePrefix: project.confluencePageTitlePrefix
+          }
         });
         await appendAuditHistory({ actor: auditActor, action: publishResult.published ? `documentation.publish.${publishResult.mode}` : "documentation.publish.dry-run", entityType: "project-documentation", entityId: projectId, entityName: project.name });
         sendJson(200, { ok: true, projectId, publishResult, html });

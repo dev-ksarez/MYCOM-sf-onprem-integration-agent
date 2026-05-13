@@ -11093,6 +11093,9 @@ export function renderAdminUiScript(): string {
         document.getElementById('prj-id').value = '';
         document.getElementById('prj-name').value = '';
         document.getElementById('prj-description').value = '';
+        document.getElementById('prj-confluence-space-key').value = '';
+        document.getElementById('prj-confluence-parent-page-id').value = '';
+        document.getElementById('prj-confluence-title-prefix').value = '';
         document.getElementById('prj-production-write-protection').checked = true;
       }
 
@@ -11103,7 +11106,7 @@ export function renderAdminUiScript(): string {
         }
 
         if (!state.projects.length) {
-          tableBody.innerHTML = '<tr><td colspan="4" class="text-secondary small">Keine Projekte vorhanden.</td></tr>';
+          tableBody.innerHTML = '<tr><td colspan="5" class="text-secondary small">Keine Projekte vorhanden.</td></tr>';
           return;
         }
 
@@ -11116,9 +11119,13 @@ export function renderAdminUiScript(): string {
             ? '<span class="badge text-bg-secondary">Archiviert</span>'
             : '<span class="badge text-bg-primary">Aktiv</span>';
           const isDefault = String(item.id || '') === 'default-project';
+          const confluenceLabel = item.confluenceSpaceKey || item.confluenceParentPageId || item.confluencePageTitlePrefix
+            ? '<div class="small text-secondary">' + esc([item.confluenceSpaceKey ? ('Space ' + item.confluenceSpaceKey) : null, item.confluenceParentPageId ? ('Parent ' + item.confluenceParentPageId) : null, item.confluencePageTitlePrefix ? ('Prefix ' + item.confluencePageTitlePrefix) : null].filter(Boolean).join(' · ')) + '</div>'
+            : '<div class="small text-secondary">-</div>';
 
           return '<tr>' +
             '<td><div class="fw-semibold">' + esc(String(item.name || item.id)) + '</div><div class="small text-secondary">' + esc(String(item.id || '')) + '</div></td>' +
+            '<td>' + confluenceLabel + '</td>' +
             '<td>' + protection + '</td>' +
             '<td>' + status + '</td>' +
             '<td class="text-nowrap">' +
@@ -11141,6 +11148,9 @@ export function renderAdminUiScript(): string {
             document.getElementById('prj-id').value = String(project.id || '');
             document.getElementById('prj-name').value = String(project.name || '');
             document.getElementById('prj-description').value = String(project.description || '');
+            document.getElementById('prj-confluence-space-key').value = String(project.confluenceSpaceKey || '');
+            document.getElementById('prj-confluence-parent-page-id').value = String(project.confluenceParentPageId || '');
+            document.getElementById('prj-confluence-title-prefix').value = String(project.confluencePageTitlePrefix || '');
             document.getElementById('prj-production-write-protection').checked = project.productionWriteProtection !== false;
           });
         });
@@ -11201,6 +11211,9 @@ export function renderAdminUiScript(): string {
         const id = String(document.getElementById('prj-id').value || '').trim();
         const name = String(document.getElementById('prj-name').value || '').trim();
         const description = String(document.getElementById('prj-description').value || '').trim();
+        const confluenceSpaceKey = String(document.getElementById('prj-confluence-space-key').value || '').trim();
+        const confluenceParentPageId = String(document.getElementById('prj-confluence-parent-page-id').value || '').trim();
+        const confluencePageTitlePrefix = String(document.getElementById('prj-confluence-title-prefix').value || '').trim();
         const productionWriteProtection = document.getElementById('prj-production-write-protection').checked;
 
         if (!name) {
@@ -11213,7 +11226,10 @@ export function renderAdminUiScript(): string {
           name,
           description: description || undefined,
           archived: state.projects.find((item) => String(item.id || '') === String(id || state.editingProjectId || ''))?.archived === true,
-          productionWriteProtection
+          productionWriteProtection,
+          confluenceSpaceKey: confluenceSpaceKey || undefined,
+          confluenceParentPageId: confluenceParentPageId || undefined,
+          confluencePageTitlePrefix: confluencePageTitlePrefix || undefined
         };
 
         await requestJson('/api/projects', {

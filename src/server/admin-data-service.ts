@@ -61,6 +61,9 @@ export interface SalesforceProjectConfig {
   description?: string;
   archived?: boolean;
   productionWriteProtection: boolean;
+  confluenceSpaceKey?: string;
+  confluenceParentPageId?: string;
+  confluencePageTitlePrefix?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -106,6 +109,9 @@ export interface SalesforceProjectMutationInput {
   description?: string;
   archived?: boolean;
   productionWriteProtection?: boolean;
+  confluenceSpaceKey?: string;
+  confluenceParentPageId?: string;
+  confluencePageTitlePrefix?: string;
 }
 
 export interface MigrationSalesforceInstanceMutationInput {
@@ -407,9 +413,31 @@ function defaultProjectConfig(): SalesforceProjectConfig {
     name: "Default-Projekt",
     archived: false,
     productionWriteProtection: true,
+    confluenceSpaceKey: undefined,
+    confluenceParentPageId: undefined,
+    confluencePageTitlePrefix: undefined,
     createdAt: now,
     updatedAt: now
   };
+}
+
+function ensureProjectsSqliteColumns(db: any): void {
+  try {
+    const columns = new Set<string>((db.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>).map((row) => row.name));
+    const statements = [
+      { name: "confluence_space_key", sql: "ALTER TABLE projects ADD COLUMN confluence_space_key TEXT" },
+      { name: "confluence_parent_page_id", sql: "ALTER TABLE projects ADD COLUMN confluence_parent_page_id TEXT" },
+      { name: "confluence_page_title_prefix", sql: "ALTER TABLE projects ADD COLUMN confluence_page_title_prefix TEXT" }
+    ];
+
+    for (const statement of statements) {
+      if (!columns.has(statement.name)) {
+        db.exec(statement.sql);
+      }
+    }
+  } catch {
+    // ignore schema migration errors; JSON fallback will still work
+  }
 }
 
 function openProjectsSqliteSync(): any | null {
@@ -432,9 +460,13 @@ function openProjectsSqliteSync(): any | null {
       description TEXT,
       archived INTEGER NOT NULL DEFAULT 0,
       production_write_protection INTEGER NOT NULL DEFAULT 1,
+      confluence_space_key TEXT,
+      confluence_parent_page_id TEXT,
+      confluence_page_title_prefix TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`);
+    ensureProjectsSqliteColumns(db);
 
     return db;
   } catch {
@@ -450,13 +482,16 @@ function readProjectsFromSqliteSync(): SalesforceProjectConfig[] | null {
 
   try {
     const rows = db
-      .prepare(`SELECT id, name, description, archived, production_write_protection, created_at, updated_at FROM projects`)
+      .prepare(`SELECT id, name, description, archived, production_write_protection, confluence_space_key, confluence_parent_page_id, confluence_page_title_prefix, created_at, updated_at FROM projects`)
       .all() as Array<{
       id: string;
       name: string;
       description?: string;
       archived: number;
       production_write_protection: number;
+      confluence_space_key?: string;
+      confluence_parent_page_id?: string;
+      confluence_page_title_prefix?: string;
       created_at: string;
       updated_at: string;
     }>;
@@ -468,6 +503,9 @@ function readProjectsFromSqliteSync(): SalesforceProjectConfig[] | null {
         description: String(row.description || "").trim() || undefined,
         archived: Number(row.archived || 0) === 1,
         productionWriteProtection: Number(row.production_write_protection || 0) !== 0,
+        confluenceSpaceKey: String(row.confluence_space_key || "").trim() || undefined,
+        confluenceParentPageId: String(row.confluence_parent_page_id || "").trim() || undefined,
+        confluencePageTitlePrefix: String(row.confluence_page_title_prefix || "").trim() || undefined,
         createdAt: String(row.created_at || "").trim() || new Date().toISOString(),
         updatedAt: String(row.updated_at || "").trim() || new Date().toISOString()
       }))
@@ -494,8 +532,8 @@ function writeProjectsToSqliteSync(projects: SalesforceProjectConfig[]): void {
     db.exec("DELETE FROM projects");
 
     const insert = db.prepare(
-      `INSERT INTO projects (id, name, description, archived, production_write_protection, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO projects (id, name, description, archived, production_write_protection, confluence_space_key, confluence_parent_page_id, confluence_page_title_prefix, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     for (const project of projects) {
@@ -505,6 +543,9 @@ function writeProjectsToSqliteSync(projects: SalesforceProjectConfig[]): void {
         project.description || "",
         project.archived === true ? 1 : 0,
         project.productionWriteProtection === false ? 0 : 1,
+        project.confluenceSpaceKey || "",
+        project.confluenceParentPageId || "",
+        project.confluencePageTitlePrefix || "",
         project.createdAt,
         project.updatedAt
       );
@@ -573,6 +614,9 @@ function readLocalProjects(): SalesforceProjectConfig[] {
           description: typeof candidate.description === "string" ? candidate.description.trim() || undefined : undefined,
           archived: candidate.archived === true,
           productionWriteProtection: candidate.productionWriteProtection !== false,
+          confluenceSpaceKey: typeof candidate.confluenceSpaceKey === "string" ? candidate.confluenceSpaceKey.trim() || undefined : undefined,
+          confluenceParentPageId: typeof candidate.confluenceParentPageId === "string" ? candidate.confluenceParentPageId.trim() || undefined : undefined,
+          confluencePageTitlePrefix: typeof candidate.confluencePageTitlePrefix === "string" ? candidate.confluencePageTitlePrefix.trim() || undefined : undefined,
           createdAt: typeof candidate.createdAt === "string" && candidate.createdAt.trim()
             ? candidate.createdAt
             : new Date().toISOString(),
@@ -797,6 +841,9 @@ export interface SalesforceProjectOption {
   description?: string;
   archived?: boolean;
   productionWriteProtection: boolean;
+  confluenceSpaceKey?: string;
+  confluenceParentPageId?: string;
+  confluencePageTitlePrefix?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -2281,6 +2328,9 @@ export class AdminDataService {
       description: String(input.description || "").trim() || undefined,
       archived: input.archived === undefined ? (existingProject?.archived === true) : input.archived === true,
       productionWriteProtection: input.productionWriteProtection !== false,
+      confluenceSpaceKey: String(input.confluenceSpaceKey || existingProject?.confluenceSpaceKey || "").trim() || undefined,
+      confluenceParentPageId: String(input.confluenceParentPageId || existingProject?.confluenceParentPageId || "").trim() || undefined,
+      confluencePageTitlePrefix: String(input.confluencePageTitlePrefix || existingProject?.confluencePageTitlePrefix || "").trim() || undefined,
       createdAt: existingProject?.createdAt || now,
       updatedAt: now
     };
