@@ -11383,6 +11383,32 @@ export function renderAdminUiScript(): string {
         window.bootstrap.Modal.getOrCreateInstance(modalEl).show();
       }
 
+      function focusElementLater(elementId) {
+        const targetId = String(elementId || '').trim();
+        if (!targetId) {
+          return;
+        }
+
+        window.setTimeout(() => {
+          const element = document.getElementById(targetId);
+          if (!element) {
+            return;
+          }
+
+          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          if (typeof element.focus === 'function') {
+            element.focus({ preventScroll: true });
+          }
+        }, 220);
+      }
+
+      async function openProjectManagement() {
+        clearError();
+        await loadProjects();
+        resetProjectForm();
+        projectModal.show();
+      }
+
       // Boot data loading before the large listener block so the UI still initializes
       // even if a later non-critical listener registration fails.
       (async () => {
@@ -11579,13 +11605,46 @@ export function renderAdminUiScript(): string {
       document.getElementById('save-instance').addEventListener('click', saveInstance);
       document.getElementById('manage-projects').addEventListener('click', async () => {
         try {
-          clearError();
-          await loadProjects();
-          resetProjectForm();
-          projectModal.show();
+          await openProjectManagement();
         } catch (error) {
           showError(error.message || 'Projekte konnten nicht geladen werden');
         }
+      });
+      bindEventListenerOnce('admin-open-users', 'click', () => {
+        openAdminModal();
+        focusElementLater('admin-user-username');
+      });
+      bindEventListenerOnce('admin-manage-projects', 'click', async () => {
+        try {
+          await openProjectManagement();
+        } catch (error) {
+          showError(error.message || 'Projekte konnten nicht geladen werden');
+        }
+      });
+      bindEventListenerOnce('admin-open-deployment', 'click', async () => {
+        try {
+          await openProjectManagement();
+          focusElementLater('project-table-body');
+        } catch (error) {
+          showError(error.message || 'Deployment-Konfiguration konnte nicht geöffnet werden');
+        }
+      });
+      bindEventListenerOnce('admin-open-documentation', 'click', async () => {
+        try {
+          await openProjectManagement();
+          focusElementLater('prj-confluence-space-key');
+        } catch (error) {
+          showError(error.message || 'Dokumentations-Konfiguration konnte nicht geöffnet werden');
+        }
+      });
+      bindEventListenerOnce('admin-open-history', 'click', async () => {
+        openAdminModal();
+        try {
+          await loadAdminData();
+        } catch {
+          // UI bleibt nutzbar; Historie wird ggf. manuell aktualisiert.
+        }
+        focusElementLater('admin-audit-refresh');
       });
       document.getElementById('save-project').addEventListener('click', async () => {
         try {

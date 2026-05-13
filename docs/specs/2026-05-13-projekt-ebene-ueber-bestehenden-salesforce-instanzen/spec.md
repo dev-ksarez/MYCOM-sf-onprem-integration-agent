@@ -36,7 +36,7 @@ Das erzeugt folgende Probleme:
 4. Bei Anlage/Bearbeitung von Instanzen ist die Projektzuordnung verpflichtend (mit Rueckwaertskompatibilitaet fuer Altbestand).
 5. Schedules und Migrationen koennen projektbezogen validiert werden, damit Instanzverwechslungen reduziert werden.
 6. Betriebs- und Monitoringansichten koennen mindestens nach Projekt aggregiert werden.
-7. Es gibt ein separates Admin-Modul mit eigener Berechtigung fuer Benutzer-, Projekt- und Deployment-Verwaltung.
+7. Es gibt ein separates Admin-Modul mit eigener Berechtigung fuer Benutzer-, Projekt-, Instanz-, Deployment- und Dokumentationsverwaltung.
 8. Deployments enthalten einen pruefbaren Test/Produktion-Abgleich in beide Richtungen (Test -> Produktion und Produktion -> Test als Vergleichslauf).
 9. Vor jedem Deployment wird ein lokales `preDeployment` durch den Kunden-Agenten ausgefuehrt, das Erreichbarkeit und technische Konsistenz validiert.
 10. Das Migrationsmodul ist dem Projektkontext untergeordnet; Migrationen nutzen die im Projekt zugeordneten Salesforce-Instanzen und pflegen keine eigenstaendige Salesforce-Verbindungsverwaltung.
@@ -110,6 +110,8 @@ Annahme fuer diese Spec:
 - [ ] Technische Umsetzung in kleinen Schritten planen.
 - [ ] Eigenstaendiges Admin-Modul mit Rollen- und Rechtekonzept spezifizieren.
 - [ ] Benutzerverwaltung inkl. Projektzuordnung (many-to-many) fachlich und technisch definieren.
+- [ ] Admin-Konfiguration fuer Benutzer, Projekte, Instanzen, Deployment und Dokumentation vollstaendig spezifizieren.
+- [ ] Änderungshistorie im Admin-Kontext per Klick erreichbar machen.
 - [ ] Deployment-Workflow mit Abgleich Test/Produktion und Produktion/Test fachlich festlegen.
 - [ ] `preDeployment`-Spezifikation erstellen (Connector-/Scheduler-Testabfragen, Mapping-Objektpruefungen).
 - [ ] Blocker- und Freigaberegeln fuer Deployment auf Basis `preDeployment` und Abgleichsergebnissen definieren.
@@ -233,12 +235,14 @@ Akzeptanzkriterien:
 
 - Es gibt ein separates Admin-Modul als eigene Oberflaeche/Funktionsgruppe.
 - Zugriff ist nur mit expliziter Admin-Berechtigung moeglich.
-- Das Modul umfasst mindestens: Benutzerverwaltung, Projektverwaltung, Deployment-Steuerung, Abgleich- und Pre-Deployment-Ergebnisse.
+- Das Modul umfasst mindestens: Benutzerverwaltung, Projektverwaltung, Instanzverwaltung, Deployment-Steuerung, Dokumentationskonfiguration sowie Abgleich- und Pre-Deployment-Ergebnisse.
+- Die Änderungshistorie ist direkt aus dem Admin-Bereich per Klick oeffnbar.
 
 Akzeptanzkriterien:
 
 - [ ] Nicht berechtigte Benutzer erhalten keinen Zugriff auf Admin-Funktionen.
-- [ ] Berechtigte Benutzer koennen Benutzer, Projekte und Deployment-Freigaben zentral verwalten.
+- [ ] Berechtigte Benutzer koennen Benutzer, Projekte, Instanzen, Deployment-Freigaben und Dokumentation zentral verwalten.
+- [ ] Die Änderungshistorie kann aus dem Admin-Kontext ohne Umweg geoeffnet werden.
 
 ### I. Benutzerverwaltung mit Projektzuordnung
 

@@ -648,7 +648,12 @@ ${renderMenuModuleNavigation()}
                 <div class="agent-menu-group">
                   <div class="agent-menu-group-title">Admin</div>
                   <div class="agent-menu-action-grid agent-menu-action-grid-compact">
-                    <button id="add-instance" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Instanz hinzufügen"><span class="agent-btn-icon" aria-hidden="true">＋</span><span>Instanz</span></button>
+                    <button id="admin-open-users" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Benutzer konfigurieren"><span class="agent-btn-icon" aria-hidden="true">👤</span><span>Benutzer</span></button>
+                    <button id="admin-manage-projects" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Projekte konfigurieren"><span class="agent-btn-icon" aria-hidden="true">▦</span><span>Projekte</span></button>
+                    <button id="add-instance" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Instanz hinzufügen"><span class="agent-btn-icon" aria-hidden="true">＋</span><span>Instanzen</span></button>
+                    <button id="admin-open-deployment" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Deployment konfigurieren"><span class="agent-btn-icon" aria-hidden="true">⇄</span><span>Deployment</span></button>
+                    <button id="admin-open-documentation" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Dokumentation konfigurieren"><span class="agent-btn-icon" aria-hidden="true">✎</span><span>Doku-Config</span></button>
+                    <button id="admin-open-history" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Änderungshistorie öffnen"><span class="agent-btn-icon" aria-hidden="true">🕘</span><span>Historie</span></button>
                     <button id="refresh-all" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Aktualisieren"><span class="agent-btn-icon" aria-hidden="true">↻</span><span>Neu laden</span></button>
                   </div>
                 </div>
