@@ -286,19 +286,121 @@ export class AISchedulerService {
       const candidate = sqlPrefixMatch[1].trim();
       const selectMatch = candidate.match(/\b(select|with)\b[\s\S]*/i);
       if (selectMatch?.[0]) {
-        return selectMatch[0].trim();
+        return this.trimSqlCandidate(selectMatch[0]);
       }
     }
 
     const inlineSelectMatch = raw.match(/\b(select|with)\b[\s\S]*?(?:;|$)/i);
     if (inlineSelectMatch?.[0]) {
-      const candidate = inlineSelectMatch[0].trim();
+      const candidate = this.trimSqlCandidate(inlineSelectMatch[0]);
       if (/^(select|with)\b/i.test(candidate)) {
         return candidate;
       }
     }
 
     return undefined;
+  }
+
+  private trimSqlCandidate(candidateRaw: string): string {
+    const candidate = String(candidateRaw || "").trim();
+    if (!candidate) {
+      return "";
+    }
+
+    let inSingleQuote = false;
+    let inDoubleQuote = false;
+    let inBracketIdentifier = false;
+    let inLineComment = false;
+    let inBlockComment = false;
+
+    for (let i = 0; i < candidate.length; i += 1) {
+      const ch = candidate[i];
+      const next = candidate[i + 1] || "";
+      const remaining = candidate.slice(i + 1).trimStart();
+
+      if (inLineComment) {
+        if (ch === "\n") {
+          inLineComment = false;
+        }
+        continue;
+      }
+
+      if (inBlockComment) {
+        if (ch === "*" && next === "/") {
+          inBlockComment = false;
+          i += 1;
+        }
+        continue;
+      }
+
+      if (!inSingleQuote && !inDoubleQuote && !inBracketIdentifier) {
+        if (ch === "-" && next === "-") {
+          inLineComment = true;
+          i += 1;
+          continue;
+        }
+        if (ch === "/" && next === "*") {
+          inBlockComment = true;
+          i += 1;
+          continue;
+        }
+      }
+
+      if (!inDoubleQuote && !inBracketIdentifier && ch === "'") {
+        inSingleQuote = !inSingleQuote;
+        continue;
+      }
+
+      if (!inSingleQuote && !inBracketIdentifier && ch === '"') {
+        inDoubleQuote = !inDoubleQuote;
+        continue;
+      }
+
+      if (!inSingleQuote && !inDoubleQuote && ch === "[") {
+        inBracketIdentifier = true;
+        continue;
+      }
+
+      if (inBracketIdentifier && ch === "]") {
+        inBracketIdentifier = false;
+        continue;
+      }
+
+      if (!inSingleQuote && !inDoubleQuote && !inBracketIdentifier) {
+        if (ch === ";") {
+          return candidate.slice(0, i + 1).trim();
+        }
+
+        if (ch === "\n" && this.isNaturalLanguageTail(remaining)) {
+          return candidate.slice(0, i).trim();
+        }
+
+        if (/\s/.test(ch)) {
+          const tailMarkerMatch = remaining.match(/^(und|bitte|danach|anschließend|then|please)\b/i);
+          if (tailMarkerMatch) {
+            const afterMarker = remaining.slice(tailMarkerMatch[0].length).trimStart();
+            if (this.isNaturalLanguageTail(afterMarker)) {
+              return candidate.slice(0, i).trim();
+            }
+          }
+        }
+      }
+    }
+
+    return candidate;
+  }
+
+  private isNaturalLanguageTail(text: string): boolean {
+    const normalized = String(text || "").trim();
+    if (!normalized) {
+      return false;
+    }
+
+    if (/^(select|with|from|where|group\s+by|order\s+by|having|limit|offset|join|left|right|inner|outer|union|and|or)\b/i.test(normalized)) {
+      return false;
+    }
+
+    return /^(bitte|und\b|dann\b|danach\b|anschließend\b|then\b|please\b|nutze\b|verwende\b|mappe\b|schreibe\b|erstelle\b|setze\b|für\b|nach\b|to\b|in\b)/i.test(normalized);
   }
 
   /**

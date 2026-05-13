@@ -23,6 +23,12 @@ Jede nicht-triviale Aenderung startet mit einer Spec, die Problem, Zielbild, Akz
 - Salesforce-Metadaten, Deploy- oder Migrationsaenderungen
 - Alles, was neue Konfiguration, neue Risiken oder Betriebsfolgen einfuehrt
 
+## Abgrenzung zu Kunden-Spezifikationen
+
+- `docs/specs/` ist ausschliesslich fuer zentrale Projekt- und Feature-Specs.
+- Kundenindividuelle Spezifikationen liegen unter `artifacts/customer-installations/<kunde>/`.
+- Kunden-Specs werden nicht automatisch als Produkt-Backlog oder globaler Projektscope interpretiert.
+
 ## Wann eine kurze Aenderungsnotiz reicht
 
 - Kleine refactorings ohne Verhaltensaenderung

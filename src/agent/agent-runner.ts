@@ -448,6 +448,16 @@ function extractTimingDefinition(targetDefinition?: string): string | undefined 
   }
 }
 
+function extractSourceObjectApiNameFromSoql(queryText: string): string | undefined {
+  const normalized = String(queryText || "").trim();
+  if (!normalized) {
+    return undefined;
+  }
+
+  const match = /\bfrom\s+([A-Za-z][A-Za-z0-9_]*)\b/i.exec(normalized);
+  return match?.[1] ? match[1].trim() : undefined;
+}
+
 async function runSalesforceAfterExport(
   salesforceClient: SalesforceClient,
   schedule: IntegrationSchedule,
@@ -458,16 +468,28 @@ async function runSalesforceAfterExport(
 ): Promise<void> {
   const parsedSourceDefinition = parseQuerySourceDefinition(schedule.sourceDefinition || "");
   const afterExport = parsedSourceDefinition.afterExport;
-  if (!afterExport || !successfulSourceRecords?.length || !schedule.objectName) {
+  if (!afterExport || !successfulSourceRecords?.length) {
     return;
   }
+
+  const sourceObjectApiName = extractSourceObjectApiNameFromSoql(parsedSourceDefinition.queryText);
+  const updateObjectApiName = String(sourceObjectApiName || schedule.objectName || "").trim();
+  if (!updateObjectApiName) {
+    return;
+  }
+
+  const afterExportEntries = Object.entries(afterExport.updates);
+  const allowsSafePostStatusWriteback =
+    afterExportEntries.length === 1
+    && afterExportEntries[0][0].trim().toLowerCase() === "post_status__c"
+    && String(afterExportEntries[0][1] || "").trim().toLowerCase() === "success";
 
   const normalizedDeltaField = String(parsedSourceDefinition.delta?.field || "").trim().toLowerCase();
   const usesMutableSalesforceTimestamp =
     parsedSourceDefinition.delta?.strategy === "datetime"
     && (normalizedDeltaField === "lastmodifieddate" || normalizedDeltaField === "systemmodstamp");
 
-  if (usesMutableSalesforceTimestamp) {
+  if (usesMutableSalesforceTimestamp && !allowsSafePostStatusWriteback) {
     await salesforceClient.createLog({
       runId,
       level: "WARN",
@@ -492,13 +514,13 @@ async function runSalesforceAfterExport(
     updatePayloads.push(payload);
   }
 
-  const updatedIds = await salesforceClient.updateGenericRecords(schedule.objectName, updatePayloads);
+  const updatedIds = await salesforceClient.updateGenericRecords(updateObjectApiName, updatePayloads);
 
   await salesforceClient.createLog({
     runId,
     level: "INFO",
     step: "AFTER_EXPORT_UPDATED",
-    message: `${updatedIds.length} exportierte Datensaetze in ${schedule.objectName} nachbearbeitet`,
+    message: `${updatedIds.length} exportierte Datensaetze in ${updateObjectApiName} nachbearbeitet`,
     correlationId
   });
 }
