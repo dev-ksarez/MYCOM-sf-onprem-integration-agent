@@ -33,14 +33,17 @@ Das erzeugt folgende Probleme:
 1. Es gibt eine neue Entitaet `Projekt` als Ebene oberhalb bestehender Salesforce-Instanzen.
 2. Jede Salesforce-Instanz ist genau einem Projekt zugeordnet.
 3. Das Web UI zeigt Instanzen gruppiert nach Projekt und ermoeglicht projektspezifische Filter.
-4. Bei Anlage/Bearbeitung von Instanzen ist die Projektzuordnung verpflichtend (mit Rueckwaertskompatibilitaet fuer Altbestand).
-5. Schedules und Migrationen koennen projektbezogen validiert werden, damit Instanzverwechslungen reduziert werden.
-6. Betriebs- und Monitoringansichten koennen mindestens nach Projekt aggregiert werden.
-7. Es gibt ein separates Admin-Modul mit eigener Berechtigung fuer Benutzer-, Projekt-, Instanz-, Deployment- und Dokumentationsverwaltung.
-8. Deployments enthalten einen pruefbaren Test/Produktion-Abgleich in beide Richtungen (Test -> Produktion und Produktion -> Test als Vergleichslauf).
-9. Vor jedem Deployment wird ein lokales `preDeployment` durch den Kunden-Agenten ausgefuehrt, das Erreichbarkeit und technische Konsistenz validiert.
-10. Das Migrationsmodul ist dem Projektkontext untergeordnet; Migrationen nutzen die im Projekt zugeordneten Salesforce-Instanzen und pflegen keine eigenstaendige Salesforce-Verbindungsverwaltung.
-11. Projekte werden in einer eigenen Projektdatenbank persistiert (Startpunkt: SQLite), damit Projektstammdaten von einzelnen Salesforce-Instanzen entkoppelt sind.
+4. Im Header wird das aktive Projekt global ausgewaehlt; direkt daneben ist der Umgebungswechsel zwischen `test` und `production` moeglich.
+5. Bei Anlage/Bearbeitung von Instanzen ist die Projektzuordnung verpflichtend (mit Rueckwaertskompatibilitaet fuer Altbestand).
+6. Schedules und Migrationen koennen projektbezogen validiert werden, damit Instanzverwechslungen reduziert werden.
+7. Betriebs- und Monitoringansichten koennen mindestens nach Projekt aggregiert werden.
+8. Es gibt ein separates Admin-Modul mit eigener Berechtigung als listenbasierte Projektverwaltung; die Konfiguration erfolgt analog zu Schedulern/Connectoren ueber einen schrittweisen Assistenten.
+9. Deployments enthalten einen pruefbaren Test/Produktion-Abgleich in beide Richtungen (Test -> Produktion und Produktion -> Test als Vergleichslauf).
+10. Vor jedem Deployment wird ein lokales `preDeployment` durch den Kunden-Agenten ausgefuehrt, das Erreichbarkeit und technische Konsistenz validiert.
+11. Das Migrationsmodul ist dem Projektkontext untergeordnet; Migrationen nutzen die im Projekt zugeordneten Salesforce-Instanzen und pflegen keine eigenstaendige Salesforce-Verbindungsverwaltung.
+12. Projekte werden in einer eigenen Projektdatenbank persistiert (Startpunkt: SQLite), damit Projektstammdaten von einzelnen Salesforce-Instanzen entkoppelt sind.
+13. Pro Projekt wird die erwartete Salesforce-Last fuer das aktuelle Setup per KI bewertet und als 24h-Prognose inklusive API-Call-Verhaeltnis zu den zulaessigen Limits angezeigt.
+14. Pro Projekt sind API-Entlastungsregeln konfigurierbar: Lookup-Daten werden gecacht und Logs werden lokal gepuffert sowie im konfigurierten Refreshintervall gebuendelt nach Salesforce uebertragen.
 
 ## Nicht-Ziele
 
@@ -57,9 +60,11 @@ Das erzeugt folgende Probleme:
 - [ ] Konfiguration, Migration oder Deployment-Folgen sind dokumentiert.
 - [ ] Es gibt persistente Projektobjekte und eine eindeutige Zuordnung Instanz -> Projekt.
 - [ ] Im UI sind Projekte sichtbar und Instanzen projektweise gruppiert oder filterbar.
+- [ ] Im Header gibt es eine globale Projektauswahl und einen direkten Umgebungswechsel `test`/`production`.
 - [ ] Bestehende Instanzen ohne Projektzuordnung erhalten einen definierten Fallback (z. B. `Default-Projekt`) und bleiben funktionsfaehig.
 - [ ] Fehlkonfigurationen (ungueltiges Projekt, geloeschte Zuordnung) liefern klare Validierungsfehler.
 - [ ] Es gibt ein eigenstaendiges Admin-Modul mit eigener Zugriffspruefung (nur berechtigte Rollen).
+- [ ] Die Projektverwaltung ist als Liste umgesetzt; Erstellen/Bearbeiten erfolgt ueber einen mehrstufigen Assistenten analog Scheduler/Connector.
 - [ ] Benutzer koennen projektspezifisch zugeordnet und verwaltet werden (lesen, zuordnen, entziehen).
 - [ ] Deployment-Workflow enthaelt einen technischen Abgleich Test/Produktion und Produktion/Test mit klarer Ergebnisdarstellung.
 - [ ] Vor Deployment wird ein lokales `preDeployment` durchgefuehrt und bei Fehlern als harter Blocker behandelt.
@@ -67,6 +72,8 @@ Das erzeugt folgende Probleme:
 - [ ] Das `preDeployment` prueft Erreichbarkeit und Verfuegbarkeit der referenzierten Salesforce-Objekte/Felder aus den Mappings.
 - [ ] Migrationen sind ausschliesslich ueber Projekte steuerbar; eine separate Salesforce-Anbindung nur fuer Migrationen existiert nicht.
 - [ ] Projektstammdaten (Projekt, Zuordnungen, Status) liegen in einer eigenen Datenbank (SQLite) und bleiben bei Wechsel der Salesforce-Instanzzuordnung stabil.
+- [ ] Das UI zeigt pro Projekt eine KI-basierte Lastbewertung mit 24h-Prognose und API-Call-Verhaeltnis gegen das Salesforce-Limit.
+- [ ] Pro Projekt sind Lookup-Caching und Log-Synchronisationsintervall konfigurierbar und reduzieren die Salesforce-API-Last nachvollziehbar.
 
 ## Umsetzungsskizze
 
@@ -89,6 +96,9 @@ Technische Leitplanken:
 - API-Antworten sollen Projektkontext enthalten, ohne alte Consumer sofort zu brechen.
 - Logging und Audit sollen Projekt-ID/-Name in relevanten Operationen mitfuehren.
 - Das Admin-Modul ist logisch getrennt und per Berechtigungspruefung abgesichert.
+- Der globale Header-Kontext (`projectId`, `environment`) steuert alle projektbezogenen Screens konsistent.
+- Lookup-Lesezugriffe koennen projektbezogen ueber einen Cache mit TTL/Invalidierung gesteuert werden.
+- Operative Logs koennen lokal vorgehalten und in konfigurierbaren Intervallen gebuendelt nach Salesforce synchronisiert werden.
 - `preDeployment` laeuft agentennah (lokal beim Kunden), damit netzwerknahe Ressourcen realistisch geprueft werden.
 - Deployment ist nur zulaessig, wenn `preDeployment` und Umgebungsabgleich erfolgreich sind.
 - Test-/Konfigurationsumgebung duerfen keine lokalen Produktivressourcen direkt adressieren; Pruefungen produktiver lokaler Ressourcen erfolgen ausschliesslich ueber den lokalen Produktions-Agenten.
@@ -106,12 +116,15 @@ Annahme fuer diese Spec:
 - [ ] Datenmodell fuer Projekt und Instanzzuordnung finalisieren.
 - [ ] Migrationsstrategie fuer Bestandsinstanzen festlegen (Default-Projekt).
 - [ ] API und UI fuer projektbezogene Anzeige/Filter spezifizieren.
+- [ ] Header-Kontextwahl fuer Projekt sowie `test`/`production` als globalen UI-Status spezifizieren.
 - [ ] Validierungs- und Fehlerfaelle definieren.
 - [ ] Technische Umsetzung in kleinen Schritten planen.
 - [ ] Eigenstaendiges Admin-Modul mit Rollen- und Rechtekonzept spezifizieren.
 - [ ] Benutzerverwaltung inkl. Projektzuordnung (many-to-many) fachlich und technisch definieren.
-- [ ] Admin-Konfiguration fuer Benutzer, Projekte, Instanzen, Deployment und Dokumentation vollstaendig spezifizieren.
+- [ ] Admin-Konfiguration als Projektliste mit Assistent-Schritten (analog Scheduler/Connector) fuer Projekte, Instanzen, Deployment und Dokumentation spezifizieren.
 - [ ] Änderungshistorie im Admin-Kontext per Klick erreichbar machen.
+- [ ] KI-gestuetzte Lastbewertung pro Projekt-Setup spezifizieren (24h-Prognose, API-Limit-Verhaeltnis, Warnschwellen).
+- [ ] Projektweite API-Entlastung spezifizieren: Lookup-Cache-Strategie, lokale Log-Pufferung und Sync-Refreshintervall.
 - [ ] Deployment-Workflow mit Abgleich Test/Produktion und Produktion/Test fachlich festlegen.
 - [ ] `preDeployment`-Spezifikation erstellen (Connector-/Scheduler-Testabfragen, Mapping-Objektpruefungen).
 - [ ] Blocker- und Freigaberegeln fuer Deployment auf Basis `preDeployment` und Abgleichsergebnissen definieren.
@@ -123,9 +136,15 @@ Annahme fuer diese Spec:
 - Build oder schmaler Smoke-Test: `npm run build`
 - Manuelle Checks in Web UI oder Agent:
 	- Neues Projekt anlegen
+	- Projekt im Header auswaehlen und auf relevante Bereiche anwenden
+	- Im Header zwischen Test und Produktion wechseln und Kontextwechsel pruefen
 	- Benutzer anlegen/zuweisen und Projektberechtigungen pruefen
 	- Instanz Projekt zuordnen
 	- Instanzen pro Projekt filtern
+	- KI-Lastbewertung fuer das aktive Projekt aufrufen und 24h-Prognose plausibilisieren
+	- Verhaeltnis prognostizierter API Calls zu zulaessigen API Calls pruefen (inkl. Warn-/Kritisch-Schwelle)
+	- Lookup-Caching fuer das Projekt aktivieren und reduzierte Lookup-API-Calls verifizieren
+	- Lokale Log-Pufferung aktivieren und gebuendelte Log-Uebertragung im Refreshintervall validieren
 	- `preDeployment` lokal starten und Fehler/Erfolg pruefen
 	- Abgleich Test/Produktion sowie Produktion/Test ausfuehren und Ergebnis validieren
 	- Schedule-/Migrationszuordnung gegen Projekt pruefen
@@ -167,12 +186,35 @@ Akzeptanzkriterien:
 ### B. Klare Umgebungskennzeichnung im UI
 
 - In allen projektrelevanten Oberflaechen (Instanzliste, Scheduler, Migration, Deploy) ist klar sichtbar, ob der Kontext `test` oder `production` ist.
+- Der aktive Kontext wird zentral im Header gefuehrt: Projektauswahl plus Umgebungsumschalter (`test`/`production`).
 - Produktion erhaelt eine deutlichere visuelle Kennzeichnung als Test.
 
 Akzeptanzkriterien:
 
 - [ ] Jeder Screen mit Instanzbezug zeigt den Umgebungstyp ohne Zusatzklick.
+- [ ] Ein Wechsel im Header aktualisiert den Kontext fuer Scheduler, Connector, Migration und Deploy konsistent.
 - [ ] Verwechslungsrisiko zwischen Test und Produktion wird durch eindeutige Label/Farbkodierung reduziert.
+
+### B2. KI-Lastbewertung fuer Salesforce API-Verbrauch
+
+- Pro Projekt wird aus dem aktuellen Setup (Scheduler, Connector, Migrationskontext, geplante Runs) eine prognostizierte Last fuer 24 Stunden berechnet.
+- Die Lastbewertung erfolgt KI-gestuetzt und liefert mindestens:
+	- erwartete API Calls in 24h
+	- Verhaeltnis in Prozent zu den zulaessigen API Calls der Zielumgebung
+	- Risiko-Klassifikation (z. B. `ok`, `warning`, `critical`) mit kurzer Begruendung
+- Standardisierte Schwellen fuer die Klassifikation:
+	- `ok`: unter 70% der zulaessigen API Calls
+	- `warning`: ab 70% bis unter 85%
+	- `high`: ab 85% bis unter 95%
+	- `critical`: ab 95%
+- Die Anzeige ist im Projektkontext sichtbar und aktualisiert sich bei relevanten Setup-Aenderungen.
+
+Akzeptanzkriterien:
+
+- [ ] Fuer ein Projekt ist eine 24h-Prognose der Salesforce-API-Last sichtbar.
+- [ ] Das Verhaeltnis `prognostizierte API Calls / zulaessige API Calls` wird klar als Prozentwert angezeigt.
+- [ ] Bei Ueberschreitung definierter Schwellen wird mindestens eine Warnung im UI angezeigt.
+- [ ] Die Bewertung ist je nach Header-Kontext (`test`/`production`) getrennt nachvollziehbar.
 
 ### C. Konfigurierbare Schreibsperre fuer Produktion
 
@@ -231,17 +273,21 @@ Akzeptanzkriterien:
 - [ ] Bei konfigurierter Confluence-URL kann die Doku alternativ veroeffentlicht werden.
 - [ ] Die Confluence-Publikation ist per einem expliziten UI-Click aus dem Projektkontext ausloesbar und erstellt/aktualisiert die Seite mit Mapping- und lokalen Ressourceninformationen.
 
-### H. Eigenstaendiges Admin-Modul mit Berechtigung
+### H. Projektverwaltung im Admin-Modul mit Berechtigung
 
 - Es gibt ein separates Admin-Modul als eigene Oberflaeche/Funktionsgruppe.
 - Zugriff ist nur mit expliziter Admin-Berechtigung moeglich.
-- Das Modul umfasst mindestens: Benutzerverwaltung, Projektverwaltung, Instanzverwaltung, Deployment-Steuerung, Dokumentationskonfiguration sowie Abgleich- und Pre-Deployment-Ergebnisse.
+- Das Modul fuehrt die Konfiguration ueber eine listenbasierte Projektverwaltung.
+- Projekte werden in einer Liste wie bei Schedulern/Connectoren angezeigt (inkl. Status, zugeordnete Instanzen, Kurzinfos).
+- Erstellen/Bearbeiten erfolgt ueber einen Assistenten mit klaren Schritten (mindestens Projektstammdaten -> Instanzen Test/Produktion -> Benutzerzuordnung -> Deployment/Dokumentation -> Pruefen & Speichern).
+- Deployment-Steuerung, Dokumentationskonfiguration sowie Abgleich-/Pre-Deployment-Ergebnisse sind im Projektkontext erreichbar.
 - Die Änderungshistorie ist direkt aus dem Admin-Bereich per Klick oeffnbar.
 
 Akzeptanzkriterien:
 
 - [ ] Nicht berechtigte Benutzer erhalten keinen Zugriff auf Admin-Funktionen.
-- [ ] Berechtigte Benutzer koennen Benutzer, Projekte, Instanzen, Deployment-Freigaben und Dokumentation zentral verwalten.
+- [ ] Berechtigte Benutzer koennen Projekte ueber Liste und Assistent verwalten sowie Instanzen/Benutzer hierarchisch zuordnen.
+- [ ] Die Hierarchie Projekt -> Instanzen (`test`/`production`) -> Benutzer ist im Admin-Flow eindeutig und ohne Medienbruch abbildbar.
 - [ ] Die Änderungshistorie kann aus dem Admin-Kontext ohne Umweg geoeffnet werden.
 
 ### I. Benutzerverwaltung mit Projektzuordnung
@@ -377,9 +423,55 @@ Akzeptanzkriterien:
 - [ ] Projektdaten sind nach Neustart aus SQLite wiederherstellbar und konsistent.
 - [ ] Wechsel einer Salesforce-Instanzzuordnung loescht keine Projektstammdaten.
 
+### N. Prognose und Monitoring der Projektlast (KI)
+
+- Die Plattform berechnet pro Projekt eine 24h-Prognose des zu erwartenden Salesforce-API-Verbrauchs.
+- Die Prognose kombiniert historische Laufdaten und Setup-Metadaten (z. B. Trigger-Haeufigkeit, Batchgroessen, Objektvolumen, Fehlerraten).
+- KI bewertet die Lastentwicklung und markiert moegliche Engpaesse fruehzeitig.
+- Die Darstellung erfolgt im Projektkontext und zeigt das Verhaeltnis zum API-Limit der jeweiligen Umgebung.
+
+Akzeptanzkriterien:
+
+- [ ] Prognosewerte sind fuer `test` und `production` getrennt abrufbar.
+- [ ] Es gibt eine 24h-Zeitscheibe mit erwarteter Lastkurve oder aggregierter Lastprognose.
+- [ ] Die API-Limit-Auslastung wird als Prozent und Ampel-/Statuswert angezeigt.
+- [ ] Bei kritischer Prognose wird eine konkrete Empfehlung ausgegeben (z. B. Scheduler-Takt reduzieren, Batchgroesse anpassen).
+
+### O. Projektweite API-Optimierung (Cache + Log-Batching)
+
+- Pro Projekt gibt es eine konfigurierbare Lookup-Cache-Strategie, um wiederholte Salesforce-Lookups zu reduzieren.
+- Cache-Parameter sind mindestens: Aktiv/Inaktiv, TTL, Invalidierung bei relevanten Setup-Aenderungen.
+- Logs werden nicht zwingend sofort nach Salesforce geschrieben, sondern koennen lokal gepuffert werden.
+- Die Uebertragung lokaler Logs nach Salesforce erfolgt gebuendelt in einem konfigurierbaren Refreshintervall.
+- Die Auswirkungen auf API-Last sind im Projektkontext sichtbar und fliessen in die KI-Lastbewertung ein.
+
+Defaultwerte (MVP):
+
+- Lookup-Cache:
+	- Aktiv: `true`
+	- TTL: `15 Minuten`
+	- Harte Invalidierung bei: Deployment, Setup-Import, Mapping-Aenderung, Instanzwechsel
+- Log-Pufferung:
+	- Aktiv: `true`
+	- Sync-Refreshintervall: `5 Minuten`
+	- Sofort-Flush bei: `critical` Fehlern, manuellem Deploy-Start, kontrolliertem Agent-Shutdown
+	- Max. lokaler Puffer pro Projekt: `10.000` Logeintraege (danach FIFO-Rotation mit Audit-Hinweis)
+- Log-Batchgroesse Richtung Salesforce:
+	- Standard: `200` Eintraege pro Uebertragung
+	- Retry-Strategie: exponentielles Backoff mit maximal `5` Wiederholungen
+
+Akzeptanzkriterien:
+
+- [ ] Lookup-Cache ist pro Projekt aktivierbar und reduziert wiederholte Lookup-API-Aufrufe messbar.
+- [ ] Log-Pufferung und Log-Sync-Intervall sind pro Projekt konfigurierbar.
+- [ ] Bei aktivem Batching werden Logs lokal gespeichert und im Intervall gebuendelt nach Salesforce uebertragen.
+- [ ] Bei Ausfall der Salesforce-Verbindung gehen lokal gepufferte Logs nicht verloren und werden nachgeliefert.
+- [ ] Dashboard/Projektansicht zeigt den Einfluss von Cache und Batching auf API-Last und Limit-Auslastung.
+- [ ] Die Defaultwerte fuer Cache/Batching sind wirksam, sofern projektspezifisch nichts abweichend konfiguriert wurde.
+
 ### Priorisierungsvorschlag
 
-1. Muss: A, B, D, E, H, I, J, K, M
+1. Muss: A, B, B2, D, E, H, I, J, K, M, N, O
 2. Soll: C, F
 3. Kann: G (Confluence-Publikation optional)
 
