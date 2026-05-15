@@ -2070,8 +2070,18 @@ ${renderAISchedulerAssistantModule()}
                 <div class="migration-drop-target-hint">Dateien hier auf die Liste ziehen, um direkt einen Entwurf zu starten. Unterstützt CSV, TXT, Excel und JSON.</div>
                 <div class="table-responsive">
                   <table class="table table-sm mb-0" id="migration-list-table">
-                    <thead><tr><th>Name</th><th>Status</th><th>Objekte</th><th>Letzter Lauf</th><th>Aktionen</th></tr></thead>
-                    <tbody id="migration-list-body"><tr><td colspan="5" class="text-secondary">Keine Migrationen vorhanden.</td></tr></tbody>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Status</th>
+                        <th>Ziel-Instanz</th>
+                        <th>Quelle / Datensätze</th>
+                        <th>Zielobjekt(e)</th>
+                        <th>Letzter Lauf</th>
+                        <th>Aktionen</th>
+                      </tr>
+                    </thead>
+                    <tbody id="migration-list-body"><tr><td colspan="7" class="text-secondary">Keine Migrationen vorhanden.</td></tr></tbody>
                   </table>
                 </div>
               </div>
