@@ -4,9 +4,12 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import archiver from "archiver";
 import {
+  CreateLogInput,
   ConnectorConfig,
+  isOperationallyRelevantLog,
   SalesforceClient,
   SalesforceOrgOverview,
+  SalesforceObjectFieldMetadata,
   SalesforceScheduleRecord
 } from "../clients/salesforce/salesforce-client";
 import { ConnectorRegistry } from "../core/connector-registry/connector-registry";
@@ -22,10 +25,12 @@ import {
   getSalesforceConfig,
   SalesforceConfig
 } from "../infrastructure/config/salesforce-config";
+import { calculateNextRunAtFromTiming } from "../core/scheduler/schedule-timing";
 import { isImportProfileSchedulerRuleDue, type SchedulerDay } from "../core/scheduler/import-profile-scheduler";
 import { getDefaultStaleRunInactivityThresholdMinutes, getStaleRunInactivityThresholdMinutesForSchedule } from "../core/scheduler/stale-run-policy";
 import { MigrationStagingSqlite } from "../infrastructure/db/migration-staging-sqlite";
 import { MssqlDatabase } from "../infrastructure/db/mssql";
+import { SqliteDatabase } from "../infrastructure/db/sqlite";
 import {
   ConnectorTemplateDraft,
   listBuiltInTemplates,
@@ -61,6 +66,15 @@ export interface SalesforceProjectConfig {
   description?: string;
   archived?: boolean;
   productionWriteProtection: boolean;
+  lookupCacheEnabled: boolean;
+  lookupCacheTtlMinutes: number;
+  logBatchingEnabled: boolean;
+  logSyncIntervalMinutes: number;
+  logBatchSize: number;
+  logBufferMaxEntries: number;
+  confluenceBaseUrl?: string;
+  confluenceUsername?: string;
+  confluenceApiToken?: string;
   confluenceSpaceKey?: string;
   confluenceParentPageId?: string;
   confluencePageTitlePrefix?: string;
@@ -100,6 +114,8 @@ export interface SalesforceInstanceMutationInput {
   role?: "test" | "production";
   clientId: string;
   clientSecret: string;
+  clientIdEnv?: string;
+  clientSecretEnv?: string;
   queryLimit?: number;
 }
 
@@ -109,9 +125,74 @@ export interface SalesforceProjectMutationInput {
   description?: string;
   archived?: boolean;
   productionWriteProtection?: boolean;
+  lookupCacheEnabled?: boolean;
+  lookupCacheTtlMinutes?: number;
+  logBatchingEnabled?: boolean;
+  logSyncIntervalMinutes?: number;
+  logBatchSize?: number;
+  logBufferMaxEntries?: number;
+  confluenceBaseUrl?: string;
+  confluenceUsername?: string;
+  confluenceApiToken?: string;
   confluenceSpaceKey?: string;
   confluenceParentPageId?: string;
   confluencePageTitlePrefix?: string;
+}
+
+export type SalesforceInstanceReadinessStatus = "ready" | "setup-required" | "setup-running" | "setup-failed";
+
+export interface SalesforceReadinessMissingArtifact {
+  type: "object" | "field" | "permission" | "capability";
+  name: string;
+  severity: "critical" | "warning";
+  message?: string;
+}
+
+export interface SalesforceInstanceReadinessCheckInput {
+  projectId?: string;
+  targetEnv?: "test" | "production";
+  mode?: "validate-only";
+  requestedBy?: string;
+}
+
+export interface SalesforceInstanceReadinessResult {
+  instanceId: string;
+  projectId: string;
+  status: SalesforceInstanceReadinessStatus;
+  checkedAt: string;
+  missingArtifacts: SalesforceReadinessMissingArtifact[];
+  capabilities: {
+    healthPulse: boolean;
+    remoteCommands: boolean;
+    logUpload: boolean;
+  };
+  nextAction?: "run-msd-setup" | "none";
+}
+
+export interface SalesforceInstanceMsdSetupInput {
+  projectId?: string;
+  targetEnv?: "test" | "production";
+  mode?: "dry-run" | "apply";
+  components?: string[];
+  requestedBy?: string;
+}
+
+export interface SalesforceInstanceMsdSetupResult {
+  instanceId: string;
+  projectId: string;
+  status: SalesforceInstanceReadinessStatus;
+  startedAt: string;
+  finishedAt: string;
+  applied: string[];
+  warnings: string[];
+  missingArtifacts: SalesforceReadinessMissingArtifact[];
+  capabilities: {
+    healthPulse: boolean;
+    remoteCommands: boolean;
+    logUpload: boolean;
+  };
+  nextAction?: "run-msd-setup" | "none";
+  auditId: string;
 }
 
 export interface MigrationSalesforceInstanceMutationInput {
@@ -137,6 +218,22 @@ interface MigrationOAuthTokenResponse {
   scope?: string;
   error?: string;
   error_description?: string;
+}
+
+interface AgentObjectFieldDefinition {
+  apiName: string;
+  label: string;
+  type: "Text" | "LongTextArea" | "DateTime";
+  length?: number;
+  visibleLines?: number;
+  legacyApiNames?: string[];
+}
+
+interface AgentObjectDefinition {
+  canonicalObjectApiName: string;
+  capability: "healthPulse" | "remoteCommands";
+  legacyObjectApiNames: string[];
+  requiredFields: AgentObjectFieldDefinition[];
 }
 
 function formatSalesforceOauthError(error?: string, description?: string, loginUrl?: string): string {
@@ -209,11 +306,15 @@ interface ResolvedInstance {
 const LOCAL_INSTANCES_FILE = process.env.SF_INSTANCES_FILE || path.resolve(process.cwd(), "artifacts/sf-instances.json");
 const LOCAL_PROJECTS_FILE = process.env.SF_PROJECTS_FILE || path.resolve(process.cwd(), "artifacts/projects.json");
 const PROJECTS_SQLITE_FILE = process.env.PROJECTS_SQLITE_FILE || path.resolve(process.cwd(), "data/projects.sqlite");
+const METADATA_SQLITE_FILE = process.env.METADATA_SQLITE_FILE || PROJECTS_SQLITE_FILE;
+const SAGE100_DB_DOC_INDEX_FILE = process.env.SAGE100_DB_DOC_INDEX_FILE || path.resolve(process.cwd(), "artifacts/sage100-db-doc-index.json");
 const LOCAL_MIGRATION_INSTANCES_FILE = process.env.SF_MIGRATION_INSTANCES_FILE || path.resolve(process.cwd(), "artifacts/migration-instances.json");
 const LOCAL_SCHEDULE_TIMING_FILE = process.env.SF_SCHEDULE_TIMING_FILE || path.resolve(process.cwd(), "artifacts/schedule-timing.json");
 const LOCAL_SCHEDULE_HEALTH_FILE = process.env.SF_SCHEDULE_HEALTH_FILE || path.resolve(process.cwd(), "artifacts/schedule-health.json");
 const LOCAL_MIGRATIONS_FILE = path.resolve(process.cwd(), "artifacts/migrations.json");
-const LOCAL_FAILED_RUN_RECORDS_DIR = path.resolve(process.cwd(), "artifacts/runtime/failed-run-records");
+const LOCAL_INSTANCE_READINESS_FILE = process.env.SF_INSTANCE_READINESS_FILE || path.resolve(process.cwd(), "artifacts/instance-readiness.json");
+const LOCAL_FAILED_RUN_RECORDS_DIR =
+  process.env.FAILED_RUN_RECORDS_DIR || path.resolve(process.cwd(), "artifacts/runtime/failed-run-records");
 const SALESFORCE_METADATA_DIR = path.resolve(process.cwd(), "salesforce/metadata");
 const LOCAL_SCHEDULE_TIMING_VERSION = 1;
 
@@ -235,6 +336,259 @@ interface LocalScheduleHealthDocument {
   version: number;
   updatedAt: string;
   schedules: Record<string, LocalScheduleHealthItem>;
+}
+
+interface LocalInstanceReadinessRecord {
+  instanceId: string;
+  projectId: string;
+  status: SalesforceInstanceReadinessStatus;
+  missingArtifacts: SalesforceReadinessMissingArtifact[];
+  lastCheckedAt: string;
+  lastSetupAt?: string;
+}
+
+export interface PersistedMetadataObject {
+  systemType: "salesforce";
+  objectName: string;
+  label: string;
+  kind?: string;
+  queryable: boolean;
+  fieldCount: number;
+}
+
+export interface PersistedMetadataField {
+  objectName: string;
+  name: string;
+  label: string;
+  type: string;
+  required: boolean;
+  externalId: boolean;
+  createable: boolean;
+  updateable: boolean;
+  referenceTo?: string[];
+  picklistValues?: Array<{ value: string; label: string }>;
+}
+
+export interface InstanceMetadataSnapshot {
+  id: number;
+  projectId: string;
+  instanceId: string;
+  systemType: "salesforce";
+  status: "running" | "success" | "error";
+  refreshedAt: string;
+  objectCount: number;
+  fieldCount: number;
+  errorMessage?: string;
+}
+
+export interface InstanceMetadataContext {
+  snapshot?: InstanceMetadataSnapshot;
+  objects: PersistedMetadataObject[];
+  fieldsByObject: Record<string, PersistedMetadataField[]>;
+}
+
+export interface Sage100DocumentationField {
+  name: string;
+  type: string;
+  required?: boolean;
+  description?: string;
+}
+
+export interface Sage100DocumentationTable {
+  name: string;
+  pages?: number[];
+  primaryKey?: string[];
+  fields: Sage100DocumentationField[];
+  score?: number;
+}
+
+export interface Sage100DocumentationContext {
+  sourceFile?: string;
+  indexFile: string;
+  generatedAt?: string;
+  pageCount?: number;
+  tableCount: number;
+  matchedTables: Sage100DocumentationTable[];
+}
+
+async function withMetadataDatabase<T>(callback: (database: SqliteDatabase) => Promise<T>): Promise<T> {
+  const database = new SqliteDatabase({ filePath: METADATA_SQLITE_FILE });
+  try {
+    await initializeMetadataDatabase(database);
+    return await callback(database);
+  } finally {
+    await database.close();
+  }
+}
+
+async function initializeMetadataDatabase(database: SqliteDatabase): Promise<void> {
+  await database.run(`
+    CREATE TABLE IF NOT EXISTS metadata_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      system_type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      refreshed_at TEXT NOT NULL,
+      object_count INTEGER NOT NULL DEFAULT 0,
+      field_count INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT
+    )
+  `);
+
+  await database.run(`
+    CREATE TABLE IF NOT EXISTS metadata_objects (
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      system_type TEXT NOT NULL,
+      object_name TEXT NOT NULL,
+      label TEXT NOT NULL,
+      kind TEXT,
+      queryable INTEGER NOT NULL DEFAULT 1,
+      field_count INTEGER NOT NULL DEFAULT 0,
+      refreshed_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, instance_id, system_type, object_name)
+    )
+  `);
+
+  await database.run(`
+    CREATE TABLE IF NOT EXISTS metadata_fields (
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      system_type TEXT NOT NULL,
+      object_name TEXT NOT NULL,
+      field_name TEXT NOT NULL,
+      label TEXT NOT NULL,
+      type TEXT NOT NULL,
+      required INTEGER NOT NULL DEFAULT 0,
+      external_id INTEGER NOT NULL DEFAULT 0,
+      createable INTEGER NOT NULL DEFAULT 0,
+      updateable INTEGER NOT NULL DEFAULT 0,
+      reference_to_json TEXT,
+      picklist_values_json TEXT,
+      refreshed_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, instance_id, system_type, object_name, field_name)
+    )
+  `);
+}
+
+function normalizeMetadataSnapshot(row: Record<string, unknown>): InstanceMetadataSnapshot {
+  return {
+    id: Number(row.id || 0),
+    projectId: String(row.project_id || "").trim(),
+    instanceId: String(row.instance_id || "").trim(),
+    systemType: "salesforce",
+    status: String(row.status || "error").trim() === "success" ? "success" : String(row.status || "").trim() === "running" ? "running" : "error",
+    refreshedAt: String(row.refreshed_at || "").trim(),
+    objectCount: Number(row.object_count || 0),
+    fieldCount: Number(row.field_count || 0),
+    errorMessage: String(row.error_message || "").trim() || undefined
+  };
+}
+
+function parseJsonArrayField<T>(raw: unknown): T[] | undefined {
+  const text = String(raw || "").trim();
+  if (!text) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return Array.isArray(parsed) ? parsed as T[] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readLocalInstanceReadinessRecords(): LocalInstanceReadinessRecord[] {
+  try {
+    if (!fs.existsSync(LOCAL_INSTANCE_READINESS_FILE)) {
+      return [];
+    }
+
+    const raw = fs.readFileSync(LOCAL_INSTANCE_READINESS_FILE, "utf8").trim();
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    const normalized: LocalInstanceReadinessRecord[] = [];
+
+    for (const item of parsed) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        continue;
+      }
+
+      const candidate = item as Record<string, unknown>;
+      const instanceId = String(candidate.instanceId || "").trim();
+      const projectId = String(candidate.projectId || "default-project").trim() || "default-project";
+      if (!instanceId) {
+        continue;
+      }
+
+      const statusCandidate = String(candidate.status || "setup-required").trim();
+      const status: SalesforceInstanceReadinessStatus = (
+        statusCandidate === "ready"
+        || statusCandidate === "setup-running"
+        || statusCandidate === "setup-failed"
+        || statusCandidate === "setup-required"
+      ) ? statusCandidate : "setup-required";
+
+      const missingArtifacts: SalesforceReadinessMissingArtifact[] = [];
+      if (Array.isArray(candidate.missingArtifacts)) {
+        for (const entry of candidate.missingArtifacts) {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+            continue;
+          }
+
+          const artifact = entry as Record<string, unknown>;
+          const typeCandidate = String(artifact.type || "capability").trim();
+          const type: SalesforceReadinessMissingArtifact["type"] = (
+            typeCandidate === "object"
+            || typeCandidate === "field"
+            || typeCandidate === "permission"
+            || typeCandidate === "capability"
+          ) ? typeCandidate : "capability";
+          const severityCandidate = String(artifact.severity || "warning").trim();
+          const severity: SalesforceReadinessMissingArtifact["severity"] = severityCandidate === "critical" ? "critical" : "warning";
+          const name = String(artifact.name || "").trim();
+          if (!name) {
+            continue;
+          }
+
+          missingArtifacts.push({
+            type,
+            name,
+            severity,
+            message: String(artifact.message || "").trim() || undefined
+          });
+        }
+      }
+
+      normalized.push({
+        instanceId,
+        projectId,
+        status,
+        missingArtifacts,
+        lastCheckedAt: String(candidate.lastCheckedAt || "").trim() || new Date().toISOString(),
+        lastSetupAt: String(candidate.lastSetupAt || "").trim() || undefined
+      });
+    }
+
+    return normalized;
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalInstanceReadinessRecords(records: LocalInstanceReadinessRecord[]): void {
+  const directory = path.dirname(LOCAL_INSTANCE_READINESS_FILE);
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(LOCAL_INSTANCE_READINESS_FILE, JSON.stringify(records, null, 2), "utf8");
 }
 
 function normalizeLocalScheduleTimingStore(parsed: unknown): LocalScheduleTimingStore {
@@ -413,6 +767,15 @@ function defaultProjectConfig(): SalesforceProjectConfig {
     name: "Default-Projekt",
     archived: false,
     productionWriteProtection: true,
+    lookupCacheEnabled: true,
+    lookupCacheTtlMinutes: 15,
+    logBatchingEnabled: true,
+    logSyncIntervalMinutes: 5,
+    logBatchSize: 200,
+    logBufferMaxEntries: 10000,
+    confluenceBaseUrl: undefined,
+    confluenceUsername: undefined,
+    confluenceApiToken: undefined,
     confluenceSpaceKey: undefined,
     confluenceParentPageId: undefined,
     confluencePageTitlePrefix: undefined,
@@ -427,7 +790,16 @@ function ensureProjectsSqliteColumns(db: any): void {
     const statements = [
       { name: "confluence_space_key", sql: "ALTER TABLE projects ADD COLUMN confluence_space_key TEXT" },
       { name: "confluence_parent_page_id", sql: "ALTER TABLE projects ADD COLUMN confluence_parent_page_id TEXT" },
-      { name: "confluence_page_title_prefix", sql: "ALTER TABLE projects ADD COLUMN confluence_page_title_prefix TEXT" }
+      { name: "confluence_page_title_prefix", sql: "ALTER TABLE projects ADD COLUMN confluence_page_title_prefix TEXT" },
+      { name: "confluence_base_url", sql: "ALTER TABLE projects ADD COLUMN confluence_base_url TEXT" },
+      { name: "confluence_username", sql: "ALTER TABLE projects ADD COLUMN confluence_username TEXT" },
+      { name: "confluence_api_token", sql: "ALTER TABLE projects ADD COLUMN confluence_api_token TEXT" },
+      { name: "lookup_cache_enabled", sql: "ALTER TABLE projects ADD COLUMN lookup_cache_enabled INTEGER NOT NULL DEFAULT 1" },
+      { name: "lookup_cache_ttl_minutes", sql: "ALTER TABLE projects ADD COLUMN lookup_cache_ttl_minutes INTEGER NOT NULL DEFAULT 15" },
+      { name: "log_batching_enabled", sql: "ALTER TABLE projects ADD COLUMN log_batching_enabled INTEGER NOT NULL DEFAULT 1" },
+      { name: "log_sync_interval_minutes", sql: "ALTER TABLE projects ADD COLUMN log_sync_interval_minutes INTEGER NOT NULL DEFAULT 5" },
+      { name: "log_batch_size", sql: "ALTER TABLE projects ADD COLUMN log_batch_size INTEGER NOT NULL DEFAULT 200" },
+      { name: "log_buffer_max_entries", sql: "ALTER TABLE projects ADD COLUMN log_buffer_max_entries INTEGER NOT NULL DEFAULT 10000" }
     ];
 
     for (const statement of statements) {
@@ -460,9 +832,18 @@ function openProjectsSqliteSync(): any | null {
       description TEXT,
       archived INTEGER NOT NULL DEFAULT 0,
       production_write_protection INTEGER NOT NULL DEFAULT 1,
+      lookup_cache_enabled INTEGER NOT NULL DEFAULT 1,
+      lookup_cache_ttl_minutes INTEGER NOT NULL DEFAULT 15,
+      log_batching_enabled INTEGER NOT NULL DEFAULT 1,
+      log_sync_interval_minutes INTEGER NOT NULL DEFAULT 5,
+      log_batch_size INTEGER NOT NULL DEFAULT 200,
+      log_buffer_max_entries INTEGER NOT NULL DEFAULT 10000,
       confluence_space_key TEXT,
       confluence_parent_page_id TEXT,
       confluence_page_title_prefix TEXT,
+      confluence_base_url TEXT,
+      confluence_username TEXT,
+      confluence_api_token TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`);
@@ -482,16 +863,25 @@ function readProjectsFromSqliteSync(): SalesforceProjectConfig[] | null {
 
   try {
     const rows = db
-      .prepare(`SELECT id, name, description, archived, production_write_protection, confluence_space_key, confluence_parent_page_id, confluence_page_title_prefix, created_at, updated_at FROM projects`)
+      .prepare(`SELECT id, name, description, archived, production_write_protection, lookup_cache_enabled, lookup_cache_ttl_minutes, log_batching_enabled, log_sync_interval_minutes, log_batch_size, log_buffer_max_entries, confluence_space_key, confluence_parent_page_id, confluence_page_title_prefix, confluence_base_url, confluence_username, confluence_api_token, created_at, updated_at FROM projects`)
       .all() as Array<{
       id: string;
       name: string;
       description?: string;
       archived: number;
       production_write_protection: number;
+      lookup_cache_enabled: number;
+      lookup_cache_ttl_minutes: number;
+      log_batching_enabled: number;
+      log_sync_interval_minutes: number;
+      log_batch_size: number;
+      log_buffer_max_entries: number;
       confluence_space_key?: string;
       confluence_parent_page_id?: string;
       confluence_page_title_prefix?: string;
+      confluence_base_url?: string;
+      confluence_username?: string;
+      confluence_api_token?: string;
       created_at: string;
       updated_at: string;
     }>;
@@ -503,6 +893,15 @@ function readProjectsFromSqliteSync(): SalesforceProjectConfig[] | null {
         description: String(row.description || "").trim() || undefined,
         archived: Number(row.archived || 0) === 1,
         productionWriteProtection: Number(row.production_write_protection || 0) !== 0,
+        lookupCacheEnabled: Number(row.lookup_cache_enabled ?? 1) !== 0,
+        lookupCacheTtlMinutes: Math.max(1, Number(row.lookup_cache_ttl_minutes ?? 15) || 15),
+        logBatchingEnabled: Number(row.log_batching_enabled ?? 1) !== 0,
+        logSyncIntervalMinutes: Math.max(1, Number(row.log_sync_interval_minutes ?? 5) || 5),
+        logBatchSize: Math.max(1, Number(row.log_batch_size ?? 200) || 200),
+        logBufferMaxEntries: Math.max(100, Number(row.log_buffer_max_entries ?? 10000) || 10000),
+        confluenceBaseUrl: String(row.confluence_base_url || "").trim() || undefined,
+        confluenceUsername: String(row.confluence_username || "").trim() || undefined,
+        confluenceApiToken: String(row.confluence_api_token || "").trim() || undefined,
         confluenceSpaceKey: String(row.confluence_space_key || "").trim() || undefined,
         confluenceParentPageId: String(row.confluence_parent_page_id || "").trim() || undefined,
         confluencePageTitlePrefix: String(row.confluence_page_title_prefix || "").trim() || undefined,
@@ -532,8 +931,8 @@ function writeProjectsToSqliteSync(projects: SalesforceProjectConfig[]): void {
     db.exec("DELETE FROM projects");
 
     const insert = db.prepare(
-      `INSERT INTO projects (id, name, description, archived, production_write_protection, confluence_space_key, confluence_parent_page_id, confluence_page_title_prefix, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO projects (id, name, description, archived, production_write_protection, lookup_cache_enabled, lookup_cache_ttl_minutes, log_batching_enabled, log_sync_interval_minutes, log_batch_size, log_buffer_max_entries, confluence_space_key, confluence_parent_page_id, confluence_page_title_prefix, confluence_base_url, confluence_username, confluence_api_token, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     for (const project of projects) {
@@ -543,9 +942,18 @@ function writeProjectsToSqliteSync(projects: SalesforceProjectConfig[]): void {
         project.description || "",
         project.archived === true ? 1 : 0,
         project.productionWriteProtection === false ? 0 : 1,
+        project.lookupCacheEnabled === false ? 0 : 1,
+        Math.max(1, Number(project.lookupCacheTtlMinutes || 15) || 15),
+        project.logBatchingEnabled === false ? 0 : 1,
+        Math.max(1, Number(project.logSyncIntervalMinutes || 5) || 5),
+        Math.max(1, Number(project.logBatchSize || 200) || 200),
+        Math.max(100, Number(project.logBufferMaxEntries || 10000) || 10000),
         project.confluenceSpaceKey || "",
         project.confluenceParentPageId || "",
         project.confluencePageTitlePrefix || "",
+        project.confluenceBaseUrl || "",
+        project.confluenceUsername || "",
+        project.confluenceApiToken || "",
         project.createdAt,
         project.updatedAt
       );
@@ -614,6 +1022,15 @@ function readLocalProjects(): SalesforceProjectConfig[] {
           description: typeof candidate.description === "string" ? candidate.description.trim() || undefined : undefined,
           archived: candidate.archived === true,
           productionWriteProtection: candidate.productionWriteProtection !== false,
+          lookupCacheEnabled: candidate.lookupCacheEnabled !== false,
+          lookupCacheTtlMinutes: Math.max(1, Number(candidate.lookupCacheTtlMinutes || 15) || 15),
+          logBatchingEnabled: candidate.logBatchingEnabled !== false,
+          logSyncIntervalMinutes: Math.max(1, Number(candidate.logSyncIntervalMinutes || 5) || 5),
+          logBatchSize: Math.max(1, Number(candidate.logBatchSize || 200) || 200),
+          logBufferMaxEntries: Math.max(100, Number(candidate.logBufferMaxEntries || 10000) || 10000),
+          confluenceBaseUrl: typeof candidate.confluenceBaseUrl === "string" ? candidate.confluenceBaseUrl.trim() || undefined : undefined,
+          confluenceUsername: typeof candidate.confluenceUsername === "string" ? candidate.confluenceUsername.trim() || undefined : undefined,
+          confluenceApiToken: typeof candidate.confluenceApiToken === "string" ? candidate.confluenceApiToken.trim() || undefined : undefined,
           confluenceSpaceKey: typeof candidate.confluenceSpaceKey === "string" ? candidate.confluenceSpaceKey.trim() || undefined : undefined,
           confluenceParentPageId: typeof candidate.confluenceParentPageId === "string" ? candidate.confluenceParentPageId.trim() || undefined : undefined,
           confluencePageTitlePrefix: typeof candidate.confluencePageTitlePrefix === "string" ? candidate.confluencePageTitlePrefix.trim() || undefined : undefined,
@@ -841,6 +1258,15 @@ export interface SalesforceProjectOption {
   description?: string;
   archived?: boolean;
   productionWriteProtection: boolean;
+  lookupCacheEnabled: boolean;
+  lookupCacheTtlMinutes: number;
+  logBatchingEnabled: boolean;
+  logSyncIntervalMinutes: number;
+  logBatchSize: number;
+  logBufferMaxEntries: number;
+  confluenceBaseUrl?: string;
+  confluenceUsername?: string;
+  confluenceApiTokenConfigured?: boolean;
   confluenceSpaceKey?: string;
   confluenceParentPageId?: string;
   confluencePageTitlePrefix?: string;
@@ -1008,6 +1434,22 @@ export interface RunListItem {
   errorMessage?: string;
 }
 
+function isMonitorRelevantRun(run: Pick<RunListItem, "status" | "recordsRead" | "recordsProcessed" | "recordsSucceeded" | "recordsFailed" | "errorMessage">): boolean {
+  const status = String(run.status || "").trim().toLowerCase();
+  if (status && status !== "success") {
+    return true;
+  }
+  if (String(run.errorMessage || "").trim()) {
+    return true;
+  }
+
+  const recordsRead = Math.max(0, Number(run.recordsRead || 0));
+  const recordsProcessed = Math.max(0, Number(run.recordsProcessed || 0));
+  const recordsSucceeded = Math.max(0, Number(run.recordsSucceeded || 0));
+  const recordsFailed = Math.max(0, Number(run.recordsFailed || 0));
+  return recordsRead > 0 || recordsProcessed > 0 || recordsSucceeded > 0 || recordsFailed > 0;
+}
+
 export interface StaleRunListItem extends RunListItem {
   ageMinutes: number;
   staleThresholdMinutes: number;
@@ -1037,6 +1479,16 @@ export interface LogListItem {
   message?: string;
   recordKey?: string;
   createdAt?: string;
+}
+
+function isMonitorRelevantLogItem(log: Pick<LogListItem, "level" | "step" | "message" | "recordKey">): boolean {
+  const normalizedLevel = String(log.level || "").trim().toUpperCase();
+  return isOperationallyRelevantLog({
+    level: normalizedLevel === "ERROR" ? "ERROR" : normalizedLevel === "WARN" ? "WARN" : "INFO",
+    step: log.step || "",
+    message: log.message || "",
+    recordKey: log.recordKey
+  });
 }
 
 export interface RunFailedRecordItem {
@@ -1816,6 +2268,127 @@ function resolveInstances(): ResolvedInstance[] {
 }
 
 export class AdminDataService {
+  private static readonly agentPermissionSetLegacyNames = ["MSD_Agent_Integration", "MSD_IntegrationAgent"];
+  private static readonly defaultSalesforceMetadataFieldObjects = [
+    "Account",
+    "Contact",
+    "Lead",
+    "Opportunity",
+    "Order",
+    "Product2",
+    "Pricebook2",
+    "PricebookEntry"
+  ];
+
+  private static readonly agentObjectDefinitions: AgentObjectDefinition[] = [
+    {
+      canonicalObjectApiName: "MSD_AgentHealth__c",
+      capability: "healthPulse",
+      legacyObjectApiNames: ["MSD_AgentPulse__c", "MSD_Heartbeat__c"],
+      requiredFields: [
+        {
+          apiName: "MSD_InstanceId__c",
+          label: "Instance Id",
+          type: "Text",
+          length: 120,
+          legacyApiNames: ["InstanceId__c", "MSD_SourceInstance__c"]
+        },
+        {
+          apiName: "MSD_ProjectId__c",
+          label: "Project Id",
+          type: "Text",
+          length: 120,
+          legacyApiNames: ["ProjectId__c"]
+        },
+        {
+          apiName: "MSD_AgentVersion__c",
+          label: "Agent Version",
+          type: "Text",
+          length: 120,
+          legacyApiNames: ["Version__c", "AgentVersion__c"]
+        },
+        {
+          apiName: "MSD_RuntimeStatus__c",
+          label: "Runtime Status",
+          type: "Text",
+          length: 80,
+          legacyApiNames: ["Status__c", "MSD_Status__c"]
+        },
+        {
+          apiName: "MSD_LastSeenAt__c",
+          label: "Last Seen At",
+          type: "DateTime",
+          legacyApiNames: ["LastSeenAt__c", "MSD_LastHeartbeat__c"]
+        },
+        {
+          apiName: "MSD_HealthPayload__c",
+          label: "Health Payload",
+          type: "LongTextArea",
+          length: 32768,
+          visibleLines: 8,
+          legacyApiNames: ["MSD_HealthJson__c", "HealthPayload__c", "Payload__c"]
+        }
+      ]
+    },
+    {
+      canonicalObjectApiName: "MSD_AgentCommand__c",
+      capability: "remoteCommands",
+      legacyObjectApiNames: ["MSD_RemoteCommand__c", "MSD_AgentInstruction__c"],
+      requiredFields: [
+        {
+          apiName: "MSD_CommandId__c",
+          label: "Command Id",
+          type: "Text",
+          length: 120,
+          legacyApiNames: ["CommandId__c"]
+        },
+        {
+          apiName: "MSD_CommandType__c",
+          label: "Command Type",
+          type: "Text",
+          length: 120,
+          legacyApiNames: ["CommandType__c", "Type__c"]
+        },
+        {
+          apiName: "MSD_CommandPayload__c",
+          label: "Command Payload",
+          type: "LongTextArea",
+          length: 32768,
+          visibleLines: 8,
+          legacyApiNames: ["MSD_PayloadJson__c", "Payload__c"]
+        },
+        {
+          apiName: "MSD_ResponseInstruction__c",
+          label: "Response Instruction",
+          type: "LongTextArea",
+          length: 32768,
+          visibleLines: 6,
+          legacyApiNames: ["ResponseInstruction__c", "Instruction__c"]
+        },
+        {
+          apiName: "MSD_Status__c",
+          label: "Status",
+          type: "Text",
+          length: 80,
+          legacyApiNames: ["Status__c"]
+        },
+        {
+          apiName: "MSD_ExpiresAt__c",
+          label: "Expires At",
+          type: "DateTime",
+          legacyApiNames: ["ExpiresAt__c"]
+        },
+        {
+          apiName: "MSD_Signature__c",
+          label: "Signature",
+          type: "Text",
+          length: 255,
+          legacyApiNames: ["Signature__c"]
+        }
+      ]
+    }
+  ];
+
   private readonly migrationStaging = new MigrationStagingSqlite();
   private readonly adaptiveSalesforceCache = new Map<string, { expiresAt: number; value: unknown }>();
   private readonly salesforceApiUsageByInstance = new Map<string, number>();
@@ -1888,6 +2461,63 @@ export class AdminDataService {
     }
 
     return this.resolveInstance(instanceId);
+  }
+
+  private resolveProjectForInstance(instanceId?: string): SalesforceProjectConfig {
+    if (!instanceId) {
+      return defaultProjectConfig();
+    }
+
+    const configured = readConfiguredInstancesWithMetadata().find((item) => item.id === instanceId);
+    const projectId = String(configured?.projectId || "default-project").trim() || "default-project";
+    const projects = readLocalProjects();
+    const projectById = new Map(projects.map((item) => [item.id, item]));
+    return projectById.get(projectId) || projectById.get("default-project") || defaultProjectConfig();
+  }
+
+  private resolveLookupCacheRuntime(instanceId?: string): { enabled: boolean; ttlMs: number } {
+    const project = this.resolveProjectForInstance(instanceId);
+    if (project.lookupCacheEnabled === false) {
+      return { enabled: false, ttlMs: 0 };
+    }
+
+    const ttlMinutes = Math.max(1, Number(project.lookupCacheTtlMinutes || 15) || 15);
+    return {
+      enabled: true,
+      ttlMs: ttlMinutes * 60_000
+    };
+  }
+
+  private async writeRunLogsWithProjectStrategy(
+    client: SalesforceClient,
+    inputs: CreateLogInput[],
+    instanceId?: string
+  ): Promise<void> {
+    const project = this.resolveProjectForInstance(instanceId);
+    const normalizedInputs = Array.isArray(inputs) ? inputs.filter((item) => !!item) : [];
+    if (!normalizedInputs.length) {
+      return;
+    }
+
+    const batchingEnabled = project.logBatchingEnabled !== false;
+    const batchSize = Math.max(1, Number(project.logBatchSize || 200) || 200);
+
+    if (!batchingEnabled || normalizedInputs.length === 1) {
+      if (batchingEnabled) {
+        await client.createLogsBulk([normalizedInputs[0]]);
+        return;
+      }
+      await client.createLog(normalizedInputs[0]);
+      return;
+    }
+
+    for (let offset = 0; offset < normalizedInputs.length; offset += batchSize) {
+      const batch = normalizedInputs.slice(offset, offset + batchSize);
+      if (!batch.length) {
+        continue;
+      }
+      await client.createLogsBulk(batch);
+    }
   }
 
   private summarizeMigrationForInstance(migration: MigrationConfig): MigrationSalesforceInstanceSummary["lastMigration"] {
@@ -2169,12 +2799,27 @@ export class AdminDataService {
   private async createMigrationLookupResolver(
     client: SalesforceClient,
     mappingLines: MappingDefinitionLine[],
-    sourceRecords: Array<Record<string, unknown>>
+    sourceRecords: Array<Record<string, unknown>>,
+    instanceId?: string
   ): Promise<LookupResolverFn> {
+    const cacheRuntime = this.resolveLookupCacheRuntime(instanceId);
     const lookupLines = mappingLines.filter(
       (line) => line.transform.type === "LOOKUP" && line.transform.lookupObject && line.transform.lookupField
     );
-    const lookupCache = new Map<string, string | null>();
+    const lookupCache = new Map<string, { value: string | null; expiresAt: number }>();
+
+    if (!cacheRuntime.enabled) {
+      return async (lookupObject: string, lookupField: string, value: unknown): Promise<string | null> => {
+        if (value === undefined || value === null || value === "") {
+          return null;
+        }
+
+        const soql = `SELECT Id FROM ${lookupObject} WHERE ${lookupField} = ${this.toSoqlLiteral(value)} LIMIT 1`;
+        const result = await client.queryGeneric(soql);
+        return result.length && typeof result[0].Id === "string" ? result[0].Id : null;
+      };
+    }
+
     const groupedLookups = new Map<string, { lookupObject: string; lookupField: string; values: Set<string> }>();
 
     for (const line of lookupLines) {
@@ -2222,14 +2867,20 @@ export class AdminDataService {
           }
           const cacheKey = `${group.lookupObject}|${group.lookupField}|${String(fieldValue)}`;
           if (!lookupCache.has(cacheKey)) {
-            lookupCache.set(cacheKey, typeof row.Id === "string" ? row.Id : null);
+            lookupCache.set(cacheKey, {
+              value: typeof row.Id === "string" ? row.Id : null,
+              expiresAt: Date.now() + cacheRuntime.ttlMs
+            });
           }
         }
 
         for (const value of chunk) {
           const cacheKey = `${group.lookupObject}|${group.lookupField}|${value}`;
           if (!lookupCache.has(cacheKey)) {
-            lookupCache.set(cacheKey, null);
+            lookupCache.set(cacheKey, {
+              value: null,
+              expiresAt: Date.now() + cacheRuntime.ttlMs
+            });
           }
         }
       }
@@ -2242,14 +2893,18 @@ export class AdminDataService {
 
       const normalizedValue = String(value);
       const cacheKey = `${lookupObject}|${lookupField}|${normalizedValue}`;
-      if (lookupCache.has(cacheKey)) {
-        return lookupCache.get(cacheKey) ?? null;
+      const cachedEntry = lookupCache.get(cacheKey);
+      if (cachedEntry && cachedEntry.expiresAt > Date.now()) {
+        return cachedEntry.value;
       }
 
       const soql = `SELECT Id FROM ${lookupObject} WHERE ${lookupField} = ${this.toSoqlLiteral(value)} LIMIT 1`;
       const result = await client.queryGeneric(soql);
       const resolvedId = result.length && typeof result[0].Id === "string" ? result[0].Id : null;
-      lookupCache.set(cacheKey, resolvedId);
+      lookupCache.set(cacheKey, {
+        value: resolvedId,
+        expiresAt: Date.now() + cacheRuntime.ttlMs
+      });
       return resolvedId;
     };
   }
@@ -2273,6 +2928,635 @@ export class AdminDataService {
         role
       };
     });
+  }
+
+  private findInstanceOptionOrThrow(instanceId: string): SalesforceInstanceOption {
+    const normalizedInstanceId = String(instanceId || "").trim();
+    if (!normalizedInstanceId) {
+      throw new Error("instanceId ist erforderlich");
+    }
+
+    const instance = this.listInstances().find((item) => item.id === normalizedInstanceId);
+    if (!instance) {
+      throw new Error(`Salesforce-Instanz ${normalizedInstanceId} nicht gefunden`);
+    }
+
+    return instance;
+  }
+
+  private buildDefaultReadinessMissingArtifacts(): SalesforceReadinessMissingArtifact[] {
+    const defaults: SalesforceReadinessMissingArtifact[] = [];
+    for (const definition of AdminDataService.agentObjectDefinitions) {
+      defaults.push({
+        type: "object",
+        name: definition.canonicalObjectApiName,
+        severity: "critical",
+        message: `Objekt ${definition.canonicalObjectApiName} fehlt`
+      });
+      for (const field of definition.requiredFields) {
+        defaults.push({
+          type: "field",
+          name: `${definition.canonicalObjectApiName}.${field.apiName}`,
+          severity: "critical",
+          message: `Feld ${definition.canonicalObjectApiName}.${field.apiName} fehlt`
+        });
+      }
+    }
+
+    defaults.push({
+      type: "permission",
+      name: "MSD_Integration_Agent",
+      severity: "critical",
+      message: "Berechtigungssatz fuer Agent-Betrieb fehlt"
+    });
+    return defaults;
+  }
+
+  private normalizeApiName(value: string): string {
+    return String(value || "").trim().toLowerCase();
+  }
+
+  private escapeSoqlLiteral(value: string): string {
+    return String(value || "").replace(/'/g, "\\'");
+  }
+
+  private buildCustomFieldMetadata(field: AgentObjectFieldDefinition): Record<string, unknown> {
+    if (field.type === "DateTime") {
+      return {
+        label: field.label,
+        type: "DateTime",
+        required: false
+      };
+    }
+
+    if (field.type === "LongTextArea") {
+      return {
+        label: field.label,
+        type: "LongTextArea",
+        length: field.length ?? 32768,
+        visibleLines: field.visibleLines ?? 6,
+        required: false
+      };
+    }
+
+    return {
+      label: field.label,
+      type: "Text",
+      length: field.length ?? 255,
+      required: false
+    };
+  }
+
+  private resolveKnownObjectName(
+    knownObjects: Map<string, string>,
+    names: string[]
+  ): string | null {
+    for (const name of names) {
+      const match = knownObjects.get(this.normalizeApiName(name));
+      if (match) {
+        return match;
+      }
+    }
+    return null;
+  }
+
+  private resolveKnownFieldName(
+    knownFields: Set<string>,
+    canonicalName: string,
+    legacyNames: string[]
+  ): string | null {
+    const canonical = this.normalizeApiName(canonicalName);
+    if (knownFields.has(canonical)) {
+      return canonicalName;
+    }
+
+    for (const legacyName of legacyNames) {
+      const legacy = this.normalizeApiName(legacyName);
+      if (knownFields.has(legacy)) {
+        return legacyName;
+      }
+    }
+
+    return null;
+  }
+
+  private buildCapabilityFromArtifacts(
+    missingArtifacts: SalesforceReadinessMissingArtifact[]
+  ): { healthPulse: boolean; remoteCommands: boolean; logUpload: boolean } {
+    const hasGlobalCritical = missingArtifacts.some(
+      (artifact) => artifact.severity === "critical" && (artifact.name === "describeGlobal" || artifact.name === "MSD_Integration_Agent")
+    );
+
+    const hasHealthCritical = missingArtifacts.some(
+      (artifact) => artifact.severity === "critical" && artifact.name.startsWith("MSD_AgentHealth__c")
+    );
+    const hasCommandCritical = missingArtifacts.some(
+      (artifact) => artifact.severity === "critical" && artifact.name.startsWith("MSD_AgentCommand__c")
+    );
+
+    return {
+      healthPulse: !(hasGlobalCritical || hasHealthCritical),
+      remoteCommands: !(hasGlobalCritical || hasCommandCritical),
+      logUpload: true
+    };
+  }
+
+  private async ensureAgentObjectSetup(
+    client: SalesforceClient,
+    knownObjects: Map<string, string>,
+    definition: AgentObjectDefinition
+  ): Promise<{ applied: string[]; warnings: string[] }> {
+    const applied: string[] = [];
+    const warnings: string[] = [];
+
+    let targetObject = this.resolveKnownObjectName(knownObjects, [definition.canonicalObjectApiName]);
+    if (!targetObject) {
+      const legacyObject = this.resolveKnownObjectName(knownObjects, definition.legacyObjectApiNames);
+      if (legacyObject) {
+        targetObject = legacyObject;
+        warnings.push(
+          `Legacy-Objekt ${legacyObject} gefunden. Migration bleibt kompatibel; kanonisches Objekt ${definition.canonicalObjectApiName} wurde nicht erzwungen.`
+        );
+      } else {
+        const canonical = definition.canonicalObjectApiName;
+        const label = canonical.replace(/__c$/, "").replace(/_/g, " ");
+        await client.createOrUpdateMetadata("CustomObject", canonical, {
+          fullName: canonical,
+          label,
+          pluralLabel: `${label}s`,
+          deploymentStatus: "Deployed",
+          sharingModel: "ReadWrite",
+          nameField: {
+            type: "AutoNumber",
+            label: "Name",
+            displayFormat: `${canonical.replace(/__c$/, "")}-{0000}`
+          }
+        });
+        if (await client.waitForObjectVisibility(canonical)) {
+          knownObjects.set(this.normalizeApiName(canonical), canonical);
+          targetObject = canonical;
+          applied.push(canonical);
+        } else {
+          warnings.push(`Objekt ${canonical} wurde angelegt, ist aber noch nicht im Salesforce-Describe sichtbar. Bitte Setup erneut ausfuehren.`);
+          return { applied, warnings };
+        }
+      }
+    }
+
+    if (!targetObject) {
+      return { applied, warnings };
+    }
+
+    try {
+      const objectAccess = await client.ensurePermissionSetObjectAccess("MSD_Integration_Agent", targetObject);
+      if (!objectAccess.alreadyExisted) {
+        applied.push(`MSD_Integration_Agent.objectPermissions.${targetObject}`);
+      }
+    } catch (error) {
+      warnings.push(
+        `Objektberechtigung fuer ${targetObject} konnte nicht gesetzt werden: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    let knownFieldNames = new Set<string>();
+    try {
+      const fields = await client.describeObjectFields(targetObject, { forceRefresh: true });
+      knownFieldNames = new Set(fields.map((field) => this.normalizeApiName(field.name)).filter(Boolean));
+    } catch (error) {
+      warnings.push(
+        `Felder fuer ${targetObject} konnten nicht geladen werden: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return { applied, warnings };
+    }
+
+    for (const field of definition.requiredFields) {
+      const resolvedField = this.resolveKnownFieldName(knownFieldNames, field.apiName, field.legacyApiNames || []);
+      if (resolvedField) {
+        const resolvedFullName = `${targetObject}.${resolvedField}`;
+        if (await client.waitForCustomFieldMetadataVisibility(resolvedFullName, 6, 1000)) {
+          try {
+            const fieldAccess = await client.ensurePermissionSetFieldAccess("MSD_Integration_Agent", targetObject, resolvedField);
+            if (!fieldAccess.alreadyExisted) {
+              applied.push(`MSD_Integration_Agent.fieldPermissions.${resolvedFullName}`);
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (message.includes("no CustomField named") || message.includes("bad value for restricted picklist field")) {
+              warnings.push(
+                `Feldberechtigung fuer ${resolvedFullName} wird beim naechsten Setup-Lauf erneut gesetzt; Salesforce kennt das Feld in PermissionSet-Metadaten noch nicht.`
+              );
+            } else {
+              warnings.push(`Feldberechtigung fuer ${resolvedFullName} konnte nicht gesetzt werden: ${message}`);
+            }
+          }
+        } else {
+          warnings.push(
+            `Feldberechtigung fuer ${resolvedFullName} wird beim naechsten Setup-Lauf gesetzt; Salesforce-Metadata-Read sieht das Feld noch nicht.`
+          );
+        }
+        if (this.normalizeApiName(resolvedField) !== this.normalizeApiName(field.apiName)) {
+          warnings.push(
+            `Legacy-Feld ${targetObject}.${resolvedField} gefunden. Kanonisches Feld ${targetObject}.${field.apiName} wird fuer neue Installationen verwendet.`
+          );
+        }
+        continue;
+      }
+
+      const fullName = `${targetObject}.${field.apiName}`;
+      try {
+        await client.createOrUpdateMetadata("CustomField", fullName, this.buildCustomFieldMetadata(field), {
+          waitForCustomFieldDescribe: false
+        });
+        const metadataVisible = await client.waitForCustomFieldMetadataVisibility(fullName, 2, 500);
+        if (metadataVisible) {
+          try {
+            const fieldAccess = await client.ensurePermissionSetFieldAccess("MSD_Integration_Agent", targetObject, field.apiName);
+            if (!fieldAccess.alreadyExisted) {
+              applied.push(`MSD_Integration_Agent.fieldPermissions.${fullName}`);
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (message.includes("no CustomField named") || message.includes("bad value for restricted picklist field")) {
+              warnings.push(
+                `Feldberechtigung fuer ${fullName} wird beim naechsten Setup-Lauf erneut gesetzt; Salesforce kennt das Feld in PermissionSet-Metadaten noch nicht.`
+              );
+            } else {
+              warnings.push(`Feldberechtigung fuer ${fullName} konnte nicht gesetzt werden: ${message}`);
+            }
+          }
+        } else {
+          warnings.push(
+            `Feld ${fullName} wurde angelegt, ist aber noch nicht per Salesforce-Metadata-Read sichtbar. Feldberechtigung wird beim naechsten Setup-Lauf gesetzt.`
+          );
+        }
+        knownFieldNames.add(this.normalizeApiName(field.apiName));
+        applied.push(fullName);
+      } catch (error) {
+        warnings.push(`${fullName}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    return { applied, warnings };
+  }
+
+  private async checkSalesforceAgentReadiness(
+    instanceId: string,
+    permissionSetName = "MSD_Integration_Agent"
+  ): Promise<{
+    missingArtifacts: SalesforceReadinessMissingArtifact[];
+    capabilities: { healthPulse: boolean; remoteCommands: boolean; logUpload: boolean };
+  }> {
+    const resolved = this.resolveRuntimeInstance(instanceId);
+    const client = new SalesforceClient(resolved.config);
+    await client.login();
+
+    const missingArtifacts: SalesforceReadinessMissingArtifact[] = [];
+    const knownObjects = new Map<string, string>();
+    try {
+      const metadata = await client.listObjectMetadata();
+      for (const entry of metadata) {
+        const objectName = String(entry.name || "").trim();
+        if (!objectName) {
+          continue;
+        }
+        knownObjects.set(this.normalizeApiName(objectName), objectName);
+      }
+    } catch (error) {
+      missingArtifacts.push({
+        type: "capability",
+        name: "describeGlobal",
+        severity: "critical",
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    for (const definition of AdminDataService.agentObjectDefinitions) {
+      const canonical = definition.canonicalObjectApiName;
+      const objectApiName = this.resolveKnownObjectName(
+        knownObjects,
+        [canonical, ...definition.legacyObjectApiNames]
+      );
+
+      if (!objectApiName) {
+        missingArtifacts.push({
+          type: "object",
+          name: canonical,
+          severity: "critical",
+          message: `Objekt ${canonical} fehlt oder ist fuer den aktuellen Benutzer nicht sichtbar.`
+        });
+        continue;
+      }
+
+      if (this.normalizeApiName(objectApiName) !== this.normalizeApiName(canonical)) {
+        missingArtifacts.push({
+          type: "object",
+          name: canonical,
+          severity: "warning",
+          message: `Legacy-Objekt ${objectApiName} erkannt. Migration auf ${canonical} empfohlen, aber bestehendes System bleibt lauffaehig.`
+        });
+      }
+
+      let knownFieldNames = new Set<string>();
+      try {
+        const fields = await client.describeObjectFields(objectApiName, { forceRefresh: true });
+        knownFieldNames = new Set(fields.map((field) => this.normalizeApiName(field.name)).filter(Boolean));
+      } catch (error) {
+        missingArtifacts.push({
+          type: "capability",
+          name: canonical,
+          severity: "critical",
+          message: `Feld-Describe fuer ${objectApiName} fehlgeschlagen: ${error instanceof Error ? error.message : String(error)}`
+        });
+        continue;
+      }
+
+      for (const field of definition.requiredFields) {
+        const matchedField = this.resolveKnownFieldName(knownFieldNames, field.apiName, field.legacyApiNames || []);
+        if (!matchedField) {
+          const fieldCandidates = [field.apiName, ...(field.legacyApiNames || [])];
+          let metadataFieldName = "";
+          for (const candidateFieldName of fieldCandidates) {
+            const candidateFullName = `${objectApiName}.${candidateFieldName}`;
+            if (await client.customFieldMetadataExists(candidateFullName)) {
+              metadataFieldName = candidateFieldName;
+              break;
+            }
+          }
+
+          if (metadataFieldName) {
+            missingArtifacts.push({
+              type: "field",
+              name: `${canonical}.${field.apiName}`,
+              severity: "warning",
+              message: `Feld ${metadataFieldName} existiert auf ${objectApiName}, ist fuer den aktuellen Benutzer aber nicht im Salesforce-Describe sichtbar. Field-Level-Security/PermissionSet pruefen.`
+            });
+            continue;
+          }
+
+          missingArtifacts.push({
+            type: "field",
+            name: `${canonical}.${field.apiName}`,
+            severity: "critical",
+            message: `Erforderliches Feld ${field.apiName} fehlt auf ${objectApiName}.`
+          });
+          continue;
+        }
+
+        if (this.normalizeApiName(matchedField) !== this.normalizeApiName(field.apiName)) {
+          missingArtifacts.push({
+            type: "field",
+            name: `${canonical}.${field.apiName}`,
+            severity: "warning",
+            message: `Legacy-Feld ${matchedField} erkannt. Migration auf ${field.apiName} empfohlen.`
+          });
+        }
+      }
+    }
+
+    try {
+      const permissionCandidates = [
+        permissionSetName,
+        ...AdminDataService.agentPermissionSetLegacyNames
+      ].map((entry) => String(entry || "").trim()).filter(Boolean);
+      const quotedPermissionCandidates = permissionCandidates
+        .map((entry) => `'${this.escapeSoqlLiteral(entry)}'`)
+        .join(", ");
+      const permissionSetResult = await client.queryGeneric(
+        `SELECT Id, Name FROM PermissionSet WHERE Name IN (${quotedPermissionCandidates})`
+      );
+      const discoveredPermissionSets = new Set(
+        permissionSetResult
+          .map((entry) => String(entry.Name || "").trim())
+          .filter(Boolean)
+      );
+
+      if (!discoveredPermissionSets.size) {
+        missingArtifacts.push({
+          type: "permission",
+          name: permissionSetName,
+          severity: "critical",
+          message: "Erforderlicher Permission Set fehlt."
+        });
+      } else if (!discoveredPermissionSets.has(permissionSetName)) {
+        const legacyPermissionName = permissionCandidates.find((entry) => discoveredPermissionSets.has(entry));
+        missingArtifacts.push({
+          type: "permission",
+          name: permissionSetName,
+          severity: "warning",
+          message: `Legacy-PermissionSet ${legacyPermissionName || "unbekannt"} erkannt. Migration auf ${permissionSetName} empfohlen.`
+        });
+      }
+    } catch (error) {
+      missingArtifacts.push({
+        type: "permission",
+        name: permissionSetName,
+        severity: "critical",
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    return {
+      missingArtifacts,
+      capabilities: this.buildCapabilityFromArtifacts(missingArtifacts)
+    };
+  }
+
+  private async applySalesforceMsdSetup(
+    instanceId: string,
+    components: string[]
+  ): Promise<{ applied: string[]; warnings: string[]; missingArtifacts: SalesforceReadinessMissingArtifact[] }> {
+    const resolved = this.resolveRuntimeInstance(instanceId);
+    const client = new SalesforceClient(resolved.config);
+    await client.login();
+
+    const knownObjects = new Map<string, string>();
+    try {
+      const metadata = await client.listObjectMetadata();
+      for (const entry of metadata) {
+        const objectName = String(entry.name || "").trim();
+        if (!objectName) {
+          continue;
+        }
+        knownObjects.set(this.normalizeApiName(objectName), objectName);
+      }
+    } catch {
+      // Readiness liefert den eigentlichen Fehlertext; Setup versucht dennoch Best-Effort-Anlage.
+    }
+
+    const desiredComponents = components.length
+      ? components
+      : ["MSD_AgentHealth__c", "MSD_AgentCommand__c", "MSD_Integration_Agent.permissionset"];
+    const applied: string[] = [];
+    const warnings: string[] = [];
+
+    for (const component of desiredComponents) {
+      const normalized = String(component || "").trim();
+      if (!normalized) {
+        continue;
+      }
+
+      try {
+        const definition = AdminDataService.agentObjectDefinitions.find(
+          (entry) => this.normalizeApiName(entry.canonicalObjectApiName) === this.normalizeApiName(normalized)
+        );
+        if (definition) {
+          const setupResult = await this.ensureAgentObjectSetup(client, knownObjects, definition);
+          applied.push(...setupResult.applied);
+          warnings.push(...setupResult.warnings);
+          continue;
+        }
+
+        if (normalized === "MSD_Integration_Agent.permissionset") {
+          const permissionCandidates = [
+            "MSD_Integration_Agent",
+            ...AdminDataService.agentPermissionSetLegacyNames
+          ];
+          const quotedPermissionCandidates = permissionCandidates
+            .map((entry) => `'${this.escapeSoqlLiteral(entry)}'`)
+            .join(", ");
+          const availablePermissionSets = new Set(
+            (await client.queryGeneric(
+              `SELECT Id, Name FROM PermissionSet WHERE Name IN (${quotedPermissionCandidates})`
+            ))
+              .map((entry) => String(entry.Name || "").trim())
+              .filter(Boolean)
+          );
+
+          if (availablePermissionSets.has("MSD_Integration_Agent")) {
+            await client.ensurePermissionSetAssigned("MSD_Integration_Agent");
+            applied.push(normalized);
+          } else {
+            const legacyPermissionName = AdminDataService.agentPermissionSetLegacyNames.find(
+              (entry) => availablePermissionSets.has(entry)
+            );
+            if (legacyPermissionName) {
+              await client.ensurePermissionSetAssigned(legacyPermissionName);
+              warnings.push(
+                `Legacy-PermissionSet ${legacyPermissionName} zugewiesen. Migration auf MSD_Integration_Agent empfohlen.`
+              );
+              applied.push(`${legacyPermissionName}.permissionset`);
+            } else {
+              warnings.push("PermissionSet MSD_Integration_Agent fehlt und konnte nicht automatisch erstellt werden.");
+            }
+          }
+          continue;
+        }
+
+        warnings.push(`Komponente ${normalized} ist im MVP-Setup nicht automatisiert hinterlegt.`);
+      } catch (error) {
+        warnings.push(`${normalized}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    const readiness = await this.checkSalesforceAgentReadiness(instanceId);
+    return {
+      applied,
+      warnings,
+      missingArtifacts: readiness.missingArtifacts
+    };
+  }
+
+  public async runInstanceReadinessCheck(
+    instanceId: string,
+    input: SalesforceInstanceReadinessCheckInput
+  ): Promise<SalesforceInstanceReadinessResult> {
+    const instance = this.findInstanceOptionOrThrow(instanceId);
+    const projectId = String(input.projectId || instance.projectId || "default-project").trim() || "default-project";
+    const now = new Date().toISOString();
+
+    const records = readLocalInstanceReadinessRecords();
+    const existing = records.find((entry) => entry.instanceId === instance.id);
+
+    if (existing?.status === "setup-running") {
+      throw new Error("Readiness-Check kann nicht ausgefuehrt werden, solange ein Setup-Lauf aktiv ist.");
+    }
+
+    const runtimeReadiness = await this.checkSalesforceAgentReadiness(instance.id);
+    const missingArtifacts = runtimeReadiness.missingArtifacts;
+    const criticalArtifactCount = missingArtifacts.filter((artifact) => artifact.severity === "critical").length;
+    const status: SalesforceInstanceReadinessStatus = criticalArtifactCount ? "setup-required" : "ready";
+
+    const nextRecord: LocalInstanceReadinessRecord = {
+      instanceId: instance.id,
+      projectId,
+      status,
+      missingArtifacts,
+      lastCheckedAt: now,
+      lastSetupAt: existing?.lastSetupAt
+    };
+
+    const nextRecords = records.filter((entry) => entry.instanceId !== instance.id);
+    nextRecords.push(nextRecord);
+    writeLocalInstanceReadinessRecords(nextRecords);
+
+    return {
+      instanceId: instance.id,
+      projectId,
+      status,
+      checkedAt: now,
+      missingArtifacts,
+      capabilities: runtimeReadiness.capabilities,
+      nextAction: status === "ready" ? "none" : "run-msd-setup"
+    };
+  }
+
+  public async runInstanceMsdSetup(
+    instanceId: string,
+    input: SalesforceInstanceMsdSetupInput
+  ): Promise<SalesforceInstanceMsdSetupResult> {
+    const instance = this.findInstanceOptionOrThrow(instanceId);
+    const projectId = String(input.projectId || instance.projectId || "default-project").trim() || "default-project";
+    const mode = input.mode === "dry-run" ? "dry-run" : "apply";
+    const startedAt = new Date().toISOString();
+    const normalizedComponents = Array.isArray(input.components)
+      ? input.components.map((entry) => String(entry || "").trim()).filter(Boolean)
+      : [];
+
+    let applied: string[] = [];
+    let warnings: string[] = [];
+    let missingArtifacts: SalesforceReadinessMissingArtifact[] = this.buildDefaultReadinessMissingArtifacts();
+    if (mode === "apply") {
+      const setupResult = await this.applySalesforceMsdSetup(instance.id, normalizedComponents);
+      applied = setupResult.applied;
+      warnings = setupResult.warnings;
+      missingArtifacts = setupResult.missingArtifacts;
+    } else {
+      const readiness = await this.checkSalesforceAgentReadiness(instance.id);
+      missingArtifacts = readiness.missingArtifacts;
+      warnings = ["Dry-Run: Keine Aenderungen in Salesforce vorgenommen."];
+    }
+    const finishedAt = new Date().toISOString();
+
+    const records = readLocalInstanceReadinessRecords();
+    const criticalArtifactCount = missingArtifacts.filter((artifact) => artifact.severity === "critical").length;
+    const nextStatus: SalesforceInstanceReadinessStatus = criticalArtifactCount
+      ? (mode === "apply" && warnings.length ? "setup-failed" : "setup-required")
+      : "ready";
+    const nextRecord: LocalInstanceReadinessRecord = {
+      instanceId: instance.id,
+      projectId,
+      status: nextStatus,
+      missingArtifacts,
+      lastCheckedAt: finishedAt,
+      lastSetupAt: mode === "apply" ? finishedAt : records.find((entry) => entry.instanceId === instance.id)?.lastSetupAt
+    };
+    const nextRecords = records.filter((entry) => entry.instanceId !== instance.id);
+    nextRecords.push(nextRecord);
+    writeLocalInstanceReadinessRecords(nextRecords);
+
+    return {
+      instanceId: instance.id,
+      projectId,
+      status: nextStatus,
+      startedAt,
+      finishedAt,
+      applied,
+      warnings,
+      missingArtifacts,
+      capabilities: this.buildCapabilityFromArtifacts(missingArtifacts),
+      nextAction: nextStatus === "ready" ? "none" : "run-msd-setup",
+      auditId: `audit-${Date.now().toString(36)}`
+    };
   }
 
   public assertInstanceWriteAllowed(instanceId?: string, operation?: string): void {
@@ -2304,8 +3588,23 @@ export class AdminDataService {
 
   public listProjects(): SalesforceProjectOption[] {
     return readLocalProjects()
-      .map((project) => ({ ...project }))
+      .map((project) => {
+        const { confluenceApiToken: _confluenceApiToken, ...safeProject } = project;
+        return {
+          ...safeProject,
+          confluenceApiTokenConfigured: Boolean(_confluenceApiToken)
+        };
+      })
       .sort((left, right) => left.name.localeCompare(right.name, "de"));
+  }
+
+  public getProjectConfig(projectId: string): SalesforceProjectConfig | undefined {
+    const normalizedProjectId = String(projectId || "").trim();
+    if (!normalizedProjectId) {
+      return undefined;
+    }
+    const project = readLocalProjects().find((item) => item.id === normalizedProjectId);
+    return project ? { ...project } : undefined;
   }
 
   public saveProject(input: SalesforceProjectMutationInput): SalesforceProjectOption {
@@ -2322,14 +3621,70 @@ export class AdminDataService {
     const id = existingByName && !input.id ? existingByName.id : desiredId;
     const existingProject = projects.find((project) => project.id === id);
 
+    const lookupCacheTtlMinutes = Math.max(
+      1,
+      Number(
+        input.lookupCacheTtlMinutes
+        ?? existingProject?.lookupCacheTtlMinutes
+        ?? 15
+      ) || 15
+    );
+    const logSyncIntervalMinutes = Math.max(
+      1,
+      Number(
+        input.logSyncIntervalMinutes
+        ?? existingProject?.logSyncIntervalMinutes
+        ?? 5
+      ) || 5
+    );
+    const logBatchSize = Math.max(
+      1,
+      Number(
+        input.logBatchSize
+        ?? existingProject?.logBatchSize
+        ?? 200
+      ) || 200
+    );
+    const logBufferMaxEntries = Math.max(
+      100,
+      Number(
+        input.logBufferMaxEntries
+        ?? existingProject?.logBufferMaxEntries
+        ?? 10000
+      ) || 10000
+    );
+
+    // Normalize and validate Confluence parent page id: accept numeric id or full Confluence URL
+    let normalizedConfluenceParentPageId: string | undefined = undefined;
+    const rawConfluenceParentPageId = String(input.confluenceParentPageId ?? existingProject?.confluenceParentPageId ?? "").trim();
+    if (rawConfluenceParentPageId) {
+      const urlMatch = rawConfluenceParentPageId.match(/(?:pages\/(\d+)|pageId=(\d+))/i);
+      if (urlMatch && (urlMatch[1] || urlMatch[2])) {
+        normalizedConfluenceParentPageId = String(urlMatch[1] || urlMatch[2]);
+      } else if (/^[0-9]+$/.test(rawConfluenceParentPageId)) {
+        normalizedConfluenceParentPageId = rawConfluenceParentPageId;
+      } else {
+        throw new Error('Ungültige Confluence Parent Page ID. Bitte nur numerische ID oder eine Confluence Page URL angeben.');
+      }
+    }
+
     const nextItem: SalesforceProjectConfig = {
       id,
       name,
       description: String(input.description || "").trim() || undefined,
       archived: input.archived === undefined ? (existingProject?.archived === true) : input.archived === true,
       productionWriteProtection: input.productionWriteProtection !== false,
+      lookupCacheEnabled: input.lookupCacheEnabled === undefined ? (existingProject?.lookupCacheEnabled !== false) : input.lookupCacheEnabled !== false,
+      lookupCacheTtlMinutes,
+      logBatchingEnabled: input.logBatchingEnabled === undefined ? (existingProject?.logBatchingEnabled !== false) : input.logBatchingEnabled !== false,
+      logSyncIntervalMinutes,
+      logBatchSize,
+      logBufferMaxEntries,
+      confluenceBaseUrl: String(input.confluenceBaseUrl || existingProject?.confluenceBaseUrl || "").trim() || undefined,
+      confluenceUsername: String(input.confluenceUsername || existingProject?.confluenceUsername || "").trim() || undefined,
+      confluenceApiToken: String(input.confluenceApiToken || existingProject?.confluenceApiToken || "").trim() || undefined,
       confluenceSpaceKey: String(input.confluenceSpaceKey || existingProject?.confluenceSpaceKey || "").trim() || undefined,
-      confluenceParentPageId: String(input.confluenceParentPageId || existingProject?.confluenceParentPageId || "").trim() || undefined,
+      confluenceParentPageId: normalizedConfluenceParentPageId,
       confluencePageTitlePrefix: String(input.confluencePageTitlePrefix || existingProject?.confluencePageTitlePrefix || "").trim() || undefined,
       createdAt: existingProject?.createdAt || now,
       updatedAt: now
@@ -2343,7 +3698,8 @@ export class AdminDataService {
     }
 
     writeLocalProjects(projects);
-    return { ...nextItem };
+    const { confluenceApiToken: _confluenceApiToken, ...safeProject } = nextItem;
+    return { ...safeProject, confluenceApiTokenConfigured: Boolean(_confluenceApiToken) };
   }
 
   public setProjectArchived(projectId: string, archived: boolean): SalesforceProjectOption {
@@ -2381,11 +3737,24 @@ export class AdminDataService {
       throw new Error("Default-Projekt kann nicht geloescht werden");
     }
 
+    const localInstances = readLocalInstances();
+    const reassignedLocalInstances = localInstances.map((instance) =>
+      String(instance.projectId || "default-project").trim() === normalizedProjectId
+        ? { ...instance, projectId: "default-project" }
+        : instance
+    );
+    const localAssignedIds = new Set(
+      localInstances
+        .filter((instance) => String(instance.projectId || "default-project").trim() === normalizedProjectId)
+        .map((instance) => String(instance.id || "").trim())
+        .filter(Boolean)
+    );
     const assignedInstances = readConfiguredInstancesWithMetadata().filter((instance) =>
       String(instance.projectId || "default-project").trim() === normalizedProjectId
     );
-    if (assignedInstances.length) {
-      throw new Error(`Projekt ${normalizedProjectId} kann nicht geloescht werden, da noch ${assignedInstances.length} Instanz(en) zugeordnet sind.`);
+    const nonLocalAssignedInstances = assignedInstances.filter((instance) => !localAssignedIds.has(String(instance.id || "").trim()));
+    if (nonLocalAssignedInstances.length) {
+      throw new Error(`Projekt ${normalizedProjectId} kann nicht geloescht werden, da noch ${nonLocalAssignedInstances.length} nicht lokal verwaltete Instanz(en) zugeordnet sind.`);
     }
 
     const projects = readLocalProjects();
@@ -2393,6 +3762,9 @@ export class AdminDataService {
     const deleted = filtered.length < projects.length;
 
     if (deleted) {
+      if (localAssignedIds.size > 0) {
+        writeLocalInstances(reassignedLocalInstances);
+      }
       writeLocalProjects(filtered);
     }
 
@@ -2400,15 +3772,11 @@ export class AdminDataService {
   }
 
   public saveInstance(input: SalesforceInstanceMutationInput): SalesforceInstanceOption {
-    const id = input.id.trim();
-    const loginUrl = input.loginUrl.trim();
+    const id = String(input.id || "").trim();
     const projectId = String(input.projectId || "default-project").trim() || "default-project";
     const role = input.role === "production" ? "production" : "test";
-    const clientId = input.clientId.trim();
-    const clientSecret = input.clientSecret.trim();
-
-    if (!id || !loginUrl || !clientId || !clientSecret) {
-      throw new Error("id, loginUrl, clientId und clientSecret sind erforderlich");
+    if (!id) {
+      throw new Error("id ist erforderlich");
     }
 
     const projects = readLocalProjects();
@@ -2419,6 +3787,19 @@ export class AdminDataService {
 
     const localInstances = readLocalInstances();
     const configuredInstances = readConfiguredInstancesWithMetadata();
+    const existingLocal = localInstances.find((item) => item.id === id);
+    const existingConfigured = configuredInstances.find((item) => item.id === id);
+    const existingResolved = resolveInstances().find((item) => item.id === id);
+
+    const loginUrl = String(input.loginUrl || existingLocal?.loginUrl || existingConfigured?.loginUrl || existingResolved?.config.loginUrl || "").trim();
+    const clientId = String(input.clientId || existingLocal?.clientId || existingConfigured?.clientId || existingResolved?.config.clientId || "").trim();
+    const clientSecret = String(input.clientSecret || existingLocal?.clientSecret || existingConfigured?.clientSecret || existingResolved?.config.clientSecret || "").trim();
+    const clientIdEnv = String(input.clientIdEnv || existingLocal?.clientIdEnv || existingConfigured?.clientIdEnv || "").trim();
+    const clientSecretEnv = String(input.clientSecretEnv || existingLocal?.clientSecretEnv || existingConfigured?.clientSecretEnv || "").trim();
+
+    if (!loginUrl || (!clientId && !clientIdEnv) || (!clientSecret && !clientSecretEnv)) {
+      throw new Error("Instanzzuordnung konnte nicht gespeichert werden: loginUrl und Client-Credentials fehlen. Bestehende Instanzen muessen entweder clientId/clientSecret oder clientIdEnv/clientSecretEnv enthalten.");
+    }
 
     if (role === "production") {
       const conflictingProduction = configuredInstances.find((item) => (
@@ -2433,13 +3814,15 @@ export class AdminDataService {
 
     const nextItem: SalesforceInstanceEnvConfig = {
       id,
-      name: input.name?.trim() || id,
+      name: input.name?.trim() || existingLocal?.name || existingConfigured?.name || existingResolved?.name || id,
       loginUrl,
       projectId,
       role,
-      clientId,
-      clientSecret,
-      queryLimit: input.queryLimit
+      clientId: clientId || undefined,
+      clientSecret: clientSecret || undefined,
+      clientIdEnv: clientIdEnv || undefined,
+      clientSecretEnv: clientSecretEnv || undefined,
+      queryLimit: input.queryLimit || existingLocal?.queryLimit || existingConfigured?.queryLimit || existingResolved?.config.queryLimit
     };
 
     const existingIndex = localInstances.findIndex((item) => item.id === id);
@@ -2482,37 +3865,39 @@ export class AdminDataService {
 
   public async listSchedules(instanceId?: string): Promise<ScheduleListItem[]> {
     const resolvedInstance = this.resolveInstance(instanceId);
-    return this.withAdaptiveSalesforceCache(resolvedInstance.id, "listSchedules", async () => {
-      const client = await this.createClient(resolvedInstance.id);
-      const records = await client.querySchedules(false);
-      const runningRuns = await client.queryRunningRuns(200);
-      const localTiming = readLocalScheduleTimingStore()[resolvedInstance.id] || {};
-      const localHealth = readLocalScheduleHealthStore();
-      const runningScheduleIds = new Set(
-        runningRuns
-          .map((run) => String(run.MSD_Schedule__c || "").trim())
-          .filter(Boolean)
-      );
+    const client = await this.createClient(resolvedInstance.id);
+    const records = await client.querySchedules(false);
+    const runningRuns = await client.queryRunningRuns(200);
+    const localTiming = readLocalScheduleTimingStore()[resolvedInstance.id] || {};
+    const localHealth = readLocalScheduleHealthStore();
+    const runningScheduleIds = new Set(
+      runningRuns
+        .map((run) => String(run.MSD_Schedule__c || "").trim())
+        .filter(Boolean)
+    );
 
-      const checkpointEntries = await Promise.all(records.map(async (record) => {
-        const schedule = this.toIntegrationSchedule(record);
-        try {
-          const checkpoint = await client.getCheckpoint(schedule.id, schedule.objectName);
-          return [schedule.id, checkpoint] as const;
-        } catch {
-          return [schedule.id, null] as const;
-        }
-      }));
-      const checkpointsByScheduleId = new Map(checkpointEntries);
+    const checkpointEntries = await Promise.all(records.map(async (record) => {
+      const schedule = this.toIntegrationSchedule(record);
+      try {
+        const checkpoint = await client.getCheckpoint(schedule.id, schedule.objectName);
+        return [schedule.id, checkpoint] as const;
+      } catch {
+        return [schedule.id, null] as const;
+      }
+    }));
+    const checkpointsByScheduleId = new Map(checkpointEntries);
 
-      return records.map((record) => {
-        const schedule = this.toIntegrationSchedule(record);
-        const persistedTimingDefinition = localTiming[schedule.id] || schedule.timingDefinition;
-        const effectiveSchedule: IntegrationSchedule = {
-          ...schedule,
-          timingDefinition: persistedTimingDefinition
-        };
-        const checkpoint = checkpointsByScheduleId.get(schedule.id) || null;
+    return records.map((record) => {
+      const schedule = this.toIntegrationSchedule(record);
+      const persistedTimingDefinition = localTiming[schedule.id] || schedule.timingDefinition;
+      const effectiveNextRunAt = schedule.nextRunAt
+        || calculateNextRunAtFromTiming(persistedTimingDefinition, new Date());
+      const effectiveSchedule: IntegrationSchedule = {
+        ...schedule,
+        timingDefinition: persistedTimingDefinition,
+        nextRunAt: effectiveNextRunAt
+      };
+      const checkpoint = checkpointsByScheduleId.get(schedule.id) || null;
 
         return {
           id: schedule.id,
@@ -2536,7 +3921,7 @@ export class AdminDataService {
           mappingDefinition: schedule.mappingDefinition,
           sourceDefinition: schedule.sourceDefinition,
           targetDefinition: schedule.targetDefinition,
-          nextRunAt: schedule.nextRunAt,
+          nextRunAt: effectiveNextRunAt,
           lastRunAt: schedule.lastRunAt,
           batchSize: schedule.batchSize,
           timingDefinition: persistedTimingDefinition,
@@ -2548,7 +3933,6 @@ export class AdminDataService {
           currentDeltaRecordId: checkpoint?.lastRecordId,
           currentDeltaRunId: checkpoint?.lastRunId
         };
-      });
     });
   }
 
@@ -3025,25 +4409,25 @@ export class AdminDataService {
 
   public async listRuns(limit = 50, instanceId?: string): Promise<RunListItem[]> {
     const resolvedInstance = this.resolveInstance(instanceId);
-    return this.withAdaptiveSalesforceCache(resolvedInstance.id, `listRuns:${limit}`, async () => {
-      const client = await this.createClient(resolvedInstance.id);
-      const runs = await client.queryRuns(limit);
-      return runs.map((run) => ({
-        id: run.Id,
-        scheduleId: run.MSD_Schedule__c,
-        scheduleName: run.MSD_Schedule__r?.Name,
-        connectorId: run.MSD_Schedule__r?.MSD_Connector__c,
-        connectorName: run.MSD_Schedule__r?.MSD_Connector__r?.Name,
-        status: run.MSD_Status__c || "Unknown",
-        startedAt: run.MSD_StartedAt__c,
-        finishedAt: run.MSD_FinishedAt__c,
-        recordsRead: run.MSD_RecordsRead__c,
-        recordsProcessed: run.MSD_RecordsProcessed__c,
-        recordsSucceeded: run.MSD_RecordsSucceeded__c,
-        recordsFailed: run.MSD_RecordsFailed__c,
-        errorMessage: run.MSD_ErrorMessage__c
-      }));
-    });
+    const client = await this.createClient(resolvedInstance.id);
+    const requestedLimit = Math.max(1, Math.min(limit, 200));
+    const rawLimit = Math.max(requestedLimit, Math.min(200, requestedLimit * 5));
+    const runs = await client.queryRuns(rawLimit);
+    return runs.map((run) => ({
+      id: run.Id,
+      scheduleId: run.MSD_Schedule__c,
+      scheduleName: run.MSD_Schedule__r?.Name,
+      connectorId: run.MSD_Schedule__r?.MSD_Connector__c,
+      connectorName: run.MSD_Schedule__r?.MSD_Connector__r?.Name,
+      status: run.MSD_Status__c || "Unknown",
+      startedAt: run.MSD_StartedAt__c,
+      finishedAt: run.MSD_FinishedAt__c,
+      recordsRead: run.MSD_RecordsRead__c,
+      recordsProcessed: run.MSD_RecordsProcessed__c,
+      recordsSucceeded: run.MSD_RecordsSucceeded__c,
+      recordsFailed: run.MSD_RecordsFailed__c,
+      errorMessage: run.MSD_ErrorMessage__c
+    })).filter(isMonitorRelevantRun).slice(0, requestedLimit);
   }
 
   public async summarizeRecordsByRange(range: OverviewStatsRange, instanceId?: string): Promise<RecordsChartSummary> {
@@ -3136,6 +4520,7 @@ export class AdminDataService {
     await client.updateScheduleRecord(scheduleId, {
       Active__c: active
     });
+    this.invalidateAdaptiveSalesforceCache(resolvedInstance.id, ["listSchedules"]);
 
     if (active) {
       this.clearScheduleAutoDisabledFlag(scheduleId);
@@ -3274,13 +4659,17 @@ export class AdminDataService {
       recordsFailed: run.MSD_RecordsFailed__c,
       errorMessage
     });
-    await client.createLog({
-      runId: normalizedRunId,
-      level: "WARN",
-      step: "RUN_ABORTED",
-      message: errorMessage,
-      correlationId: run.MSD_CorrelationId__c || `manual-abort-${Date.now()}`
-    });
+    await this.writeRunLogsWithProjectStrategy(
+      client,
+      [{
+        runId: normalizedRunId,
+        level: "WARN",
+        step: "RUN_ABORTED",
+        message: errorMessage,
+        correlationId: run.MSD_CorrelationId__c || `manual-abort-${Date.now()}`
+      }],
+      instanceId
+    );
 
     return {
       cancelled: true,
@@ -3303,36 +4692,50 @@ export class AdminDataService {
       message: log.MSD_Message__c,
       recordKey: log.MSD_RecordKey__c,
       createdAt: log.CreatedDate
-    }));
+    })).filter(isMonitorRelevantLogItem);
   }
 
-  public getRunFailedRecords(runId: string): RunFailedRecordsResult {
+  public async getRunFailedRecords(runId: string, instanceId?: string): Promise<RunFailedRecordsResult> {
     const normalizedRunId = String(runId || "").trim();
     if (!normalizedRunId) {
       throw new Error("Run-ID fehlt");
     }
 
-    const filePath = path.join(LOCAL_FAILED_RUN_RECORDS_DIR, `${normalizedRunId}.json`);
-    if (!fs.existsSync(filePath)) {
+    const fallbackFromLogs = async (): Promise<RunFailedRecordsResult> => {
+      const logs = await this.listLogs(normalizedRunId, 500, instanceId);
+      const items = logs
+        .filter((log) => String(log.level || "").trim().toUpperCase() === "ERROR")
+        .map((log, index) => ({
+          rowIndex: index,
+          externalKey: String(log.recordKey || "").trim() || undefined,
+          statusCode: String(log.step || "").trim() || undefined,
+          message: String(log.message || "").trim() || undefined,
+          retryable: undefined,
+          sourceRecord: undefined,
+          mappedRecord: undefined
+        }));
+
       return {
         runId: normalizedRunId,
-        total: 0,
-        items: []
+        scheduleName: String(logs[0]?.scheduleName || "").trim() || undefined,
+        total: items.length,
+        items
       };
+    };
+
+    const filePath = path.join(LOCAL_FAILED_RUN_RECORDS_DIR, `${normalizedRunId}.json`);
+    if (!fs.existsSync(filePath)) {
+      return await fallbackFromLogs();
     }
 
     try {
       const raw = fs.readFileSync(filePath, "utf8").trim();
       if (!raw) {
-        return {
-          runId: normalizedRunId,
-          total: 0,
-          items: []
-        };
+        return await fallbackFromLogs();
       }
 
       const parsed = JSON.parse(raw) as RunFailedRecordsResult;
-      return {
+      const parsedResult = {
         runId: normalizedRunId,
         scheduleId: String(parsed.scheduleId || "").trim() || undefined,
         scheduleName: String(parsed.scheduleName || "").trim() || undefined,
@@ -3352,12 +4755,10 @@ export class AdminDataService {
             }))
           : []
       };
+
+      return parsedResult.items.length > 0 ? parsedResult : await fallbackFromLogs();
     } catch {
-      return {
-        runId: normalizedRunId,
-        total: 0,
-        items: []
-      };
+      return await fallbackFromLogs();
     }
   }
 
@@ -3413,7 +4814,12 @@ export class AdminDataService {
     instanceId?: string
   ): Promise<LogListItem[]> {
     const client = await this.createClient(instanceId);
-    const records = await client.queryLogsByDateRange(startIso, endIso, Math.max(limit * 4, 1000));
+    const records = await client.queryLogsByDateRange(
+      startIso,
+      endIso,
+      Math.max(limit * 4, 1000),
+      type === "error" ? "ERROR" : undefined
+    );
 
     const mapped = records.map((log) => ({
       id: log.Id,
@@ -3425,7 +4831,7 @@ export class AdminDataService {
       message: log.MSD_Message__c,
       recordKey: log.MSD_RecordKey__c,
       createdAt: log.CreatedDate
-    }));
+    })).filter(isMonitorRelevantLogItem);
 
     const filteredByType = type === "error"
       ? mapped.filter((item) => (item.level || "").toUpperCase() === "ERROR")
@@ -3938,6 +5344,7 @@ export class AdminDataService {
     if (input.id) {
       // Update existing record - Name field is read-only (auto-number), never update it
       await client.updateScheduleRecord(input.id, fields);
+      this.invalidateAdaptiveSalesforceCache(resolvedInstance.id, ["listSchedules", "scheduleFormOptions"]);
       this.saveLocalTimingDefinition(resolvedInstance.id, input.id, input.timingDefinition);
       if (input.active) {
         this.clearScheduleAutoDisabledFlag(input.id);
@@ -3947,6 +5354,7 @@ export class AdminDataService {
 
     // Create new record - Name field should not be set as it's auto-generated
     const id = await client.createScheduleRecord(fields);
+    this.invalidateAdaptiveSalesforceCache(resolvedInstance.id, ["listSchedules", "scheduleFormOptions"]);
     this.saveLocalTimingDefinition(resolvedInstance.id, id, input.timingDefinition);
     return { id, action: "created" };
   }
@@ -4876,6 +6284,15 @@ export class AdminDataService {
   }
 
   private getAdaptiveSalesforceCacheTtlMs(instanceId: string): number {
+    const projectRuntime = this.resolveLookupCacheRuntime(instanceId);
+    if (!projectRuntime.enabled) {
+      return 0;
+    }
+
+    if (projectRuntime.ttlMs > 0) {
+      return projectRuntime.ttlMs;
+    }
+
     const usageRatio = this.salesforceApiUsageByInstance.get(instanceId);
     if (usageRatio === undefined || Number.isNaN(usageRatio)) {
       return 10_000;
@@ -4909,6 +6326,11 @@ export class AdminDataService {
   }
 
   private async withAdaptiveSalesforceCache<T>(instanceId: string, bucket: string, loader: () => Promise<T>): Promise<T> {
+    const ttlMs = this.getAdaptiveSalesforceCacheTtlMs(instanceId);
+    if (ttlMs <= 0) {
+      return await loader();
+    }
+
     const key = `${instanceId}:${bucket}`;
     const now = Date.now();
     const cached = this.adaptiveSalesforceCache.get(key);
@@ -4917,12 +6339,32 @@ export class AdminDataService {
     }
 
     const value = await loader();
-    const ttlMs = this.getAdaptiveSalesforceCacheTtlMs(instanceId);
     this.adaptiveSalesforceCache.set(key, {
       value,
       expiresAt: now + ttlMs
     });
     return value;
+  }
+
+  private invalidateAdaptiveSalesforceCache(instanceId: string, buckets?: string[]): void {
+    const normalizedInstanceId = String(instanceId || "").trim();
+    if (!normalizedInstanceId) {
+      return;
+    }
+
+    const prefix = `${normalizedInstanceId}:`;
+    if (!buckets || buckets.length === 0) {
+      for (const key of Array.from(this.adaptiveSalesforceCache.keys())) {
+        if (key.startsWith(prefix)) {
+          this.adaptiveSalesforceCache.delete(key);
+        }
+      }
+      return;
+    }
+
+    for (const bucket of buckets) {
+      this.adaptiveSalesforceCache.delete(`${normalizedInstanceId}:${bucket}`);
+    }
   }
 
   private extractSalesforceObjectName(sourceDefinition: string): string | undefined {
@@ -5942,6 +7384,365 @@ export class AdminDataService {
       this.updateApiUsageRatio(resolvedInstance.id, overview);
       return overview;
     });
+  }
+
+  public async refreshInstanceMetadata(
+    instanceId?: string,
+    options?: { objectNames?: string[]; includeAllFields?: boolean; maxFieldObjects?: number }
+  ): Promise<InstanceMetadataSnapshot> {
+    const resolvedInstance = this.resolveRuntimeInstance(instanceId);
+    const configured = readConfiguredInstancesWithMetadata().find((item) => item.id === resolvedInstance.id);
+    const projectId = String(configured?.projectId || "default-project").trim() || "default-project";
+    const refreshedAt = new Date().toISOString();
+    const normalizedRequestedObjects = (options?.objectNames || [])
+      .map((name) => String(name || "").trim())
+      .filter(Boolean);
+
+    try {
+      const client = await this.createClient(resolvedInstance.id);
+      const objects = await client.listObjectMetadata();
+      const objectNameSet = new Set(objects.map((object) => object.name));
+      const maxFieldObjects = Math.max(1, Math.min(Number(options?.maxFieldObjects || 40), 250));
+      const existingScheduleObjects = (await this.listSchedules(resolvedInstance.id))
+        .map((schedule) => String(schedule.objectName || "").trim())
+        .filter(Boolean);
+      const priorityObjects = [
+        ...normalizedRequestedObjects,
+        ...existingScheduleObjects,
+        ...AdminDataService.defaultSalesforceMetadataFieldObjects
+      ].filter((name, index, arr) => arr.indexOf(name) === index && objectNameSet.has(name));
+      const fieldObjectNames = options?.includeAllFields === true
+        ? objects.slice(0, maxFieldObjects).map((object) => object.name)
+        : priorityObjects.slice(0, maxFieldObjects);
+
+      const fieldsByObject = new Map<string, SalesforceObjectFieldMetadata[]>();
+      for (const objectName of fieldObjectNames) {
+        try {
+          fieldsByObject.set(objectName, await client.describeObjectFields(objectName, { forceRefresh: true }));
+        } catch {
+          fieldsByObject.set(objectName, []);
+        }
+      }
+
+      const fieldCount = Array.from(fieldsByObject.values()).reduce((sum, fields) => sum + fields.length, 0);
+
+      return await withMetadataDatabase(async (database) => {
+        const snapshotResult = await database.run(
+          `INSERT INTO metadata_snapshots (
+            project_id, instance_id, system_type, status, refreshed_at, object_count, field_count, error_message
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [projectId, resolvedInstance.id, "salesforce", "success", refreshedAt, objects.length, fieldCount, null]
+        );
+
+        await database.run(
+          `DELETE FROM metadata_objects WHERE project_id = ? AND instance_id = ? AND system_type = ?`,
+          [projectId, resolvedInstance.id, "salesforce"]
+        );
+
+        for (const object of objects) {
+          const fields = fieldsByObject.get(object.name);
+          await database.run(
+            `INSERT OR REPLACE INTO metadata_objects (
+              project_id, instance_id, system_type, object_name, label, kind, queryable, field_count, refreshed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              projectId,
+              resolvedInstance.id,
+              "salesforce",
+              object.name,
+              object.label || object.name,
+              object.name.endsWith("__c") ? "customObject" : "standardObject",
+              1,
+              fields ? fields.length : 0,
+              refreshedAt
+            ]
+          );
+        }
+
+        for (const objectName of fieldObjectNames) {
+          await database.run(
+            `DELETE FROM metadata_fields
+             WHERE project_id = ? AND instance_id = ? AND system_type = ? AND object_name = ?`,
+            [projectId, resolvedInstance.id, "salesforce", objectName]
+          );
+
+          for (const field of fieldsByObject.get(objectName) || []) {
+            await database.run(
+              `INSERT OR REPLACE INTO metadata_fields (
+                project_id, instance_id, system_type, object_name, field_name, label, type,
+                required, external_id, createable, updateable, reference_to_json, picklist_values_json, refreshed_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                projectId,
+                resolvedInstance.id,
+                "salesforce",
+                objectName,
+                field.name,
+                field.label || field.name,
+                field.type || "unknown",
+                field.requiredOnCreate ? 1 : 0,
+                field.isExternalId ? 1 : 0,
+                field.createable ? 1 : 0,
+                field.updateable ? 1 : 0,
+                field.referenceTo?.length ? JSON.stringify(field.referenceTo) : null,
+                field.picklistValues?.length ? JSON.stringify(field.picklistValues) : null,
+                refreshedAt
+              ]
+            );
+          }
+        }
+
+        return {
+          id: snapshotResult.lastID,
+          projectId,
+          instanceId: resolvedInstance.id,
+          systemType: "salesforce",
+          status: "success",
+          refreshedAt,
+          objectCount: objects.length,
+          fieldCount
+        };
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return await withMetadataDatabase(async (database) => {
+        const snapshotResult = await database.run(
+          `INSERT INTO metadata_snapshots (
+            project_id, instance_id, system_type, status, refreshed_at, object_count, field_count, error_message
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [projectId, resolvedInstance.id, "salesforce", "error", refreshedAt, 0, 0, message]
+        );
+
+        return {
+          id: snapshotResult.lastID,
+          projectId,
+          instanceId: resolvedInstance.id,
+          systemType: "salesforce",
+          status: "error",
+          refreshedAt,
+          objectCount: 0,
+          fieldCount: 0,
+          errorMessage: message
+        };
+      });
+    }
+  }
+
+  public async getInstanceMetadataContext(instanceId?: string): Promise<InstanceMetadataContext> {
+    const resolvedInstance = this.resolveRuntimeInstance(instanceId);
+    const configured = readConfiguredInstancesWithMetadata().find((item) => item.id === resolvedInstance.id);
+    const projectId = String(configured?.projectId || "default-project").trim() || "default-project";
+
+    return await withMetadataDatabase(async (database) => {
+      let snapshotRow = await database.get<Record<string, unknown>>(
+        `SELECT *
+         FROM metadata_snapshots
+         WHERE project_id = ? AND instance_id = ? AND system_type = ?
+         ORDER BY id DESC
+         LIMIT 1`,
+        [projectId, resolvedInstance.id, "salesforce"]
+      );
+
+      if (!snapshotRow) {
+        snapshotRow = await database.get<Record<string, unknown>>(
+          `SELECT *
+           FROM metadata_snapshots
+           WHERE instance_id = ? AND system_type = ?
+           ORDER BY CASE WHEN status = 'success' THEN 0 ELSE 1 END, id DESC
+           LIMIT 1`,
+          [resolvedInstance.id, "salesforce"]
+        );
+      }
+
+      if (!snapshotRow && !instanceId) {
+        snapshotRow = await database.get<Record<string, unknown>>(
+          `SELECT *
+           FROM metadata_snapshots
+           WHERE system_type = ?
+           ORDER BY CASE WHEN status = 'success' THEN 0 ELSE 1 END, id DESC
+           LIMIT 1`,
+          ["salesforce"]
+        );
+      }
+
+      const metadataProjectId = String(snapshotRow?.project_id || projectId).trim() || projectId;
+      const metadataInstanceId = String(snapshotRow?.instance_id || resolvedInstance.id).trim() || resolvedInstance.id;
+
+      const objectRows = await database.all<Record<string, unknown>>(
+        `SELECT *
+         FROM metadata_objects
+         WHERE project_id = ? AND instance_id = ? AND system_type = ?
+         ORDER BY object_name ASC`,
+        [metadataProjectId, metadataInstanceId, "salesforce"]
+      );
+
+      const fieldRows = await database.all<Record<string, unknown>>(
+        `SELECT *
+         FROM metadata_fields
+         WHERE project_id = ? AND instance_id = ? AND system_type = ?
+         ORDER BY object_name ASC, field_name ASC`,
+        [metadataProjectId, metadataInstanceId, "salesforce"]
+      );
+
+      const fieldsByObject: Record<string, PersistedMetadataField[]> = {};
+      for (const row of fieldRows) {
+        const objectName = String(row.object_name || "").trim();
+        const fieldName = String(row.field_name || "").trim();
+        if (!objectName || !fieldName) {
+          continue;
+        }
+
+        if (!fieldsByObject[objectName]) {
+          fieldsByObject[objectName] = [];
+        }
+
+        fieldsByObject[objectName].push({
+          objectName,
+          name: fieldName,
+          label: String(row.label || fieldName).trim(),
+          type: String(row.type || "unknown").trim(),
+          required: Number(row.required || 0) === 1,
+          externalId: Number(row.external_id || 0) === 1,
+          createable: Number(row.createable || 0) === 1,
+          updateable: Number(row.updateable || 0) === 1,
+          referenceTo: parseJsonArrayField<string>(row.reference_to_json),
+          picklistValues: parseJsonArrayField<{ value: string; label: string }>(row.picklist_values_json)
+        });
+      }
+
+      return {
+        snapshot: snapshotRow ? normalizeMetadataSnapshot(snapshotRow) : undefined,
+        objects: objectRows
+          .map((row) => {
+            const objectName = String(row.object_name || "").trim();
+            return {
+              systemType: "salesforce" as const,
+              objectName,
+              label: String(row.label || objectName).trim(),
+              kind: String(row.kind || "").trim() || undefined,
+              queryable: Number(row.queryable || 0) === 1,
+              fieldCount: Number(row.field_count || 0)
+            };
+          })
+          .filter((object) => object.objectName),
+        fieldsByObject
+      };
+    });
+  }
+
+  public getSage100DocumentationContext(prompt?: string, limit = 8): Sage100DocumentationContext | undefined {
+    if (!fs.existsSync(SAGE100_DB_DOC_INDEX_FILE)) {
+      return undefined;
+    }
+
+    try {
+      const raw = fs.readFileSync(SAGE100_DB_DOC_INDEX_FILE, "utf8").trim();
+      if (!raw) {
+        return undefined;
+      }
+
+      const parsed = JSON.parse(raw) as {
+        sourceFile?: string;
+        generatedAt?: string;
+        pageCount?: number;
+        tableCount?: number;
+        tables?: Sage100DocumentationTable[];
+      };
+      const tables = Array.isArray(parsed.tables) ? parsed.tables : [];
+      const normalizedPrompt = this.normalizeDocumentationMatchText(prompt || "");
+      const promptTokens = normalizedPrompt
+        .split(" ")
+        .filter((token) => token.length >= 3);
+      const domainHints = this.getSage100DomainHints(normalizedPrompt);
+
+      const scoredTables = tables
+        .map((table) => {
+          const tableName = String(table.name || "").trim();
+          const searchable = [
+            tableName,
+            ...(table.fields || []).slice(0, 40).flatMap((field) => [field.name, field.description || ""])
+          ].join(" ");
+          const normalizedSearchable = this.normalizeDocumentationMatchText(searchable);
+          let score = 0;
+
+          const normalizedTableName = this.normalizeDocumentationMatchText(tableName);
+          for (const hint of domainHints) {
+            if (hint.tableName && normalizedTableName === hint.tableName) {
+              score += hint.score;
+            } else if (hint.tableContains && normalizedTableName.includes(hint.tableContains)) {
+              score += hint.score;
+            }
+          }
+
+          for (const token of promptTokens) {
+            if (normalizedSearchable.includes(token)) {
+              score += 1;
+            }
+          }
+
+          return {
+            ...table,
+            fields: (table.fields || []).slice(0, 40),
+            score
+          };
+        })
+        .filter((table) => Number(table.score || 0) > 0)
+        .sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
+        .slice(0, Math.max(1, Math.min(limit, 20)));
+
+      return {
+        sourceFile: parsed.sourceFile,
+        indexFile: SAGE100_DB_DOC_INDEX_FILE,
+        generatedAt: parsed.generatedAt,
+        pageCount: parsed.pageCount,
+        tableCount: Number(parsed.tableCount || tables.length),
+        matchedTables: scoredTables
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private normalizeDocumentationMatchText(value: string): string {
+    return String(value || "")
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9_]+/g, " ")
+      .trim();
+  }
+
+  private getSage100DomainHints(normalizedPrompt: string): Array<{ tableName?: string; tableContains?: string; score: number }> {
+    const hints: Array<{ tableName?: string; tableContains?: string; score: number }> = [];
+    if (/\b(order|orders|auftrag|auftraege|bestellung|beleg|erp)\b/.test(normalizedPrompt)) {
+      hints.push(
+        { tableName: "khkvkbelege", score: 50 },
+        { tableName: "khkvkbelegepositionen", score: 35 },
+        { tableContains: "khkvkbelege", score: 8 }
+      );
+    }
+    if (/\b(opportunity|opportunities|chance|deal)\b/.test(normalizedPrompt)) {
+      hints.push(
+        { tableName: "khkvkbelege", score: 20 },
+        { tableContains: "khkprojekte", score: 3 }
+      );
+    }
+    if (/\b(account|accounts|kunde|kunden|adresse|adressen)\b/.test(normalizedPrompt)) {
+      hints.push(
+        { tableName: "khkadressen", score: 60 },
+        { tableContains: "khkadressen", score: 8 }
+      );
+    }
+    if (/\b(contact|kontakt|kontakte|ansprechpartner)\b/.test(normalizedPrompt)) {
+      hints.push({ tableContains: "khkansprechpartner", score: 8 });
+    }
+    if (/\b(product|produkt|artikel|pricebook|preis)\b/.test(normalizedPrompt)) {
+      hints.push(
+        { tableContains: "khkartikel", score: 8 },
+        { tableContains: "khkartikelvarianten", score: 5 }
+      );
+    }
+    return hints;
   }
 
   public async listSalesforceObjects(instanceId?: string): Promise<{ name: string; label: string }[]> {
@@ -7091,7 +8892,12 @@ export class AdminDataService {
 
       const sourceRows = await this.loadMigrationSourceRows(migration.id, obj);
       const mappingLines = this.buildMigrationMappingLines(obj);
-      const lookupResolver = await this.createMigrationLookupResolver(client, mappingLines, sourceRows.map((entry) => entry.row));
+      const lookupResolver = await this.createMigrationLookupResolver(
+        client,
+        mappingLines,
+        sourceRows.map((entry) => entry.row),
+        instanceId ?? migration.instanceId
+      );
       const engine = new MappingDefinitionEngine(lookupResolver);
 
       const recordStates: Array<{
