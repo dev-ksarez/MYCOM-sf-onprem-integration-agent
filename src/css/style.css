@@ -398,6 +398,68 @@
 .glyphicon-bell:before {
   content: "\e123";
 }
+
+/* Custom: subtler, smoother buttons across the admin UI */
+.btn {
+  border-radius: 8px;
+  transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+  box-shadow: none;
+}
+.btn:focus,
+.btn:active {
+  box-shadow: 0 0 0 0.12rem rgba(0,0,0,0.06);
+  transform: translateY(0);
+}
+
+/* Make outline buttons less saturated and with very light borders */
+.btn-outline-primary {
+  color: #1f6feb;
+  border-color: rgba(31,111,235,0.12);
+}
+.btn-outline-primary:hover,
+.btn-outline-primary:focus {
+  background-color: rgba(31,111,235,0.06);
+  color: #0f4fcf;
+}
+.btn-outline-success {
+  color: #198754;
+  border-color: rgba(25,135,84,0.12);
+}
+.btn-outline-success:hover,
+.btn-outline-success:focus {
+  background-color: rgba(25,135,84,0.06);
+}
+.btn-outline-danger {
+  color: #c82333;
+  border-color: rgba(200,35,51,0.12);
+}
+.btn-outline-danger:hover,
+.btn-outline-danger:focus {
+  background-color: rgba(200,35,51,0.06);
+}
+.btn-outline-secondary {
+  color: #495057;
+  border-color: rgba(73,80,87,0.12);
+}
+.btn-outline-secondary:hover,
+.btn-outline-secondary:focus {
+  background-color: rgba(73,80,87,0.04);
+}
+
+/* Smaller, smoother project action buttons */
+.project-actions .btn,
+.migration-header-actions .btn,
+.connector-actions .btn {
+  border-width: 1px;
+  padding: 0.35rem 0.6rem;
+  font-size: .85rem;
+}
+
+/* Reduce visual noise for small outline buttons used across lists */
+.table .btn {
+  padding: 0.25rem 0.45rem;
+  font-size: .78rem;
+}
 .glyphicon-certificate:before {
   content: "\e124";
 }
@@ -9919,9 +9981,93 @@ a,
   border-bottom: 0;
 }
 
+body.context-test .agent-topbar,
+body.context-test .agent-topbar-primary {
+  background:
+    linear-gradient(90deg, #064e3b 0%, #0f766e 48%, #0284c7 100%);
+}
+
+body.context-production .agent-topbar,
+body.context-production .agent-topbar-primary {
+  background:
+    linear-gradient(90deg, #7f1d1d 0%, #b91c1c 52%, #dc2626 100%);
+}
+
+body.context-none .agent-topbar,
+body.context-none .agent-topbar-primary {
+  background:
+    linear-gradient(90deg, var(--sf-navy) 0%, var(--mycom-blue) 48%, var(--sf-blue) 100%);
+}
+
 .agent-topbar-brand,
 .agent-version-label {
   color: #ffffff;
+}
+
+.active-context-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  max-width: min(54rem, 100%);
+  color: #ffffff;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.active-context-project,
+.active-context-instance {
+  overflow: hidden;
+  max-width: 18rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.active-context-env {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 6.2rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid rgba(255, 255, 255, 0.46);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  font-size: 0.78rem;
+}
+
+.active-context-production .active-context-env {
+  background: #ffffff;
+  color: #991b1b;
+}
+
+.active-context-test .active-context-env {
+  background: #ffffff;
+  color: #0f766e;
+}
+
+.active-context-none {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+@media (max-width: 900px) {
+  .active-context-pill {
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    width: 100%;
+  }
+
+  .active-context-project,
+  .active-context-instance {
+    max-width: 100%;
+  }
+
+  .active-context-env {
+    min-width: 5rem;
+  }
 }
 
 .agent-menu-panel-primary {
@@ -10077,6 +10223,111 @@ button.connector-wizard-step:hover,
   white-space: nowrap;
 }
 
+.project-panel-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.project-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.project-panel-title {
+  font-size: 1rem;
+}
+
+.project-panel-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: stretch;
+  min-width: 8rem;
+}
+
+.project-kpi-grid,
+.project-review-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.project-kpi,
+.project-review-item {
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.86);
+}
+
+.project-kpi span {
+  display: block;
+  color: #64748b;
+  font-size: 0.78rem;
+}
+
+.project-kpi strong,
+.project-review-item .fw-semibold {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.project-operation-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.project-operation-result,
+.project-operation-empty {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.project-operation-empty {
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.project-operation-details {
+  margin: 0.55rem 0 0;
+  padding-left: 1.1rem;
+  color: #475569;
+  font-size: 0.82rem;
+}
+
+.instance-readiness-box {
+  padding: 1rem;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.instance-readiness-checklist {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.instance-readiness-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: start;
+  padding: 0.65rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
 @media (max-width: 992px) {
   .migration-wizard-steps-line {
     grid-template-columns: repeat(var(--wizard-step-count-mobile, 3), minmax(0, 1fr));
@@ -10105,5 +10356,16 @@ button.connector-wizard-step:hover,
   .migration-wizard-step,
   .connector-wizard-step {
     justify-content: flex-start;
+  }
+
+  .project-panel,
+  .project-kpi-grid,
+  .project-review-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .project-panel-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
   }
 }
