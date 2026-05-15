@@ -725,8 +725,8 @@ function formatDocumentationPageTitle(
   project: { name: string; confluencePageTitlePrefix?: string },
   suffix: string
 ): string {
-  const prefix = String(project.confluencePageTitlePrefix || "").trim();
-  return prefix ? `${prefix} ${suffix}` : suffix;
+  // Prefix no longer prepended to titles — return suffix only
+  return suffix;
 }
 
 function renderConfluencePageLinks(titles: string[]): string {
