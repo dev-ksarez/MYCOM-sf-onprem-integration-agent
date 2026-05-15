@@ -1,5 +1,5 @@
 
-import { ConnectorConfig, SalesforceClient } from "../../clients/salesforce/salesforce-client";
+import { ConnectorConfig, SalesforceClient, type SalesforceObjectFieldMetadata } from "../../clients/salesforce/salesforce-client";
 import {
   isImportProfileSchedulerRuleDue,
   type SchedulerDay
@@ -502,6 +502,7 @@ export class SalesforceTargetAdapter implements TargetAdapter {
   private readonly lastRunAt?: string;
   private picklistSqlDatabase?: MssqlDatabase;
   private readonly sqlMappingCache: Map<string, Map<string, string>>;
+  private readonly objectFieldCache: Map<string, Map<string, SalesforceObjectFieldMetadata>>;
   private static readonly PRICEBOOK_UPSERT_CONCURRENCY = 10;
 
   private async preparePricebookEntryCompositeLookup(
@@ -664,6 +665,7 @@ export class SalesforceTargetAdapter implements TargetAdapter {
     this.targetDefinition = parseTargetDefinition(targetDefinition);
     this.activeProfile = this.resolveActiveImportProfile();
     this.sqlMappingCache = new Map();
+    this.objectFieldCache = new Map();
   }
 
   public isProfileSchedulerDue(now = Date.now()): boolean {
@@ -690,6 +692,68 @@ export class SalesforceTargetAdapter implements TargetAdapter {
     return this.activeProfile.name;
   }
 
+  private async getObjectFieldMap(objectApiName: string): Promise<Map<string, SalesforceObjectFieldMetadata>> {
+    const normalizedObjectApiName = String(objectApiName || "").trim();
+    const cacheKey = normalizedObjectApiName.toLowerCase();
+    const cached = this.objectFieldCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const fields = await this.salesforceClient.describeObjectFields(normalizedObjectApiName);
+    const byName = new Map<string, SalesforceObjectFieldMetadata>();
+    for (const field of fields) {
+      const fieldName = String(field.name || "").trim();
+      if (fieldName) {
+        byName.set(fieldName.toLowerCase(), field);
+      }
+    }
+
+    this.objectFieldCache.set(cacheKey, byName);
+    return byName;
+  }
+
+  private async filterWritableTargetFields(
+    objectApiName: string,
+    operation: SalesforceOperation,
+    externalIdField: string,
+    values: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    const fieldMap = await this.getObjectFieldMap(objectApiName);
+    const externalIdKey = String(externalIdField || "").trim().toLowerCase();
+    const filtered: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(values)) {
+      const normalizedKey = String(key || "").trim();
+      if (!normalizedKey) {
+        continue;
+      }
+
+      if (normalizedKey.includes(".")) {
+        filtered[normalizedKey] = value;
+        continue;
+      }
+
+      const field = fieldMap.get(normalizedKey.toLowerCase());
+      if (!field) {
+        continue;
+      }
+
+      const isExternalId = normalizedKey.toLowerCase() === externalIdKey;
+      const isWritable = operation === "insert"
+        ? field.createable
+        : operation === "update"
+          ? field.updateable
+          : field.createable || field.updateable;
+
+      if (isExternalId || isWritable) {
+        filtered[field.name] = value;
+      }
+    }
+
+    return filtered;
+  }
+
   public async writeRecords(
     records: GenericRecord[],
     context: TransferContext
@@ -714,10 +778,21 @@ export class SalesforceTargetAdapter implements TargetAdapter {
         target.objectApiName === "PricebookEntry" && target.pricebook2Id && normalizedValues.Pricebook2Id === undefined
           ? {
               ...normalizedValues,
-              Pricebook2Id: target.pricebook2Id
-            }
-          : normalizedValues;
-      const externalKeyValue = valuesWithTargetDefaults[target.externalIdField];
+            Pricebook2Id: target.pricebook2Id
+          }
+        : normalizedValues;
+      const valuesToWrite =
+        mode === "picklist"
+          ? this.filterPicklistValuesForWrite(valuesWithTargetDefaults)
+          : shouldUsePricebookCompositeKey
+            ? valuesWithTargetDefaults
+            : await this.filterWritableTargetFields(
+                target.objectApiName,
+                target.operation,
+                target.externalIdField,
+                valuesWithTargetDefaults
+              );
+      const externalKeyValue = valuesToWrite[target.externalIdField];
       const externalKey =
         typeof externalKeyValue === "string"
           ? externalKeyValue
@@ -731,11 +806,6 @@ export class SalesforceTargetAdapter implements TargetAdapter {
             );
           }
         }
-
-        const valuesToWrite =
-          mode === "picklist"
-            ? this.filterPicklistValuesForWrite(valuesWithTargetDefaults)
-            : valuesWithTargetDefaults;
 
         validateRequiredRelationshipLookups(target.objectApiName, valuesToWrite);
 

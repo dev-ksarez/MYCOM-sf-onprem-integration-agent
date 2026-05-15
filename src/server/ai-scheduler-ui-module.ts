@@ -105,6 +105,7 @@ export function renderAISchedulerAssistantModule(): string {
               <div class="card-body">
                 <!-- Reasoning -->
                 <div class="alert alert-info mb-3" id="ai-reasoning-alert"></div>
+                <div class="small text-secondary mb-3" id="ai-metadata-basis"></div>
 
                 <!-- Issues -->
                 <div id="ai-issues-container"></div>
@@ -180,6 +181,12 @@ export function renderAISchedulerAssistantModule(): string {
                 </button>
                 <button class="btn btn-sm btn-outline-secondary w-100 text-start mt-1 ai-example-btn" data-example="inbound-2">
                   <small>REST-API Kontakte → SF</small>
+                </button>
+                <button class="btn btn-sm btn-outline-secondary w-100 text-start mt-1 ai-example-btn" data-example="sage-products">
+                  <small>SAGE100 Produkte → SF</small>
+                </button>
+                <button class="btn btn-sm btn-outline-secondary w-100 text-start mt-1 ai-example-btn" data-example="sage-customers">
+                  <small>SAGE100 Kunden → SF</small>
                 </button>
               </div>
 
@@ -329,8 +336,10 @@ export function renderAISchedulerAssistantModule(): string {
       const examplePrompts = {
         "inbound-1": "Alle Accounts aus unserer MSSQL-Datenbank nach Salesforce synchronisieren. Verwende diese SQL: SELECT Kundennummer AS ExternalKey, Name1 AS Name, Telefon AS Phone, Webseite AS Website FROM KHKAdressen WHERE Aktiv = 1. Täglich um 08:00 Uhr.",
         "inbound-2": "REST-API Kundenaktualisierungen nach Salesforce Contact Object. Stündliche Synchronisation.",
+        "sage-products": "Produkte aus SAGE100 nach Salesforce Product2 synchronisieren. Operation: Upsert. Zeitsteuerung: jeden Tag alle 5 Minuten.",
+        "sage-customers": "Kunden aus SAGE100 nach Salesforce Account synchronisieren. Operation: Upsert. Zeitsteuerung: werktags alle 15 Minuten ab 08:00.",
         "outbound-1": "Alle aktiven Salesforce Contacts mit Newsletter-Opt-in nach Brevo/Newsletter-System exportieren. Täglicher Export um 22 Uhr.",
-        "outbound-2": "Abgeschlossene Opportunities aus Salesforce als Orders in unser ERP-System synchronisieren."
+        "outbound-2": "Abgeschlossene Opportunities aus Salesforce als Orders in unser SAGE100-System synchronisieren. Jeden Tag alle 5 Minuten."
       };
 
       function initializeAIAssistant(connectors) {
@@ -370,6 +379,7 @@ export function renderAISchedulerAssistantModule(): string {
             generateScheduler();
           }
         });
+
       }
 
       async function bootAIAssistant() {
@@ -425,6 +435,7 @@ export function renderAISchedulerAssistantModule(): string {
       function displayResult(result) {
         const container = document.getElementById('ai-result-container');
         const reasoningAlert = document.getElementById('ai-reasoning-alert');
+        const metadataBasisEl = document.getElementById('ai-metadata-basis');
         const issuesContainer = document.getElementById('ai-issues-container');
         const configPreview = document.getElementById('ai-config-preview');
         const sourcePreview = document.getElementById('ai-source-preview');
@@ -440,6 +451,9 @@ export function renderAISchedulerAssistantModule(): string {
         confidenceBadge.textContent = confidence + '%';
 
         reasoningAlert.innerHTML = '✓ ' + esc(result.reasoning);
+        if (metadataBasisEl) {
+          metadataBasisEl.innerHTML = formatMetadataBasis(result.metadataBasis);
+        }
 
         if (result.issues && result.issues.length > 0) {
           issuesContainer.innerHTML = result.issues
@@ -540,6 +554,54 @@ export function renderAISchedulerAssistantModule(): string {
         } catch {
           return false;
         }
+      }
+
+      function formatMetadataBasis(metadataBasis) {
+        const basis = metadataBasis && typeof metadataBasis === 'object' ? metadataBasis : {};
+        const salesforce = basis.salesforce && typeof basis.salesforce === 'object' ? basis.salesforce : null;
+        const sage100 = basis.sage100 && typeof basis.sage100 === 'object' ? basis.sage100 : null;
+        const parts = [];
+
+        if (salesforce && salesforce.status === 'success') {
+          parts.push(
+            'Salesforce-Metadaten: ' +
+            esc(formatDateTime(salesforce.refreshedAt) || salesforce.refreshedAt || '-') +
+            ' · ' + esc(String(salesforce.objectCount || 0)) + ' Objekte' +
+            ' · ' + esc(String(salesforce.fieldCount || 0)) + ' Felder'
+          );
+        } else {
+          parts.push('Salesforce-Metadaten: nicht geladen');
+        }
+
+        if (sage100) {
+          const tables = Array.isArray(sage100.matchedTables) ? sage100.matchedTables.filter(Boolean) : [];
+          parts.push(
+            'SAGE100-Doku: ' +
+            esc(formatDateTime(sage100.generatedAt) || sage100.generatedAt || '-') +
+            ' · ' + esc(String(sage100.tableCount || 0)) + ' Tabellen' +
+            (tables.length ? ' · Treffer: ' + esc(tables.slice(0, 4).join(', ')) : '')
+          );
+        }
+
+        return parts.join('<br>');
+      }
+
+      function formatDateTime(value) {
+        const raw = String(value || '').trim();
+        if (!raw) {
+          return '';
+        }
+        const date = new Date(raw);
+        if (Number.isNaN(date.getTime())) {
+          return raw;
+        }
+        return date.toLocaleString('de-DE', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
       }
 
       function detectDeltaSuggestionFromFields(fields) {

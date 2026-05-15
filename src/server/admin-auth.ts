@@ -20,7 +20,7 @@ const salesforceLoginStates = new Map<string, OAuthStateEntry>();
 
 export type AdminPermission = "read" | "write" | "delete" | "admin";
 export type AdminAuthMode = "local" | "salesforce_oidc";
-export type AdminModule = "migration";
+export type AdminModule = "migration" | "projects" | "deployment";
 
 export interface AdminUserRecord {
   id: string;
@@ -148,15 +148,20 @@ function normalizePermissions(value: unknown, roles: string[]): AdminPermission[
 function normalizeModules(value: unknown, roles: string[]): AdminModule[] {
   const roleSet = new Set(roles.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean));
   const modules = new Set<AdminModule>();
+  const addModule = (item: unknown): void => {
+    const normalized = String(item || "").trim().toLowerCase();
+    if (normalized === "migration" || normalized === "projects" || normalized === "deployment") {
+      modules.add(normalized);
+    }
+  };
+
   if (Array.isArray(value)) {
-    value.forEach((item) => {
-      if (String(item || "").trim().toLowerCase() === "migration") {
-        modules.add("migration");
-      }
-    });
+    value.forEach(addModule);
   }
   if (roleSet.has("admin")) {
     modules.add("migration");
+    modules.add("projects");
+    modules.add("deployment");
   }
   return Array.from(modules);
 }
@@ -253,7 +258,7 @@ function loadUsersFromConfig(): AdminUserRecord[] {
     displayName: username,
     roles: ["admin"],
     permissions: ["admin", "read", "write", "delete"],
-    modules: ["migration"]
+    modules: ["migration", "projects", "deployment"]
   }];
 }
 

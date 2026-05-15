@@ -217,6 +217,46 @@ export interface CreateLogInput {
   recordKey?: string;
 }
 
+export function isOperationallyRelevantLog(input: Pick<CreateLogInput, "level" | "step" | "message" | "recordKey">): boolean {
+  const level = String(input.level || "").trim().toUpperCase();
+  if (level === "ERROR" || level === "WARN") {
+    return true;
+  }
+  if (input.recordKey) {
+    return true;
+  }
+
+  const step = String(input.step || "").trim().toUpperCase();
+  const message = String(input.message || "").trim().toLowerCase();
+  const noisySteps = new Set([
+    "RUN_START",
+    "RUN_NOW_START",
+    "CHECKPOINT_LOADED",
+    "CHECKPOINT_SKIPPED",
+    "RUN_SKIPPED"
+  ]);
+  if (noisySteps.has(step)) {
+    return false;
+  }
+  if (
+    (step === "RUN_FINISHED" || step === "RUN_NOW_FINISHED") &&
+    message.includes("status success") &&
+    !/\b(records|datensaetze|read|processed|ok|fail)\b/i.test(message)
+  ) {
+    return false;
+  }
+  if (
+    message.includes("no records processed") ||
+    message.includes("checkpoint unchanged") ||
+    message.includes("no checkpoint found") ||
+    message.includes("run skipped because selected import profile scheduler is not active/due")
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 export interface CreateTaskInput {
   ownerId: string;
   subject: string;
@@ -298,6 +338,8 @@ export interface SalesforceObjectFieldMetadata {
   calculated: boolean;
   autoNumber: boolean;
   requiredOnCreate: boolean;
+  referenceTo?: string[];
+  picklistValues?: SalesforcePicklistValue[];
 }
 
 interface SalesforceDescribeField {
@@ -311,6 +353,7 @@ interface SalesforceDescribeField {
   defaultedOnCreate?: boolean;
   calculated?: boolean;
   autoNumber?: boolean;
+  referenceTo?: string[];
   picklistValues?: Array<{ value?: string; label?: string; active?: boolean }>;
 }
 
@@ -827,6 +870,114 @@ export class SalesforceClient {
     return { assigned: true, alreadyExisted: false };
   }
 
+  private asMetadataArray<T = Record<string, unknown>>(value: unknown): T[] {
+    if (Array.isArray(value)) {
+      return value as T[];
+    }
+    if (value && typeof value === "object") {
+      return [value as T];
+    }
+    return [];
+  }
+
+  private async updatePermissionSetMetadata(
+    permissionSetName: string,
+    mutator: (metadata: Record<string, unknown>) => void
+  ): Promise<void> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const metadataApi = this.connection.metadata as unknown as {
+      read: (type: string, fullName: string) => Promise<unknown>;
+      update: (type: string, metadata: unknown) => Promise<unknown>;
+    };
+    const readResult = await metadataApi.read("PermissionSet", permissionSetName);
+    const permissionSet = Array.isArray(readResult) ? readResult[0] : readResult;
+    if (!permissionSet || typeof permissionSet !== "object") {
+      throw new Error(`PermissionSet metadata '${permissionSetName}' not found.`);
+    }
+
+    const payload: Record<string, unknown> = {
+      ...(permissionSet as Record<string, unknown>),
+      fullName: permissionSetName
+    };
+    mutator(payload);
+
+    const updateResult = await metadataApi.update("PermissionSet", payload);
+    const resultArray = Array.isArray(updateResult) ? updateResult : [updateResult];
+    const failed = resultArray.find(
+      (entry) => entry && typeof entry === "object" && "success" in (entry as Record<string, unknown>) && (entry as Record<string, unknown>).success === false
+    ) as Record<string, unknown> | undefined;
+    if (failed) {
+      const errors = failed.errors ? JSON.stringify(failed.errors) : "unknown metadata error";
+      throw new Error(`Failed to update PermissionSet metadata '${permissionSetName}': ${errors}`);
+    }
+  }
+
+  private async ensurePermissionSetFieldAccessViaMetadata(
+    permissionSetName: string,
+    objectApiName: string,
+    fieldApiName: string
+  ): Promise<void> {
+    const qualifiedFieldName = `${objectApiName}.${fieldApiName}`;
+    await this.updatePermissionSetMetadata(permissionSetName, (metadata) => {
+      const fieldPermissions = this.asMetadataArray<Record<string, unknown>>(metadata.fieldPermissions);
+      const existing = fieldPermissions.find((entry) => String(entry.field || "").trim() === qualifiedFieldName);
+      if (existing) {
+        existing.readable = true;
+        existing.editable = true;
+      } else {
+        fieldPermissions.push({
+          field: qualifiedFieldName,
+          readable: true,
+          editable: true
+        });
+      }
+      metadata.fieldPermissions = fieldPermissions;
+    });
+  }
+
+  private async ensurePermissionSetObjectAccessViaMetadata(
+    permissionSetName: string,
+    objectApiName: string
+  ): Promise<void> {
+    await this.updatePermissionSetMetadata(permissionSetName, (metadata) => {
+      const objectPermissions = this.asMetadataArray<Record<string, unknown>>(metadata.objectPermissions);
+      const existing = objectPermissions.find((entry) => String(entry.object || "").trim() === objectApiName);
+      if (existing) {
+        existing.allowCreate = true;
+        existing.allowRead = true;
+        existing.allowEdit = true;
+        existing.allowDelete = false;
+        existing.viewAllRecords = false;
+        existing.modifyAllRecords = false;
+      } else {
+        objectPermissions.push({
+          object: objectApiName,
+          allowCreate: true,
+          allowRead: true,
+          allowEdit: true,
+          allowDelete: false,
+          viewAllRecords: false,
+          modifyAllRecords: false
+        });
+      }
+      metadata.objectPermissions = objectPermissions;
+    });
+  }
+
+  private stringifySalesforceError(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+
   public async ensurePermissionSetFieldAccess(
     permissionSetName: string,
     objectApiName: string,
@@ -861,32 +1012,168 @@ export class SalesforceClient {
         return { granted: true, alreadyExisted: true };
       }
 
-      const updateResult = await this.connection.sobject("FieldPermissions").update({
-        Id: existing.Id,
+      try {
+        const updateResult = await this.connection.sobject("FieldPermissions").update({
+          Id: existing.Id,
+          PermissionsRead: true,
+          PermissionsEdit: true
+        });
+        if (updateResult.success) {
+          return { granted: true, alreadyExisted: false };
+        }
+        const errors = "errors" in updateResult ? JSON.stringify(updateResult.errors) : "unknown error";
+        try {
+          await this.ensurePermissionSetFieldAccessViaMetadata(permissionSetName, objectApiName, fieldApiName);
+          return { granted: true, alreadyExisted: false };
+        } catch (metadataError) {
+          throw new Error(
+            `Failed to update field access for ${qualifiedFieldName}: ${errors}; metadata fallback failed: ${metadataError instanceof Error ? metadataError.message : String(metadataError)}`
+          );
+        }
+      } catch (error) {
+        try {
+          await this.ensurePermissionSetFieldAccessViaMetadata(permissionSetName, objectApiName, fieldApiName);
+          return { granted: true, alreadyExisted: false };
+        } catch (metadataError) {
+          throw new Error(
+            `Failed to update field access for ${qualifiedFieldName}: ${this.stringifySalesforceError(error)}; metadata fallback failed: ${metadataError instanceof Error ? metadataError.message : String(metadataError)}`
+          );
+        }
+      }
+    }
+
+    try {
+      const createResult = await this.connection.sobject("FieldPermissions").create({
+        ParentId: permissionSetId,
+        SobjectType: objectApiName,
+        Field: qualifiedFieldName,
         PermissionsRead: true,
         PermissionsEdit: true
       });
-      if (!updateResult.success) {
-        const errors = "errors" in updateResult ? JSON.stringify(updateResult.errors) : "unknown error";
-        throw new Error(`Failed to update field access for ${qualifiedFieldName}: ${errors}`);
+      if (createResult.success) {
+        return { granted: true, alreadyExisted: false };
+      }
+      const errors = "errors" in createResult ? JSON.stringify(createResult.errors) : "unknown error";
+      try {
+        await this.ensurePermissionSetFieldAccessViaMetadata(permissionSetName, objectApiName, fieldApiName);
+        return { granted: true, alreadyExisted: false };
+      } catch (metadataError) {
+        throw new Error(
+          `Failed to create field access for ${qualifiedFieldName}: ${errors}; metadata fallback failed: ${metadataError instanceof Error ? metadataError.message : String(metadataError)}`
+        );
+      }
+    } catch (error) {
+      try {
+        await this.ensurePermissionSetFieldAccessViaMetadata(permissionSetName, objectApiName, fieldApiName);
+        return { granted: true, alreadyExisted: false };
+      } catch (metadataError) {
+        throw new Error(
+          `Failed to create field access for ${qualifiedFieldName}: ${this.stringifySalesforceError(error)}; metadata fallback failed: ${metadataError instanceof Error ? metadataError.message : String(metadataError)}`
+        );
+      }
+    }
+  }
+
+  public async ensurePermissionSetObjectAccess(
+    permissionSetName: string,
+    objectApiName: string
+  ): Promise<{ granted: boolean; alreadyExisted: boolean }> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    await this.ensurePermissionSetAssigned(permissionSetName);
+
+    const psResult = await this.connection.query<{ Id: string }>(
+      `SELECT Id FROM PermissionSet WHERE Name = '${permissionSetName}' LIMIT 1`
+    );
+    if (!psResult.records.length) {
+      throw new Error(`PermissionSet '${permissionSetName}' not found in Salesforce.`);
+    }
+
+    const permissionSetId = psResult.records[0].Id;
+    const objectPermissionResult = await this.connection.query<{
+      Id: string;
+      PermissionsCreate?: boolean;
+      PermissionsRead?: boolean;
+      PermissionsEdit?: boolean;
+    }>(
+      `SELECT Id, PermissionsCreate, PermissionsRead, PermissionsEdit FROM ObjectPermissions WHERE ParentId = '${permissionSetId}' AND SobjectType = '${objectApiName}' LIMIT 1`
+    );
+
+    if (objectPermissionResult.records.length > 0) {
+      const existing = objectPermissionResult.records[0];
+      if (existing.PermissionsCreate === true && existing.PermissionsRead === true && existing.PermissionsEdit === true) {
+        return { granted: true, alreadyExisted: true };
       }
 
-      return { granted: true, alreadyExisted: false };
+      try {
+        const updateResult = await this.connection.sobject("ObjectPermissions").update({
+          Id: existing.Id,
+          PermissionsCreate: true,
+          PermissionsRead: true,
+          PermissionsEdit: true,
+          PermissionsDelete: false,
+          PermissionsViewAllRecords: false,
+          PermissionsModifyAllRecords: false
+        });
+        if (updateResult.success) {
+          return { granted: true, alreadyExisted: false };
+        }
+        const errors = "errors" in updateResult ? JSON.stringify(updateResult.errors) : "unknown error";
+        try {
+          await this.ensurePermissionSetObjectAccessViaMetadata(permissionSetName, objectApiName);
+          return { granted: true, alreadyExisted: false };
+        } catch (metadataError) {
+          throw new Error(
+            `Failed to update object access for ${objectApiName}: ${errors}; metadata fallback failed: ${metadataError instanceof Error ? metadataError.message : String(metadataError)}`
+          );
+        }
+      } catch (error) {
+        try {
+          await this.ensurePermissionSetObjectAccessViaMetadata(permissionSetName, objectApiName);
+          return { granted: true, alreadyExisted: false };
+        } catch (metadataError) {
+          throw new Error(
+            `Failed to update object access for ${objectApiName}: ${this.stringifySalesforceError(error)}; metadata fallback failed: ${metadataError instanceof Error ? metadataError.message : String(metadataError)}`
+          );
+        }
+      }
     }
 
-    const createResult = await this.connection.sobject("FieldPermissions").create({
-      ParentId: permissionSetId,
-      SobjectType: objectApiName,
-      Field: qualifiedFieldName,
-      PermissionsRead: true,
-      PermissionsEdit: true
-    });
-    if (!createResult.success) {
+    try {
+      const createResult = await this.connection.sobject("ObjectPermissions").create({
+        ParentId: permissionSetId,
+        SobjectType: objectApiName,
+        PermissionsCreate: true,
+        PermissionsRead: true,
+        PermissionsEdit: true,
+        PermissionsDelete: false,
+        PermissionsViewAllRecords: false,
+        PermissionsModifyAllRecords: false
+      });
+      if (createResult.success) {
+        return { granted: true, alreadyExisted: false };
+      }
       const errors = "errors" in createResult ? JSON.stringify(createResult.errors) : "unknown error";
-      throw new Error(`Failed to create field access for ${qualifiedFieldName}: ${errors}`);
+      try {
+        await this.ensurePermissionSetObjectAccessViaMetadata(permissionSetName, objectApiName);
+        return { granted: true, alreadyExisted: false };
+      } catch (metadataError) {
+        throw new Error(
+          `Failed to create object access for ${objectApiName}: ${errors}; metadata fallback failed: ${metadataError instanceof Error ? metadataError.message : String(metadataError)}`
+        );
+      }
+    } catch (error) {
+      try {
+        await this.ensurePermissionSetObjectAccessViaMetadata(permissionSetName, objectApiName);
+        return { granted: true, alreadyExisted: false };
+      } catch (metadataError) {
+        throw new Error(
+          `Failed to create object access for ${objectApiName}: ${this.stringifySalesforceError(error)}; metadata fallback failed: ${metadataError instanceof Error ? metadataError.message : String(metadataError)}`
+        );
+      }
     }
-
-    return { granted: true, alreadyExisted: false };
   }
 
   public async querySchedules(activeOnly = true): Promise<SalesforceScheduleRecord[]> {
@@ -1602,12 +1889,14 @@ export class SalesforceClient {
     return result.records;
   }
 
-  public async queryLogsByDateRange(startIso: string, endIso: string, limit = 2000): Promise<SalesforceLogRecord[]> {
+  public async queryLogsByDateRange(startIso: string, endIso: string, limit = 2000, level?: "ERROR" | "WARN" | "INFO"): Promise<SalesforceLogRecord[]> {
     if (!this.connection) {
       throw new Error("Salesforce connection not initialized. Call login() first.");
     }
 
     const normalizedLimit = Math.max(1, Math.min(limit, 5000));
+    const normalizedLevel = level === "ERROR" || level === "WARN" || level === "INFO" ? level : undefined;
+    const levelWhere = normalizedLevel ? `\n        AND MSD_Level__c = '${normalizedLevel}'` : "";
     const soql = `
       SELECT
         Id,
@@ -1623,6 +1912,7 @@ export class SalesforceClient {
       FROM MSD_Log__c
       WHERE CreatedDate >= ${formatSoqlDateTime(startIso)}
         AND CreatedDate < ${formatSoqlDateTime(endIso)}
+        ${levelWhere}
       ORDER BY CreatedDate DESC
       LIMIT ${normalizedLimit}
     `;
@@ -1703,6 +1993,9 @@ export class SalesforceClient {
     if (!this.connection) {
       throw new Error("Salesforce connection not initialized. Call login() first.");
     }
+    if (!isOperationallyRelevantLog(input)) {
+      return "";
+    }
 
     const result = await this.connection.sobject("MSD_Log__c").create({
       MSD_Run__c: input.runId,
@@ -1726,6 +2019,7 @@ export class SalesforceClient {
     }
 
     const payloads = (Array.isArray(inputs) ? inputs : [])
+      .filter((input) => isOperationallyRelevantLog(input))
       .map((input) => ({
         MSD_Run__c: input.runId,
         MSD_Level__c: input.level,
@@ -2025,17 +2319,25 @@ export class SalesforceClient {
       return [];
     }
 
-    const results = await this.connection.sobject(apiName).update(payloads);
-    const saveResults = Array.isArray(results) ? results : [results];
+    const updatedIds: string[] = [];
+    // Salesforce SOAP/API typically limits composite updates to 200 records per call.
+    const chunkSize = 200;
+    for (let i = 0; i < payloads.length; i += chunkSize) {
+      const chunk = payloads.slice(i, i + chunkSize);
+      const results = await this.connection.sobject(apiName).update(chunk);
+      const saveResults = Array.isArray(results) ? results : [results];
 
-    saveResults.forEach((result, index) => {
-      if (!result.success) {
-        const details = "errors" in result ? JSON.stringify(result.errors) : "unknown update error";
-        throw new Error(`Failed to update ${apiName} Id=${payloads[index]?.Id || "unknown"} - ${details}`);
-      }
-    });
+      saveResults.forEach((result, index) => {
+        if (!result.success) {
+          const details = "errors" in result ? JSON.stringify((result as any).errors) : "unknown update error";
+          throw new Error(`Failed to update ${apiName} Id=${chunk[index]?.Id || "unknown"} - ${details}`);
+        }
+        const id = String((chunk[index] as any).Id || "").trim();
+        if (id) updatedIds.push(id);
+      });
+    }
 
-    return payloads.map((payload) => String(payload.Id).trim());
+    return updatedIds;
   }
 
   public async resolveProduct2IdsByProductCodes(productCodes: string[]): Promise<Map<string, string>> {
@@ -2361,6 +2663,20 @@ export class SalesforceClient {
         defaultedOnCreate: Boolean((field as { defaultedOnCreate?: boolean }).defaultedOnCreate),
         calculated: Boolean((field as { calculated?: boolean }).calculated),
         autoNumber: Boolean((field as { autoNumber?: boolean }).autoNumber),
+        referenceTo: Array.isArray((field as { referenceTo?: unknown }).referenceTo)
+          ? ((field as { referenceTo?: unknown[] }).referenceTo || [])
+              .map((entry) => String(entry || "").trim())
+              .filter(Boolean)
+          : undefined,
+        picklistValues: Array.isArray((field as { picklistValues?: unknown }).picklistValues)
+          ? ((field as { picklistValues?: Array<{ value?: unknown; label?: unknown; active?: unknown }> }).picklistValues || [])
+              .filter((entry) => entry?.active !== false)
+              .map((entry) => ({
+                value: String(entry.value ?? "").trim(),
+                label: String(entry.label ?? entry.value ?? "").trim()
+              }))
+              .filter((entry) => entry.value)
+          : undefined,
         requiredOnCreate: Boolean(
           (field as { createable?: boolean }).createable
           && !(field as { nillable?: boolean }).nillable
@@ -2386,6 +2702,68 @@ export class SalesforceClient {
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const fields = await this.describeObjectFields(objectApiName, { forceRefresh: true });
       if (fields.some((field) => field.name.toLowerCase() === normalizedFieldName)) {
+        return true;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    return false;
+  }
+
+  public async customFieldMetadataExists(fullName: string): Promise<boolean> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedFullName = String(fullName || "").trim().toLowerCase();
+    if (!normalizedFullName) {
+      return false;
+    }
+
+    const metadataApi = this.connection.metadata as unknown as {
+      read: (type: string, fullName: string) => Promise<unknown>;
+    };
+    try {
+      const readResult = await metadataApi.read("CustomField", fullName);
+      const metadataEntry = Array.isArray(readResult) ? readResult[0] : readResult;
+      if (!metadataEntry || typeof metadataEntry !== "object") {
+        return false;
+      }
+      const entryFullName = String((metadataEntry as Record<string, unknown>).fullName || "").trim().toLowerCase();
+      return entryFullName === normalizedFullName;
+    } catch {
+      return false;
+    }
+  }
+
+  public async waitForCustomFieldMetadataVisibility(
+    fullName: string,
+    maxAttempts = 12,
+    delayMs = 1000
+  ): Promise<boolean> {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (await this.customFieldMetadataExists(fullName)) {
+        return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    return false;
+  }
+
+  public async waitForObjectVisibility(
+    objectApiName: string,
+    maxAttempts = 20,
+    delayMs = 1000
+  ): Promise<boolean> {
+    const normalizedObjectName = String(objectApiName || "").trim().toLowerCase();
+    if (!normalizedObjectName) {
+      return false;
+    }
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const objects = await this.listObjectMetadata();
+      if (objects.some((entry) => String(entry.name || "").trim().toLowerCase() === normalizedObjectName)) {
         return true;
       }
 
@@ -2817,7 +3195,12 @@ export class SalesforceClient {
   public async createOrUpdateMetadata(
     metadataType: string,
     fullName: string,
-    metadata: Record<string, unknown>
+    metadata: Record<string, unknown>,
+    options?: {
+      waitForCustomFieldDescribe?: boolean;
+      customFieldDescribeAttempts?: number;
+      customFieldDescribeDelayMs?: number;
+    }
   ): Promise<unknown> {
     if (!this.connection) {
       throw new Error("Salesforce connection not initialized. Call login() first.");
@@ -2872,15 +3255,29 @@ export class SalesforceClient {
       } catch {
         exists = false;
       }
+      if (!exists) {
+        try {
+          const readResult = await metadataApi.read(metadataType, fullName);
+          const metadataEntry = Array.isArray(readResult) ? readResult[0] : readResult;
+          if (metadataEntry && typeof metadataEntry === "object") {
+            const entryFullName = String((metadataEntry as Record<string, unknown>).fullName || "").trim();
+            exists = entryFullName
+              ? entryFullName.toLowerCase() === fullName.toLowerCase()
+              : false;
+          }
+        } catch {
+          exists = false;
+        }
+      }
     } else {
       try {
         const readResult = await metadataApi.read(metadataType, fullName);
         const metadataEntry = Array.isArray(readResult) ? readResult[0] : readResult;
         if (metadataEntry && typeof metadataEntry === "object") {
-          const entryFullName = String((metadataEntry as Record<string, unknown>).fullName || "").trim();
-          exists = entryFullName
+            const entryFullName = String((metadataEntry as Record<string, unknown>).fullName || "").trim();
+            exists = entryFullName
             ? entryFullName.toLowerCase() === fullName.toLowerCase()
-            : true;
+            : false;
         } else {
           exists = false;
         }
@@ -2939,18 +3336,56 @@ export class SalesforceClient {
         } catch {
           // Keep original error if fallback field lookup fails.
         }
+
+        try {
+          const readResult = await metadataApi.read(metadataType, fullName);
+          const metadataEntry = Array.isArray(readResult) ? readResult[0] : readResult;
+          if (metadataEntry && typeof metadataEntry === "object") {
+            const entryFullName = String((metadataEntry as Record<string, unknown>).fullName || "").trim();
+            if (entryFullName.toLowerCase() === fullName.toLowerCase()) {
+              return {
+                success: true,
+                action: "exists",
+                type: metadataType,
+                fullName
+              };
+            }
+          }
+        } catch {
+          // Keep original error if metadata read also cannot see the field.
+        }
       }
 
       throw new Error(`Failed to create ${metadataType} ${fullName}: ${errors}`);
     }
 
     if (customFieldTarget) {
-      if (await this.waitForObjectFieldVisibility(customFieldTarget.objectApiName, customFieldTarget.fieldApiName)) {
+      const shouldWaitForDescribe = options?.waitForCustomFieldDescribe !== false;
+      const isVisible = shouldWaitForDescribe
+        ? await this.waitForObjectFieldVisibility(
+          customFieldTarget.objectApiName,
+          customFieldTarget.fieldApiName,
+          options?.customFieldDescribeAttempts ?? 20,
+          options?.customFieldDescribeDelayMs ?? 1000
+        )
+        : await this.customFieldMetadataExists(fullName);
+
+      if (isVisible) {
         return {
           success: true,
           action: "created",
           type: metadataType,
           fullName
+        };
+      }
+
+      if (!shouldWaitForDescribe) {
+        return {
+          success: true,
+          action: "created-pending-visibility",
+          type: metadataType,
+          fullName,
+          createResult: writeResult
         };
       }
 

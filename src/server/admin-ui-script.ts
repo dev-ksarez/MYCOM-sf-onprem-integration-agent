@@ -7793,14 +7793,21 @@ export function renderAdminUiScript(): string {
           return;
         }
 
+        const renderJsonCell = (value) => {
+          if (!value || typeof value !== 'object') {
+            return '<span class="text-secondary">-</span>';
+          }
+          return '<pre class="failed-record-json">' + esc(JSON.stringify(value, null, 2)) + '</pre>';
+        };
+
         body.innerHTML = rows.map((item, idx) =>
           '<tr>' +
             '<td>' + esc(Number.isFinite(Number(item.rowIndex)) ? Number(item.rowIndex) + 1 : idx + 1) + '</td>' +
             '<td>' + esc(item.externalKey || '-') + '</td>' +
             '<td>' + esc(item.statusCode || '-') + '</td>' +
             '<td style="white-space: normal; word-break: break-word; overflow-wrap: anywhere;">' + esc(item.message || '-') + '</td>' +
-            '<td><pre class="small mb-0" style="max-width: 320px; white-space: pre-wrap;">' + esc(item.sourceRecord ? JSON.stringify(item.sourceRecord, null, 2) : '-') + '</pre></td>' +
-            '<td><pre class="small mb-0" style="max-width: 320px; white-space: pre-wrap;">' + esc(item.mappedRecord ? JSON.stringify(item.mappedRecord, null, 2) : '-') + '</pre></td>' +
+            '<td>' + renderJsonCell(item.sourceRecord) + '</td>' +
+            '<td>' + renderJsonCell(item.mappedRecord) + '</td>' +
           '</tr>'
         ).join('');
 
@@ -14610,6 +14617,8 @@ export function renderAdminUiScript(): string {
           }
 
           // Email validation controls
+          const emailEnabledEl = panel.querySelector('[data-map-email-enabled="' + col + '"]');
+          const emailActionEl = panel.querySelector('[data-map-email-action="' + col + '"]');
           if (emailEnabledEl && emailActionEl) {
             emailEnabledEl.addEventListener('change', () => {
               emailActionEl.style.display = emailEnabledEl.checked ? '' : 'none';

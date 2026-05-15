@@ -3149,15 +3149,15 @@ ${renderAISchedulerAssistantModule()}
           </div>
           <div class="modal-body p-0">
             <div class="table-responsive">
-              <table class="table table-sm mb-0">
+              <table class="table table-sm mb-0 failed-records-table">
                 <thead>
                   <tr>
-                    <th>#</th>
-                    <th>Key</th>
-                    <th>Status</th>
-                    <th>Fehler</th>
-                    <th>Quelle</th>
-                    <th>Mapped</th>
+                    <th style="width: 48px;">#</th>
+                    <th style="width: 180px;">Key</th>
+                    <th style="width: 150px;">Status</th>
+                    <th style="min-width: 360px;">Fehler</th>
+                    <th style="width: 360px;">Quelle</th>
+                    <th style="width: 360px;">Mapped</th>
                   </tr>
                 </thead>
                 <tbody id="failed-records-modal-body"></tbody>

@@ -19,6 +19,7 @@ import { FileSourceAdapter } from "../source-adapters/file/file-source-adapter";
 import { FileTargetAdapter } from "../target-adapters/file/file-target-adapter";
 import { SalesforceTargetAdapter } from "../target-adapters/salesforce/salesforce-target-adapter";
 import { SalesforceGlobalPicklistTargetAdapter } from "../target-adapters/salesforce/salesforce-global-picklist-target-adapter";
+import { calculateNextRunAtFromTiming } from "../core/scheduler/schedule-timing";
 import { JobContext } from "../types/job-context";
 import { TransferContext } from "../types/transfer-context";
 import { IntegrationSchedule } from "../types/integration-schedule";
@@ -516,13 +517,15 @@ async function runSalesforceAfterExport(
 
   const updatedIds = await salesforceClient.updateGenericRecords(updateObjectApiName, updatePayloads);
 
-  await salesforceClient.createLog({
-    runId,
-    level: "INFO",
-    step: "AFTER_EXPORT_UPDATED",
-    message: `${updatedIds.length} exportierte Datensaetze in ${updateObjectApiName} nachbearbeitet`,
-    correlationId
-  });
+  if (updatedIds.length > 0) {
+    await salesforceClient.createLog({
+      runId,
+      level: "INFO",
+      step: "AFTER_EXPORT_UPDATED",
+      message: `${updatedIds.length} exportierte Datensaetze in ${updateObjectApiName} nachbearbeitet`,
+      correlationId
+    });
+  }
 }
 
 function extractEffectiveTargetDefinition(targetDefinition?: string): EffectiveTargetDefinition {
@@ -611,71 +614,6 @@ function getScheduleConflictPriority(schedule: IntegrationSchedule): number {
   return score;
 }
 
-function calculateNextRunAtFromTiming(timingDefinition?: string, now: Date = new Date()): string | undefined {
-  const raw = String(timingDefinition || "").trim();
-  if (!raw) {
-    return undefined;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return undefined;
-    }
-
-    const intervalMinutes = Number((parsed as Record<string, unknown>).intervalMinutes || 0);
-    
-    // Für Intervall-basiertes Timing (z.B. alle 5 Minuten): nächster Lauf = jetzt + intervalMinutes
-    if (Number.isInteger(intervalMinutes) && intervalMinutes > 0 && intervalMinutes < 1440) {
-      const nextRun = new Date(now);
-      nextRun.setMinutes(nextRun.getMinutes() + intervalMinutes);
-      return nextRun.toISOString();
-    }
-
-    // Für Zeit-basiertes Timing (Wochentag + Uhrzeit): nächsten passenden Tag um startTime berechnen
-    const days = Array.isArray((parsed as Record<string, unknown>).days)
-      ? ((parsed as Record<string, unknown>).days as unknown[])
-          .map((value) => Number(value))
-          .filter((value) => Number.isInteger(value) && value >= 0 && value <= 6)
-      : [];
-
-    const uniqueDays = Array.from(new Set(days));
-    if (uniqueDays.length === 0) {
-      return undefined;
-    }
-
-    const startTime = String((parsed as Record<string, unknown>).startTime || "09:00");
-    const match = startTime.match(/^(\d{1,2}):(\d{2})$/);
-    if (!match) {
-      return undefined;
-    }
-
-    const hours = Number(match[1]);
-    const minutes = Number(match[2]);
-    if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
-      return undefined;
-    }
-
-    for (let offset = 0; offset <= 60; offset += 1) {
-      const candidate = new Date(now);
-      candidate.setDate(now.getDate() + offset);
-      candidate.setHours(hours, minutes, 0, 0);
-
-      if (candidate.getTime() <= now.getTime()) {
-        continue;
-      }
-
-      if (uniqueDays.includes(candidate.getDay())) {
-        return candidate.toISOString();
-      }
-    }
-
-    return undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function buildHierarchyOrderedSchedules(schedules: IntegrationSchedule[]): IntegrationSchedule[] {
   const byId = new Map(schedules.map((schedule) => [schedule.id, schedule]));
   const childrenByParent = new Map<string, IntegrationSchedule[]>();
@@ -755,6 +693,62 @@ function mapSchedule(record: SalesforceScheduleRecord): IntegrationSchedule {
   };
 }
 
+function getScheduleTimingDefinition(schedule: IntegrationSchedule): string | undefined {
+  return schedule.timingDefinition || extractTimingDefinition(schedule.targetDefinition);
+}
+
+function buildScheduleRunTimestampFields(
+  schedule: IntegrationSchedule,
+  finishedAt: string,
+  options?: { updateNextRunAt?: boolean }
+): Record<string, unknown> {
+  const fields: Record<string, unknown> = {
+    LastRunAt__c: finishedAt
+  };
+
+  if (options?.updateNextRunAt !== false && !schedule.inheritTimingFromParent) {
+    const calculatedNextRunAt = calculateNextRunAtFromTiming(getScheduleTimingDefinition(schedule), new Date(finishedAt));
+    if (calculatedNextRunAt) {
+      fields.NextRunAt__c = calculatedNextRunAt;
+    }
+  }
+
+  return fields;
+}
+
+async function ensureScheduleHasNextRunAt(
+  salesforceClient: SalesforceClient,
+  logger: pino.Logger,
+  schedule: IntegrationSchedule
+): Promise<IntegrationSchedule> {
+  if (schedule.inheritTimingFromParent || schedule.nextRunAt || !getScheduleTimingDefinition(schedule)) {
+    return schedule;
+  }
+
+  const calculatedNextRunAt = calculateNextRunAtFromTiming(getScheduleTimingDefinition(schedule), new Date());
+  if (!calculatedNextRunAt) {
+    return schedule;
+  }
+
+  await salesforceClient.updateScheduleRecord(schedule.id, {
+    NextRunAt__c: calculatedNextRunAt
+  });
+
+  logger.info(
+    {
+      scheduleId: schedule.id,
+      scheduleName: schedule.name,
+      nextRunAt: calculatedNextRunAt
+    },
+    "Initialized missing scheduler NextRunAt from timing definition"
+  );
+
+  return {
+    ...schedule,
+    nextRunAt: calculatedNextRunAt
+  };
+}
+
 function isValidSalesforceIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_.]*$/.test(value);
 }
@@ -767,6 +761,25 @@ async function executeSchedule(
   options?: { forceRun?: boolean }
 ): Promise<boolean> {
   const forceRun = options?.forceRun ?? false;
+  const latestScheduleRecord = await salesforceClient.queryScheduleById(schedule.id);
+  const latestSchedule = mapSchedule(latestScheduleRecord);
+  if (!latestSchedule.active) {
+    logger.info(
+      { scheduleId: schedule.id, scheduleName: schedule.name },
+      "Skipping schedule because it is no longer active after refresh"
+    );
+    return false;
+  }
+
+  if (!forceRun && !isScheduleDue(latestSchedule)) {
+    logger.info(
+      { scheduleId: schedule.id, scheduleName: schedule.name },
+      "Skipping schedule because it is no longer due after refresh"
+    );
+    return false;
+  }
+
+  schedule = latestSchedule;
   const isFileSource = isFileScheduleType(schedule.sourceType);
   const isFileTarget = isFileScheduleType(schedule.targetType);
   const isRestSource = schedule.sourceType === "REST_API";
@@ -838,16 +851,6 @@ async function executeSchedule(
     startedAt: new Date().toISOString()
   });
 
-  await salesforceClient.createLog({
-    runId,
-    level: "INFO",
-    step: forceRun ? "RUN_NOW_START" : "RUN_START",
-    message: forceRun
-      ? `Manual run started for schedule ${schedule.name}`
-      : `Run started for schedule ${schedule.name}`,
-    correlationId: context.correlationId
-  });
-
   logger.info(
     {
       scheduleId: schedule.id,
@@ -862,16 +865,6 @@ async function executeSchedule(
   const checkpoint = await salesforceClient.getCheckpoint(schedule.id, schedule.objectName);
   const lastCheckpoint = checkpoint?.lastCheckpoint;
   const lastRecordId = checkpoint?.lastRecordId;
-
-  await salesforceClient.createLog({
-    runId,
-    level: "INFO",
-    step: "CHECKPOINT_LOADED",
-    message: lastCheckpoint
-      ? `Using checkpoint ${lastCheckpoint}${lastRecordId ? ` / ${lastRecordId}` : ""}`
-      : "No checkpoint found. Running initial load.",
-    correlationId: context.correlationId
-  });
 
   try {
     const connectionOk = (isFileConnector || isRestSource) ? true : await connector!.testConnection();
@@ -1073,14 +1066,6 @@ async function executeSchedule(
           "Skipping schedule because selected import profile scheduler is not active/due"
         );
 
-        await salesforceClient.createLog({
-          runId,
-          level: "INFO",
-          step: "RUN_SKIPPED",
-          message: "Run skipped because selected import profile scheduler is not active/due",
-          correlationId: context.correlationId
-        });
-
         await salesforceClient.updateRun(runId, {
           status: "Success",
           finishedAt: new Date().toISOString(),
@@ -1089,6 +1074,12 @@ async function executeSchedule(
           recordsSucceeded: 0,
           recordsFailed: 0
         });
+
+        const skippedFinishedAt = new Date().toISOString();
+        await salesforceClient.updateScheduleRecord(
+          schedule.id,
+          buildScheduleRunTimestampFields(schedule, skippedFinishedAt)
+        );
 
         return false;
       }
@@ -1169,13 +1160,15 @@ async function executeSchedule(
       );
     }
 
-    await salesforceClient.createLog({
-      runId,
-      level: "INFO",
-      step: forceRun ? "RUN_NOW_FINISHED" : "RUN_FINISHED",
-      message: `Run finished with status ${result.status}`,
-      correlationId: context.correlationId
-    });
+    if (result.status !== "Success" || result.recordsRead > 0 || result.recordsProcessed > 0 || result.recordsSucceeded > 0 || result.recordsFailed > 0) {
+      await salesforceClient.createLog({
+        runId,
+        level: "INFO",
+        step: forceRun ? "RUN_NOW_FINISHED" : "RUN_FINISHED",
+        message: `Run finished with status ${result.status}. Records: read=${result.recordsRead}, processed=${result.recordsProcessed}, ok=${result.recordsSucceeded}, fail=${result.recordsFailed}`,
+        correlationId: context.correlationId
+      });
+    }
 
     await salesforceClient.updateRun(runId, {
       status: result.status,
@@ -1186,18 +1179,7 @@ async function executeSchedule(
       recordsFailed: result.recordsFailed
     });
 
-    const scheduleFields: Record<string, unknown> = {
-      LastRunAt__c: finishedAt
-    };
-
-    if (!schedule.inheritTimingFromParent) {
-      const calculatedNextRunAt = calculateNextRunAtFromTiming(schedule.timingDefinition || extractTimingDefinition(schedule.targetDefinition), new Date(finishedAt));
-      if (calculatedNextRunAt) {
-        scheduleFields.NextRunAt__c = calculatedNextRunAt;
-      }
-    }
-
-    await salesforceClient.updateScheduleRecord(schedule.id, scheduleFields);
+    await salesforceClient.updateScheduleRecord(schedule.id, buildScheduleRunTimestampFields(schedule, finishedAt));
     markScheduleRunSuccess(schedule.id);
 
     if (result.lastProcessedRecord) {
@@ -1224,14 +1206,6 @@ async function executeSchedule(
         message: `Checkpoint updated to ${checkpointValue || checkpointRecordId || "-"}${checkpointRecordId && checkpointRecordId !== checkpointValue ? ` / ${checkpointRecordId}` : ""}`,
         correlationId: context.correlationId
       });
-    } else {
-      await salesforceClient.createLog({
-        runId,
-        level: "INFO",
-        step: "CHECKPOINT_SKIPPED",
-        message: "No records processed. Checkpoint unchanged.",
-        correlationId: context.correlationId
-      });
     }
 
     return true;
@@ -1255,11 +1229,16 @@ async function executeSchedule(
       correlationId: context.correlationId
     });
 
+    const failedAt = new Date().toISOString();
     await salesforceClient.updateRun(runId, {
       status: "Failed",
-      finishedAt: new Date().toISOString(),
+      finishedAt: failedAt,
       errorMessage
     });
+
+    if (!forceRun) {
+      await salesforceClient.updateScheduleRecord(schedule.id, buildScheduleRunTimestampFields(schedule, failedAt));
+    }
 
     const health = markScheduleRunFailure(schedule.id, errorMessage);
     const shouldAutoDisable =
@@ -1278,7 +1257,7 @@ async function executeSchedule(
     if (shouldAutoDisable) {
       await salesforceClient.updateScheduleRecord(schedule.id, {
         Active__c: false,
-        LastRunAt__c: new Date().toISOString()
+        ...buildScheduleRunTimestampFields(schedule, failedAt, { updateNextRunAt: false })
       });
 
       markScheduleAutoDisabled(schedule.id);
@@ -1372,7 +1351,8 @@ export async function runDueSchedulesOnce(logger: pino.Logger, agentId: string):
   let dueSchedules = 0;
   let processedSchedules = 0;
 
-  for (const schedule of orderedSchedules) {
+  for (const scheduleEntry of orderedSchedules) {
+    const schedule = await ensureScheduleHasNextRunAt(salesforceClient, logger, scheduleEntry);
     const parentId = schedule.parentScheduleId;
     const hasValidParent = Boolean(parentId && orderedSchedules.some((entry) => entry.id === parentId));
     const ownDue = isScheduleDue(schedule);
