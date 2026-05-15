@@ -1,11 +1,14 @@
 
 import http from "node:http";
+import crypto from "node:crypto";
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
   AdminDataService,
   SalesforceInstanceMutationInput,
+  SalesforceInstanceMsdSetupInput,
+  SalesforceInstanceReadinessCheckInput,
   SalesforceProjectMutationInput,
   ConnectorMutationInput,
   ScheduleMutationInput,
@@ -17,6 +20,7 @@ import {
   ScheduleFormOptions
 } from "./admin-data-service";
 import { isRemoteAgentConfigured, syncRemoteAgentInstances } from "../runtime/remote-agent-client";
+import { MappingDefinitionParser } from "../core/mapping-dsl/mapping-definition-parser";
 import {
   appendSetCookie,
   authenticateLocalAdminUser,
@@ -24,14 +28,11 @@ import {
   buildSalesforceLoginAuthorizationUrl,
   buildCsrfCookie,
   buildExpiredSessionCookie,
-  buildMigrationOauthRedirectUri,
   buildSessionCookie,
   clearAdminSession,
   completeSalesforceLogin,
   constantTimeEquals,
-  consumeMigrationOauthState,
   createAdminSession,
-  createMigrationOauthState,
   createSalesforceLoginState,
   getAdminSession,
   getAdminAuthConfig,
@@ -56,7 +57,6 @@ import { HealthSnapshot } from "./health-snapshot";
 import { generateInstallerFiles, getInstallerSummary, INSTALLER_OUTPUT_DIR, InstallerGenerationInput } from "./installer-generator";
 import { AISchedulerService } from "./ai-scheduler-service";
 import { AIErrorAnalyzer, type RunErrorData } from "./ai-error-analyzer";
-import { AIMigrationAnalyzer, type MigrationSourceData } from "./ai-migration-analyzer";
 import { AIDashboardAnalyzer, type AIDashboardAnalysisInput } from "./ai-dashboard-analyzer";
 import { generateSalesforceMappingRules } from "../core/mapping-dsl/salesforce-mapping-generator";
 import { serveStaticAsset, UI_ASSET_VERSION } from "./asset-server";
@@ -71,6 +71,9 @@ const LOCAL_DEPLOYMENT_PRECHECKS_FILE = path.resolve(process.cwd(), "artifacts/d
 const LOCAL_PROJECT_SETUP_VERSIONS_FILE = path.resolve(process.cwd(), "artifacts/project-setup-versions.json");
 const LOCAL_DEPLOYMENT_RUNS_FILE = path.resolve(process.cwd(), "artifacts/deployment-runs.json");
 const LOCAL_PROJECT_DOCUMENTATION_PAGES_FILE = path.resolve(process.cwd(), "artifacts/project-documentation-pages.json");
+const LOCAL_AGENT_HEARTBEATS_FILE = path.resolve(process.cwd(), "artifacts/agent-heartbeats.json");
+const LOCAL_AGENT_COMMANDS_FILE = path.resolve(process.cwd(), "artifacts/agent-commands.json");
+const LOCAL_AGENT_LOG_BUCKETS_FILE = path.resolve(process.cwd(), "artifacts/agent-log-buckets.json");
 
 type DeploymentCompareDirection = "test-to-production" | "production-to-test";
 
@@ -138,6 +141,367 @@ interface ProjectDocumentationPageRecord {
   projectId: string;
   pageId: string;
   updatedAt: string;
+}
+
+interface ConfluencePublishPageResult {
+  published: boolean;
+  pageId?: string;
+  url?: string;
+  mode: "created" | "updated" | "dry-run";
+  title: string;
+  error?: string;
+}
+
+type AgentCommandType = "restart-agent" | "request-update" | "upload-error-log";
+type AgentCommandStatus = "pending" | "accepted" | "done" | "failed" | "ignored";
+
+interface AgentHealthPulseInput {
+  agentId?: string;
+  projectId?: string;
+  instanceId?: string;
+  targetEnv?: "test" | "production";
+  agentVersion?: string;
+  appVersion?: string;
+  nodeVersion?: string;
+  status?: "ok" | "warning" | "error";
+  lastSuccessAt?: string;
+  openErrors?: number;
+  metrics?: Record<string, unknown>;
+}
+
+interface AgentCommandResponseItem {
+  commandId: string;
+  type: AgentCommandType;
+  issuedAt: string;
+  expiresAt?: string;
+  payload?: Record<string, unknown>;
+  signature?: string;
+}
+
+interface AgentCommandAckInput {
+  agentId?: string;
+  projectId?: string;
+  instanceId?: string;
+  status?: "accepted" | "done" | "failed" | "ignored";
+  executedAt?: string;
+  result?: {
+    message?: string;
+    artifactRef?: string;
+    errorCode?: string;
+    errorMessage?: string;
+  };
+}
+
+interface AgentHeartbeatRecord {
+  id: string;
+  agentId: string;
+  projectId: string;
+  instanceId: string;
+  targetEnv: "test" | "production";
+  agentVersion: string;
+  appVersion: string;
+  nodeVersion: string;
+  status: "ok" | "warning" | "error";
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+interface AgentCommandRecord {
+  commandId: string;
+  agentId: string;
+  projectId?: string;
+  instanceId?: string;
+  type: AgentCommandType;
+  payload?: Record<string, unknown>;
+  signature?: string;
+  status: AgentCommandStatus;
+  issuedAt: string;
+  expiresAt?: string;
+  acknowledgedAt?: string;
+  result?: Record<string, unknown>;
+}
+
+type RolloutStorageMode = "legacy" | "dual-write" | "json-primary";
+
+interface AgentLogBucketRecord {
+  projectId?: string;
+  instanceId?: string;
+  bucketDate?: string;
+  segment?: number;
+  createdAt?: string;
+}
+
+const AGENT_COMMAND_SHARED_SECRET = String(process.env.AGENT_COMMAND_SHARED_SECRET || "").trim();
+
+function clampInteger(value: unknown, fallback: number, min: number, max: number): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+
+  const rounded = Math.trunc(numeric);
+  if (rounded < min) {
+    return min;
+  }
+  if (rounded > max) {
+    return max;
+  }
+  return rounded;
+}
+
+function isTimestampInRange(isoDate: string | undefined, startMs: number, endMs: number): boolean {
+  const millis = Date.parse(String(isoDate || ""));
+  if (!Number.isFinite(millis)) {
+    return false;
+  }
+  return millis >= startMs && millis <= endMs;
+}
+
+function resolveRolloutStorageMode(): RolloutStorageMode {
+  const configured = String(process.env.ROLLOUT_STORAGE_MODE || "dual-write").trim().toLowerCase();
+  if (configured === "legacy" || configured === "json-primary" || configured === "dual-write") {
+    return configured;
+  }
+  return "dual-write";
+}
+
+function resolveDataModelVersion(storageMode: RolloutStorageMode): string {
+  if (storageMode === "legacy") {
+    return "legacy-v1";
+  }
+  if (storageMode === "json-primary") {
+    return "json-primary-v1";
+  }
+  return "dual-write-v1";
+}
+
+async function buildRolloutKpiResponse(
+  adminDataService: AdminDataService,
+  projectId: string,
+  targetEnv: "test" | "production",
+  windowDays: number
+): Promise<Record<string, unknown>> {
+  const effectiveWindowDays = clampInteger(windowDays, 14, 1, 90);
+  const endMs = Date.now();
+  const startMs = endMs - (effectiveWindowDays * 24 * 60 * 60 * 1000);
+  const startIso = new Date(startMs).toISOString();
+  const endIso = new Date(endMs).toISOString();
+
+  const storageMode = resolveRolloutStorageMode();
+  const dataModelVersion = resolveDataModelVersion(storageMode);
+
+  const unavailableKpis: string[] = [];
+  const evaluatedKpis: string[] = [];
+
+  const heartbeats = readAgentHeartbeatRecords().filter((entry) => (
+    String(entry.projectId || "").trim() === projectId
+    && entry.targetEnv === targetEnv
+    && isTimestampInRange(entry.createdAt, startMs, endMs)
+  ));
+
+  let healthPulseSuccessRatePct: number | null = null;
+  if (heartbeats.length > 0) {
+    const successful = heartbeats.filter((entry) => entry.status !== "error").length;
+    healthPulseSuccessRatePct = Number(((successful / heartbeats.length) * 100).toFixed(2));
+    evaluatedKpis.push("healthPulseSuccessRatePct");
+  } else {
+    unavailableKpis.push("healthPulseSuccessRatePct");
+  }
+
+  const projectInstances = adminDataService
+    .listInstances()
+    .filter((entry) => String(entry.projectId || "default-project").trim() === projectId);
+  const targetInstanceIds = new Set(projectInstances
+    .filter((entry) => String(entry.role || "test").trim() === targetEnv)
+    .map((entry) => String(entry.id || "").trim())
+    .filter(Boolean));
+
+  const commandRecords = readAgentCommandRecords().filter((entry) => {
+    if (!isTimestampInRange(entry.issuedAt, startMs, endMs)) {
+      return false;
+    }
+    const commandProjectId = String(entry.projectId || "").trim();
+    if (commandProjectId && commandProjectId !== projectId) {
+      return false;
+    }
+    const commandInstanceId = String(entry.instanceId || "").trim();
+    if (commandInstanceId && targetInstanceIds.size > 0 && !targetInstanceIds.has(commandInstanceId)) {
+      return false;
+    }
+    return true;
+  });
+  let commandAckSuccessRatePct: number | null = null;
+  if (commandRecords.length > 0) {
+    const acknowledged = commandRecords.filter((entry) => entry.status !== "pending");
+    if (acknowledged.length > 0) {
+      const successful = acknowledged.filter((entry) => entry.status === "accepted" || entry.status === "done").length;
+      commandAckSuccessRatePct = Number(((successful / acknowledged.length) * 100).toFixed(2));
+      evaluatedKpis.push("commandAckSuccessRatePct");
+    } else {
+      unavailableKpis.push("commandAckSuccessRatePct");
+    }
+  } else {
+    unavailableKpis.push("commandAckSuccessRatePct");
+  }
+
+  const logBuckets = readJsonArrayFile<AgentLogBucketRecord>(LOCAL_AGENT_LOG_BUCKETS_FILE).filter((entry) => {
+    if (String(entry.projectId || "").trim() !== projectId) {
+      return false;
+    }
+
+    if (entry.createdAt) {
+      return isTimestampInRange(entry.createdAt, startMs, endMs);
+    }
+
+    const bucketDate = String(entry.bucketDate || "").trim();
+    if (!bucketDate) {
+      return false;
+    }
+
+    const bucketMillis = Date.parse(`${bucketDate}T00:00:00Z`);
+    if (!Number.isFinite(bucketMillis)) {
+      return false;
+    }
+
+    return bucketMillis >= startMs && bucketMillis <= endMs;
+  });
+
+  let dailyLogBucketSegmentsPerInstance: number | null = null;
+  if (logBuckets.length > 0) {
+    const segmentsPerDay = new Map<string, number>();
+    for (const item of logBuckets) {
+      const instanceId = String(item.instanceId || "unknown-instance").trim() || "unknown-instance";
+      const bucketDate = String(item.bucketDate || "unknown-date").trim() || "unknown-date";
+      const key = `${instanceId}|${bucketDate}`;
+      segmentsPerDay.set(key, (segmentsPerDay.get(key) || 0) + 1);
+    }
+
+    dailyLogBucketSegmentsPerInstance = Math.max(...Array.from(segmentsPerDay.values()));
+    evaluatedKpis.push("dailyLogBucketSegmentsPerInstance");
+  } else {
+    unavailableKpis.push("dailyLogBucketSegmentsPerInstance");
+  }
+
+  // Not derivable from current artifact model yet.
+  const legacyJsonDivergenceRatePct: number | null = null;
+  const idempotencyConflictRatePct: number | null = null;
+  const logRedeliveryWithin24hRatePct: number | null = null;
+  const storageModeAuditCoveragePct: number | null = null;
+  const openCriticalMigrationIncidents: number | null = null;
+
+  unavailableKpis.push(
+    "legacyJsonDivergenceRatePct",
+    "idempotencyConflictRatePct",
+    "logRedeliveryWithin24hRatePct",
+    "storageModeAuditCoveragePct",
+    "openCriticalMigrationIncidents"
+  );
+
+  const uniqueUnavailableKpis = Array.from(new Set(unavailableKpis));
+
+  const thresholds = {
+    legacyJsonDivergenceRatePct: {
+      goMax: 0.5,
+      rollbackTrigger: 1.0
+    },
+    healthPulseSuccessRatePct: {
+      goMin: 99.5
+    },
+    commandAckSuccessRatePct: {
+      goMin: 99.9,
+      rollbackTrigger: 99.0
+    },
+    dailyLogBucketSegmentsPerInstance: {
+      goMax: 20
+    },
+    logRedeliveryWithin24hRatePct: {
+      goMin: 99.0
+    },
+    storageModeAuditCoveragePct: {
+      goMin: 100.0
+    },
+    openCriticalMigrationIncidents: {
+      goMax: 0
+    }
+  };
+
+  let decisionStatus = "insufficient-data";
+  let decisionReason = "Keine umgebungsspezifischen Messdaten im Messfenster vorhanden.";
+
+  const environmentScopedSignals = [
+    healthPulseSuccessRatePct,
+    dailyLogBucketSegmentsPerInstance
+  ].filter((value) => value !== null).length;
+
+  if (environmentScopedSignals > 0) {
+    const criticalFailure = (
+      (legacyJsonDivergenceRatePct !== null && legacyJsonDivergenceRatePct > thresholds.legacyJsonDivergenceRatePct.rollbackTrigger)
+      || (commandAckSuccessRatePct !== null && commandAckSuccessRatePct < thresholds.commandAckSuccessRatePct.rollbackTrigger)
+      || (openCriticalMigrationIncidents !== null && openCriticalMigrationIncidents > thresholds.openCriticalMigrationIncidents.goMax)
+    );
+
+    if (criticalFailure) {
+      decisionStatus = "no-go";
+      decisionReason = "Mindestens ein kritischer Rollback-Trigger ist verletzt.";
+    } else {
+      const failedChecks = [
+        legacyJsonDivergenceRatePct === null || legacyJsonDivergenceRatePct <= thresholds.legacyJsonDivergenceRatePct.goMax,
+        healthPulseSuccessRatePct === null || healthPulseSuccessRatePct >= thresholds.healthPulseSuccessRatePct.goMin,
+        commandAckSuccessRatePct === null || commandAckSuccessRatePct >= thresholds.commandAckSuccessRatePct.goMin,
+        dailyLogBucketSegmentsPerInstance === null || dailyLogBucketSegmentsPerInstance <= thresholds.dailyLogBucketSegmentsPerInstance.goMax,
+        logRedeliveryWithin24hRatePct === null || logRedeliveryWithin24hRatePct >= thresholds.logRedeliveryWithin24hRatePct.goMin,
+        storageModeAuditCoveragePct === null || storageModeAuditCoveragePct >= thresholds.storageModeAuditCoveragePct.goMin,
+        openCriticalMigrationIncidents === null || openCriticalMigrationIncidents <= thresholds.openCriticalMigrationIncidents.goMax
+      ].filter((isValid) => !isValid).length;
+
+      if (failedChecks === 0) {
+        decisionStatus = "go";
+        decisionReason = uniqueUnavailableKpis.length > 0
+          ? "Alle verfuegbaren Go-Kriterien im Messfenster erfuellt; fehlende KPIs bleiben als nicht bewertet markiert."
+          : "Alle P3-Go-Kriterien im Messfenster erfuellt.";
+      } else if (failedChecks === 1) {
+        decisionStatus = "conditional-go";
+        decisionReason = "Genau ein nicht-kritisches Kriterium verletzt; Freigabe durch project-owner und release-manager erforderlich.";
+      } else {
+        decisionStatus = "no-go";
+        decisionReason = "Mehrere Go-Kriterien verletzt.";
+      }
+    }
+  }
+
+  return {
+    projectId,
+    targetEnv,
+    dataModelVersion,
+    storageMode,
+    window: {
+      start: startIso,
+      end: endIso,
+      durationDays: effectiveWindowDays
+    },
+    kpis: {
+      legacyJsonDivergenceRatePct,
+      healthPulseSuccessRatePct,
+      commandAckSuccessRatePct,
+      idempotencyConflictRatePct,
+      dailyLogBucketSegmentsPerInstance,
+      logRedeliveryWithin24hRatePct,
+      storageModeAuditCoveragePct,
+      openCriticalMigrationIncidents
+    },
+    thresholds,
+    decision: {
+      status: decisionStatus,
+      decidedAt: new Date().toISOString(),
+      decidedBy: ["system-stub"],
+      reason: decisionReason
+    },
+    notes: {
+      stub: uniqueUnavailableKpis.length > 0,
+      evaluatedKpis,
+      unavailableKpis: uniqueUnavailableKpis
+    }
+  };
 }
 
 function readJsonArrayFile<T>(filePath: string): T[] {
@@ -227,6 +591,116 @@ function saveDeploymentRun(record: DeploymentRunRecord): void {
   writeJsonArrayFile(LOCAL_DEPLOYMENT_RUNS_FILE, items);
 }
 
+function readAgentHeartbeatRecords(): AgentHeartbeatRecord[] {
+  return readJsonArrayFile<AgentHeartbeatRecord>(LOCAL_AGENT_HEARTBEATS_FILE);
+}
+
+function saveAgentHeartbeatRecord(record: AgentHeartbeatRecord): void {
+  const items = readAgentHeartbeatRecords();
+  items.push(record);
+  writeJsonArrayFile(LOCAL_AGENT_HEARTBEATS_FILE, items);
+}
+
+function readAgentCommandRecords(): AgentCommandRecord[] {
+  return readJsonArrayFile<AgentCommandRecord>(LOCAL_AGENT_COMMANDS_FILE);
+}
+
+function writeAgentCommandRecords(items: AgentCommandRecord[]): void {
+  writeJsonArrayFile(LOCAL_AGENT_COMMANDS_FILE, items);
+}
+
+function getPendingCommandsForAgent(agentId: string): AgentCommandResponseItem[] {
+  const now = Date.now();
+  return readAgentCommandRecords()
+    .filter((item) => {
+      if (item.status !== "pending") {
+        return false;
+      }
+      if (item.agentId && item.agentId !== agentId) {
+        return false;
+      }
+      const expiresAt = String(item.expiresAt || "").trim();
+      if (!expiresAt) {
+        return true;
+      }
+      const expiresAtMs = Date.parse(expiresAt);
+      return Number.isFinite(expiresAtMs) && expiresAtMs >= now;
+    })
+    .map((item) => {
+      const signaturePayload = `${item.commandId}|${item.agentId}|${item.type}|${item.issuedAt}`;
+      const computedSignature = AGENT_COMMAND_SHARED_SECRET
+        ? crypto.createHmac("sha256", AGENT_COMMAND_SHARED_SECRET).update(signaturePayload).digest("base64")
+        : undefined;
+
+      return {
+        commandId: item.commandId,
+        type: item.type,
+        issuedAt: item.issuedAt,
+        expiresAt: item.expiresAt,
+        payload: item.payload,
+        signature: computedSignature || item.signature
+      };
+    });
+}
+
+function buildAgentAckSignature(commandId: string, ack: AgentCommandAckInput): string {
+  const canonical = [
+    String(commandId || "").trim(),
+    String(ack.agentId || "").trim(),
+    String(ack.projectId || "").trim(),
+    String(ack.instanceId || "").trim(),
+    String(ack.status || "").trim(),
+    String(ack.executedAt || "").trim()
+  ].join("|");
+  return crypto.createHmac("sha256", AGENT_COMMAND_SHARED_SECRET).update(canonical).digest("base64");
+}
+
+function upsertAgentCommandAck(commandId: string, ack: AgentCommandAckInput): AgentCommandRecord {
+  const records = readAgentCommandRecords();
+  const existingIndex = records.findIndex((item) => item.commandId === commandId);
+  const now = new Date().toISOString();
+  const nextStatus: AgentCommandStatus = (
+    ack.status === "accepted"
+    || ack.status === "done"
+    || ack.status === "failed"
+    || ack.status === "ignored"
+  ) ? ack.status : "ignored";
+
+  if (existingIndex >= 0) {
+    const existing = records[existingIndex];
+    if (existing.status !== "pending" && existing.status !== "accepted") {
+      return existing;
+    }
+
+    const updated: AgentCommandRecord = {
+      ...existing,
+      projectId: String(ack.projectId || existing.projectId || "").trim() || undefined,
+      instanceId: String(ack.instanceId || existing.instanceId || "").trim() || undefined,
+      status: nextStatus,
+      acknowledgedAt: String(ack.executedAt || now).trim() || now,
+      result: ack.result ? { ...ack.result } : existing.result
+    };
+    records[existingIndex] = updated;
+    writeAgentCommandRecords(records);
+    return updated;
+  }
+
+  const created: AgentCommandRecord = {
+    commandId,
+    agentId: String(ack.agentId || "").trim() || "unknown-agent",
+    projectId: String(ack.projectId || "").trim() || undefined,
+    instanceId: String(ack.instanceId || "").trim() || undefined,
+    type: "upload-error-log",
+    status: nextStatus,
+    issuedAt: now,
+    acknowledgedAt: String(ack.executedAt || now).trim() || now,
+    result: ack.result ? { ...ack.result } : undefined
+  };
+  records.push(created);
+  writeAgentCommandRecords(records);
+  return created;
+}
+
 function escapeXml(value: string): string {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -247,8 +721,427 @@ function renderList(items: string[]): string {
   return `<ul>${items.map((item) => `<li>${escapeXml(item)}</li>`).join("")}</ul>`;
 }
 
+function formatDocumentationPageTitle(
+  project: { name: string; confluencePageTitlePrefix?: string },
+  suffix: string
+): string {
+  const prefix = String(project.confluencePageTitlePrefix || "").trim();
+  return prefix ? `${prefix} ${suffix}` : suffix;
+}
+
+function renderConfluencePageLinks(titles: string[]): string {
+  if (!titles.length) {
+    return "<p><em>Keine Detailseiten vorhanden.</em></p>";
+  }
+  return `<ul>${titles.map((title) => (
+    `<li><ac:link><ri:page ri:content-title="${escapeXml(title)}" /></ac:link></li>`
+  )).join("")}</ul>`;
+}
+
+function parseDocumentationJson(value: unknown): unknown {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return trimmed;
+  }
+}
+
+function stringifyDocumentationValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function renderDefinitionBlock(title: string, value: unknown): string {
+  const parsed = parseDocumentationJson(value);
+  if (parsed === null || parsed === undefined || parsed === "") {
+    return `<h4>${escapeXml(title)}</h4><p><em>Nicht konfiguriert.</em></p>`;
+  }
+  if (typeof parsed === "object" && !Array.isArray(parsed)) {
+    return `<h4>${escapeXml(title)}</h4>${renderKeyValueTable(Object.entries(parsed as Record<string, unknown>).map(([key, entry]) => [key, stringifyDocumentationValue(entry)]))}`;
+  }
+  return `<h4>${escapeXml(title)}</h4><p>${escapeXml(stringifyDocumentationValue(parsed))}</p>`;
+}
+
+function resolveSelectedDocumentationTargetDefinition(targetDefinition: unknown): Record<string, unknown> {
+  const parsed = parseDocumentationJson(targetDefinition);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {};
+  }
+
+  const base = parsed as Record<string, unknown>;
+  const profiles = Array.isArray(base.importProfiles) ? base.importProfiles : [];
+  if (!profiles.length) {
+    return base;
+  }
+
+  const selectedName = String(base.selectedImportProfileName || "").trim();
+  const selectedProfile = (selectedName
+    ? profiles.find((profile) => String((profile as { name?: unknown })?.name || "").trim() === selectedName)
+    : profiles[0]) || profiles[0];
+  if (!selectedProfile || typeof selectedProfile !== "object" || Array.isArray(selectedProfile)) {
+    return base;
+  }
+
+  const profileRecord = selectedProfile as Record<string, unknown>;
+  if (profileRecord.target && typeof profileRecord.target === "object" && !Array.isArray(profileRecord.target)) {
+    return { ...base, ...(profileRecord.target as Record<string, unknown>) };
+  }
+  return { ...base, ...profileRecord };
+}
+
+function getScheduleUpsertField(schedule: SetupExportDocument["schedules"][number]): string {
+  if (String(schedule.operation || "").trim().toLowerCase() !== "upsert") {
+    return "";
+  }
+  const target = resolveSelectedDocumentationTargetDefinition(schedule.targetDefinition);
+  return String(target.externalIdField || target.upsertKey || target.upsertField || target.matchField || "").trim();
+}
+
+function renderDocumentationDefinitionSummary(title: string, value: unknown, preferredKeys: string[]): string {
+  const parsed = parseDocumentationJson(value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return `<h4>${escapeXml(title)}</h4><p><em>Nicht strukturiert konfiguriert.</em></p>`;
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const rows = preferredKeys
+    .filter((key) => record[key] !== undefined && record[key] !== null && String(record[key]).trim())
+    .map((key): [string, string] => [key, stringifyDocumentationValue(record[key])]);
+  if (!rows.length) {
+    return `<h4>${escapeXml(title)}</h4><p><em>Keine dokumentationsrelevanten Felder gefunden.</em></p>`;
+  }
+  return `<h4>${escapeXml(title)}</h4>${renderKeyValueTable(rows)}`;
+}
+
+function formatTimingDays(days: unknown): string {
+  const labels = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
+  const items = Array.isArray(days)
+    ? days
+    : typeof days === "string"
+      ? days.split(",").map((item) => item.trim()).filter(Boolean)
+      : [];
+  if (!items.length) {
+    return "-";
+  }
+  return items
+    .map((day) => Number(day))
+    .filter((day) => Number.isInteger(day) && day >= 0 && day <= 6)
+    .map((day) => labels[day])
+    .join(", ") || "-";
+}
+
+function formatIntervalMinutes(value: unknown): string {
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    return "-";
+  }
+  if (minutes % 1440 === 0) {
+    const days = minutes / 1440;
+    return `${days} Tag${days === 1 ? "" : "e"}`;
+  }
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return `${hours} Stunde${hours === 1 ? "" : "n"}`;
+  }
+  return `${minutes} Minuten`;
+}
+
+function renderTimingSummary(timingDefinition: unknown): string {
+  const parsed = parseDocumentationJson(timingDefinition);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return "<h4>Laufzeit / Timing</h4><p><em>Nicht konfiguriert.</em></p>";
+  }
+  const record = parsed as Record<string, unknown>;
+  return `<h4>Laufzeit / Timing</h4>${renderKeyValueTable([
+    ["Tage", formatTimingDays(record.days ?? record.weekdays ?? record.weekdayList)],
+    ["Startzeit", stringifyDocumentationValue(record.startTime ?? record.time ?? record.start)],
+    ["Intervall", formatIntervalMinutes(record.intervalMinutes ?? record.interval)],
+    ["Zeitzone", stringifyDocumentationValue(record.timezone)]
+  ])}`;
+}
+
+function extractMappingRows(mappingDefinition: unknown): Array<Record<string, unknown>> {
+  const definitionText = typeof mappingDefinition === "string"
+    ? mappingDefinition.trim()
+    : mappingDefinition === null || mappingDefinition === undefined
+      ? ""
+      : JSON.stringify(mappingDefinition);
+  if (definitionText) {
+    try {
+      return new MappingDefinitionParser().parse(definitionText).lines.map((line) => {
+        const notes: string[] = [];
+        if (line.picklistMappings?.length) {
+          notes.push(`Picklist: ${line.picklistMappings.map((entry) => `${entry.source} -> ${entry.target}`).join(", ")}`);
+        }
+        if (line.emailValidation?.enabled) {
+          notes.push(`E-Mail-Pruefung: ${line.emailValidation.invalidAction}`);
+        }
+        return {
+          sourceField: line.sourceField,
+          targetField: line.targetField,
+          targetType: line.targetType,
+          transformation: line.transform.raw,
+          description: notes.join("; ")
+        };
+      });
+    } catch {
+      // Fallback below keeps unknown/custom mapping formats visible.
+    }
+  }
+
+  const parsed = parseDocumentationJson(mappingDefinition);
+  if (Array.isArray(parsed)) {
+    return parsed.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry));
+  }
+  if (parsed && typeof parsed === "object") {
+    const record = parsed as Record<string, unknown>;
+    for (const candidate of [record.mappings, record.fields, record.rules, record.items]) {
+      if (Array.isArray(candidate)) {
+        return candidate.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry));
+      }
+    }
+  }
+  return [];
+}
+
+function pickMappingValue(row: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = row[key];
+    if (value !== undefined && value !== null && String(value).trim()) {
+      return stringifyDocumentationValue(value);
+    }
+  }
+  return "-";
+}
+
+function renderMappingTable(mappingDefinition: unknown, upsertField = ""): string {
+  const rows = extractMappingRows(mappingDefinition);
+  if (!rows.length) {
+    const parsed = parseDocumentationJson(mappingDefinition);
+    return parsed
+      ? "<h4>Mapping</h4><p><em>Mapping ist vorhanden, konnte aber nicht tabellarisch gelesen werden.</em></p>"
+      : "<h4>Mapping</h4><p><em>Kein Mapping hinterlegt.</em></p>";
+  }
+  const normalizedUpsertField = upsertField.trim().toLowerCase();
+  return `<h4>Mapping</h4><table><thead><tr><th>Quelle</th><th>Ziel</th><th>Zieltyp</th><th>Transformation</th><th>Pflicht</th><th>Hinweis</th></tr></thead><tbody>${rows.map((row) => (
+    (() => {
+      const targetField = pickMappingValue(row, ["target", "targetField", "targetFieldName", "to", "salesforceField"]);
+      const isUpsertField = Boolean(normalizedUpsertField) && targetField.trim().toLowerCase() === normalizedUpsertField;
+      const targetContent = isUpsertField
+        ? `<strong><span style="background-color: #fff3cd; color: #664d03; padding: 2px 6px; border-radius: 4px;">${escapeXml(targetField)} (Upsert)</span></strong>`
+        : escapeXml(targetField);
+      return `<tr${isUpsertField ? " style=\"background-color: #fff8e1;\"" : ""}><td>${escapeXml(pickMappingValue(row, ["source", "sourceField", "sourceFieldName", "from", "erpField"]))}</td>`
+        + `<td>${targetContent}</td>`
+        + `<td>${escapeXml(pickMappingValue(row, ["targetType", "type", "dataType", "fieldType"]))}</td>`
+        + `<td>${escapeXml(pickMappingValue(row, ["transform", "transformation", "expression", "defaultValue"]))}</td>`
+        + `<td>${escapeXml(pickMappingValue(row, ["required", "mandatory", "isRequired"]))}</td>`
+        + `<td>${escapeXml(pickMappingValue(row, ["description", "note", "comment"]))}</td></tr>`;
+    })()
+  )).join("")}</tbody></table>`;
+}
+
+function renderConnectorDocumentation(connectors: SetupExportDocument["connectors"]): string {
+  if (!connectors.length) return "<h2>Connectoren</h2><p><em>Keine Connectoren im Setup vorhanden.</em></p>";
+  const sortedConnectors = connectors.slice().sort((left, right) => (
+    getDirectionRank(String(left.direction || "")) - getDirectionRank(String(right.direction || ""))
+    || String(left.name || "").localeCompare(String(right.name || ""), "de")
+  ));
+  return `<h2>Connectoren</h2>${sortedConnectors.map((connector, index) => (
+    `<h3>${escapeXml(connector.name || `Connector ${index + 1}`)}</h3>`
+    + renderKeyValueTable([
+      ["Aktiv", connector.active === false ? "Nein" : "Ja"],
+      ["Typ", connector.connectorType || "-"],
+      ["Zielsystem", connector.targetSystem || "-"],
+      ["Richtung", connector.direction || "-"],
+      ["Timeout", connector.timeoutMs ? `${connector.timeoutMs} ms` : "-"],
+      ["Retries", connector.maxRetries !== undefined ? String(connector.maxRetries) : "-"],
+      ["Secret", connector.secretKey ? "Konfiguriert" : "-"],
+      ["Beschreibung", connector.description || "-"]
+    ])
+    + renderDefinitionBlock("Parameter", connector.parameters)
+  )).join("")}`;
+}
+
+function getDirectionRank(directionValue: string): number {
+  const direction = directionValue.trim().toLowerCase();
+  if (direction === "inbound") return 0;
+  if (direction === "outbound") return 1;
+  return 2;
+}
+
+function getSchedulerDocumentationFlow(schedule: SetupExportDocument["schedules"][number]): string {
+  const direction = String(schedule.direction || "").trim().toLowerCase();
+  const objectName = String(schedule.objectName || "").trim() || "Objekt";
+  if (direction === "outbound") {
+    const target = String(schedule.targetSystem || schedule.targetType || "").trim() || "Ziel";
+    return `${objectName} -> ${target}`;
+  }
+  const source = String(schedule.sourceSystem || schedule.sourceType || "").trim() || "Quelle";
+  return `${source} -> ${objectName}`;
+}
+
+function getSchedulerDirectionRank(schedule: SetupExportDocument["schedules"][number]): number {
+  return getDirectionRank(String(schedule.direction || ""));
+}
+
+function getSchedulerDirectionLabel(schedule: SetupExportDocument["schedules"][number]): string {
+  const direction = String(schedule.direction || "").trim().toLowerCase();
+  if (direction === "inbound") return "↓ Inbound";
+  if (direction === "outbound") return "↑ Outbound";
+  return "• Richtung";
+}
+
+function getScheduleIntervalMinutes(schedule: SetupExportDocument["schedules"][number]): number {
+  const record = getTimingRecord(schedule.timingDefinition);
+  const minutes = Number(record?.intervalMinutes ?? record?.interval);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes : Number.MAX_SAFE_INTEGER;
+}
+
+function getSortedScheduleEntries(schedules: SetupExportDocument["schedules"]): Array<{ schedule: SetupExportDocument["schedules"][number]; index: number }> {
+  return schedules
+    .map((schedule, index) => ({ schedule, index }))
+    .sort((left, right) => (
+      getSchedulerDirectionRank(left.schedule) - getSchedulerDirectionRank(right.schedule)
+      || getScheduleIntervalMinutes(left.schedule) - getScheduleIntervalMinutes(right.schedule)
+      || String(left.schedule.name || "").localeCompare(String(right.schedule.name || ""), "de")
+    ));
+}
+
+function getSchedulerDocumentationTitle(schedule: SetupExportDocument["schedules"][number], index: number): string {
+  const scheduleName = String(schedule.name || "").trim() || `Scheduler ${index + 1}`;
+  return `${getSchedulerDirectionLabel(schedule)} - ${scheduleName} - ${getSchedulerDocumentationFlow(schedule)}`;
+}
+
+function getSchedulerPublishedDocumentationTitle(
+  project: { name: string; confluencePageTitlePrefix?: string },
+  schedule: SetupExportDocument["schedules"][number],
+  index: number
+): string {
+  const title = getSchedulerDocumentationTitle(schedule, index);
+  const prefix = String(project.confluencePageTitlePrefix || "").trim();
+  return prefix ? `${prefix} ${title}` : title;
+}
+
+function getSchedulerDocumentationKey(schedule: SetupExportDocument["schedules"][number], index: number): string {
+  const keySource = `${schedule.name || ""}|${schedule.sourceSystem || ""}|${schedule.objectName || ""}|${schedule.targetSystem || ""}|${schedule.direction || ""}|${index}`;
+  return `scheduler-${crypto.createHash("sha1").update(keySource).digest("hex").slice(0, 12)}`;
+}
+
+function getTimingRecord(timingDefinition: unknown): Record<string, unknown> | null {
+  const parsed = parseDocumentationJson(timingDefinition);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function formatTimingOverview(timingDefinition: unknown): string {
+  const record = getTimingRecord(timingDefinition);
+  if (!record) {
+    return "-";
+  }
+  const days = formatTimingDays(record.days ?? record.weekdays ?? record.weekdayList);
+  const interval = formatIntervalMinutes(record.intervalMinutes ?? record.interval);
+  const start = stringifyDocumentationValue(record.startTime ?? record.time ?? record.start);
+  return [days, start, interval].filter((item) => item && item !== "-").join(" / ") || "-";
+}
+
+function renderScheduleOverviewDocumentation(
+  project: { name: string; confluencePageTitlePrefix?: string },
+  schedules: SetupExportDocument["schedules"]
+): string {
+  if (!schedules.length) return "<h2>Scheduler</h2><p><em>Keine Scheduler im Setup vorhanden.</em></p>";
+  const entries = getSortedScheduleEntries(schedules);
+  return `<h2>Scheduler</h2><table><thead><tr><th>Scheduler</th><th>Richtung</th><th>Quelle -> Ziel</th><th>Connector</th><th>Laufzeit</th><th>Detailseite</th></tr></thead><tbody>${entries.map(({ schedule, index }) => {
+    return `<tr><td>${escapeXml(schedule.name || `Scheduler ${index + 1}`)}</td>`
+      + `<td>${escapeXml(getSchedulerDirectionLabel(schedule))}</td>`
+      + `<td>${escapeXml(getSchedulerDocumentationFlow(schedule))}</td>`
+      + `<td>${escapeXml(schedule.connectorName || schedule.connectorId || "-")}</td>`
+      + `<td>${escapeXml(formatTimingOverview(schedule.timingDefinition))}</td>`
+      + `<td><ac:link><ri:page ri:content-title="${escapeXml(getSchedulerPublishedDocumentationTitle(project, schedule, index))}" /></ac:link></td></tr>`;
+  }).join("")}</tbody></table>`;
+}
+
+function renderSingleScheduleDocumentation(schedule: SetupExportDocument["schedules"][number], index: number): string {
+  return `<h2>Scheduler</h2>`
+    + `<h3>${escapeXml(schedule.name || `Scheduler ${index + 1}`)}</h3>`
+    + renderKeyValueTable([
+      ["Aktiv", schedule.active === false ? "Nein" : "Ja"],
+      ["Connector", schedule.connectorName || schedule.connectorId || "-"],
+      ["Quelle", schedule.sourceSystem || "-"],
+      ["Quelltyp", schedule.sourceType || "-"],
+      ["Ziel", schedule.targetSystem || "-"],
+      ["Zieltyp", schedule.targetType || "-"],
+      ["Objekt", schedule.objectName || "-"],
+      ["Operation", schedule.operation || "-"],
+      ["Richtung", schedule.direction || "-"],
+      ["Batchgroesse", schedule.batchSize !== undefined ? String(schedule.batchSize) : "-"],
+      ["Naechster Lauf", schedule.nextRunAt || "-"],
+      ["Letzter Lauf", schedule.lastRunAt || "-"],
+      ["Parent Scheduler", schedule.parentScheduleName || schedule.parentScheduleId || "-"],
+      ["Timing erben", schedule.inheritTimingFromParent ? "Ja" : "Nein"]
+    ])
+    + renderDocumentationDefinitionSummary("Quelle", schedule.sourceDefinition, ["queryText", "query", "path", "file", "table", "objectApiName", "endpoint", "method"])
+    + renderDocumentationDefinitionSummary("Ziel", resolveSelectedDocumentationTargetDefinition(schedule.targetDefinition), ["objectApiName", "table", "path", "file", "endpoint", "method", "operation", "externalIdField", "upsertKey", "pricebook2Id"])
+    + renderTimingSummary(schedule.timingDefinition)
+    + renderMappingTable(schedule.mappingDefinition, getScheduleUpsertField(schedule));
+}
+
+function renderScheduleDependencyDocumentation(schedules: SetupExportDocument["schedules"]): string {
+  if (!schedules.length) return "";
+  const dependencies = schedules.filter((schedule) => schedule.parentScheduleName || schedule.parentScheduleId);
+  if (!dependencies.length) {
+    return "<h2>Abhaengigkeiten</h2><p><em>Keine expliziten Scheduler-Abhaengigkeiten konfiguriert.</em></p>";
+  }
+  return `<h2>Abhaengigkeiten</h2><table><thead><tr><th>Parent Scheduler</th><th>Abhaengiger Scheduler</th><th>Timing erben</th></tr></thead><tbody>${dependencies.map((schedule) => (
+    `<tr><td>${escapeXml(schedule.parentScheduleName || schedule.parentScheduleId || "-")}</td>`
+    + `<td>${escapeXml(schedule.name || "-")}</td>`
+    + `<td>${escapeXml(schedule.inheritTimingFromParent ? "Ja" : "Nein")}</td></tr>`
+  )).join("")}</tbody></table>`;
+}
+
+function buildConnectorDocumentationHtml(input: {
+  project: { name: string };
+  setupDocument?: SetupExportDocument;
+}): string {
+  return `
+    <h1>Connectoren</h1>
+    <p>Connector-Konfiguration des zuletzt exportierten Setups.</p>
+    ${input.setupDocument ? renderConnectorDocumentation(input.setupDocument.connectors || []) : "<p><em>Kein Setup-Export vorhanden.</em></p>"}
+  `;
+}
+
+function buildSchedulerDocumentationHtml(input: {
+  project: { name: string; confluencePageTitlePrefix?: string };
+  setupDocument?: SetupExportDocument;
+}): string {
+  return `
+    <h1>Scheduler</h1>
+    <p>Scheduler-Uebersicht mit je einer Detailseite pro Scheduler.</p>
+    ${input.setupDocument ? renderScheduleOverviewDocumentation(input.project, input.setupDocument.schedules || []) + renderScheduleDependencyDocumentation(input.setupDocument.schedules || []) : "<p><em>Kein Setup-Export vorhanden.</em></p>"}
+  `;
+}
+
+function buildSingleSchedulerDocumentationHtml(input: {
+  project: { name: string };
+  schedule: SetupExportDocument["schedules"][number];
+  index: number;
+}): string {
+  return `
+    <h1>${escapeXml(getSchedulerDocumentationTitle(input.schedule, input.index))}</h1>
+    <p>Scheduler-Detaildokumentation mit Quelle, Ziel, Laufzeit, Mapping und Upsert-Kennzeichnung.</p>
+    ${renderSingleScheduleDocumentation(input.schedule, input.index)}
+  `;
+}
+
 function buildProjectDocumentationHtml(input: {
-  project: { id: string; name: string; description?: string; archived?: boolean; productionWriteProtection: boolean; confluenceSpaceKey?: string; confluenceParentPageId?: string; confluencePageTitlePrefix?: string };
+  project: { id: string; name: string; description?: string; archived?: boolean; productionWriteProtection: boolean; confluenceBaseUrl?: string; confluenceUsername?: string; confluenceApiToken?: string; confluenceSpaceKey?: string; confluenceParentPageId?: string; confluencePageTitlePrefix?: string };
   instances: Array<{ id: string; name: string; role?: string; projectName?: string }>;
   members: Array<{ username: string; displayName?: string; roleInProject?: string }>;
   setupVersion?: ProjectSetupVersionRecord;
@@ -264,6 +1157,10 @@ function buildProjectDocumentationHtml(input: {
   const precheckSummary = input.precheckRun
     ? `${input.precheckRun.status.toUpperCase()} (${input.precheckRun.targetEnv})`
     : "Kein Precheck-Run vorhanden";
+  const detailPageTitles = input.setupDocument ? [
+    formatDocumentationPageTitle(input.project, "Connectoren"),
+    formatDocumentationPageTitle(input.project, "Scheduler")
+  ] : [];
 
   return `
     <h1>${escapeXml(input.project.name)} - Projektdokumentation</h1>
@@ -272,6 +1169,8 @@ function buildProjectDocumentationHtml(input: {
       ["Projekt-ID", input.project.id],
       ["Archiviert", input.project.archived ? "Ja" : "Nein"],
       ["Produktionsschutz", input.project.productionWriteProtection ? "Aktiv" : "Inaktiv"],
+      ["Confluence URL", input.project.confluenceBaseUrl || "-"],
+      ["Confluence Benutzer", input.project.confluenceUsername || "-"],
       ["Confluence Space", input.project.confluenceSpaceKey || "-"],
       ["Confluence Parent", input.project.confluenceParentPageId || "-"],
       ["Confluence Präfix", input.project.confluencePageTitlePrefix || "-"],
@@ -291,6 +1190,15 @@ function buildProjectDocumentationHtml(input: {
       ["Autor", input.setupVersion.author || "-"],
       ["Notiz", input.setupVersion.note || "-"]
     ]) : "<p><em>Keine Setup-Version vorhanden.</em></p>"}
+    <h2>Setup-Export</h2>
+    ${input.setupDocument ? renderKeyValueTable([
+      ["Exportiert am", input.setupDocument.exportedAt],
+      ["Instanz", input.setupDocument.instanceId],
+      ["Formatversion", String(input.setupDocument.version)]
+    ])
+      : "<p><em>Kein Setup-Export vorhanden.</em></p>"}
+    <h2>Detailseiten</h2>
+    ${renderConfluencePageLinks(detailPageTitles)}
   `;
 }
 
@@ -298,83 +1206,149 @@ async function publishProjectDocumentationToConfluence(input: {
   projectId: string;
   title: string;
   html: string;
-  project?: { confluenceSpaceKey?: string; confluenceParentPageId?: string; confluencePageTitlePrefix?: string };
-}): Promise<{ published: boolean; pageId?: string; url?: string; mode: "created" | "updated" | "dry-run" }> {
-  const baseUrl = String(process.env.CONFLUENCE_BASE_URL || "").trim().replace(/\/wiki\/?$/, "");
-  const username = String(process.env.ATLASSIAN_USERNAME || "").trim();
-  const apiToken = String(process.env.ATLASSIAN_API_TOKEN || "").trim();
+  childPages?: Array<{ key: string; title: string; html: string }>;
+  project?: { confluenceBaseUrl?: string; confluenceUsername?: string; confluenceApiToken?: string; confluenceSpaceKey?: string; confluenceParentPageId?: string; confluencePageTitlePrefix?: string };
+}): Promise<ConfluencePublishPageResult & { childPages?: ConfluencePublishPageResult[] }> {
+  const baseUrl = String(input.project?.confluenceBaseUrl || process.env.CONFLUENCE_BASE_URL || "").trim().replace(/\/wiki\/?$/, "");
+  const username = String(input.project?.confluenceUsername || process.env.ATLASSIAN_USERNAME || "").trim();
+  const apiToken = String(input.project?.confluenceApiToken || process.env.ATLASSIAN_API_TOKEN || "").trim();
   const spaceKey = String(input.project?.confluenceSpaceKey || process.env.CONFLUENCE_SPACE_KEY || "").trim();
   const parentId = String(input.project?.confluenceParentPageId || process.env.CONFLUENCE_PARENT_ID || "").trim();
   const titlePrefix = String(input.project?.confluencePageTitlePrefix || "").trim();
-  const pageTitle = titlePrefix ? `${titlePrefix} ${input.title}` : input.title;
+  const formatTitle = (title: string) => titlePrefix ? `${titlePrefix} ${title}` : title;
 
   if (!baseUrl || !username || !apiToken) {
-    return { published: false, mode: "dry-run" };
+    return {
+      published: false,
+      mode: "dry-run",
+      title: formatTitle(input.title),
+      childPages: (input.childPages || []).map((page) => ({
+        published: false,
+        mode: "dry-run",
+        title: formatTitle(page.title)
+      }))
+    };
   }
 
   const auth = Buffer.from(`${username}:${apiToken}`).toString("base64");
   const pageMap = getProjectDocumentationPageMap();
-  const existing = pageMap[input.projectId];
   const headers = {
     Authorization: `Basic ${auth}`,
     Accept: "application/json",
     "Content-Type": "application/json"
   };
 
-  if (existing?.pageId) {
-    const lookupResponse = await fetch(`${baseUrl}/wiki/rest/api/content/${encodeURIComponent(existing.pageId)}?expand=version` , { headers });
-    if (!lookupResponse.ok) {
-      throw new Error(`Confluence-Seite ${existing.pageId} konnte nicht geladen werden (${lookupResponse.status})`);
+  const upsertPage = async (recordKey: string, title: string, html: string, ancestorId?: string): Promise<ConfluencePublishPageResult> => {
+    const pageTitle = formatTitle(title);
+    const existing = pageMap[recordKey];
+    if (existing?.pageId) {
+      const lookupResponse = await fetch(`${baseUrl}/wiki/rest/api/content/${encodeURIComponent(existing.pageId)}?expand=version`, { headers });
+      if (!lookupResponse.ok) {
+        const status = lookupResponse.status;
+        const text = await lookupResponse.text().catch(() => "");
+        if (status === 404) {
+          // existing page was not found anymore - fall back to create
+          const createResponse = await fetch(`${baseUrl}/wiki/rest/api/content`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              type: "page",
+              title: pageTitle,
+              space: spaceKey ? { key: spaceKey } : undefined,
+              ancestors: ancestorId ? [{ id: ancestorId }] : undefined,
+              body: { storage: { value: html, representation: "storage" } }
+            })
+          });
+          if (!createResponse.ok) {
+            const ctext = await createResponse.text().catch(() => "");
+            throw new Error(`Confluence-Erstellung fehlgeschlagen (${createResponse.status}): ${ctext}`);
+          }
+          const created = await createResponse.json() as { id?: string };
+          const pageId = String(created.id || "").trim();
+          if (pageId) {
+            saveProjectDocumentationPageRecord({ projectId: recordKey, pageId, updatedAt: new Date().toISOString() });
+            pageMap[recordKey] = { projectId: recordKey, pageId, updatedAt: new Date().toISOString() };
+          }
+          return { published: true, mode: "created", title: pageTitle, pageId: pageId || undefined, url: pageId ? `${baseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}` : undefined };
+        }
+        throw new Error(`Confluence-Seite ${existing.pageId} konnte nicht geladen werden (${lookupResponse.status}): ${text}`);
+      }
+      const content = await lookupResponse.json() as { version?: { number?: number } };
+      const version = Number(content?.version?.number || 1) + 1;
+      const ancestors = ancestorId && String(ancestorId) !== String(existing.pageId) ? (ancestorId ? [{ id: ancestorId }] : undefined) : undefined;
+      const updateResponse = await fetch(`${baseUrl}/wiki/rest/api/content/${encodeURIComponent(existing.pageId)}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({
+          id: existing.pageId,
+          type: "page",
+          title: pageTitle,
+          version: { number: version },
+          ancestors: ancestors,
+          body: {
+            storage: {
+              value: html,
+              representation: "storage"
+            }
+          }
+        })
+      });
+      if (!updateResponse.ok) {
+        const text = await updateResponse.text().catch(() => "");
+        throw new Error(`Confluence-Update fehlgeschlagen (${updateResponse.status}): ${text}`);
+      }
+      return { published: true, mode: "updated", title: pageTitle, pageId: existing.pageId, url: `${baseUrl}/wiki/spaces/${spaceKey}/pages/${existing.pageId}` };
     }
-    const content = await lookupResponse.json() as { version?: { number?: number } };
-    const version = Number(content?.version?.number || 1) + 1;
-    const updateResponse = await fetch(`${baseUrl}/wiki/rest/api/content/${encodeURIComponent(existing.pageId)}`, {
-      method: "PUT",
+
+    const createResponse = await fetch(`${baseUrl}/wiki/rest/api/content`, {
+      method: "POST",
       headers,
       body: JSON.stringify({
-        id: existing.pageId,
         type: "page",
         title: pageTitle,
-        version: { number: version },
+        space: spaceKey ? { key: spaceKey } : undefined,
+        ancestors: ancestorId ? [{ id: ancestorId }] : undefined,
         body: {
           storage: {
-            value: input.html,
+            value: html,
             representation: "storage"
           }
         }
       })
     });
-    if (!updateResponse.ok) {
-      throw new Error(`Confluence-Update fehlgeschlagen (${updateResponse.status})`);
+    if (!createResponse.ok) {
+      const text = await createResponse.text().catch(() => "");
+      throw new Error(`Confluence-Erstellung fehlgeschlagen (${createResponse.status}): ${text}`);
     }
-    return { published: true, mode: "updated", pageId: existing.pageId, url: `${baseUrl}/wiki/spaces/${spaceKey}/pages/${existing.pageId}` };
-  }
+    const created = await createResponse.json() as { id?: string };
+    const pageId = String(created.id || "").trim();
+    if (pageId) {
+      saveProjectDocumentationPageRecord({ projectId: recordKey, pageId, updatedAt: new Date().toISOString() });
+      pageMap[recordKey] = { projectId: recordKey, pageId, updatedAt: new Date().toISOString() };
+    }
+    return { published: true, mode: "created", title: pageTitle, pageId: pageId || undefined, url: pageId ? `${baseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}` : undefined };
+  };
 
-  const createResponse = await fetch(`${baseUrl}/wiki/rest/api/content`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      type: "page",
-      title: pageTitle,
-      space: spaceKey ? { key: spaceKey } : undefined,
-      ancestors: parentId ? [{ id: parentId }] : undefined,
-      body: {
-        storage: {
-          value: input.html,
-          representation: "storage"
-        }
+  try {
+    const rootResult = await upsertPage(input.projectId, input.title, input.html, parentId || undefined);
+    const childResults: ConfluencePublishPageResult[] = [];
+    if (rootResult.pageId) {
+      for (const childPage of input.childPages || []) {
+        childResults.push(await upsertPage(`${input.projectId}:${childPage.key}`, childPage.title, childPage.html, rootResult.pageId));
       }
-    })
-  });
-  if (!createResponse.ok) {
-    throw new Error(`Confluence-Erstellung fehlgeschlagen (${createResponse.status})`);
+    }
+    return { ...rootResult, childPages: childResults };
+  } catch (err) {
+    const e: any = err;
+    const message = e && e.message ? String(e.message) : String(e ?? 'Unbekannter Fehler');
+    return {
+      published: false,
+      mode: "dry-run",
+      title: formatTitle(input.title),
+      error: message,
+      childPages: (input.childPages || []).map((p) => ({ published: false, mode: "dry-run", title: formatTitle(p.title) }))
+    };
   }
-  const created = await createResponse.json() as { id?: string };
-  const pageId = String(created.id || "").trim();
-  if (pageId) {
-    saveProjectDocumentationPageRecord({ projectId: input.projectId, pageId, updatedAt: new Date().toISOString() });
-  }
-  return { published: true, mode: "created", pageId: pageId || undefined, url: pageId ? `${baseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}` : undefined };
 }
 
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
@@ -427,7 +1401,7 @@ function renderLoginShell(options: { errorMessage?: string; csrfToken?: string; 
           <div class="mb-4">
             <div class="text-uppercase text-secondary small fw-semibold">Geschützter Bereich</div>
             <h1 class="h3 mb-2">SF Integration Agent</h1>
-            <p class="text-secondary mb-0">${authMode === "salesforce_oidc" ? "Bitte mit Salesforce anmelden." : "Bitte mit Admin-Benutzer und Passwort anmelden."}</p>
+            <p class="text-secondary mb-0">${authMode === "salesforce_oidc" ? "Bitte mit Salesforce anmelden." : "Bitte mit Benutzer und Passwort anmelden."}</p>
           </div>
           <div class="agent-login-content">
             <div id="login-error" class="alert alert-danger ${safeErrorMessage ? "" : "d-none"}" role="alert">${safeErrorMessage || "Anmeldung fehlgeschlagen"}</div>
@@ -472,28 +1446,6 @@ function formatSalesforceLoginCallbackError(req: http.IncomingMessage, error: st
   }
 }
 
-function renderMigrationOauthCallbackShell(options: { ok: boolean; migrationId: string; message: string }): string {
-  return renderHtmlDocument({
-    title: "Salesforce Login",
-    stylesheets: ["/assets/bootstrap.min.css"],
-    scripts: ["/assets/migration-oauth-callback.js"],
-    bodyClass: "bg-light d-flex align-items-center justify-content-center min-vh-100",
-    body: `    <div
-      id="migration-oauth-payload"
-      class="card shadow-sm border-0"
-      style="max-width:32rem; width:100%;"
-      data-ok="${options.ok ? "true" : "false"}"
-      data-migration-id="${escapeHtml(options.migrationId)}"
-      data-message="${escapeHtml(options.message)}"
-    >
-      <div class="card-body p-4 text-center">
-        <h1 class="h5 mb-3">${escapeHtml(options.ok ? "Salesforce-Freigabe gespeichert" : "Salesforce-Freigabe fehlgeschlagen")}</h1>
-        <p class="text-secondary small mb-0">${escapeHtml(options.message)}</p>
-      </div>
-    </div>`
-  });
-}
-
 function renderAuthConfigurationShell(): string {
   return renderHtmlDocument({
     title: "SF Integration Agent Konfiguration erforderlich",
@@ -503,7 +1455,7 @@ function renderAuthConfigurationShell(): string {
       <div class="card shadow-sm border-0 mx-auto" style="max-width: 40rem;">
         <div class="card-body p-4">
           <div class="text-uppercase text-secondary small fw-semibold mb-2">Sichere Voreinstellung</div>
-          <h1 class="h4 mb-3">Admin-Zugang ist noch nicht konfiguriert</h1>
+          <h1 class="h4 mb-3">Benutzerzugang ist noch nicht konfiguriert</h1>
           <p class="text-secondary mb-3">Im Produktionsmodus bleibt die Web-UI gesperrt, bis ADMIN_UI_USERNAME und ADMIN_UI_PASSWORD gesetzt sind.</p>
           <div class="alert alert-warning mb-0" role="alert">Bitte die Environment-Datei ergänzen und den Dienst neu starten.</div>
         </div>
@@ -559,6 +1511,11 @@ ${renderSidebarModuleNavigation()}
         <nav class="agent-topbar">
           <div class="agent-topbar-primary">
             <div class="agent-topbar-brand">SF Integration Agent <span id="agent-version-label" class="agent-version-label">v${escapeHtml(APP_VERSION)}</span></div>
+            <div id="active-context-pill" class="active-context-pill active-context-test" aria-live="polite" title="Aktiver Projektkontext">
+              <span id="active-context-project" class="active-context-project">Projekt: Default-Projekt</span>
+              <span id="active-context-env" class="active-context-env">Test</span>
+              <span id="active-context-instance" class="active-context-instance">Instanz: -</span>
+            </div>
           </div>
           <div class="agent-topbar-actions">
             <button
@@ -593,6 +1550,17 @@ ${renderMenuModuleNavigation()}
                 <div class="agent-menu-section-label">Kontext</div>
                 <div class="agent-menu-control-grid">
                   <div class="agent-menu-control-card">
+                    <label class="small text-secondary" for="context-project-select">Projekt</label>
+                    <select id="context-project-select" class="form-select form-select-sm"></select>
+                  </div>
+                  <div class="agent-menu-control-card">
+                    <label class="small text-secondary" for="context-target-env-select">Zielumgebung</label>
+                    <select id="context-target-env-select" class="form-select form-select-sm">
+                      <option value="test">Test</option>
+                      <option value="production">Produktion</option>
+                    </select>
+                  </div>
+                  <div class="agent-menu-control-card">
                     <label class="small text-secondary" for="instance-select">Instanz</label>
                     <select id="instance-select" class="form-select form-select-sm"></select>
                   </div>
@@ -605,6 +1573,7 @@ ${renderMenuModuleNavigation()}
                     </select>
                   </div>
                 </div>
+                <div id="context-selection-summary" class="small text-secondary mt-2">Kontext wird geladen...</div>
               </section>
 
               <section class="agent-menu-panel">
@@ -643,17 +1612,6 @@ ${renderMenuModuleNavigation()}
                   <div class="agent-menu-action-grid agent-menu-action-grid-compact">
                     <button id="export-setup" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Setup exportieren"><span class="agent-btn-icon" aria-hidden="true">⭳</span><span>Export</span></button>
                     <button id="import-setup" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Setup importieren"><span class="agent-btn-icon" aria-hidden="true">⭱</span><span>Import</span></button>
-                  </div>
-                </div>
-                <div class="agent-menu-group">
-                  <div class="agent-menu-group-title">Admin</div>
-                  <div class="agent-menu-action-grid agent-menu-action-grid-compact">
-                    <button id="admin-open-users" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Benutzer konfigurieren"><span class="agent-btn-icon" aria-hidden="true">👤</span><span>Benutzer</span></button>
-                    <button id="admin-manage-projects" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Projekte konfigurieren"><span class="agent-btn-icon" aria-hidden="true">▦</span><span>Projekte</span></button>
-                    <button id="add-instance" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Instanz hinzufügen"><span class="agent-btn-icon" aria-hidden="true">＋</span><span>Instanzen</span></button>
-                    <button id="admin-open-deployment" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Deployment konfigurieren"><span class="agent-btn-icon" aria-hidden="true">⇄</span><span>Deployment</span></button>
-                    <button id="admin-open-documentation" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Dokumentation konfigurieren"><span class="agent-btn-icon" aria-hidden="true">✎</span><span>Doku-Config</span></button>
-                    <button id="admin-open-history" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Änderungshistorie öffnen"><span class="agent-btn-icon" aria-hidden="true">🕘</span><span>Historie</span></button>
                     <button id="refresh-all" class="btn btn-outline-secondary agent-btn-subtle" aria-label="Aktualisieren"><span class="agent-btn-icon" aria-hidden="true">↻</span><span>Neu laden</span></button>
                   </div>
                 </div>
@@ -986,6 +1944,45 @@ ${renderMenuModuleNavigation()}
           </div>
         </section>
 
+        <section class="tab-pane fade" id="tab-projects" role="tabpanel">
+          <div class="card soft-card">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+              <span class="fw-semibold">Projektverwaltung</span>
+              <div class="d-flex gap-2">
+                <button id="admin-projects-refresh" class="btn btn-sm btn-outline-secondary" type="button">Aktualisieren</button>
+                <button id="admin-project-new" class="btn btn-sm btn-primary" type="button">Neues Projekt</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="d-flex flex-column flex-lg-row gap-2 align-items-lg-center mb-3">
+                <input type="search" class="form-control form-control-sm" placeholder="Suche Projekte..." id="projects-filter" />
+                <div id="projects-summary" class="small text-secondary text-lg-end">Projekte werden geladen...</div>
+              </div>
+              <div id="project-table-body" class="project-panel-list mb-3"></div>
+            </div>
+          </div>
+
+        </section>
+
+        <section class="tab-pane fade" id="tab-instances" role="tabpanel">
+          <div class="card soft-card">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+              <span class="fw-semibold">Instanzverwaltung</span>
+              <div class="d-flex gap-2">
+                <button id="instances-refresh" class="btn btn-sm btn-outline-secondary" type="button">Aktualisieren</button>
+                <button id="new-instance" class="btn btn-sm btn-primary" type="button">Neue Instanz</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="d-flex flex-column flex-lg-row gap-2 align-items-lg-center mb-3">
+                <input type="search" class="form-control form-control-sm" placeholder="Suche Instanzen..." id="instances-filter" />
+                <div id="instances-summary" class="small text-secondary text-lg-end">Instanzen werden geladen...</div>
+              </div>
+              <div id="instances-panels" class="row g-3"></div>
+            </div>
+          </div>
+        </section>
+
         <section class="tab-pane fade" id="tab-connectors" role="tabpanel">
           <div class="card soft-card">
             <div class="card-header bg-white d-flex justify-content-between align-items-center">
@@ -1059,87 +2056,6 @@ ${renderAISchedulerAssistantModule()}
           <div class="card soft-card mb-3">
             <div class="card-header bg-white d-flex justify-content-between align-items-center">
               <div>
-                <div class="migration-card-title">Migrationen mit eigenem Login</div>
-                <div class="migration-card-subtitle">Jede Migration traegt ihre Salesforce-Freigabe ueber die Login-Seite inklusive Status, letzter Ausfuehrung und Fehlerbild selbst.</div>
-              </div>
-              <div class="d-flex align-items-center gap-2 flex-wrap migration-header-actions">
-                <button id="new-migration-instance" class="btn btn-sm btn-outline-primary">Neue Migration</button>
-              </div>
-            </div>
-            <div class="card-body">
-              <div id="migration-instance-summary" class="small text-secondary mb-3">Migrations-Instanzen werden geladen...</div>
-              <div id="migration-instance-panels" class="row g-3"></div>
-            </div>
-          </div>
-          <div class="card soft-card mb-3">
-            <div class="card-header bg-white d-flex justify-content-between align-items-center">
-              <div>
-                <div class="migration-card-title">🤖 KI-Datenquellen-Analyse</div>
-                <div class="migration-card-subtitle">Datenquellen mit Fokus auf Datenschutz & automatisches Mapping analysieren</div>
-              </div>
-              <button id="migration-ai-analyze" type="button" class="btn btn-sm btn-info">⚡ Quelle analysieren</button>
-            </div>
-            <div class="card-body">
-              <div class="row g-3">
-                <div class="col-md-4">
-                  <label class="form-label small">Quellname</label>
-                  <input type="text" id="migration-source-name" class="form-control form-control-sm" placeholder="z.B. SAP_Customers" />
-                </div>
-                <div class="col-md-4">
-                  <label class="form-label small">Quelltyp</label>
-                  <select id="migration-source-type" class="form-select form-select-sm">
-                    <option value="MSSQL_SQL">MSSQL/SQL Server</option>
-                    <option value="REST_API">REST API</option>
-                    <option value="FILE_CSV">CSV Datei</option>
-                    <option value="FILE_XLSX">Excel Datei</option>
-                    <option value="SALESFORCE">Salesforce</option>
-                    <option value="OTHER">Sonstiges</option>
-                  </select>
-                </div>
-                <div class="col-md-4">
-                  <label class="form-label small">Salesforce Zielobjekt</label>
-                  <select id="migration-target-object" class="form-select form-select-sm">
-                    <option value="Contact" selected>Contact</option>
-                    <option value="Account">Account</option>
-                    <option value="Lead">Lead</option>
-                    <option value="Opportunity">Opportunity</option>
-                    <option value="Order">Order</option>
-                    <option value="Product2">Product</option>
-                    <option value="PricebookEntry">ProductPrice</option>
-                  </select>
-                </div>
-                <div class="col-12">
-                  <label class="form-label small">Datei für Auto-Analyse (optional)</label>
-                  <div id="migration-analysis-dropzone" class="migration-list-drop-target p-3">
-                    <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
-                      <button id="migration-analysis-file-pick" type="button" class="btn btn-sm btn-outline-primary">Datei auswählen</button>
-                      <input id="migration-analysis-file" type="file" class="d-none" accept=".csv,.txt,.json,.xlsx,.xls" />
-                      <small id="migration-analysis-file-meta" class="text-secondary">Keine Datei gewählt.</small>
-                    </div>
-                    <div class="migration-drop-target-hint">Datei hierher ziehen (CSV, TXT, JSON, Excel), um Felddefinitionen automatisch zu erzeugen.</div>
-                  </div>
-                  <div class="form-text">Die Datei wird lokal verarbeitet, Header/Feldnamen werden automatisch übernommen.</div>
-                </div>
-                <div class="col-12">
-                  <label class="form-label small">Feld-Definitionen (JSON)</label>
-                  <textarea id="migration-field-defs" class="form-control form-control-sm" rows="4" placeholder='[{"name":"FirstName","type":"varchar(100)"},{"name":"Email","type":"varchar(255)"}]'></textarea>
-                </div>
-                <div class="col-md-6">
-                  <label class="form-label small">Geschätzte Records</label>
-                  <input type="number" id="migration-est-records" class="form-control form-control-sm" placeholder="z.B. 10000" />
-                </div>
-                <div class="col-md-6">
-                  <label class="form-label small">Beschreibung (optional)</label>
-                  <input type="text" id="migration-description" class="form-control form-control-sm" placeholder="z.B. Kundenaddaten aus SAP" />
-                </div>
-              </div>
-              <div id="migration-analysis-result" class="mt-3"></div>
-            </div>
-          </div>
-
-          <div class="card soft-card mb-3">
-            <div class="card-header bg-white d-flex justify-content-between align-items-center">
-              <div>
                 <div class="migration-card-title">Daten-Migration</div>
                 <div class="migration-card-subtitle">Dateien direkt auf die Tabelle ziehen oder oben auswählen.</div>
               </div>
@@ -1174,95 +2090,154 @@ ${renderAISchedulerAssistantModule()}
             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schliessen"></button>
           </div>
           <div class="modal-body">
-            <div class="row g-3">
-              <div class="col-lg-5">
-                <div class="card soft-card h-100">
-                  <div class="card-header bg-white fw-semibold">Benutzerverwaltung</div>
-                  <div class="card-body">
-                    <input id="admin-user-id" type="hidden" />
-                    <div class="mb-2">
-                      <label class="form-label">Benutzername</label>
-                      <input id="admin-user-username" class="form-control" autocomplete="off" />
-                    </div>
-                    <div class="mb-2">
-                      <label class="form-label">Anzeigename</label>
-                      <input id="admin-user-display-name" class="form-control" autocomplete="off" />
-                    </div>
-                    <div class="mb-3">
-                      <label class="form-label">Passwort</label>
-                      <input id="admin-user-password" type="password" class="form-control" autocomplete="new-password" placeholder="Leer lassen, um beizubehalten" />
-                    </div>
-                    <div class="mb-3">
-                      <div class="form-label">Berechtigungen</div>
-                      <div class="d-flex flex-wrap gap-3 small">
-                        <label><input class="form-check-input me-1" type="checkbox" data-admin-permission="read" />Lesen</label>
-                        <label><input class="form-check-input me-1" type="checkbox" data-admin-permission="write" />Schreiben</label>
-                        <label><input class="form-check-input me-1" type="checkbox" data-admin-permission="delete" />Loeschen</label>
-                        <label><input class="form-check-input me-1" type="checkbox" data-admin-permission="admin" />Admin</label>
+            <ul class="nav nav-tabs mb-3" id="admin-tabs" role="tablist">
+              <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="admin-tab-users-trigger" data-bs-toggle="tab" data-bs-target="#admin-tab-users" type="button" role="tab" aria-controls="admin-tab-users" aria-selected="true">Benutzer</button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link" id="admin-tab-history-trigger" data-bs-toggle="tab" data-bs-target="#admin-tab-history" type="button" role="tab" aria-controls="admin-tab-history" aria-selected="false">Aenderungshistorie</button>
+              </li>
+            </ul>
+
+            <div class="tab-content" id="admin-tab-content">
+              <section class="tab-pane fade show active" id="admin-tab-users" role="tabpanel" aria-labelledby="admin-tab-users-trigger" tabindex="0">
+                <div class="row g-3">
+                  <div class="col-lg-5">
+                    <div class="card soft-card h-100">
+                      <div class="card-header bg-white fw-semibold">Benutzerverwaltung</div>
+                      <div class="card-body">
+                        <input id="admin-user-id" type="hidden" />
+                        <div class="mb-2">
+                          <label class="form-label">Benutzername</label>
+                          <input id="admin-user-username" class="form-control" autocomplete="off" />
+                        </div>
+                        <div class="mb-2">
+                          <label class="form-label">Anzeigename</label>
+                          <input id="admin-user-display-name" class="form-control" autocomplete="off" />
+                        </div>
+                        <div class="mb-3">
+                          <label class="form-label">Passwort</label>
+                          <input id="admin-user-password" type="password" class="form-control" autocomplete="new-password" placeholder="Leer lassen, um beizubehalten" />
+                        </div>
+                        <div class="mb-3">
+                          <div class="form-label">Berechtigungen</div>
+                          <div class="d-flex flex-wrap gap-3 small">
+                            <label><input class="form-check-input me-1" type="checkbox" data-admin-permission="read" />Lesen</label>
+                            <label><input class="form-check-input me-1" type="checkbox" data-admin-permission="write" />Schreiben</label>
+                            <label><input class="form-check-input me-1" type="checkbox" data-admin-permission="delete" />Loeschen</label>
+                            <label><input class="form-check-input me-1" type="checkbox" data-admin-permission="admin" />Admin</label>
+                          </div>
+                        </div>
+                        <div class="mb-3">
+                          <div class="form-label">Module</div>
+                          <div class="d-flex flex-wrap gap-3 small">
+                            <label><input class="form-check-input me-1" type="checkbox" data-admin-module="migration" />Migrationsmodul</label>
+                            <label><input class="form-check-input me-1" type="checkbox" data-admin-module="projects" />Projektverwaltung</label>
+                            <label><input class="form-check-input me-1" type="checkbox" data-admin-module="deployment" />Deployment</label>
+                          </div>
+                        </div>
+                        <div class="d-flex gap-2">
+                          <button id="admin-user-save" class="btn btn-primary btn-sm" type="button">Benutzer speichern</button>
+                          <button id="admin-user-reset" class="btn btn-outline-secondary btn-sm" type="button">Neu</button>
+                        </div>
                       </div>
                     </div>
-                    <div class="mb-3">
-                      <div class="form-label">Module</div>
-                      <label class="small"><input class="form-check-input me-1" type="checkbox" data-admin-module="migration" />Migrationsmodul</label>
+                  </div>
+
+                  <div class="col-lg-7">
+                    <div class="card soft-card mb-3">
+                      <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                        <span class="fw-semibold">Benutzer</span>
+                        <button id="admin-users-refresh" class="btn btn-sm btn-outline-secondary" type="button">Aktualisieren</button>
+                      </div>
+                      <div class="card-body p-0">
+                        <div class="table-responsive">
+                          <table class="table table-sm mb-0">
+                            <thead><tr><th>Benutzer</th><th>Rechte</th><th>Module</th><th>Aktionen</th></tr></thead>
+                            <tbody id="admin-users-body"></tbody>
+                          </table>
+                        </div>
+                      </div>
                     </div>
-                    <div class="d-flex gap-2">
-                      <button id="admin-user-save" class="btn btn-primary btn-sm" type="button">Benutzer speichern</button>
-                      <button id="admin-user-reset" class="btn btn-outline-secondary btn-sm" type="button">Neu</button>
+
+                    <div class="card soft-card">
+                      <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                        <span class="fw-semibold">Projektzuordnungen</span>
+                        <button id="admin-memberships-refresh" class="btn btn-sm btn-outline-secondary" type="button">Aktualisieren</button>
+                      </div>
+                      <div class="card-body">
+                        <div class="row g-2 mb-2">
+                          <div class="col-md-5">
+                            <label class="form-label">Projekt</label>
+                            <select id="admin-membership-project" class="form-select form-select-sm"></select>
+                          </div>
+                          <div class="col-md-4">
+                            <label class="form-label">Benutzer</label>
+                            <select id="admin-membership-user" class="form-select form-select-sm"></select>
+                          </div>
+                          <div class="col-md-3">
+                            <label class="form-label">Rolle</label>
+                            <select id="admin-membership-role" class="form-select form-select-sm">
+                              <option value="viewer">viewer</option>
+                              <option value="operator">operator</option>
+                              <option value="release-manager">release-manager</option>
+                              <option value="owner">owner</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div class="d-flex gap-2 mb-2">
+                          <button id="admin-membership-assign" class="btn btn-sm btn-primary" type="button">Zuweisen</button>
+                        </div>
+                        <div class="table-responsive">
+                          <table class="table table-sm mb-0">
+                            <thead><tr><th>Benutzer</th><th>Projektrolle</th><th>Zugeordnet</th><th>Aktionen</th></tr></thead>
+                            <tbody id="admin-memberships-body"></tbody>
+                          </table>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-              <div class="col-lg-7">
+              </section>
+
+              <section class="tab-pane fade" id="admin-tab-history" role="tabpanel" aria-labelledby="admin-tab-history-trigger" tabindex="0">
                 <div class="card soft-card mb-3">
-                  <div class="card-header bg-white d-flex justify-content-between align-items-center">
-                    <span class="fw-semibold">Benutzer</span>
-                    <button id="admin-users-refresh" class="btn btn-sm btn-outline-secondary" type="button">Aktualisieren</button>
-                  </div>
-                  <div class="card-body p-0">
-                    <div class="table-responsive">
-                      <table class="table table-sm mb-0">
-                        <thead><tr><th>Benutzer</th><th>Rechte</th><th>Module</th><th>Aktionen</th></tr></thead>
-                        <tbody id="admin-users-body"></tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-                <div class="card soft-card mb-3">
-                  <div class="card-header bg-white d-flex justify-content-between align-items-center">
-                    <span class="fw-semibold">Projektzuordnungen</span>
-                    <button id="admin-memberships-refresh" class="btn btn-sm btn-outline-secondary" type="button">Aktualisieren</button>
+                  <div class="card-header bg-white d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                    <span class="fw-semibold">Rollout-KPIs (P4)</span>
+                    <button id="admin-rollout-refresh" class="btn btn-sm btn-outline-secondary" type="button">Aktualisieren</button>
                   </div>
                   <div class="card-body">
-                    <div class="row g-2 mb-2">
-                      <div class="col-md-5">
-                        <label class="form-label">Projekt</label>
-                        <select id="admin-membership-project" class="form-select form-select-sm"></select>
+                    <div class="row g-2 mb-3">
+                      <div class="col-md-4">
+                        <label class="form-label small">Projekt</label>
+                        <select id="admin-rollout-project" class="form-select form-select-sm"></select>
                       </div>
                       <div class="col-md-4">
-                        <label class="form-label">Benutzer</label>
-                        <select id="admin-membership-user" class="form-select form-select-sm"></select>
-                      </div>
-                      <div class="col-md-3">
-                        <label class="form-label">Rolle</label>
-                        <select id="admin-membership-role" class="form-select form-select-sm">
-                          <option value="viewer">viewer</option>
-                          <option value="operator">operator</option>
-                          <option value="release-manager">release-manager</option>
-                          <option value="owner">owner</option>
+                        <label class="form-label small">Umgebung</label>
+                        <select id="admin-rollout-env" class="form-select form-select-sm">
+                          <option value="test">Test</option>
+                          <option value="production">Produktion</option>
                         </select>
                       </div>
+                      <div class="col-md-4">
+                        <label class="form-label small">Messfenster (Tage)</label>
+                        <input id="admin-rollout-window-days" type="number" min="1" max="90" value="14" class="form-control form-control-sm" />
+                      </div>
                     </div>
-                    <div class="d-flex gap-2 mb-2">
-                      <button id="admin-membership-assign" class="btn btn-sm btn-primary" type="button">Zuweisen</button>
+                    <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+                      <span id="admin-rollout-status" class="small text-secondary">Noch keine KPI-Daten geladen.</span>
+                      <span id="admin-rollout-decision-badge" class="badge text-bg-secondary">unavailable</span>
                     </div>
-                    <div class="table-responsive">
+                    <div class="table-responsive mb-3">
                       <table class="table table-sm mb-0">
-                        <thead><tr><th>Benutzer</th><th>Projektrolle</th><th>Zugeordnet</th><th>Aktionen</th></tr></thead>
-                        <tbody id="admin-memberships-body"></tbody>
+                        <thead><tr><th>KPI</th><th>Wert</th><th>Schwelle</th><th>Status</th></tr></thead>
+                        <tbody id="admin-rollout-kpi-body"><tr><td colspan="4" class="text-secondary">Noch keine KPI-Daten geladen.</td></tr></tbody>
                       </table>
                     </div>
+                    <pre id="admin-rollout-output" class="bg-dark text-light p-3 rounded small mb-0" style="white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; overflow-x: hidden;">{}</pre>
                   </div>
                 </div>
+
                 <div class="card soft-card">
                   <div class="card-header bg-white d-flex justify-content-between align-items-center">
                     <span class="fw-semibold">Aenderungshistorie</span>
@@ -1277,7 +2252,146 @@ ${renderAISchedulerAssistantModule()}
                     </div>
                   </div>
                 </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="project-modal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable connector-wizard-dialog">
+        <div class="modal-content connector-wizard-modal">
+          <div class="modal-header connector-wizard-header">
+            <h5 class="modal-title" id="project-modal-title">Projekt-Assistent</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schliessen"></button>
+          </div>
+          <div class="modal-body connector-wizard-body">
+            <div class="migration-wizard-steps-line connector-wizard-steps mb-3" id="prj-wizard-steps" style="--wizard-step-count: 5; --wizard-step-count-mobile: 3;">
+              <button type="button" class="migration-wizard-step connector-wizard-step is-active" data-prj-step="1"><span class="migration-wizard-step-index connector-wizard-step-index">1</span><span class="migration-wizard-step-label connector-wizard-step-label">Stammdaten</span></button>
+              <button type="button" class="migration-wizard-step connector-wizard-step" data-prj-step="2"><span class="migration-wizard-step-index connector-wizard-step-index">2</span><span class="migration-wizard-step-label connector-wizard-step-label">Instanzen</span></button>
+              <button type="button" class="migration-wizard-step connector-wizard-step" data-prj-step="3"><span class="migration-wizard-step-index connector-wizard-step-index">3</span><span class="migration-wizard-step-label connector-wizard-step-label">Betrieb</span></button>
+              <button type="button" class="migration-wizard-step connector-wizard-step" data-prj-step="4"><span class="migration-wizard-step-index connector-wizard-step-index">4</span><span class="migration-wizard-step-label connector-wizard-step-label">Doku</span></button>
+              <button type="button" class="migration-wizard-step connector-wizard-step" data-prj-step="5"><span class="migration-wizard-step-index connector-wizard-step-index">5</span><span class="migration-wizard-step-label connector-wizard-step-label">Pruefen</span></button>
+            </div>
+            <div id="prj-wizard-hint" class="connector-wizard-hint mb-3">Projektkonfiguration wird schrittweise gespeichert: Stammdaten, Instanzen, Betriebsregeln, Dokumentation und Pruefung.</div>
+            <div id="prj-modal-error" class="alert alert-danger d-none" role="alert"></div>
+
+            <div class="connector-wizard-panel" data-prj-step-panel="1">
+              <div class="row g-3">
+                <div class="col-md-4"><label class="form-label">Projekt-ID (optional)</label><input id="prj-id" class="form-control" placeholder="leer = automatisch aus Name" /></div>
+                <div class="col-md-8"><label class="form-label">Name</label><input id="prj-name" class="form-control" placeholder="z. B. Annaburger Rollout" /></div>
+                <div class="col-12"><label class="form-label">Beschreibung (optional)</label><input id="prj-description" class="form-control" /></div>
+                <div class="col-12">
+                  <div class="form-check mt-1">
+                    <input id="prj-production-write-protection" class="form-check-input" type="checkbox" checked />
+                    <label class="form-check-label" for="prj-production-write-protection">Produktions-Schreibschutz aktiv</label>
+                  </div>
+                </div>
               </div>
+            </div>
+
+            <div class="connector-wizard-panel d-none" data-prj-step-panel="2">
+              <div class="row g-3">
+                <div class="col-md-6"><label class="form-label">Test-Instanz</label><select id="prj-test-instance-id" class="form-select"></select></div>
+                <div class="col-md-6"><label class="form-label">Produktions-Instanz</label><select id="prj-production-instance-id" class="form-select"></select></div>
+                <div class="col-12"><div id="prj-instance-summary" class="small text-secondary">Keine Instanzzuordnung geladen.</div></div>
+              </div>
+            </div>
+
+            <div class="connector-wizard-panel d-none" data-prj-step-panel="3">
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <div class="form-check mt-4">
+                    <input id="prj-lookup-cache-enabled" class="form-check-input" type="checkbox" checked />
+                    <label class="form-check-label" for="prj-lookup-cache-enabled">Lookup-Cache aktiv</label>
+                  </div>
+                </div>
+                <div class="col-md-6"><label class="form-label">Lookup-Cache TTL (Minuten)</label><input id="prj-lookup-cache-ttl-minutes" class="form-control" type="number" min="1" value="15" /></div>
+                <div class="col-md-6">
+                  <div class="form-check mt-4">
+                    <input id="prj-log-batching-enabled" class="form-check-input" type="checkbox" checked />
+                    <label class="form-check-label" for="prj-log-batching-enabled">Log-Batching aktiv</label>
+                  </div>
+                </div>
+                <div class="col-md-6"><label class="form-label">Log-Sync Intervall (Minuten)</label><input id="prj-log-sync-interval-minutes" class="form-control" type="number" min="1" value="5" /></div>
+                <div class="col-md-6"><label class="form-label">Log-Batchgroesse</label><input id="prj-log-batch-size" class="form-control" type="number" min="1" value="200" /></div>
+                <div class="col-md-6"><label class="form-label">Max. Log-Puffer (Eintraege)</label><input id="prj-log-buffer-max-entries" class="form-control" type="number" min="100" value="10000" /></div>
+              </div>
+            </div>
+
+            <div class="connector-wizard-panel d-none" data-prj-step-panel="4">
+              <div class="row g-3">
+                <div class="col-md-6"><label class="form-label">Confluence Base URL</label><input id="prj-confluence-base-url" class="form-control" placeholder="https://example.atlassian.net" /></div>
+                <div class="col-md-6"><label class="form-label">Atlassian Benutzer/E-Mail</label><input id="prj-confluence-username" class="form-control" autocomplete="username" /></div>
+                <div class="col-md-6"><label class="form-label">Atlassian API Token</label><input id="prj-confluence-api-token" class="form-control" type="password" autocomplete="new-password" placeholder="leer lassen = vorhandenes Token behalten" /></div>
+                <div class="col-md-6"><label class="form-label">Confluence Space Key</label><input id="prj-confluence-space-key" class="form-control" placeholder="z. B. PRJ" /></div>
+                <div class="col-md-6"><label class="form-label">Confluence Parent Page ID</label><input id="prj-confluence-parent-page-id" class="form-control" placeholder="z. B. 123456789" /></div>
+                <div class="col-md-6"><label class="form-label">Confluence Titel-Praefix</label><input id="prj-confluence-title-prefix" class="form-control" placeholder="z. B. Projekt A" /></div>
+                <div class="col-12"><div id="prj-confluence-token-status" class="small text-secondary">Noch kein Projekttoken hinterlegt.</div></div>
+              </div>
+            </div>
+
+            <div class="connector-wizard-panel d-none" data-prj-step-panel="5">
+              <div id="prj-review" class="project-review-grid"></div>
+            </div>
+          </div>
+          <div class="modal-footer connector-wizard-footer">
+            <div id="prj-wizard-meta" class="connector-wizard-meta">Neues Projekt · noch nicht gespeichert</div>
+            <div class="connector-wizard-footer-group connector-wizard-footer-start">
+              <button id="prj-wizard-back" type="button" class="btn btn-outline-secondary">Zurueck</button>
+              <button id="prj-wizard-next" type="button" class="btn btn-primary">Weiter</button>
+            </div>
+            <div class="connector-wizard-footer-group connector-wizard-footer-end">
+              <button id="admin-project-reset" type="button" class="btn btn-outline-secondary">Zuruecksetzen</button>
+              <button id="save-project" type="button" class="btn btn-success">Projekt speichern</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="instance-modal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable connector-wizard-dialog">
+        <div class="modal-content connector-wizard-modal">
+          <div class="modal-header connector-wizard-header">
+            <h5 class="modal-title" id="instance-modal-title">Instanz bearbeiten</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schliessen"></button>
+          </div>
+          <div class="modal-body connector-wizard-body">
+            <div id="ins-modal-error" class="alert alert-danger d-none" role="alert"></div>
+            <div class="row g-3">
+              <div class="col-md-3"><label class="form-label">Instanz-ID</label><input id="ins-id" class="form-control" placeholder="z. B. sandbox-1" /></div>
+              <div class="col-md-3"><label class="form-label">Name</label><input id="ins-name" class="form-control" placeholder="z. B. Sandbox Team A" /></div>
+              <div class="col-md-4"><label class="form-label">Projekt</label><select id="ins-project-id" class="form-select"></select></div>
+              <div class="col-md-2"><label class="form-label">Rolle</label><select id="ins-role" class="form-select"><option value="test">Test</option><option value="production">Produktion</option></select></div>
+              <div class="col-md-4"><label class="form-label">Login URL</label><input id="ins-login-url" class="form-control" placeholder="https://login.salesforce.com" /></div>
+              <div class="col-md-3"><label class="form-label">Client ID</label><input id="ins-client-id" class="form-control" /></div>
+              <div class="col-md-3"><label class="form-label">Client Secret</label><input id="ins-client-secret" class="form-control" type="password" /></div>
+              <div class="col-md-2"><label class="form-label">Query Limit</label><input id="ins-query-limit" class="form-control" type="number" /></div>
+            </div>
+
+            <div class="instance-readiness-box mt-4">
+              <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+                <span class="fw-semibold">Readiness / MSD-Setup</span>
+                <span id="ins-readiness-status" class="badge text-bg-secondary">n/a</span>
+              </div>
+              <div class="progress mb-3" style="height: 8px;">
+                <div id="ins-readiness-progress" class="progress-bar" role="progressbar" style="width: 0%"></div>
+              </div>
+              <div class="d-flex gap-2 flex-wrap mb-3">
+                <button id="admin-instance-readiness-check" type="button" class="btn btn-sm btn-outline-secondary">Readiness prüfen</button>
+                <button id="admin-instance-msd-setup-dry" type="button" class="btn btn-sm btn-outline-warning">MSD Setup (Dry-Run)</button>
+                <button id="admin-instance-msd-setup-apply" type="button" class="btn btn-sm btn-outline-primary">MSD Setup (Apply)</button>
+              </div>
+              <div id="ins-readiness-output" class="instance-readiness-checklist"></div>
+            </div>
+          </div>
+          <div class="modal-footer connector-wizard-footer">
+            <div id="ins-modal-meta" class="connector-wizard-meta">Neue Instanz · noch nicht gespeichert</div>
+            <div class="connector-wizard-footer-group connector-wizard-footer-end">
+              <button id="admin-instance-reset" type="button" class="btn btn-outline-secondary">Zuruecksetzen</button>
+              <button id="save-instance" type="button" class="btn btn-primary">Instanz speichern</button>
             </div>
           </div>
         </div>
@@ -1322,64 +2436,10 @@ ${renderAISchedulerAssistantModule()}
                   <input type="number" id="mig-batch-size" class="form-control" value="200" min="1" max="200" />
                   <div class="form-text">Anzahl Datensätze pro Salesforce-Schreibvorgang.</div>
                 </div>
-                <div class="col-md-4">
-                  <label class="form-label">Salesforce Quelle</label>
-                  <select id="mig-instance-source" class="form-select">
-                    <option value="embedded">Eigenen Login in Migration speichern</option>
-                    <option value="existing">Bestehende Instanz verwenden</option>
-                  </select>
-                </div>
-                <div class="col-md-8 d-none" id="mig-existing-instance-wrap">
-                  <label class="form-label">Bestehende Instanz</label>
+                <div class="col-md-8" id="mig-existing-instance-wrap">
+                  <label class="form-label">Projektinstanz</label>
                   <select id="mig-existing-instance" class="form-select"></select>
-                  <div class="form-text">Verwendet eine bereits im Agenten konfigurierte Salesforce-Instanz.</div>
-                </div>
-                <div class="col-md-4" id="mig-login-environment-wrap">
-                  <label class="form-label">Umgebung</label>
-                  <select id="mig-login-environment" class="form-select">
-                    <option value="sandbox">Sandbox</option>
-                    <option value="production">Produktion</option>
-                  </select>
-                </div>
-                <div class="col-md-4" id="mig-login-auth-type-wrap">
-                  <label class="form-label">Login-Modus</label>
-                  <select id="mig-login-auth-type" class="form-select">
-                    <option value="password">Benutzername / Passwort</option>
-                    <option value="client_credentials">Client ID + Client Secret</option>
-                    <option value="oauth_refresh_token">Salesforce Login mit Allow</option>
-                  </select>
-                </div>
-                <div class="col-md-8" id="mig-login-url-wrap">
-                  <label class="form-label">Login-URL</label>
-                  <input type="text" id="mig-login-url" class="form-control" placeholder="https://test.salesforce.com" />
-                  <div class="form-text">Standard ist die zur Umgebung passende Salesforce-Login-Seite. Bei Bedarf kannst du hier eine andere Salesforce-Domain eintragen.</div>
-                </div>
-                <div class="col-md-6" id="mig-login-username-wrap">
-                  <label class="form-label">Salesforce Benutzername</label>
-                  <input type="text" id="mig-login-username" class="form-control" placeholder="user@example.com" />
-                </div>
-                <div class="col-md-6" id="mig-login-password-wrap">
-                  <label class="form-label">Passwort</label>
-                  <input type="password" id="mig-login-password" class="form-control" />
-                </div>
-                <div class="col-md-6" id="mig-login-security-token-wrap">
-                  <label class="form-label">Security Token (optional)</label>
-                  <input type="password" id="mig-login-security-token" class="form-control" />
-                </div>
-                <div class="col-md-6 d-none" id="mig-login-client-id-wrap">
-                  <label class="form-label">Client ID</label>
-                  <input type="text" id="mig-login-client-id" class="form-control" placeholder="3MVG9..." />
-                </div>
-                <div class="col-md-6 d-none" id="mig-login-client-secret-wrap">
-                  <label class="form-label">Client Secret</label>
-                  <input type="password" id="mig-login-client-secret" class="form-control" />
-                </div>
-                <div class="col-md-8" id="mig-login-status-wrap">
-                  <label class="form-label">Salesforce Verbindung</label>
-                  <div id="mig-login-status" class="small text-secondary border rounded-3 px-3 py-2 bg-light-subtle">Noch keine Salesforce-Freigabe vorhanden.</div>
-                </div>
-                <div class="col-md-4 d-flex align-items-end" id="mig-login-authorize-wrap">
-                  <button type="button" class="btn btn-outline-primary w-100" id="mig-login-authorize">Mit Salesforce verbinden</button>
+                  <div class="form-text">Migrationen verwenden ausschließlich die im Projekt zugeordneten Salesforce-Instanzen.</div>
                 </div>
               </div>
               <div id="mig-pending-import-hint" class="alert alert-info py-2 small d-none"></div>
@@ -1519,95 +2579,6 @@ ${renderAISchedulerAssistantModule()}
         </div>
       </div>
     </div>
-    <div class="modal fade" id="instance-modal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header"><h5 class="modal-title">Salesforce Instanz hinzufügen</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-          <div class="modal-body">
-            <div class="row g-2">
-              <div class="col-12"><label class="form-label">Instanz-ID</label><input id="ins-id" class="form-control" placeholder="z. B. sandbox-1" /></div>
-              <div class="col-12"><label class="form-label">Name</label><input id="ins-name" class="form-control" placeholder="z. B. Sandbox Team A" /></div>
-              <div class="col-md-8"><label class="form-label">Projekt</label><select id="ins-project-id" class="form-select"></select></div>
-              <div class="col-md-4"><label class="form-label">Rolle</label><select id="ins-role" class="form-select"><option value="test">Test</option><option value="production">Produktion</option></select></div>
-              <div class="col-12"><label class="form-label">Login URL</label><input id="ins-login-url" class="form-control" placeholder="https://login.salesforce.com" /></div>
-              <div class="col-12"><label class="form-label">Client ID</label><input id="ins-client-id" class="form-control" /></div>
-              <div class="col-12"><label class="form-label">Client Secret</label><input id="ins-client-secret" class="form-control" type="password" /></div>
-              <div class="col-12"><label class="form-label">Query Limit (optional)</label><input id="ins-query-limit" class="form-control" type="number" /></div>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-light" data-bs-dismiss="modal">Abbrechen</button>
-            <button id="save-instance" type="button" class="btn btn-primary">Instanz speichern</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="modal fade" id="project-modal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-          <div class="modal-header"><h5 class="modal-title">Projekte verwalten</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-          <div class="modal-body">
-            <div class="table-responsive mb-3">
-              <table class="table table-sm align-middle mb-0">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                      <th>Confluence</th>
-                    <th>Schreibschutz Produktion</th>
-                    <th>Status</th>
-                    <th>Aktion</th>
-                  </tr>
-                </thead>
-                <tbody id="project-table-body"></tbody>
-              </table>
-            </div>
-            <hr class="my-3" />
-            <div class="row g-2">
-              <div class="col-12"><label class="form-label">Projekt-ID (optional)</label><input id="prj-id" class="form-control" placeholder="leer = automatisch aus Name" /></div>
-              <div class="col-12"><label class="form-label">Name</label><input id="prj-name" class="form-control" placeholder="z. B. Annaburger Rollout" /></div>
-              <div class="col-12"><label class="form-label">Beschreibung (optional)</label><input id="prj-description" class="form-control" /></div>
-              <div class="col-md-4"><label class="form-label">Confluence Space Key</label><input id="prj-confluence-space-key" class="form-control" placeholder="z. B. PRJ" /></div>
-              <div class="col-md-4"><label class="form-label">Confluence Parent Page ID</label><input id="prj-confluence-parent-page-id" class="form-control" placeholder="z. B. 123456789" /></div>
-              <div class="col-md-4"><label class="form-label">Confluence Titel-Präfix</label><input id="prj-confluence-title-prefix" class="form-control" placeholder="z. B. Projekt A" /></div>
-              <div class="col-12">
-                <div class="form-check mt-1">
-                  <input id="prj-production-write-protection" class="form-check-input" type="checkbox" checked />
-                  <label class="form-check-label" for="prj-production-write-protection">Produktions-Schreibschutz aktiv</label>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-light" data-bs-dismiss="modal">Schließen</button>
-            <button id="save-project" type="button" class="btn btn-primary">Projekt speichern</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="modal fade" id="migration-instance-modal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header"><h5 class="modal-title">Migrations-Instanz verbinden</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-          <div class="modal-body">
-            <div class="row g-2">
-              <div class="col-12"><label class="form-label">Name</label><input id="mig-ins-name" class="form-control" placeholder="z. B. Sandbox Migration Team A" /></div>
-              <div class="col-md-6"><label class="form-label">Umgebung</label><select id="mig-ins-environment" class="form-select"><option value="sandbox">Sandbox</option><option value="production">Produktion</option></select></div>
-              <div class="col-md-6"><label class="form-label">Query Limit (optional)</label><input id="mig-ins-query-limit" class="form-control" type="number" /></div>
-              <div class="col-12"><label class="form-label">Client ID</label><input id="mig-ins-client-id" class="form-control" /></div>
-              <div class="col-12"><label class="form-label">Client Secret</label><input id="mig-ins-client-secret" class="form-control" type="password" /></div>
-              <div class="col-12"><div id="mig-ins-login-url-hint" class="form-text">Verwendete Login-URL: https://test.salesforce.com</div></div>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-light" data-bs-dismiss="modal">Abbrechen</button>
-            <button id="save-migration-instance" type="button" class="btn btn-primary">Speichern und verbinden</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <div class="modal fade" id="schedule-modal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
@@ -2264,13 +3235,15 @@ export function createAppServer(
       const isAssetRequest = requestUrl.pathname.startsWith("/assets/");
       const isPublicRequest =
         requestUrl.pathname === "/api/system/health" ||
+        requestUrl.pathname.startsWith("/api/agent/") ||
         requestUrl.pathname === "/auth/login" ||
         requestUrl.pathname === "/auth/logout" ||
         requestUrl.pathname === "/favicon.ico" ||
-        requestUrl.pathname === "/auth/migration-salesforce/callback" ||
         requestUrl.pathname === "/auth/salesforce/login" ||
         requestUrl.pathname === "/auth/salesforce/callback";
-      const requiresMutationProtection = isMutatingMethod(req.method) && (requestUrl.pathname.startsWith("/api/") || requestUrl.pathname.startsWith("/auth/"));
+      const isAgentApiRequest = requestUrl.pathname.startsWith("/api/agent/");
+      const requiresMutationProtection = isMutatingMethod(req.method)
+        && ((requestUrl.pathname.startsWith("/api/") && !isAgentApiRequest) || requestUrl.pathname.startsWith("/auth/"));
       const requiredPermission = (() => {
         if (requestUrl.pathname === "/auth/logout") {
           return null;
@@ -2279,6 +3252,9 @@ export function createAppServer(
           return null;
         }
         if (requestUrl.pathname === "/api/system/health" || requestUrl.pathname === "/favicon.ico" || isAssetRequest) {
+          return null;
+        }
+        if (requestUrl.pathname.startsWith("/api/agent/")) {
           return null;
         }
         if (req.method === "DELETE") {
@@ -2430,9 +3406,7 @@ export function createAppServer(
       }
 
       const isMigrationRequest =
-        requestUrl.pathname === "/auth/migration-salesforce/start" ||
-        requestUrl.pathname.startsWith("/api/migrations") ||
-        requestUrl.pathname.startsWith("/api/migration-instances");
+        requestUrl.pathname.startsWith("/api/migrations");
       if (adminAuthRequired && isMigrationRequest && !hasModuleAccess(session, "migration")) {
         if (requestUrl.pathname.startsWith("/api/")) {
           sendJson(403, { error: "Modulberechtigung 'migration' fehlt" });
@@ -2443,6 +3417,8 @@ export function createAppServer(
       }
 
       const instanceId = requestUrl.searchParams.get("instanceId") || undefined;
+      const contextProjectId = String(requestUrl.searchParams.get("projectId") || "").trim();
+      const contextTargetEnv = String(requestUrl.searchParams.get("targetEnv") || "").trim() === "production" ? "production" : "test";
       const connectorTestMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/test$/) : null;
       const connectorDeleteMatch = req.method === "DELETE" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)$/) : null;
       const scheduleRunMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/run$/) : null;
@@ -2458,6 +3434,7 @@ export function createAppServer(
       const adminProjectMigrationsMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/migrations$/);
       const adminProjectMigrationRunMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/migrations\/([^/]+)\/run$/);
       const adminProjectSetupVersionsMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/setup\/versions$/);
+      const adminProjectRolloutKpisMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/rollout\/kpis$/);
       const adminProjectDeployCompareMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/compare$/);
       const adminProjectDeployCompareByIdMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/compare\/([^/]+)$/);
       const adminProjectDeployPrecheckMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/precheck$/);
@@ -2465,6 +3442,48 @@ export function createAppServer(
       const adminProjectDeployRunsMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/runs$/);
       const adminProjectDeployStartMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/start$/);
       const adminProjectDocumentationPublishMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/documentation\/publish-confluence$/);
+      const isRuntimeContextEndpoint = (() => {
+        if (!contextProjectId || !requestUrl.pathname.startsWith("/api/")) {
+          return false;
+        }
+        if (
+          requestUrl.pathname === "/api/instances"
+          || requestUrl.pathname === "/api/projects"
+          || requestUrl.pathname === "/api/admin/me"
+          || requestUrl.pathname === "/api/admin/users"
+          || requestUrl.pathname === "/api/admin/audit-history"
+          || requestUrl.pathname === "/api/system/health"
+          || requestUrl.pathname === "/api/installer/summary"
+          || requestUrl.pathname.startsWith("/api/admin/")
+          || requestUrl.pathname.startsWith("/api/agent/")
+        ) {
+          return false;
+        }
+        return true;
+      })();
+
+      if (isRuntimeContextEndpoint) {
+        const selectedInstance = instanceId
+          ? adminDataService.listInstances().find((item) => String(item.id || "") === String(instanceId || ""))
+          : null;
+
+        if (!selectedInstance) {
+          sendJson(409, {
+            error: `Kein Salesforce-Instanzkontext fuer Projekt ${contextProjectId} und Umgebung ${contextTargetEnv} ausgewaehlt.`
+          });
+          return;
+        }
+
+        const selectedProjectId = String(selectedInstance.projectId || "default-project").trim() || "default-project";
+        const selectedTargetEnv = selectedInstance.role === "production" ? "production" : "test";
+        if (selectedProjectId !== contextProjectId || selectedTargetEnv !== contextTargetEnv) {
+          sendJson(409, {
+            error: `Instanzkontext passt nicht zum Header-Kontext (${contextProjectId}/${contextTargetEnv}).`
+          });
+          return;
+        }
+      }
+
       const requiresInstanceWriteCheck = (() => {
         if (!instanceId) {
           return false;
@@ -2512,83 +3531,6 @@ export function createAppServer(
           ? logRangeParam
           : "last_24h";
 
-      if (req.method === "GET" && requestUrl.pathname === "/auth/migration-salesforce/callback") {
-        const state = String(requestUrl.searchParams.get("state") || "").trim();
-        const code = String(requestUrl.searchParams.get("code") || "").trim();
-        const oauthError = String(requestUrl.searchParams.get("error") || "").trim();
-        const oauthErrorDescription = String(requestUrl.searchParams.get("error_description") || "").trim();
-        const pendingState = consumeMigrationOauthState(state);
-
-        if (!pendingState) {
-          sendHtml(400, renderMigrationOauthCallbackShell({
-            ok: false,
-            migrationId: "",
-            message: "Der Salesforce-Login-Status ist abgelaufen oder ungueltig. Bitte den Login erneut aus der Migration starten."
-          }));
-          return;
-        }
-
-        if (oauthError) {
-          sendHtml(400, renderMigrationOauthCallbackShell({
-            ok: false,
-            migrationId: pendingState.migrationId,
-            message: oauthErrorDescription || oauthError
-          }));
-          return;
-        }
-
-        if (!code) {
-          sendHtml(400, renderMigrationOauthCallbackShell({
-            ok: false,
-            migrationId: pendingState.migrationId,
-            message: "Salesforce hat keinen Authorization Code geliefert."
-          }));
-          return;
-        }
-
-        try {
-          await adminDataService.completeMigrationOAuth(pendingState.migrationId, code, pendingState.redirectUri);
-          sendHtml(200, renderMigrationOauthCallbackShell({
-            ok: true,
-            migrationId: pendingState.migrationId,
-            message: "Salesforce-Freigabe gespeichert. Das Fenster schliesst sich gleich."
-          }));
-        } catch (error) {
-          sendHtml(500, renderMigrationOauthCallbackShell({
-            ok: false,
-            migrationId: pendingState.migrationId,
-            message: error instanceof Error ? error.message : String(error)
-          }));
-        }
-        return;
-      }
-
-      if (req.method === "GET" && requestUrl.pathname === "/auth/migration-salesforce/start") {
-        const migrationInstanceId = String(requestUrl.searchParams.get("migrationId") || "").trim();
-        if (!migrationInstanceId) {
-          sendHtml(400, renderMigrationOauthCallbackShell({
-            ok: false,
-            migrationId: "",
-            message: "Migration-ID fuer Salesforce-Login fehlt."
-          }));
-          return;
-        }
-
-        try {
-          const redirectUri = buildMigrationOauthRedirectUri(req);
-          const state = createMigrationOauthState(migrationInstanceId, redirectUri);
-          const authorizationUrl = adminDataService.getMigrationOAuthAuthorizationUrl(migrationInstanceId, state, redirectUri);
-          sendRedirect(authorizationUrl);
-        } catch (error) {
-          sendHtml(500, renderMigrationOauthCallbackShell({
-            ok: false,
-            migrationId: migrationInstanceId,
-            message: error instanceof Error ? error.message : String(error)
-          }));
-        }
-        return;
-      }
-
       if (req.method === "GET" && requestUrl.pathname === "/api/system/health") {
         sendJson(200, await getHealthSnapshot());
         return;
@@ -2615,8 +3557,21 @@ export function createAppServer(
         return;
       }
 
-      if (requestUrl.pathname.startsWith("/api/admin/") && !hasPermission(session, "admin")) {
+      const isAdminUserManagementRequest = requestUrl.pathname.startsWith("/api/admin/users");
+      const isAdminAuditRequest = requestUrl.pathname === "/api/admin/audit-history";
+      const isProjectAdminRequest = requestUrl.pathname === "/api/admin/projects"
+        || requestUrl.pathname.startsWith("/api/admin/projects/")
+        || requestUrl.pathname === "/api/admin/sf-instances"
+        || requestUrl.pathname.startsWith("/api/admin/sf-instances/");
+      const hasProjectAdminModule = hasModuleAccess(session, "projects") || hasModuleAccess(session, "deployment");
+
+      if ((isAdminUserManagementRequest || isAdminAuditRequest) && !hasPermission(session, "admin")) {
         sendJson(403, { error: "Admin-Berechtigung fehlt" });
+        return;
+      }
+
+      if (requestUrl.pathname.startsWith("/api/admin/") && !hasPermission(session, "admin") && !(isProjectAdminRequest && hasProjectAdminModule)) {
+        sendJson(403, { error: "Admin- oder Projektmodul-Berechtigung fehlt" });
         return;
       }
 
@@ -2656,6 +3611,10 @@ export function createAppServer(
 
       if (adminProjectMembersMatch && req.method === "GET") {
         const projectId = decodeURIComponent(adminProjectMembersMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "read")) {
+          sendJson(403, { error: "Projekt-Lesezugriff fehlt" });
+          return;
+        }
         sendJson(200, { items: listProjectMembers(projectId) });
         return;
       }
@@ -2663,6 +3622,10 @@ export function createAppServer(
       if (adminProjectMemberItemMatch && req.method === "PUT") {
         const projectId = decodeURIComponent(adminProjectMemberItemMatch[1]);
         const userId = decodeURIComponent(adminProjectMemberItemMatch[2]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
         const body = (await readJsonBody(req)) as { roleInProject?: "viewer" | "operator" | "release-manager" | "owner" };
         const item = saveProjectMember({
           projectId,
@@ -2684,6 +3647,10 @@ export function createAppServer(
       if (adminProjectMemberItemMatch && req.method === "DELETE") {
         const projectId = decodeURIComponent(adminProjectMemberItemMatch[1]);
         const userId = decodeURIComponent(adminProjectMemberItemMatch[2]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
         const deleted = deleteProjectMember(projectId, userId);
         await appendAuditHistory({
           actor: auditActor,
@@ -2708,13 +3675,25 @@ export function createAppServer(
       }
 
       if (req.method === "GET" && requestUrl.pathname === "/api/admin/projects") {
-        const items = adminDataService.listProjects();
+        const items = adminDataService.listProjects().filter((item) => {
+          if (!session || hasPermission(session, "admin")) {
+            return true;
+          }
+          return hasProjectAccess(session, item.id, "read");
+        });
         sendJson(200, { items, total: items.length });
         return;
       }
 
       if (req.method === "POST" && requestUrl.pathname === "/api/admin/projects") {
         const body = (await readJsonBody(req)) as SalesforceProjectMutationInput;
+        if (session && !hasPermission(session, "admin")) {
+          const candidateId = String(body.id || "").trim();
+          if (!candidateId || !hasProjectAccess(session, candidateId, "write")) {
+            sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+            return;
+          }
+        }
         const item = adminDataService.saveProject(body);
         await appendAuditHistory({ actor: auditActor, action: body.id ? "update" : "create", entityType: "project", entityId: item.id, entityName: item.name });
         sendJson(200, item);
@@ -2724,6 +3703,10 @@ export function createAppServer(
       const adminProjectIdMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)$/);
       if (adminProjectIdMatch && req.method === "PATCH") {
         const projectId = decodeURIComponent(adminProjectIdMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
         const body = (await readJsonBody(req)) as SalesforceProjectMutationInput;
         const item = adminDataService.saveProject({ ...body, id: projectId });
         await appendAuditHistory({ actor: auditActor, action: "update", entityType: "project", entityId: item.id, entityName: item.name });
@@ -2732,13 +3715,23 @@ export function createAppServer(
       }
 
       if (req.method === "GET" && requestUrl.pathname === "/api/admin/sf-instances") {
-        const items = adminDataService.listInstances();
+        const items = adminDataService.listInstances().filter((item) => {
+          if (!session || hasPermission(session, "admin")) {
+            return true;
+          }
+          return hasProjectAccess(session, String(item.projectId || "default-project"), "read");
+        });
         sendJson(200, { items, total: items.length });
         return;
       }
 
       if (req.method === "POST" && requestUrl.pathname === "/api/admin/sf-instances") {
         const body = (await readJsonBody(req)) as SalesforceInstanceMutationInput;
+        const projectId = String(body.projectId || "default-project").trim() || "default-project";
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
         const item = adminDataService.saveInstance(body);
         await appendAuditHistory({ actor: auditActor, action: body.id ? "update" : "create", entityType: "salesforce-instance", entityId: item.id, entityName: item.name || item.id });
         if (isRemoteAgentConfigured()) {
@@ -2749,9 +3742,90 @@ export function createAppServer(
       }
 
       const adminSfInstanceIdMatch = requestUrl.pathname.match(/^\/api\/admin\/sf-instances\/([^/]+)$/);
+      const adminSfInstanceReadinessMatch = requestUrl.pathname.match(/^\/api\/admin\/sf-instances\/([^/]+)\/readiness-check$/);
+      const adminSfInstanceMetadataMatch = requestUrl.pathname.match(/^\/api\/admin\/sf-instances\/([^/]+)\/metadata$/);
+      if (adminSfInstanceReadinessMatch && req.method === "POST") {
+        const instanceId = decodeURIComponent(adminSfInstanceReadinessMatch[1]);
+        const body = (await readJsonBody(req)) as SalesforceInstanceReadinessCheckInput;
+        const projectId = String(body?.projectId || adminDataService.listInstances().find((item) => item.id === instanceId)?.projectId || "default-project").trim() || "default-project";
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "read")) {
+          sendJson(403, { error: "Projekt-Lesezugriff fehlt" });
+          return;
+        }
+        const result = await adminDataService.runInstanceReadinessCheck(instanceId, body || {});
+        await appendAuditHistory({
+          actor: auditActor,
+          action: "validate",
+          entityType: "salesforce-instance-readiness",
+          entityId: instanceId,
+          entityName: result.status
+        });
+        sendJson(200, result);
+        return;
+      }
+
+      if (adminSfInstanceMetadataMatch && req.method === "GET") {
+        const selectedInstanceId = decodeURIComponent(adminSfInstanceMetadataMatch[1]);
+        const selectedInstance = adminDataService.listInstances().find((item) => item.id === selectedInstanceId);
+        const projectId = String(selectedInstance?.projectId || "default-project").trim() || "default-project";
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "read")) {
+          sendJson(403, { error: "Keine Leseberechtigung fuer dieses Projekt" });
+          return;
+        }
+
+        const context = await adminDataService.getInstanceMetadataContext(selectedInstanceId);
+        sendJson(200, context);
+        return;
+      }
+
+      if (adminSfInstanceMetadataMatch && req.method === "POST") {
+        const selectedInstanceId = decodeURIComponent(adminSfInstanceMetadataMatch[1]);
+        const body = (await readJsonBody(req)) as { objectNames?: string[]; includeAllFields?: boolean; maxFieldObjects?: number };
+        const selectedInstance = adminDataService.listInstances().find((item) => item.id === selectedInstanceId);
+        const projectId = String(selectedInstance?.projectId || "default-project").trim() || "default-project";
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Keine Schreibberechtigung fuer dieses Projekt" });
+          return;
+        }
+
+        const snapshot = await adminDataService.refreshInstanceMetadata(selectedInstanceId, {
+          objectNames: Array.isArray(body.objectNames) ? body.objectNames : undefined,
+          includeAllFields: body.includeAllFields === true,
+          maxFieldObjects: Number.isFinite(Number(body.maxFieldObjects)) ? Number(body.maxFieldObjects) : undefined
+        });
+        sendJson(snapshot.status === "success" ? 200 : 500, snapshot);
+        return;
+      }
+
+      const adminSfInstanceSetupMatch = requestUrl.pathname.match(/^\/api\/admin\/sf-instances\/([^/]+)\/msd-setup$/);
+      if (adminSfInstanceSetupMatch && req.method === "POST") {
+        const instanceId = decodeURIComponent(adminSfInstanceSetupMatch[1]);
+        const body = (await readJsonBody(req)) as SalesforceInstanceMsdSetupInput;
+        const projectId = String(body?.projectId || adminDataService.listInstances().find((item) => item.id === instanceId)?.projectId || "default-project").trim() || "default-project";
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
+        const result = await adminDataService.runInstanceMsdSetup(instanceId, body || {});
+        await appendAuditHistory({
+          actor: auditActor,
+          action: body?.mode === "dry-run" ? "validate" : "update",
+          entityType: "salesforce-instance-setup",
+          entityId: instanceId,
+          entityName: result.status
+        });
+        sendJson(200, result);
+        return;
+      }
+
       if (adminSfInstanceIdMatch && req.method === "PATCH") {
         const body = (await readJsonBody(req)) as SalesforceInstanceMutationInput;
         const instanceIdForPatch = decodeURIComponent(adminSfInstanceIdMatch[1]);
+        const projectId = String(body.projectId || adminDataService.listInstances().find((item) => item.id === instanceIdForPatch)?.projectId || "default-project").trim() || "default-project";
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
         const item = adminDataService.saveInstance({ ...body, id: instanceIdForPatch });
         await appendAuditHistory({ actor: auditActor, action: "update", entityType: "salesforce-instance", entityId: item.id, entityName: item.name || item.id });
         if (isRemoteAgentConfigured()) {
@@ -2761,8 +3835,84 @@ export function createAppServer(
         return;
       }
 
+      if (req.method === "POST" && requestUrl.pathname === "/api/agent/health/pulse") {
+        const body = (await readJsonBody(req)) as AgentHealthPulseInput;
+        const agentId = String(body.agentId || "").trim();
+        const projectId = String(body.projectId || "").trim();
+        const instanceId = String(body.instanceId || "").trim();
+        if (!agentId || !projectId || !instanceId) {
+          sendJson(400, { error: "agentId, projectId und instanceId sind erforderlich" });
+          return;
+        }
+
+        const now = new Date().toISOString();
+        const heartbeatRecord: AgentHeartbeatRecord = {
+          id: `hb-${Date.now().toString(36)}`,
+          agentId,
+          projectId,
+          instanceId,
+          targetEnv: body.targetEnv === "production" ? "production" : "test",
+          agentVersion: String(body.agentVersion || "-").trim() || "-",
+          appVersion: String(body.appVersion || "-").trim() || "-",
+          nodeVersion: String(body.nodeVersion || process.versions.node).trim() || process.versions.node,
+          status: body.status === "warning" || body.status === "error" ? body.status : "ok",
+          payload: {
+            lastSuccessAt: body.lastSuccessAt,
+            openErrors: Number(body.openErrors || 0) || 0,
+            metrics: body.metrics || {}
+          },
+          createdAt: now
+        };
+        saveAgentHeartbeatRecord(heartbeatRecord);
+
+        sendJson(200, {
+          receivedAt: now,
+          heartbeatId: heartbeatRecord.id,
+          nextPulseInSeconds: 300,
+          commands: getPendingCommandsForAgent(agentId)
+        });
+        return;
+      }
+
+      const agentCommandAckMatch = requestUrl.pathname.match(/^\/api\/agent\/commands\/([^/]+)\/ack$/);
+      if (agentCommandAckMatch && req.method === "POST") {
+        const commandId = decodeURIComponent(agentCommandAckMatch[1]);
+        const body = (await readJsonBody(req)) as AgentCommandAckInput;
+
+        if (AGENT_COMMAND_SHARED_SECRET) {
+          const receivedSignature = String(req.headers["x-agent-signature"] || "").trim();
+          if (!receivedSignature) {
+            sendJson(401, { error: "x-agent-signature fehlt" });
+            return;
+          }
+
+          const expectedSignature = buildAgentAckSignature(commandId, body || {});
+          const receivedBuffer = Buffer.from(receivedSignature);
+          const expectedBuffer = Buffer.from(expectedSignature);
+          const isValid = receivedBuffer.length === expectedBuffer.length
+            && crypto.timingSafeEqual(receivedBuffer, expectedBuffer);
+          if (!isValid) {
+            sendJson(401, { error: "ungueltige agent-signatur" });
+            return;
+          }
+        }
+
+        const result = upsertAgentCommandAck(commandId, body || {});
+        sendJson(200, {
+          commandId: result.commandId,
+          acknowledged: true,
+          status: result.status,
+          storedAt: result.acknowledgedAt || new Date().toISOString()
+        });
+        return;
+      }
+
       if (adminProjectMigrationsMatch && req.method === "GET") {
         const projectId = decodeURIComponent(adminProjectMigrationsMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "read")) {
+          sendJson(403, { error: "Projekt-Lesezugriff fehlt" });
+          return;
+        }
         const items = adminDataService.listMigrationsForUi().filter((item) => String(item.projectId || "").trim() === projectId);
         sendJson(200, { items, total: items.length });
         return;
@@ -2770,6 +3920,10 @@ export function createAppServer(
 
       if (adminProjectMigrationsMatch && req.method === "POST") {
         const projectId = decodeURIComponent(adminProjectMigrationsMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
         const body = (await readJsonBody(req)) as Partial<MigrationConfig>;
         if (body.salesforceLogin) {
           sendJson(400, { error: "salesforceLogin ist nicht mehr zulaessig. Verwende projectId und Projektinstanzen." });
@@ -2796,6 +3950,10 @@ export function createAppServer(
       if (adminProjectMigrationRunMatch && req.method === "POST") {
         const projectId = decodeURIComponent(adminProjectMigrationRunMatch[1]);
         const migrationId = decodeURIComponent(adminProjectMigrationRunMatch[2]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
         const migration = adminDataService.getMigration(migrationId);
         if (!migration) {
           sendJson(404, { error: "Migration not found" });
@@ -2832,6 +3990,10 @@ export function createAppServer(
 
       if (adminProjectSetupVersionsMatch && req.method === "GET") {
         const projectId = decodeURIComponent(adminProjectSetupVersionsMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "read")) {
+          sendJson(403, { error: "Projekt-Lesezugriff fehlt" });
+          return;
+        }
         sendJson(200, {
           items: readProjectSetupVersions(projectId),
           total: readProjectSetupVersions(projectId).length
@@ -2839,10 +4001,36 @@ export function createAppServer(
         return;
       }
 
+      if (adminProjectRolloutKpisMatch && req.method === "GET") {
+        const projectId = decodeURIComponent(adminProjectRolloutKpisMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "read")) {
+          sendJson(403, { error: "Projekt-Lesezugriff fehlt" });
+          return;
+        }
+        const project = adminDataService.getProjectConfig(projectId);
+        if (!project) {
+          sendJson(404, { error: "Projekt nicht gefunden" });
+          return;
+        }
+
+        const targetEnv = String(requestUrl.searchParams.get("targetEnv") || "test").trim() === "production"
+          ? "production"
+          : "test";
+        const windowDays = clampInteger(requestUrl.searchParams.get("windowDays"), 14, 1, 90);
+        const response = await buildRolloutKpiResponse(adminDataService, projectId, targetEnv, windowDays);
+
+        sendJson(200, response);
+        return;
+      }
+
       if (adminProjectSetupVersionsMatch && req.method === "POST") {
         const projectId = decodeURIComponent(adminProjectSetupVersionsMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
         const body = (await readJsonBody(req)) as { instanceId?: string; note?: string; artifactRef?: string; author?: string };
-        const project = adminDataService.listProjects().find((item) => item.id === projectId);
+        const project = adminDataService.getProjectConfig(projectId);
         if (!project) {
           sendJson(404, { error: "Projekt nicht gefunden" });
           return;
@@ -2876,6 +4064,10 @@ export function createAppServer(
 
       if (adminProjectDeployRunsMatch && req.method === "GET") {
         const projectId = decodeURIComponent(adminProjectDeployRunsMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "read")) {
+          sendJson(403, { error: "Projekt-Lesezugriff fehlt" });
+          return;
+        }
         const items = readDeploymentRuns(projectId);
         sendJson(200, { items, total: items.length });
         return;
@@ -2883,7 +4075,11 @@ export function createAppServer(
 
       if (adminProjectDocumentationPublishMatch && req.method === "POST") {
         const projectId = decodeURIComponent(adminProjectDocumentationPublishMatch[1]);
-        const project = adminDataService.listProjects().find((item) => item.id === projectId);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
+        const project = adminDataService.getProjectConfig(projectId);
         if (!project) {
           sendJson(404, { error: "Projekt nicht gefunden" });
           return;
@@ -2894,8 +4090,12 @@ export function createAppServer(
         const members = listProjectMembers(projectId);
         const versions = readProjectSetupVersions(projectId);
         const setupVersion = versions[versions.length - 1];
-        const setupInstanceId = getProjectPrimaryInstance(projectId, instances)?.id || projectInstances[0]?.id;
-        const setupDocument = setupVersion && setupInstanceId ? await adminDataService.exportSetup(setupInstanceId) : undefined;
+        const productionInstance = projectInstances.find((item) => item.role === "production");
+        if (!productionInstance) {
+          sendJson(409, { error: "Projektdokumentation kann nur aus der Produktionsinstanz erzeugt werden. Dem Projekt ist keine Produktionsinstanz zugeordnet." });
+          return;
+        }
+        const setupDocument = await adminDataService.exportSetup(productionInstance.id);
         const compareRuns = readJsonArrayFile<DeploymentCompareRunRecord>(LOCAL_DEPLOYMENT_COMPARE_RUNS_FILE).filter((item) => item.projectId === projectId);
         const precheckRuns = readJsonArrayFile<DeploymentPrecheckRunRecord>(LOCAL_DEPLOYMENT_PRECHECKS_FILE).filter((item) => item.projectId === projectId);
         const html = buildProjectDocumentationHtml({
@@ -2912,10 +4112,30 @@ export function createAppServer(
           title: `${project.name} - Projektdokumentation`,
           html,
           project: {
+            confluenceBaseUrl: project.confluenceBaseUrl,
+            confluenceUsername: project.confluenceUsername,
+            confluenceApiToken: project.confluenceApiToken,
             confluenceSpaceKey: project.confluenceSpaceKey,
             confluenceParentPageId: project.confluenceParentPageId,
             confluencePageTitlePrefix: project.confluencePageTitlePrefix
-          }
+          },
+          childPages: setupDocument ? [
+            {
+              key: "connectors",
+              title: "Connectoren",
+              html: buildConnectorDocumentationHtml({ project, setupDocument })
+            },
+            {
+              key: "schedulers",
+              title: "Scheduler",
+              html: buildSchedulerDocumentationHtml({ project, setupDocument })
+            },
+            ...getSortedScheduleEntries(setupDocument.schedules || []).map(({ schedule, index }) => ({
+              key: getSchedulerDocumentationKey(schedule, index),
+              title: getSchedulerDocumentationTitle(schedule, index),
+              html: buildSingleSchedulerDocumentationHtml({ project, schedule, index })
+            }))
+          ] : []
         });
         await appendAuditHistory({ actor: auditActor, action: publishResult.published ? `documentation.publish.${publishResult.mode}` : "documentation.publish.dry-run", entityType: "project-documentation", entityId: projectId, entityName: project.name });
         sendJson(200, { ok: true, projectId, publishResult, html });
@@ -2924,6 +4144,10 @@ export function createAppServer(
 
       if (adminProjectDeployCompareMatch && req.method === "POST") {
         const projectId = decodeURIComponent(adminProjectDeployCompareMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
         const body = (await readJsonBody(req)) as { direction?: DeploymentCompareDirection };
         const direction: DeploymentCompareDirection = body.direction === "production-to-test" ? "production-to-test" : "test-to-production";
         const now = new Date().toISOString();
@@ -3065,6 +4289,10 @@ export function createAppServer(
       if (adminProjectDeployCompareByIdMatch && req.method === "GET") {
         const projectId = decodeURIComponent(adminProjectDeployCompareByIdMatch[1]);
         const compareRunId = decodeURIComponent(adminProjectDeployCompareByIdMatch[2]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "read")) {
+          sendJson(403, { error: "Projekt-Lesezugriff fehlt" });
+          return;
+        }
         const compareRun = readJsonArrayFile<DeploymentCompareRunRecord>(LOCAL_DEPLOYMENT_COMPARE_RUNS_FILE)
           .find((item) => item.id === compareRunId && item.projectId === projectId);
         if (!compareRun) {
@@ -3077,6 +4305,10 @@ export function createAppServer(
 
       if (adminProjectDeployPrecheckMatch && req.method === "POST") {
         const projectId = decodeURIComponent(adminProjectDeployPrecheckMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
         const body = (await readJsonBody(req)) as { targetEnv?: "test" | "production"; agentId?: string };
         const targetEnv = body.targetEnv === "test" ? "test" : "production";
         const now = new Date().toISOString();
@@ -3206,6 +4438,10 @@ export function createAppServer(
       if (adminProjectDeployPrecheckByIdMatch && req.method === "GET") {
         const projectId = decodeURIComponent(adminProjectDeployPrecheckByIdMatch[1]);
         const precheckRunId = decodeURIComponent(adminProjectDeployPrecheckByIdMatch[2]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "read")) {
+          sendJson(403, { error: "Projekt-Lesezugriff fehlt" });
+          return;
+        }
         const precheckRun = readJsonArrayFile<DeploymentPrecheckRunRecord>(LOCAL_DEPLOYMENT_PRECHECKS_FILE)
           .find((item) => item.id === precheckRunId && item.projectId === projectId);
         if (!precheckRun) {
@@ -3218,6 +4454,10 @@ export function createAppServer(
 
       if (adminProjectDeployStartMatch && req.method === "POST") {
         const projectId = decodeURIComponent(adminProjectDeployStartMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
         const compareRuns = readJsonArrayFile<DeploymentCompareRunRecord>(LOCAL_DEPLOYMENT_COMPARE_RUNS_FILE)
           .filter((item) => item.projectId === projectId)
           .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || ""), "de"));
@@ -3581,13 +4821,17 @@ export function createAppServer(
         }
 
         const connectors = await adminDataService.listConnectors(instanceId);
+        const metadataContext = await adminDataService.getInstanceMetadataContext(instanceId);
+        const sage100DocumentationContext = adminDataService.getSage100DocumentationContext(userPrompt);
         const aiService = new AISchedulerService();
         const result = await aiService.generateScheduler({
           userPrompt,
           connectorId: body.connectorId,
           targetSystem: body.targetSystem,
           objectName: body.objectName,
-          existingConnectors: connectors
+          existingConnectors: connectors,
+          metadataContext,
+          sage100DocumentationContext
         });
 
         sendJson(200, result);
@@ -3633,49 +4877,6 @@ export function createAppServer(
           entityName: body.scheduleName,
           status: analysis.severity === "critical" ? "error" : "success",
           message: `${analysis.errorCategory}: ${analysis.rootCause.substring(0, 100)}`
-        });
-
-        sendJson(200, analysis);
-        return;
-      }
-
-      if (req.method === "POST" && requestUrl.pathname === "/api/ai/analyze-migration-source") {
-        const body = (await readJsonBody(req)) as {
-          sourceName?: string;
-          sourceType?: string;
-          targetObject?: "Account" | "Contact" | "Lead" | "Opportunity" | "Order" | "Product2" | "PricebookEntry";
-          sampleData?: Record<string, unknown>[];
-          fieldDefinitions?: Array<{ name: string; type: string; nullable?: boolean; sampleValues?: unknown[] }>;
-          estimatedRecords?: number;
-          description?: string;
-        };
-
-        if (!body.sourceName) {
-          sendJson(400, { error: "sourceName ist erforderlich" });
-          return;
-        }
-
-        const migrationAnalyzer = new AIMigrationAnalyzer();
-        const allowedTargetObjects = new Set(["Account", "Contact", "Lead", "Opportunity", "Order", "Product2", "PricebookEntry"]);
-        const requestedTargetObject = String(body.targetObject || "").trim();
-        const analysis = await migrationAnalyzer.analyzeMigrationSource({
-          sourceName: body.sourceName,
-          sourceType: (body.sourceType as MigrationSourceData["sourceType"]) || "OTHER",
-          targetObject: (allowedTargetObjects.has(requestedTargetObject) ? requestedTargetObject : "Contact") as MigrationSourceData["targetObject"],
-          sampleData: body.sampleData,
-          fieldDefinitions: body.fieldDefinitions,
-          estimatedRecords: body.estimatedRecords,
-          description: body.description
-        });
-
-        // Audit-Log für Migrations-Analyse (sensitive!)
-        await appendAuditHistory({
-          action: "AI_MIGRATION_ANALYSIS",
-          entityType: "migration",
-          entityId: body.sourceName,
-          entityName: `Analysis: ${body.sourceName}`,
-          status: analysis.sensitiveFields.length > 0 ? "success" : "success",
-          message: `${analysis.totalFields} Felder, ${analysis.sensitiveFields.length} sensitiv, Qualität: ${Math.round(analysis.dataQualityScore * 100)}%`
         });
 
         sendJson(200, analysis);
@@ -3850,7 +5051,7 @@ export function createAppServer(
 
       if (runFailedRecordsMatch) {
         const runId = decodeURIComponent(runFailedRecordsMatch[1]);
-        const failedRecords = adminDataService.getRunFailedRecords(runId);
+        const failedRecords = await adminDataService.getRunFailedRecords(runId, instanceId);
         sendJson(200, failedRecords);
         return;
       }
@@ -4094,29 +5295,6 @@ export function createAppServer(
           return hasProjectAccess(session, projectId, "read");
         });
         sendJson(200, { items });
-        return;
-      }
-
-      const migrationInstanceIdMatch = requestUrl.pathname.match(/^\/api\/migration-instances\/([^/]+)$/);
-      const migrationInstanceConnectMatch = requestUrl.pathname.match(/^\/api\/migration-instances\/([^/]+)\/connect$/);
-
-      if (req.method === "GET" && requestUrl.pathname === "/api/migration-instances") {
-        sendJson(410, { error: "Migration-Instanzen werden nicht mehr separat verwaltet. Migrationen sind projektgebunden." });
-        return;
-      }
-
-      if (req.method === "POST" && requestUrl.pathname === "/api/migration-instances") {
-        sendJson(410, { error: "Migration-Instanzen werden nicht mehr separat verwaltet. Migrationen sind projektgebunden." });
-        return;
-      }
-
-      if (migrationInstanceConnectMatch && req.method === "POST") {
-        sendJson(410, { error: "Migration-Instanzen werden nicht mehr separat verwaltet. Migrationen sind projektgebunden." });
-        return;
-      }
-
-      if (migrationInstanceIdMatch && req.method === "GET") {
-        sendJson(410, { error: "Migration-Instanzen werden nicht mehr separat verwaltet. Migrationen sind projektgebunden." });
         return;
       }
 
