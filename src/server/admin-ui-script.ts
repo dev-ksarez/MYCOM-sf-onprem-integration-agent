@@ -12463,7 +12463,7 @@ export function renderAdminUiScript(): string {
         let confluenceParentPageId = String(document.getElementById('prj-confluence-parent-page-id').value || '').trim();
         // If user pasted a full Confluence page URL, try to extract the numeric page ID
         try {
-          const urlMatch = confluenceParentPageId.match(/(?:pages\/|pageId=)([0-9]+)/i);
+          const urlMatch = confluenceParentPageId.match(/(?:pages\\/|pageId=)([0-9]+)/i);
           if (urlMatch && urlMatch[1]) {
             confluenceParentPageId = urlMatch[1];
           }
