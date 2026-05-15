@@ -460,6 +460,29 @@
   padding: 0.25rem 0.45rem;
   font-size: .78rem;
 }
+
+/* Make project panel buttons more neutral and easier to read */
+.project-operation-toolbar .btn,
+.project-panel-actions .btn {
+  color: #374151 !important; /* neutral slate */
+  background-color: transparent !important;
+  border-color: rgba(55,65,81,0.08) !important;
+}
+.project-operation-toolbar .btn:hover,
+.project-panel-actions .btn:hover {
+  background-color: rgba(55,65,81,0.04) !important;
+  color: #111 !important;
+  border-color: rgba(55,65,81,0.12) !important;
+}
+.project-panel-actions .btn {
+  padding: 0.32rem 0.55rem;
+}
+
+/* Reduce prominence of badges within project panels */
+.project-panel .badge {
+  background-color: rgba(0,0,0,0.06) !important;
+  color: #374151 !important;
+}
 .glyphicon-certificate:before {
   content: "\e124";
 }
