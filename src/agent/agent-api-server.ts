@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import http from "node:http";
 import { triggerDashboardUpdate, getDashboardUpdateStatus } from "../server/dashboard-update-service";
 import { buildSystemHealthSnapshot, HealthSnapshot } from "../server/health-snapshot";
@@ -5,6 +6,26 @@ import { readConfiguredSalesforceInstances, writeConfiguredSalesforceInstances, 
 
 function getAgentApiToken(): string {
   return String(process.env.AGENT_API_TOKEN || "").trim();
+}
+
+class HttpError extends Error {
+  public constructor(public readonly statusCode: number, message: string) {
+    super(message);
+  }
+}
+
+function getAgentJsonBodyLimitBytes(): number {
+  const configured = Number(process.env.AGENT_API_JSON_BODY_LIMIT_BYTES || "");
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 512 * 1024;
+}
+
+function constantTimeEquals(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(String(left || ""), "utf8");
+  const rightBuffer = Buffer.from(String(right || ""), "utf8");
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function isAuthorized(req: http.IncomingMessage): boolean {
@@ -15,7 +36,7 @@ function isAuthorized(req: http.IncomingMessage): boolean {
 
   const authorization = Array.isArray(req.headers.authorization) ? req.headers.authorization[0] : req.headers.authorization;
   const token = String(authorization || "").replace(/^Bearer\s+/i, "").trim();
-  return token === configuredToken;
+  return constantTimeEquals(token, configuredToken);
 }
 
 export function isAgentApiEnabled(): boolean {
@@ -24,9 +45,21 @@ export function isAgentApiEnabled(): boolean {
 }
 
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+  const contentType = String(req.headers["content-type"] || "").toLowerCase();
+  if (contentType && !contentType.includes("application/json")) {
+    throw new HttpError(415, "Content-Type muss application/json sein.");
+  }
+
+  const limitBytes = getAgentJsonBodyLimitBytes();
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > limitBytes) {
+      throw new HttpError(413, "Request Body ist zu gross.");
+    }
+    chunks.push(buffer);
   }
 
   if (chunks.length === 0) {
@@ -34,7 +67,11 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   }
 
   const raw = Buffer.concat(chunks).toString("utf8").trim();
-  return raw ? (JSON.parse(raw) as unknown) : {};
+  try {
+    return raw ? (JSON.parse(raw) as unknown) : {};
+  } catch {
+    throw new HttpError(400, "JSON Body ist ungueltig.");
+  }
 }
 
 function normalizeAgentInstancesPayload(input: unknown): SalesforceInstanceEnvConfig[] {
@@ -142,7 +179,8 @@ export function createAgentApiServer(getHealthSnapshot: () => HealthSnapshot): h
 
       sendJson(404, { error: "Not Found" });
     })().catch((error) => {
-      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+      const statusCode = error instanceof HttpError ? error.statusCode : 500;
+      res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown server error" }));
     });
   });
