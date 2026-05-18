@@ -36,7 +36,15 @@ function extractDuplicateErrorEntries(error: unknown): Array<Record<string, unkn
 }
 
 function canRetryDuplicateWithAllowSave(error: unknown): boolean {
-  return extractDuplicateErrorEntries(error).some((entry) => {
+  return canRetryDuplicateErrorEntriesWithAllowSave(extractDuplicateErrorEntries(error));
+}
+
+function canRetryDuplicateErrorEntriesWithAllowSave(entries: unknown): boolean {
+  const normalizedEntries = Array.isArray(entries)
+    ? entries.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+    : [];
+
+  return normalizedEntries.some((entry) => {
     const errorCode = String(entry.errorCode || "").trim().toUpperCase();
     const duplicateResult = entry.duplicateResult;
     const allowSave = duplicateResult && typeof duplicateResult === "object"
@@ -321,6 +329,13 @@ export interface UpdateRunInput {
   errorMessage?: string;
 }
 
+export interface SalesforceBulkWriteResult {
+  success: boolean;
+  id?: string;
+  message?: string;
+  errors?: unknown[];
+}
+
 export interface SalesforcePicklistValue {
   value: string;
   label: string;
@@ -508,6 +523,28 @@ function buildSalesforceRecordPayload(values: Record<string, unknown>): Record<s
   }
 
   return payload;
+}
+
+function formatSaveResultErrors(errors: unknown): string {
+  if (Array.isArray(errors) && errors.length) {
+    return errors
+      .map((error) => {
+        if (!error || typeof error !== "object") {
+          return String(error);
+        }
+        const entry = error as { message?: unknown; errorCode?: unknown; fields?: unknown };
+        const code = String(entry.errorCode || "").trim();
+        const message = String(entry.message || "").trim();
+        const fields = Array.isArray(entry.fields) && entry.fields.length
+          ? ` [${entry.fields.join(", ")}]`
+          : "";
+        return [code, message].filter(Boolean).join(": ") + fields;
+      })
+      .filter(Boolean)
+      .join(" | ");
+  }
+
+  return "unknown Salesforce save error";
 }
 
 export class SalesforceClient {
@@ -2265,6 +2302,45 @@ export class SalesforceClient {
     return result.id;
   }
 
+  public async createGenericRecords(
+    objectApiName: string,
+    valuesList: Record<string, unknown>[]
+  ): Promise<SalesforceBulkWriteResult[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const apiName = objectApiName.trim();
+    if (!apiName) {
+      throw new Error("objectApiName must not be empty");
+    }
+
+    const payloads = valuesList.map((values) => buildSalesforceRecordPayload(values));
+    const results: SalesforceBulkWriteResult[] = [];
+    const chunkSize = 200;
+
+    for (let index = 0; index < payloads.length; index += chunkSize) {
+      const chunk = payloads.slice(index, index + chunkSize);
+      const rawResults = await this.connection.sobject(apiName).create(chunk, { allOrNone: false });
+      const saveResults = Array.isArray(rawResults) ? rawResults : [rawResults];
+
+      saveResults.forEach((result) => {
+        if (result.success) {
+          results.push({ success: true, id: result.id });
+          return;
+        }
+
+        results.push({
+          success: false,
+          message: `Failed to create ${apiName} - ${formatSaveResultErrors(result.errors)}`,
+          errors: result.errors
+        });
+      });
+    }
+
+    return results;
+  }
+
   public async updateGenericRecord(
     objectApiName: string,
     values: Record<string, unknown>
@@ -2292,6 +2368,125 @@ export class SalesforceClient {
     }
 
     return idValue.trim();
+  }
+
+  public async updateGenericRecordsDetailed(
+    objectApiName: string,
+    valuesList: Record<string, unknown>[]
+  ): Promise<SalesforceBulkWriteResult[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const apiName = objectApiName.trim();
+    if (!apiName) {
+      throw new Error("objectApiName must not be empty");
+    }
+
+    const payloads = valuesList.map((values) => {
+      const idValue = values["Id"];
+      if (!idValue || typeof idValue !== "string" || !idValue.trim()) {
+        throw new Error(`Update requires 'Id' field in mapped values for object ${apiName}`);
+      }
+      return buildSalesforceRecordPayload(values) as { Id: string } & Record<string, unknown>;
+    });
+
+    const results: SalesforceBulkWriteResult[] = [];
+    const chunkSize = 200;
+    for (let index = 0; index < payloads.length; index += chunkSize) {
+      const chunk = payloads.slice(index, index + chunkSize);
+      const rawResults = await this.connection.sobject(apiName).update(chunk, { allOrNone: false });
+      const saveResults = Array.isArray(rawResults) ? rawResults : [rawResults];
+
+      saveResults.forEach((result, resultIndex) => {
+        if (result.success) {
+          results.push({ success: true, id: chunk[resultIndex]?.Id });
+          return;
+        }
+
+        results.push({
+          success: false,
+          message: `Failed to update ${apiName} Id=${chunk[resultIndex]?.Id || "unknown"} - ${formatSaveResultErrors(result.errors)}`,
+          errors: result.errors
+        });
+      });
+    }
+
+    return results;
+  }
+
+  public async upsertGenericRecords(
+    input: {
+      objectApiName: string;
+      externalIdField: string;
+      valuesList: Record<string, unknown>[];
+    }
+  ): Promise<SalesforceBulkWriteResult[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const objectApiName = input.objectApiName.trim();
+    const externalIdField = input.externalIdField.trim();
+    if (!objectApiName) {
+      throw new Error("objectApiName must not be empty");
+    }
+    if (!externalIdField) {
+      throw new Error("externalIdField must not be empty");
+    }
+
+    const payloads = input.valuesList.map((values) => {
+      const externalIdValue = values[externalIdField];
+      if (externalIdValue === undefined || externalIdValue === null || externalIdValue === "") {
+        throw new Error(`Missing external id value for field ${externalIdField}`);
+      }
+      return buildSalesforceRecordPayload(values);
+    });
+
+    const results: SalesforceBulkWriteResult[] = [];
+    const chunkSize = 200;
+    for (let index = 0; index < payloads.length; index += chunkSize) {
+      const chunk = payloads.slice(index, index + chunkSize);
+      const sourceValuesChunk = input.valuesList.slice(index, index + chunkSize);
+      const rawResults = await this.connection.sobject(objectApiName).upsert(chunk, externalIdField, { allOrNone: false });
+      const saveResults = Array.isArray(rawResults) ? rawResults : [rawResults];
+
+      for (let resultIndex = 0; resultIndex < saveResults.length; resultIndex += 1) {
+        const result = saveResults[resultIndex];
+        if (result.success) {
+          results.push({ success: true, id: result.id });
+          continue;
+        }
+
+        if (canRetryDuplicateErrorEntriesWithAllowSave(result.errors)) {
+          try {
+            const id = await this.saveRecordAllowingDuplicates(
+              objectApiName,
+              chunk[resultIndex],
+              externalIdField,
+              sourceValuesChunk[resultIndex]?.[externalIdField]
+            );
+            results.push({ success: true, id });
+            continue;
+          } catch (error) {
+            results.push({
+              success: false,
+              message: error instanceof Error ? error.message : String(error),
+              errors: result.errors
+            });
+            continue;
+          }
+        }
+
+        results.push({
+          success: false,
+          message: `Failed to upsert ${objectApiName} via external id ${externalIdField}=${String(sourceValuesChunk[resultIndex]?.[externalIdField])} - ${formatSaveResultErrors(result.errors)}`,
+          errors: result.errors
+        });
+      }
+    }
+
+    return results;
   }
 
   public async updateGenericRecords(

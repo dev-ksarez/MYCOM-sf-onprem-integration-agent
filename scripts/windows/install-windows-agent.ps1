@@ -344,7 +344,7 @@ function Ensure-LocalAdminBootstrap {
         displayName = "Lokaler Admin"
         roles = @("admin")
         permissions = @("admin", "read", "write", "delete")
-        modules = @("migration")
+        modules = @("migration", "projects", "deployment")
       }
     ) | ConvertTo-Json -Depth 5
     Set-Content -Path $adminUsersFilePath -Value $bootstrapUsers -Encoding UTF8

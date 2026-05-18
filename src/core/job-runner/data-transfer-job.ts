@@ -98,6 +98,11 @@ export class DataTransferJob {
     );
 
     const sourceRecords = await this.sourceAdapter.readRecords(context);
+    await context.onProgress?.({
+      phase: "source-read",
+      processedRecords: 0,
+      totalRecords: sourceRecords.length
+    });
 
     this.logger.info(
       {
@@ -200,6 +205,13 @@ export class DataTransferJob {
 
       const batchResults = await this.targetAdapter.writeRecords(mappedChunk, context);
       results.push(...batchResults);
+      await context.onProgress?.({
+        phase: "batch-written",
+        processedRecords: Math.min(index + sourceChunk.length, sourceRecords.length),
+        totalRecords: sourceRecords.length,
+        batchStart: index,
+        batchSize: sourceChunk.length
+      });
 
       for (let batchIndex = 0; batchIndex < batchResults.length; batchIndex++) {
         const result = batchResults[batchIndex];

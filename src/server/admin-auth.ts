@@ -221,6 +221,18 @@ function writeUsersFile(users: AdminUserRecord[], filePath = getAdminUsersFilePa
   fs.writeFileSync(filePath, JSON.stringify(users, null, 2), "utf8");
 }
 
+function createBootstrapAdminUser(): AdminUserRecord {
+  return {
+    id: "local-admin",
+    username: "admin",
+    password: "admin123!",
+    displayName: "Lokaler Admin",
+    roles: ["admin"],
+    permissions: ["admin", "read", "write", "delete"],
+    modules: ["migration", "projects", "deployment"]
+  };
+}
+
 function loadUsersFromConfig(): AdminUserRecord[] {
   const usersFromDefaultFile = readUsersFile();
   if (usersFromDefaultFile.length) {
@@ -248,7 +260,9 @@ function loadUsersFromConfig(): AdminUserRecord[] {
   const username = String(process.env.ADMIN_UI_USERNAME || "").trim();
   const password = String(process.env.ADMIN_UI_PASSWORD || "");
   if (!username || !password) {
-    return [];
+    const bootstrapUser = createBootstrapAdminUser();
+    writeUsersFile([bootstrapUser]);
+    return [bootstrapUser];
   }
 
   return [{

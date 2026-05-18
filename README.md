@@ -166,7 +166,7 @@ Beispiel fuer `ADMIN_UI_USERS_JSON`:
     "username": "admin@example.com",
     "password": "starkes-passwort",
     "roles": ["admin"],
-    "modules": ["migration"]
+    "modules": ["migration", "projects", "deployment"]
   },
   {
     "id": "ops-viewer",

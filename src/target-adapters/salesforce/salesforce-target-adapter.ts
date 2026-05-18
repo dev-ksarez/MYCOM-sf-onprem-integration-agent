@@ -1,5 +1,10 @@
 
-import { ConnectorConfig, SalesforceClient, type SalesforceObjectFieldMetadata } from "../../clients/salesforce/salesforce-client";
+import {
+  ConnectorConfig,
+  SalesforceClient,
+  type SalesforceBulkWriteResult,
+  type SalesforceObjectFieldMetadata
+} from "../../clients/salesforce/salesforce-client";
 import {
   isImportProfileSchedulerRuleDue,
   type SchedulerDay
@@ -754,6 +759,137 @@ export class SalesforceTargetAdapter implements TargetAdapter {
     return filtered;
   }
 
+  private async writeGenericObjectRecords(
+    records: GenericRecord[],
+    target: SalesforceObjectTargetDefinition
+  ): Promise<ConnectorResult[]> {
+    const results: Array<ConnectorResult | undefined> = new Array(records.length);
+    const preparedRecords: Array<{ originalIndex: number; externalKey: string; valuesToWrite: Record<string, unknown> }> = [];
+
+    for (let index = 0; index < records.length; index += 1) {
+      const record = records[index];
+      try {
+        const normalizedValues = await this.normalizePicklistValues(normalizeRecordValues(record.values));
+        const valuesWithTargetDefaults =
+          target.objectApiName === "PricebookEntry" && target.pricebook2Id && normalizedValues.Pricebook2Id === undefined
+            ? { ...normalizedValues, Pricebook2Id: target.pricebook2Id }
+            : normalizedValues;
+        const valuesToWrite = await this.filterWritableTargetFields(
+          target.objectApiName,
+          target.operation,
+          target.externalIdField,
+          valuesWithTargetDefaults
+        );
+        const externalKeyValue = valuesToWrite[target.externalIdField];
+        const externalKey =
+          typeof externalKeyValue === "string" ? externalKeyValue : String(externalKeyValue ?? "UNKNOWN");
+
+        if (target.operation !== "insert" && (externalKeyValue === undefined || externalKeyValue === null || externalKeyValue === "")) {
+          throw new Error(`Mapped record is missing required external id field: ${target.externalIdField}`);
+        }
+        if (target.operation === "update" && !String(valuesToWrite.Id || "").trim()) {
+          throw new Error(`Update requires 'Id' field in mapped values for object ${target.objectApiName}`);
+        }
+
+        validateRequiredRelationshipLookups(target.objectApiName, valuesToWrite);
+        preparedRecords.push({ originalIndex: index, externalKey, valuesToWrite });
+      } catch (error) {
+        const message = formatUnknownError(error);
+        const isDuplicateError = isDuplicateSalesforceError(message);
+        const isExternalIdConfigError = isExternalIdConfigurationError(message);
+        results[index] = {
+          externalKey: "UNKNOWN",
+          success: false,
+          statusCode: isDuplicateError
+            ? "DUPLICATE_ERROR"
+            : isExternalIdConfigError
+              ? "CONFIGURATION_ERROR"
+              : "TECHNICAL_ERROR",
+          message,
+          retryable: !(isDuplicateError || isExternalIdConfigError)
+        };
+      }
+    }
+
+    if (!preparedRecords.length) {
+      return results.filter((result): result is ConnectorResult => Boolean(result));
+    }
+
+    const statusLabel =
+      target.operation === "insert" ? "INSERT_OK" : target.operation === "update" ? "UPDATE_OK" : "UPSERT_OK";
+
+    let bulkResults: SalesforceBulkWriteResult[];
+    try {
+      if (target.operation === "insert") {
+        bulkResults = await this.salesforceClient.createGenericRecords(
+          target.objectApiName,
+          preparedRecords.map((entry) => entry.valuesToWrite)
+        );
+      } else if (target.operation === "update") {
+        bulkResults = await this.salesforceClient.updateGenericRecordsDetailed(
+          target.objectApiName,
+          preparedRecords.map((entry) => entry.valuesToWrite)
+        );
+      } else {
+        bulkResults = await this.salesforceClient.upsertGenericRecords({
+          objectApiName: target.objectApiName,
+          externalIdField: target.externalIdField,
+          valuesList: preparedRecords.map((entry) => entry.valuesToWrite)
+        });
+      }
+    } catch (error) {
+      const message = formatUnknownError(error);
+      return records.map((_record, index) => {
+        const prepared = preparedRecords.find((entry) => entry.originalIndex === index);
+        return results[index] || {
+          externalKey: prepared?.externalKey || "UNKNOWN",
+          success: false,
+          statusCode: "TECHNICAL_ERROR",
+          message,
+          retryable: true
+        };
+      });
+    }
+
+    preparedRecords.forEach((entry, preparedIndex) => {
+      const result = bulkResults[preparedIndex];
+      if (result?.success) {
+        results[entry.originalIndex] = {
+          externalKey: entry.externalKey,
+          success: true,
+          targetId: result.id,
+          statusCode: statusLabel,
+          message: `Salesforce record ${target.operation}ed in bulk`,
+          retryable: false
+        };
+        return;
+      }
+
+      const message = result?.message || "Salesforce bulk write failed";
+      const isDuplicateError = isDuplicateSalesforceError(message);
+      const isExternalIdConfigError = isExternalIdConfigurationError(message);
+      results[entry.originalIndex] = {
+        externalKey: entry.externalKey,
+        success: false,
+        statusCode: isDuplicateError
+          ? "DUPLICATE_ERROR"
+          : isExternalIdConfigError
+            ? "CONFIGURATION_ERROR"
+            : "TECHNICAL_ERROR",
+        message,
+        retryable: !(isDuplicateError || isExternalIdConfigError)
+      };
+    });
+
+    return results.map((result) => result || {
+      externalKey: "UNKNOWN",
+      success: false,
+      statusCode: "TECHNICAL_ERROR",
+      message: "Salesforce bulk write returned no result for record",
+      retryable: true
+    });
+  }
+
   public async writeRecords(
     records: GenericRecord[],
     context: TransferContext
@@ -770,6 +906,12 @@ export class SalesforceTargetAdapter implements TargetAdapter {
 
     if (shouldUsePricebookCompositeKey && target.operation === "upsert") {
       return this.writePricebookEntryRecords(records, context, target, preparedPricebookEntryLookup);
+    }
+
+    const shouldUseProductCodeLookupForProduct2 =
+      target.objectApiName === "Product2" && target.externalIdField === "ProductCode";
+    if (mode === "object" && !shouldUseProductCodeLookupForProduct2) {
+      return this.writeGenericObjectRecords(records, target);
     }
 
     for (const record of records) {

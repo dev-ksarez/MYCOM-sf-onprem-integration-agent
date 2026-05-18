@@ -850,6 +850,26 @@ async function executeSchedule(
     agentId,
     startedAt: new Date().toISOString()
   });
+  let lastProgressLogAt = 0;
+  const writeTransferProgressLog: TransferContext["onProgress"] = async (progress) => {
+    const now = Date.now();
+    const isSourceRead = progress.phase === "source-read";
+    const isComplete = progress.totalRecords !== undefined && progress.processedRecords >= progress.totalRecords;
+    if (!isSourceRead && !isComplete && now - lastProgressLogAt < 60_000) {
+      return;
+    }
+
+    lastProgressLogAt = now;
+    await salesforceClient.createLog({
+      runId,
+      level: "INFO",
+      step: progress.phase === "source-read" ? "SOURCE_READ" : "BATCH_PROGRESS",
+      message: progress.phase === "source-read"
+        ? `Source records loaded: records=${progress.totalRecords ?? 0}`
+        : `Batch progress: records=${progress.processedRecords}/${progress.totalRecords ?? "?"}, batchSize=${progress.batchSize ?? 0}`,
+      correlationId: context.correlationId
+    });
+  };
 
   logger.info(
     {
@@ -903,7 +923,8 @@ async function executeSchedule(
         checkpoint: {
           value: lastCheckpoint,
           recordId: lastRecordId
-        }
+        },
+        onProgress: writeTransferProgressLog
       };
 
       const sourceAdapter = new SalesforceSoqlSourceAdapter(salesforceClient, schedule.sourceDefinition);
@@ -958,7 +979,8 @@ async function executeSchedule(
         checkpoint: {
           value: lastCheckpoint,
           recordId: lastRecordId
-        }
+        },
+        onProgress: writeTransferProgressLog
       };
 
       const sourceAdapter = isFileSource

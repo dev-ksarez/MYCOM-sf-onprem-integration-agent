@@ -3564,9 +3564,7 @@ export class AdminDataService {
     const metadataById = new Map(readConfiguredInstancesWithMetadata().map((item) => [item.id, item]));
     const instanceMeta = metadataById.get(resolved.id);
 
-    const role: "test" | "production" = instanceMeta?.role === "production"
-      ? "production"
-      : (resolved.id === "default" ? "production" : "test");
+    const role: "test" | "production" = instanceMeta?.role === "production" ? "production" : "test";
     if (role !== "production") {
       return;
     }
