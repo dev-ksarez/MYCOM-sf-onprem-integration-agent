@@ -151,6 +151,6 @@ Bei Salesforce-relevanten Aenderungen immer die betroffenen Objekte, Felder und 
 ## Bekannte Restarbeiten
 
 - `src/server/app.ts`, `src/server/admin-data-service.ts` und `src/server/admin-ui-script.ts` sind weiterhin zu gross. Neue Arbeit sollte sie verkleinern, nicht vergroessern.
-- `sqlite3` haengt aktuell an Advisory-Ketten ueber `node-gyp`/`tar`. Ein Upgrade auf `sqlite3@6` oder ein Wechsel auf `better-sqlite3` muss separat getestet werden.
+- Production-Dependencies sollten mit `npm audit --omit=dev` sauber bleiben. Neue Dependencies muessen vor dem Merge gegen Audit und Build geprueft werden.
 - MSSQL- und Datei-Quellen liefern aktuell noch Arrays. Die Streaming-Schnittstelle ist vorbereitet; weitere Adapter sollten sukzessive umgestellt werden.
 - Mapping-Lookup-Preload puffert bei Lookup-Jobs weiterhin alle Source Records. Fuer sehr grosse Lookup-Jobs braucht es eine cache- oder window-basierte Strategie.
