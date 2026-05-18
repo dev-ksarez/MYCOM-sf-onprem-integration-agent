@@ -43,7 +43,7 @@ import {
 import { IntegrationSchedule } from "../types/integration-schedule";
 import { FileScheduleType, isFileScheduleType, normalizeScheduleType } from "../types/file-schedule-type";
 import { runScheduleNow } from "../agent/agent-runner";
-import { analyzeUploadedFile, decodeTextBuffer, parseDelimitedRows, parseFileFromConnector } from "../utils/file-transfer";
+import { analyzeUploadedFile, decodeTextBuffer, parseDelimitedRows, parseExcelBuffer, parseFileFromConnector } from "../utils/file-transfer";
 import { parseQuerySourceDefinition } from "../utils/query-source-definition";
 import { fetchRestRows, testRestConnection } from "../source-adapters/rest/rest-api-source-adapter";
 
@@ -6103,7 +6103,7 @@ export class AdminDataService {
     }
 
     const fileBuffer = Buffer.from(contentBase64, "base64");
-    const analysis = analyzeUploadedFile(fileName, fileBuffer);
+    const analysis = await analyzeUploadedFile(fileName, fileBuffer);
     const sourceType: FileScheduleType =
       analysis.format === "excel" ? "FILE_EXCEL" : analysis.format === "json" ? "FILE_JSON" : "FILE_CSV";
 
@@ -6159,7 +6159,7 @@ export class AdminDataService {
     }
 
     const fileBuffer = Buffer.from(contentBase64, "base64");
-    const parsed = this.analyzeFileBuffer(fileName, fileBuffer);
+    const parsed = await this.analyzeFileBuffer(fileName, fileBuffer);
     const objects = await this.listSalesforceObjects(instanceId);
     const fileTokens = this.tokenizeSuggestionValue(path.basename(fileName).replace(/\.[^.]+$/, ""));
     const preferredObjectNames = new Set([
@@ -6198,9 +6198,10 @@ export class AdminDataService {
     }));
 
     const sheetAnalyses = parsed.format === "excel" && Array.isArray(parsed.availableSheetNames) && parsed.availableSheetNames.length
-      ? parsed.availableSheetNames.map((sheetName) => {
-          const fields = this.parseMigrationSourceBuffer(fileName, fileBuffer, { sheetName }).fields;
-          const recordCount = this.parseMigrationSourceBuffer(fileName, fileBuffer, { sheetName }).recordCount;
+      ? await Promise.all(parsed.availableSheetNames.map(async (sheetName) => {
+          const sheetParsed = await this.parseMigrationSourceBuffer(fileName, fileBuffer, { sheetName });
+          const fields = sheetParsed.fields;
+          const recordCount = sheetParsed.recordCount;
           return {
             sheetName,
             headers: fields,
@@ -6212,7 +6213,7 @@ export class AdminDataService {
               describedFieldsByObject
             )
           } satisfies MigrationImportSheetAnalysis;
-        })
+        }))
       : [];
     const primarySheetAnalysis = sheetAnalyses[0];
     const suggestions = primarySheetAnalysis
@@ -7931,11 +7932,11 @@ export class AdminDataService {
     return Array.from(distinctValues).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
   }
 
-  public analyzeFileBuffer(
+  public async analyzeFileBuffer(
     fileName: string,
     fileBuffer: Buffer,
     options?: { charset?: string; delimiter?: string; textQualifier?: string; sheetName?: string }
-  ): {
+  ): Promise<{
     format: "csv" | "excel" | "json";
     charset: string;
     delimiter: string;
@@ -7945,8 +7946,8 @@ export class AdminDataService {
     recordCount: number;
     sheetName?: string;
     availableSheetNames?: string[];
-  } {
-    const parsed = this.parseMigrationSourceBuffer(fileName, fileBuffer, options);
+  }> {
+    const parsed = await this.parseMigrationSourceBuffer(fileName, fileBuffer, options);
     return {
       format: parsed.format,
       charset: parsed.charset,
@@ -8002,7 +8003,7 @@ export class AdminDataService {
     const absolutePath = path.resolve(targetDir, safeFileName);
     await fs.promises.writeFile(absolutePath, fileBuffer);
 
-    const parsed = this.parseMigrationSourceBuffer(safeFileName, fileBuffer, options);
+    const parsed = await this.parseMigrationSourceBuffer(safeFileName, fileBuffer, options);
     const relativePath = path.relative(process.cwd(), absolutePath).split(path.sep).join("/");
     const stagingDatabasePath = path.relative(process.cwd(), this.migrationStaging.getFilePath()).split(path.sep).join("/");
     const importedAt = new Date().toISOString();
@@ -8111,7 +8112,7 @@ export class AdminDataService {
             : path.resolve(process.cwd(), obj.filePath);
           const fileBuffer = await fs.promises.readFile(absolutePath);
           const fileName = path.basename(absolutePath);
-          const detectedAnalysis = analyzeUploadedFile(fileName, fileBuffer);
+          const detectedAnalysis = await analyzeUploadedFile(fileName, fileBuffer);
           desiredCharset = String(detectedAnalysis.charset || desiredCharset);
           if (!String(obj.fileDelimiter || "").trim()) {
             desiredDelimiter = String(detectedAnalysis.delimiter || desiredDelimiter);
@@ -8192,7 +8193,7 @@ export class AdminDataService {
       : path.resolve(process.cwd(), obj.filePath);
     const fileBuffer = await fs.promises.readFile(absolutePath);
     const fileName = path.basename(absolutePath);
-    const analysis = this.analyzeFileBuffer(fileName, fileBuffer, {
+    const analysis = await this.analyzeFileBuffer(fileName, fileBuffer, {
       sheetName: obj.fileSheetName,
       charset: obj.fileCharset,
       delimiter: obj.fileDelimiter,
@@ -8214,11 +8215,11 @@ export class AdminDataService {
     };
   }
 
-  private parseMigrationSourceBuffer(
+  private async parseMigrationSourceBuffer(
     fileName: string,
     fileBuffer: Buffer,
     options?: { charset?: string; delimiter?: string; textQualifier?: string; sheetName?: string }
-  ): {
+  ): Promise<{
     format: "csv" | "excel" | "json";
     charset: string;
     delimiter: string;
@@ -8229,8 +8230,8 @@ export class AdminDataService {
     recordCount: number;
     sheetName?: string;
     availableSheetNames?: string[];
-  } {
-    const analysis = analyzeUploadedFile(fileName, fileBuffer);
+  }> {
+    const analysis = await analyzeUploadedFile(fileName, fileBuffer);
     const format = analysis.format;
     const charset = String(options?.charset || analysis.charset || "utf8").trim() || "utf8";
     const delimiter = String(options?.delimiter || analysis.delimiter || ';');
@@ -8246,17 +8247,8 @@ export class AdminDataService {
     let allRows: Record<string, unknown>[] = [];
     let recordCount = 0;
     if (analysis.format === 'excel') {
-      const XLSX = require('xlsx') as any;
-      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
-      if (!selectedSheetName || !workbook.Sheets[selectedSheetName]) {
-        throw new Error(`Excel-Datei enthaelt keine lesbare Mappe: ${selectedSheetName || '(leer)'}`);
-      }
-
-      const worksheetRows = XLSX.utils.sheet_to_json(workbook.Sheets[selectedSheetName], {
-        defval: '',
-        raw: false
-      }) as Record<string, unknown>[];
-      allRows = worksheetRows.map((row) => ({ ...(row || {}) }));
+      const excelPayload = await parseExcelBuffer(fileBuffer, selectedSheetName);
+      allRows = excelPayload.rows.map((row) => ({ ...(row || {}) }));
       recordCount = allRows.length;
     } else if (analysis.format === 'json') {
       let parsed: unknown;
@@ -8375,7 +8367,7 @@ export class AdminDataService {
       : path.resolve(process.cwd(), obj.filePath);
     const fileBuffer = await fs.promises.readFile(absolutePath);
     const fileName = path.basename(absolutePath);
-    const parsed = this.parseMigrationSourceBuffer(fileName, fileBuffer, {
+    const parsed = await this.parseMigrationSourceBuffer(fileName, fileBuffer, {
       charset: obj.fileCharset,
       delimiter: obj.fileDelimiter,
       textQualifier: obj.fileTextQualifier

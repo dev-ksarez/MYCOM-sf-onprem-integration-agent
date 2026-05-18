@@ -45,13 +45,13 @@
     "bootstrap": "^5.3.3",
     "chart.js": "^4.5.1",
     "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
     "footable": "^2.0.6",
     "jquery": "^3.7.1",
     "jsforce": "^3.10.14",
     "mssql": "^12.2.0",
     "pino": "^9.4.0",
     "sqlite3": "^5.1.7",
-    "xlsx": "^0.18.5",
     "zod": "^3.23.8"
   },
   "devDependencies": {
