@@ -81,6 +81,8 @@ Entwicklung mit ts-node:
 npm run dev
 ```
 
+Eine technische Einstiegskarte fuer neue Entwickler steht in [docs/source-code-guide.md](docs/source-code-guide.md).
+
 Hinweis:
 
 - `npm run dev` bzw. `npm run start` starten aus Rueckwaertskompatibilitaetsgruenden weiter den Legacy-Kombiprozess.
