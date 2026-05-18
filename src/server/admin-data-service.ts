@@ -784,6 +784,53 @@ function defaultProjectConfig(): SalesforceProjectConfig {
   };
 }
 
+function normalizeDeploymentVariant(value: unknown): "customer" | "service-provider" | undefined {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "customer" || normalized === "customer-production" || normalized === "production-monitoring") {
+    return "customer";
+  }
+  if (normalized === "service-provider" || normalized === "dienstleister" || normalized === "test-production") {
+    return "service-provider";
+  }
+  return undefined;
+}
+
+function isOperationalProductionMutation(operation?: string): boolean {
+  const normalized = String(operation || "").trim();
+  return (
+    normalized === "POST /api/schedules"
+    || normalized === "POST /api/schedules/validate-config"
+    || normalized === "POST /api/connectors"
+    || normalized === "POST /api/runs/release-stale"
+    || /^POST \/api\/schedules\/[^/]+\/(active|checkpoint|duplicate)$/.test(normalized)
+    || /^POST \/api\/runs\/[^/]+\/cancel$/.test(normalized)
+    || /^DELETE \/api\/schedules\/[^/]+$/.test(normalized)
+    || /^DELETE \/api\/connectors\/[^/]+$/.test(normalized)
+  );
+}
+
+function isCustomerProductionOperationsMode(projectId: string, instances: SalesforceInstanceEnvConfig[]): boolean {
+  const explicitVariant = normalizeDeploymentVariant(
+    process.env.AGENT_UI_DEPLOYMENT_VARIANT
+    || process.env.ADMIN_UI_DEPLOYMENT_VARIANT
+    || process.env.CUSTOMER_INSTALLATION_MODE
+  );
+  if (explicitVariant === "customer") {
+    return true;
+  }
+  if (explicitVariant === "service-provider") {
+    return false;
+  }
+
+  const normalizedProjectId = String(projectId || "default-project").trim() || "default-project";
+  const projectInstances = instances.filter((item) =>
+    String(item.projectId || "default-project").trim() === normalizedProjectId
+  );
+  const hasProduction = projectInstances.some((item) => item.role === "production");
+  const hasTest = projectInstances.some((item) => item.role !== "production");
+  return hasProduction && !hasTest;
+}
+
 function ensureProjectsSqliteColumns(db: any): void {
   try {
     const columns = new Set<string>((db.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>).map((row) => row.name));
@@ -3561,7 +3608,8 @@ export class AdminDataService {
 
   public assertInstanceWriteAllowed(instanceId?: string, operation?: string): void {
     const resolved = this.resolveRuntimeInstance(instanceId);
-    const metadataById = new Map(readConfiguredInstancesWithMetadata().map((item) => [item.id, item]));
+    const configuredInstances = readConfiguredInstancesWithMetadata();
+    const metadataById = new Map(configuredInstances.map((item) => [item.id, item]));
     const instanceMeta = metadataById.get(resolved.id);
 
     const role: "test" | "production" = instanceMeta?.role === "production" ? "production" : "test";
@@ -3575,6 +3623,13 @@ export class AdminDataService {
     const project = projectById.get(projectId) || projectById.get("default-project") || defaultProjectConfig();
 
     if (project.productionWriteProtection) {
+      if (
+        isOperationalProductionMutation(operation)
+        && isCustomerProductionOperationsMode(projectId, configuredInstances)
+      ) {
+        return;
+      }
+
       const details = operation ? ` (${operation})` : "";
       throw new Error(`Schreibzugriff blockiert: Instanz ${resolved.name} (${resolved.id}) ist als Produktion im Projekt ${project.name} mit aktivem Produktionsschutz konfiguriert${details}.`);
     }

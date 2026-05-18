@@ -11710,6 +11710,9 @@ export function renderAdminUiScript(): string {
         if (byRole) {
           return String(byRole.id || '').trim();
         }
+        if (candidates.length === 1) {
+          return String(candidates[0].id || '').trim();
+        }
         return '';
       }
 
