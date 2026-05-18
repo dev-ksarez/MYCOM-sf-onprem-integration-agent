@@ -19,6 +19,7 @@ RUN npm ci --omit=dev
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/src/css ./src/css
+COPY --from=build /app/src/public ./src/public
 COPY --from=build /app/artifacts ./artifacts
 COPY --from=build /app/scripts ./scripts
 
