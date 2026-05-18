@@ -2,6 +2,7 @@ import pino from "pino";
 import { runDueSchedulesOnce } from "../agent/agent-runner";
 import { writeAgentHealthSnapshot } from "../runtime/agent-health-store";
 import { HealthSnapshot } from "../server/health-snapshot";
+import { createSalesforceControlPlaneRuntime, SalesforceControlPlaneRuntime } from "./salesforce-control-plane";
 
 interface AgentServiceRuntimeOptions {
   logger: pino.Logger;
@@ -9,6 +10,9 @@ interface AgentServiceRuntimeOptions {
   schedulerIntervalMs: number;
   logRetentionDays: number;
   schedulerEnabled: boolean;
+  salesforceControlPlaneEnabled: boolean;
+  salesforceHealthIntervalMs: number;
+  salesforceCommandPollIntervalMs: number;
 }
 
 export interface AgentServiceRuntime {
@@ -36,6 +40,7 @@ export function createAgentServiceRuntime(options: AgentServiceRuntimeOptions): 
   let dueSchedules: number | undefined;
   let processedSchedules: number | undefined;
   let consecutiveEmptyCycles = 0;
+  let salesforceControlPlane: SalesforceControlPlaneRuntime | undefined;
 
   const getHealthSnapshot = (): HealthSnapshot => {
     const service = lastRunStatus === "error" ? "degraded" : "ok";
@@ -125,6 +130,16 @@ export function createAgentServiceRuntime(options: AgentServiceRuntimeOptions): 
   return {
     async start(): Promise<void> {
       await persistSnapshot();
+      salesforceControlPlane = createSalesforceControlPlaneRuntime({
+        logger: options.logger,
+        agentId: options.agentId,
+        getHealthSnapshot,
+        healthIntervalMs: options.salesforceHealthIntervalMs,
+        commandPollIntervalMs: options.salesforceCommandPollIntervalMs,
+        enabled: options.salesforceControlPlaneEnabled
+      });
+      salesforceControlPlane.start();
+
       if (!options.schedulerEnabled) {
         options.logger.info("Agent scheduler disabled");
         return;
@@ -137,6 +152,8 @@ export function createAgentServiceRuntime(options: AgentServiceRuntimeOptions): 
         clearTimeout(schedulerTimer);
       }
       schedulerTimer = undefined;
+      salesforceControlPlane?.stop();
+      salesforceControlPlane = undefined;
       void persistSnapshot();
     },
     getHealthSnapshot
