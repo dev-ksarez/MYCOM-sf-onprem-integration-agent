@@ -1622,6 +1622,64 @@ export class SalesforceClient {
     };
   }
 
+  public async getCheckpoints(
+    schedules: Array<{ scheduleId: string; objectName: string }>
+  ): Promise<Map<string, CheckpointData>> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedSchedules = schedules
+      .map((item) => ({
+        scheduleId: String(item.scheduleId || "").trim(),
+        objectName: String(item.objectName || "").trim()
+      }))
+      .filter((item) => item.scheduleId && item.objectName);
+    if (normalizedSchedules.length === 0) {
+      return new Map();
+    }
+
+    const expectedKeys = new Set(normalizedSchedules.map((item) => `${item.scheduleId}::${item.objectName}`));
+    const scheduleIds = Array.from(new Set(normalizedSchedules.map((item) => item.scheduleId)));
+    const checkpoints = new Map<string, CheckpointData>();
+
+    for (let index = 0; index < scheduleIds.length; index += 100) {
+      const chunk = scheduleIds.slice(index, index + 100);
+      const quotedScheduleIds = chunk.map((id) => `'${escapeSoqlLiteral(id)}'`).join(", ");
+      const soql = `
+        SELECT
+          Id,
+          Name,
+          MSD_Schedule__c,
+          MSD_ObjectName__c,
+          MSD_LastCheckpoint__c,
+          MSD_LastRecordId__c,
+          MSD_Run__c
+        FROM MSD_Checkpoint__c
+        WHERE MSD_Schedule__c IN (${quotedScheduleIds})
+        ORDER BY CreatedDate DESC
+      `;
+
+      const result = await this.connection.query<SalesforceCheckpointRecord>(soql);
+      for (const record of result.records) {
+        const key = `${record.MSD_Schedule__c || ""}::${record.MSD_ObjectName__c || ""}`;
+        if (!expectedKeys.has(key) || checkpoints.has(key)) {
+          continue;
+        }
+        checkpoints.set(key, {
+          id: record.Id,
+          scheduleId: record.MSD_Schedule__c,
+          objectName: record.MSD_ObjectName__c,
+          lastCheckpoint: record.MSD_LastCheckpoint__c,
+          lastRecordId: record.MSD_LastRecordId__c,
+          lastRunId: record.MSD_Run__c
+        });
+      }
+    }
+
+    return checkpoints;
+  }
+
   public async upsertCheckpoint(input: UpsertCheckpointInput): Promise<string> {
     if (!this.connection) {
       throw new Error("Salesforce connection not initialized. Call login() first.");

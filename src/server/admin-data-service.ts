@@ -3929,16 +3929,11 @@ export class AdminDataService {
         .filter(Boolean)
     );
 
-    const checkpointEntries = await Promise.all(records.map(async (record) => {
+    const checkpointLookupKeys = records.map((record) => {
       const schedule = this.toIntegrationSchedule(record);
-      try {
-        const checkpoint = await client.getCheckpoint(schedule.id, schedule.objectName);
-        return [schedule.id, checkpoint] as const;
-      } catch {
-        return [schedule.id, null] as const;
-      }
-    }));
-    const checkpointsByScheduleId = new Map(checkpointEntries);
+      return { scheduleId: schedule.id, objectName: schedule.objectName };
+    });
+    const checkpointsByScheduleAndObject = await client.getCheckpoints(checkpointLookupKeys).catch(() => new Map());
 
     return records.map((record) => {
       const schedule = this.toIntegrationSchedule(record);
@@ -3950,7 +3945,7 @@ export class AdminDataService {
         timingDefinition: persistedTimingDefinition,
         nextRunAt: effectiveNextRunAt
       };
-      const checkpoint = checkpointsByScheduleId.get(schedule.id) || null;
+      const checkpoint = checkpointsByScheduleAndObject.get(`${schedule.id}::${schedule.objectName}`) || null;
 
         return {
           id: schedule.id,
