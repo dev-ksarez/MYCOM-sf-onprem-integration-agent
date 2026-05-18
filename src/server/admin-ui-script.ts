@@ -19,6 +19,7 @@ export function renderAdminUiScript(): string {
         instanceReadinessSnapshots: {},
         instanceMetadataSnapshots: {},
         projectOperationResults: {},
+        projectSetupVersions: {},
         editingProjectId: '',
         schedules: [],
         connectors: [],
@@ -5117,7 +5118,6 @@ export function renderAdminUiScript(): string {
               const rowStatusClass = targetField ? 'text-bg-success' : 'text-bg-light';
               const rowStatusLabel = targetField ? 'Gemappt' : 'Offen';
               const targetType = targetMeta?.type || (targetField ? 'manuell' : '');
-              const detailsOpen = lookupEnabled || transformFunction !== 'NONE' || Boolean(picklistText) || isEmailTarget;
               const rowSearchText = [source.name, source.label, source.type, targetField, targetType, transformFunction, lookupObject, lookupField].join(' ').toLowerCase();
               const lookupFieldMeta = lookupObject ? state.schedulerLookupExternalIdFieldsByObject?.[lookupObject] : null;
               const lookupFieldMissing = useLookupSelection
@@ -5156,7 +5156,7 @@ export function renderAdminUiScript(): string {
                     '</select>' +
                   '</div>' +
                 '</div>' +
-                '<details class="migration-mapping-details"' + (detailsOpen ? ' open' : '') + '>' +
+                '<details class="migration-mapping-details">' +
                   '<summary>Details</summary>' +
                   '<div class="migration-mapping-detail-grid">' +
                     '<div>' +
@@ -11985,6 +11985,59 @@ export function renderAdminUiScript(): string {
         };
       }
 
+      function getProjectHealthSummary(kpis) {
+        const projectInstances = Array.isArray(kpis?.projectInstances) ? kpis.projectInstances : [];
+        const rows = projectInstances.map((instance) => {
+          const snapshot = state.instanceReadinessSnapshots[String(instance.id || '')] || null;
+          const status = String(snapshot?.status || 'nicht geprüft').trim() || 'nicht geprüft';
+          return {
+            instance,
+            status,
+            badgeClass: snapshot ? resolveReadinessBadgeClass(status) : 'text-bg-secondary'
+          };
+        });
+        if (!rows.length) {
+          return {
+            label: 'Keine Instanz',
+            badgeClass: 'text-bg-secondary',
+            details: ['Keine Projektinstanz zugeordnet.']
+          };
+        }
+        if (rows.some((row) => row.status === 'setup-failed')) {
+          return {
+            label: 'Fehler',
+            badgeClass: 'text-bg-danger',
+            details: rows.map((row) => String(row.instance.name || row.instance.id || '-') + ': ' + row.status)
+          };
+        }
+        if (rows.some((row) => row.status === 'setup-required')) {
+          return {
+            label: 'Setup erforderlich',
+            badgeClass: 'text-bg-warning',
+            details: rows.map((row) => String(row.instance.name || row.instance.id || '-') + ': ' + row.status)
+          };
+        }
+        if (rows.some((row) => row.status === 'setup-running')) {
+          return {
+            label: 'Prüfung läuft',
+            badgeClass: 'text-bg-info',
+            details: rows.map((row) => String(row.instance.name || row.instance.id || '-') + ': ' + row.status)
+          };
+        }
+        if (rows.every((row) => row.status === 'ready')) {
+          return {
+            label: 'Bereit',
+            badgeClass: 'text-bg-success',
+            details: rows.map((row) => String(row.instance.name || row.instance.id || '-') + ': ready')
+          };
+        }
+        return {
+          label: 'Nicht geprüft',
+          badgeClass: 'text-bg-secondary',
+          details: rows.map((row) => String(row.instance.name || row.instance.id || '-') + ': ' + row.status)
+        };
+      }
+
       function renderProjectWizardMeta(project) {
         const meta = document.getElementById('prj-wizard-meta');
         if (!meta) {
@@ -12070,7 +12123,7 @@ export function renderAdminUiScript(): string {
       function renderProjectOperationResult(projectId) {
         const result = state.projectOperationResults[String(projectId || '').trim()];
         if (!result) {
-          return '<div class="project-operation-empty">Noch keine Projektaktion ausgeführt.</div>';
+          return '';
         }
         const status = String(result.status || 'info');
         const badgeClass = status === 'success' ? 'text-bg-success' : status === 'error' ? 'text-bg-danger' : status === 'warning' ? 'text-bg-warning' : 'text-bg-info';
@@ -12103,11 +12156,83 @@ export function renderAdminUiScript(): string {
         return String(run?.status || 'unknown') + ' · Checks: ' + String(checks.length) + ' · Fehler: ' + String(failed);
       }
 
+      function formatProjectSetupVersionLabel(version) {
+        const date = version?.createdAt ? new Date(String(version.createdAt)) : null;
+        const dateLabel = date && Number.isFinite(date.getTime())
+          ? date.toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })
+          : String(version?.createdAt || '-');
+        const author = String(version?.author || 'unbekannt').trim() || 'unbekannt';
+        return 'v' + String(version?.version || '-') + ' · ' + dateLabel + ' · ' + author;
+      }
+
+      function renderProjectVersionOptions(projectId) {
+        const versions = Array.isArray(state.projectSetupVersions?.[projectId]) ? state.projectSetupVersions[projectId] : [];
+        if (!versions.length) {
+          return '<option value="">Keine Version vorhanden</option>';
+        }
+        return versions
+          .slice()
+          .sort((a, b) => Number(b.version || 0) - Number(a.version || 0))
+          .map((version, index) =>
+            '<option value="' + esc(String(version.id || '')) + '"' + (index === 0 ? ' selected' : '') + '>' + esc(formatProjectSetupVersionLabel(version)) + '</option>'
+          )
+          .join('');
+      }
+
+      async function loadProjectSetupVersions(projectId, options = {}) {
+        const normalizedProjectId = String(projectId || '').trim();
+        if (!normalizedProjectId) {
+          return [];
+        }
+        const force = options.force === true;
+        if (!force && Array.isArray(state.projectSetupVersions?.[normalizedProjectId])) {
+          return state.projectSetupVersions[normalizedProjectId];
+        }
+        const response = await safeRequest('/api/admin/projects/' + encodeURIComponent(normalizedProjectId) + '/setup/versions', { items: [] });
+        const items = Array.isArray(response.items) ? response.items : [];
+        state.projectSetupVersions = {
+          ...(state.projectSetupVersions || {}),
+          [normalizedProjectId]: items
+        };
+        const select = document.querySelector('[data-project-version-select="' + normalizedProjectId.replace(/"/g, '\\"') + '"]');
+        if (select) {
+          select.innerHTML = renderProjectVersionOptions(normalizedProjectId);
+        }
+        return items;
+      }
+
+      function getSelectedProjectVersionId(projectId) {
+        const select = document.querySelector('[data-project-version-select="' + String(projectId || '').replace(/"/g, '\\"') + '"]');
+        return String(select?.value || '').trim();
+      }
+
+      function getSelectedProjectDeployItems(projectId) {
+        return Array.from(document.querySelectorAll('[data-project-deploy-item][data-project-id="' + String(projectId || '').replace(/"/g, '\\"') + '"]'))
+          .filter((input) => input.checked)
+          .map((input) => String(input.value || '').trim())
+          .filter(Boolean);
+      }
+
+      function getProjectSetupVersionNote(projectId) {
+        const textarea = document.querySelector('[data-project-setup-note="' + String(projectId || '').replace(/"/g, '\\"') + '"]');
+        return String(textarea?.value || '').trim();
+      }
+
+      function setProjectSetupVersionNote(projectId, note) {
+        const textarea = document.querySelector('[data-project-setup-note="' + String(projectId || '').replace(/"/g, '\\"') + '"]');
+        if (textarea) {
+          textarea.value = String(note || '');
+        }
+      }
+
       async function runProjectOperation(projectId, operation) {
         const normalizedProjectId = String(projectId || '').trim();
         if (!normalizedProjectId) {
           return;
         }
+        const selectedVersionId = getSelectedProjectVersionId(normalizedProjectId);
+        const selectedDeployItems = getSelectedProjectDeployItems(normalizedProjectId);
+        const setupVersionNote = getProjectSetupVersionNote(normalizedProjectId);
         setProjectOperationResult(normalizedProjectId, { status: 'info', title: 'Projektaktion läuft', message: operation });
         try {
           if (operation === 'api-forecast') {
@@ -12128,13 +12253,31 @@ export function renderAdminUiScript(): string {
             const result = await requestJson('/api/admin/projects/' + encodeURIComponent(normalizedProjectId) + '/setup/versions', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ instanceId, note: 'Setup-Version aus Projektverwaltung erzeugt.' })
+              body: JSON.stringify({ instanceId, note: setupVersionNote, generateNote: !setupVersionNote })
             });
             setProjectOperationResult(normalizedProjectId, {
               status: 'success',
               title: 'Setup-Version erzeugt',
-              message: 'Version ' + String(result?.record?.version || '-') + ' · Artefakt ' + String(result?.record?.artifactRef || '-')
+              message: 'Version ' + String(result?.record?.version || '-') + ' · Artefakt ' + String(result?.record?.artifactRef || '-'),
+              details: result?.record?.note ? [String(result.record.note)] : []
             });
+            await loadProjectSetupVersions(normalizedProjectId, { force: true });
+            return;
+          }
+
+          if (operation === 'setup-note-suggest') {
+            const instanceId = getProjectPrimaryInstanceId(normalizedProjectId, 'test') || getProjectPrimaryInstanceId(normalizedProjectId, 'production');
+            const result = await requestJson('/api/admin/projects/' + encodeURIComponent(normalizedProjectId) + '/setup/version-note-suggestion', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ instanceId })
+            });
+            setProjectOperationResult(normalizedProjectId, {
+              status: 'success',
+              title: 'KI-Vorschlag erzeugt',
+              message: String(result?.note || 'Kein Vorschlag erzeugt.')
+            });
+            setProjectSetupVersionNote(normalizedProjectId, result?.note || '');
             return;
           }
 
@@ -12174,12 +12317,13 @@ export function renderAdminUiScript(): string {
             const result = await requestJson('/api/admin/projects/' + encodeURIComponent(normalizedProjectId) + '/deploy/start', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({})
+              body: JSON.stringify({ sourceVersionId: selectedVersionId || undefined, deployItems: selectedDeployItems })
             });
             setProjectOperationResult(normalizedProjectId, {
               status: 'success',
               title: 'Deployment gestartet',
-              message: 'Run ' + String(result?.deploymentRunId || '-') + ' · Compare ' + String(result?.compareRunId || '-') + ' · Precheck ' + String(result?.precheckRunId || '-')
+              message: 'Run ' + String(result?.deploymentRunId || '-') + ' · Version ' + String(result?.sourceVersionId || '-') + ' · Bestandteile: ' + (Array.isArray(result?.deployItems) ? result.deployItems.join(', ') : '-'),
+              details: ['Compare ' + String(result?.compareRunId || '-'), 'Precheck ' + String(result?.precheckRunId || '-')]
             });
             return;
           }
@@ -12349,33 +12493,64 @@ export function renderAdminUiScript(): string {
             : '<span class="badge text-bg-primary">Aktiv</span>';
           const isDefault = String(item.id || '') === 'default-project';
           const kpis = getProjectKpis(item);
-          const confluenceConfigured = item.confluenceBaseUrl && item.confluenceUsername && item.confluenceApiTokenConfigured && (item.confluenceSpaceKey || item.confluenceParentPageId);
-          const readinessLabel = kpis.productionInstance ? 'Produktion zugeordnet' : 'Produktion offen';
+          const health = getProjectHealthSummary(kpis);
+          const testLabel = kpis.testInstance ? String(kpis.testInstance.name || kpis.testInstance.id || '-') : '-';
+          const productionLabel = kpis.productionInstance ? String(kpis.productionInstance.name || kpis.productionInstance.id || '-') : '-';
+          const description = String(item.description || '').trim();
           return '<section class="project-panel">' +
             '<div class="project-panel-main">' +
               '<div class="d-flex justify-content-between align-items-start gap-2 flex-wrap">' +
-                '<div><div class="fw-semibold project-panel-title">' + esc(String(item.name || item.id)) + '</div><div class="small text-secondary">' + esc(String(item.id || '')) + '</div></div>' +
-                '<div class="d-flex gap-2 flex-wrap">' + status + '<span class="badge ' + (kpis.productionInstance ? 'text-bg-success' : 'text-bg-warning') + '">' + esc(readinessLabel) + '</span></div>' +
+                '<div>' +
+                  '<div class="fw-semibold project-panel-title">' + esc(String(item.name || item.id)) + '</div>' +
+                  '<div class="small text-secondary">' + esc(String(item.id || '')) + (description ? ' · ' + esc(description) : '') + '</div>' +
+                '</div>' +
+                '<div class="d-flex gap-2 flex-wrap">' + status + '<span class="badge ' + health.badgeClass + '">Health: ' + esc(health.label) + '</span></div>' +
               '</div>' +
               '<div class="project-kpi-grid mt-3">' +
                 '<div class="project-kpi"><span>Instanzen</span><strong>' + esc(String(kpis.projectInstances.length)) + '</strong></div>' +
-                '<div class="project-kpi"><span>Test</span><strong>' + esc(String(kpis.testInstance?.name || '-')) + '</strong></div>' +
-                '<div class="project-kpi"><span>Produktion</span><strong>' + esc(String(kpis.productionInstance?.name || '-')) + '</strong></div>' +
-                '<div class="project-kpi"><span>Migrationen</span><strong>' + esc(String(kpis.migrationCount)) + '</strong></div>' +
-                '<div class="project-kpi"><span>Cache</span><strong>' + esc(kpis.cacheEnabled ? 'An' : 'Aus') + '</strong></div>' +
-                '<div class="project-kpi"><span>Logs</span><strong>' + esc(kpis.logBatchingEnabled ? 'Batch' : 'Direkt') + '</strong></div>' +
+                '<div class="project-kpi"><span>Test</span><strong>' + esc(testLabel) + '</strong></div>' +
+                '<div class="project-kpi"><span>Produktion</span><strong>' + esc(productionLabel) + '</strong></div>' +
+                '<div class="project-kpi"><span>Health Details</span><strong>' + esc(health.details.join(' · ')) + '</strong></div>' +
               '</div>' +
-              '<div class="small text-secondary mt-2">Confluence: ' + esc(confluenceConfigured ? 'konfiguriert' : '-') + ' · Produktionsschutz: ' + esc(item.productionWriteProtection === false ? 'inaktiv' : 'aktiv') + '</div>' +
-              '<div class="project-operation-toolbar mt-3">' +
-                '<button type="button" class="btn btn-sm btn-outline-secondary" data-project-op="api-forecast" data-project-id="' + esc(String(item.id || '')) + '">API-Prognose</button>' +
-                '<button type="button" class="btn btn-sm btn-outline-secondary" data-project-op="setup-version" data-project-id="' + esc(String(item.id || '')) + '">Setup-Version</button>' +
-                '<button type="button" class="btn btn-sm btn-outline-primary" data-project-op="compare-test-production" data-project-id="' + esc(String(item.id || '')) + '">Abgleich Test → Prod</button>' +
-                '<button type="button" class="btn btn-sm btn-outline-primary" data-project-op="compare-production-test" data-project-id="' + esc(String(item.id || '')) + '">Abgleich Prod → Test</button>' +
-                '<button type="button" class="btn btn-sm btn-outline-warning" data-project-op="precheck-test" data-project-id="' + esc(String(item.id || '')) + '">preDeployment Test</button>' +
-                '<button type="button" class="btn btn-sm btn-outline-warning" data-project-op="precheck-production" data-project-id="' + esc(String(item.id || '')) + '">preDeployment Prod</button>' +
-                '<button type="button" class="btn btn-sm btn-outline-success" data-project-op="deploy-start" data-project-id="' + esc(String(item.id || '')) + '">Deploy starten</button>' +
-                '<button type="button" class="btn btn-sm btn-outline-info" data-project-op="publish-confluence" data-project-id="' + esc(String(item.id || '')) + '">Doku Confluence</button>' +
-              '</div>' +
+              '<div class="small text-secondary mt-2">Produktionsschutz: ' + esc(item.productionWriteProtection === false ? 'inaktiv' : 'aktiv') + ' · Cache: ' + esc(kpis.cacheEnabled ? 'an' : 'aus') + ' · Logs: ' + esc(kpis.logBatchingEnabled ? 'Batch' : 'direkt') + '</div>' +
+              '<details class="project-operations-details mt-3">' +
+                '<summary>Aktionen, Versionen und Deployment</summary>' +
+                '<div class="project-deployment-config mt-2">' +
+                  '<div class="row g-2 align-items-end">' +
+                    '<div class="col-lg-5">' +
+                      '<label class="form-label form-label-sm mb-1">Setup-Version</label>' +
+                      '<select class="form-select form-select-sm" data-project-version-select="' + esc(String(item.id || '')) + '">' + renderProjectVersionOptions(String(item.id || '')) + '</select>' +
+                    '</div>' +
+                    '<div class="col-lg-7">' +
+                      '<label class="form-label form-label-sm mb-1">Deployment-Bestandteile</label>' +
+                      '<div class="project-deploy-item-list">' +
+                        '<label><input class="form-check-input me-1" type="checkbox" value="project" data-project-deploy-item data-project-id="' + esc(String(item.id || '')) + '" checked />Projekt</label>' +
+                        '<label><input class="form-check-input me-1" type="checkbox" value="connectors" data-project-deploy-item data-project-id="' + esc(String(item.id || '')) + '" checked />Connectoren</label>' +
+                        '<label><input class="form-check-input me-1" type="checkbox" value="schedules" data-project-deploy-item data-project-id="' + esc(String(item.id || '')) + '" checked />Scheduler</label>' +
+                        '<label><input class="form-check-input me-1" type="checkbox" value="migrations" data-project-deploy-item data-project-id="' + esc(String(item.id || '')) + '" />Migrationen</label>' +
+                        '<label><input class="form-check-input me-1" type="checkbox" value="documentation" data-project-deploy-item data-project-id="' + esc(String(item.id || '')) + '" />Doku</label>' +
+                      '</div>' +
+                    '</div>' +
+                    '<div class="col-12">' +
+                      '<div class="d-flex justify-content-between align-items-center gap-2 mb-1 flex-wrap">' +
+                        '<label class="form-label form-label-sm mb-0">Beschreibung fuer neue Setup-Version</label>' +
+                        '<button type="button" class="btn btn-sm btn-outline-secondary" data-project-op="setup-note-suggest" data-project-id="' + esc(String(item.id || '')) + '">KI-Vorschlag</button>' +
+                      '</div>' +
+                      '<textarea class="form-control form-control-sm project-setup-note" rows="2" data-project-setup-note="' + esc(String(item.id || '')) + '" placeholder="Aenderungen dieser Version dokumentieren, z. B. neue Scheduler, Mapping-Anpassungen oder Connector-Updates"></textarea>' +
+                    '</div>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="project-operation-toolbar mt-3">' +
+                  '<button type="button" class="btn btn-sm btn-outline-secondary" data-project-op="api-forecast" data-project-id="' + esc(String(item.id || '')) + '">API-Prognose</button>' +
+                  '<button type="button" class="btn btn-sm btn-outline-secondary" data-project-op="setup-version" data-project-id="' + esc(String(item.id || '')) + '">Setup-Version</button>' +
+                  '<button type="button" class="btn btn-sm btn-outline-primary" data-project-op="compare-test-production" data-project-id="' + esc(String(item.id || '')) + '">Abgleich Test → Prod</button>' +
+                  '<button type="button" class="btn btn-sm btn-outline-primary" data-project-op="compare-production-test" data-project-id="' + esc(String(item.id || '')) + '">Abgleich Prod → Test</button>' +
+                  '<button type="button" class="btn btn-sm btn-outline-warning" data-project-op="precheck-test" data-project-id="' + esc(String(item.id || '')) + '">preDeployment Test</button>' +
+                  '<button type="button" class="btn btn-sm btn-outline-warning" data-project-op="precheck-production" data-project-id="' + esc(String(item.id || '')) + '">preDeployment Prod</button>' +
+                  '<button type="button" class="btn btn-sm btn-outline-success" data-project-op="deploy-start" data-project-id="' + esc(String(item.id || '')) + '">Deploy starten</button>' +
+                  '<button type="button" class="btn btn-sm btn-outline-info" data-project-op="publish-confluence" data-project-id="' + esc(String(item.id || '')) + '">Doku Confluence</button>' +
+                '</div>' +
+              '</details>' +
               renderProjectOperationResult(String(item.id || '')) +
             '</div>' +
             '<div class="project-panel-actions">' +
@@ -12385,6 +12560,10 @@ export function renderAdminUiScript(): string {
             '</div>' +
           '</section>';
         }).join('');
+
+        visibleProjects.forEach((item) => {
+          void loadProjectSetupVersions(String(item.id || ''));
+        });
 
         panelList.querySelectorAll('[data-project-edit]').forEach((button) => {
           button.addEventListener('click', () => {
@@ -12655,6 +12834,16 @@ export function renderAdminUiScript(): string {
           await loadLogSummary();
         }
       }
+
+      window.refreshSchedules = async function refreshSchedulesFromExternalChange(options = {}) {
+        await refresh({
+          includeGraph: options.includeGraph === true,
+          includeSalesforceOverview: options.includeSalesforceOverview === true,
+          includeRecordsSummary: options.includeRecordsSummary === true,
+          includeScheduleOptions: options.includeScheduleOptions !== false,
+          refreshChart: options.refreshChart === true
+        });
+      };
 
       function activateMainTab(tabTarget) {
         const trigger = document.querySelector('#main-tabs [data-bs-target="' + tabTarget + '"]');

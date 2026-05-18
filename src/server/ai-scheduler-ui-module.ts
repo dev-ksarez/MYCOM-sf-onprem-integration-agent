@@ -110,6 +110,12 @@ export function renderAISchedulerAssistantModule(): string {
                 <!-- Issues -->
                 <div id="ai-issues-container"></div>
 
+                <!-- Existing config diff -->
+                <div id="ai-diff-container" class="mb-3 d-none">
+                  <h6 class="fw-semibold mb-2">Änderungsvorschlag (Diff)</h6>
+                  <div class="table-responsive ai-diff-preview rounded border" id="ai-diff-preview"></div>
+                </div>
+
                 <!-- Preview -->
                 <div class="mb-3">
                   <h6 class="fw-semibold mb-2">Scheduler-Vorschau</h6>
@@ -262,6 +268,37 @@ export function renderAISchedulerAssistantModule(): string {
         overflow-y: auto;
         white-space: pre-wrap;
         word-break: break-word;
+      }
+
+      .ai-diff-preview {
+        font-size: 0.85rem;
+        max-height: 260px;
+        overflow-y: auto;
+      }
+
+      .ai-diff-preview table {
+        margin-bottom: 0;
+      }
+
+      .ai-diff-preview code {
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .ai-diff-added {
+        background: #e8f7ee !important;
+      }
+
+      .ai-diff-before {
+        background: #fff3cd !important;
+      }
+
+      .ai-sql-added-column {
+        background: #bbf7d0;
+        border: 1px solid #22c55e;
+        border-radius: 0.25rem;
+        padding: 0 0.15rem;
+        font-weight: 700;
       }
 
       #ai-sql-traffic-light .badge {
@@ -437,6 +474,8 @@ export function renderAISchedulerAssistantModule(): string {
         const reasoningAlert = document.getElementById('ai-reasoning-alert');
         const metadataBasisEl = document.getElementById('ai-metadata-basis');
         const issuesContainer = document.getElementById('ai-issues-container');
+        const diffContainer = document.getElementById('ai-diff-container');
+        const diffPreview = document.getElementById('ai-diff-preview');
         const configPreview = document.getElementById('ai-config-preview');
         const sourcePreview = document.getElementById('ai-source-preview');
         const sqlTrafficLight = document.getElementById('ai-sql-traffic-light');
@@ -464,9 +503,22 @@ export function renderAISchedulerAssistantModule(): string {
           issuesContainer.innerHTML = '';
         }
 
+        if (diffContainer && diffPreview) {
+          const diffHtml = formatConfigDiff(result.configDiff);
+          if (diffHtml) {
+            diffPreview.innerHTML = diffHtml;
+            diffContainer.classList.remove('d-none');
+          } else {
+            diffPreview.innerHTML = '';
+            diffContainer.classList.add('d-none');
+          }
+        }
+
         const schedule = result.schedule;
+        const addedSqlColumns = collectAddedSourceColumns(result.configDiff);
         configPreview.textContent =
           'Name: ' + esc(schedule.name) + '\\n' +
+          (result.mode === 'update' && result.existingSchedule ? 'Modus: Bestehenden Scheduler aktualisieren (' + esc(result.existingSchedule.id) + ')\\n' : '') +
           'Quelle: ' + esc(schedule.sourceSystem) + ' (' + esc(schedule.sourceType) + ')\\n' +
           'Ziel: ' + esc(schedule.targetSystem) + ' (' + esc(schedule.targetType) + ')\\n' +
           'Object: ' + esc(schedule.objectName) + ' / ' + esc(schedule.operation) + '\\n' +
@@ -483,12 +535,12 @@ export function renderAISchedulerAssistantModule(): string {
             const parsedSource = JSON.parse(rawSourceDefinition);
             if (parsedSource && typeof parsedSource === 'object' && typeof parsedSource.queryText === 'string' && parsedSource.queryText.trim()) {
               sourceQueryText = String(parsedSource.queryText).trim();
-              sourcePreview.textContent = sourceQueryText;
+              sourcePreview.innerHTML = highlightSqlAddedColumns(sourceQueryText, addedSqlColumns);
             } else {
-              sourcePreview.textContent = JSON.stringify(parsedSource, null, 2);
+              sourcePreview.textContent = 'Keine SQL-Abfrage in der Source-Definition vorhanden';
             }
           } catch {
-            sourcePreview.textContent = rawSourceDefinition;
+            sourcePreview.innerHTML = highlightSqlAddedColumns(rawSourceDefinition, addedSqlColumns);
             sourceQueryText = rawSourceDefinition;
           }
         }
@@ -541,6 +593,102 @@ export function renderAISchedulerAssistantModule(): string {
 
         mappingPreview.textContent = esc(schedule.mappingDefinition || 'Keine Zuordnung definiert');
         container.classList.remove('d-none');
+      }
+
+      function formatConfigDiff(configDiff) {
+        const entries = Array.isArray(configDiff) ? configDiff : [];
+        if (!entries.length) {
+          return '';
+        }
+
+        const rows = [];
+        entries.forEach((entry) => {
+          const area = String(entry.area || 'general').toUpperCase();
+          const label = String(entry.label || 'Aenderung');
+          const added = Array.isArray(entry.added) ? entry.added.filter(Boolean) : [];
+          added.forEach((item) => {
+            const detail = entry.area === 'source'
+              ? '<code class="ai-sql-added-column">' + esc(item) + '</code>'
+              : '<code>' + esc(item) + '</code>';
+            rows.push(
+              '<tr class="ai-diff-added">' +
+                '<td><span class="badge bg-success">Neu</span></td>' +
+                '<td>' + esc(area) + '</td>' +
+                '<td>' + esc(label) + '</td>' +
+                '<td>' + detail + '</td>' +
+              '</tr>'
+            );
+          });
+          if (entry.before || entry.after) {
+            rows.push(
+              '<tr class="ai-diff-before">' +
+                '<td><span class="badge bg-warning text-dark">Vorher</span></td>' +
+                '<td>' + esc(area) + '</td>' +
+                '<td>' + esc(label) + '</td>' +
+                '<td><details><summary>Vorher anzeigen</summary><code>' + esc(String(entry.before || '-')) + '</code></details></td>' +
+              '</tr>'
+            );
+            rows.push(
+              '<tr class="ai-diff-added">' +
+                '<td><span class="badge bg-success">Nachher</span></td>' +
+                '<td>' + esc(area) + '</td>' +
+                '<td>' + esc(label) + '</td>' +
+                '<td><details><summary>Nachher anzeigen</summary><code>' + esc(String(entry.after || '-')) + '</code></details></td>' +
+              '</tr>'
+            );
+          }
+          const warnings = Array.isArray(entry.warnings) ? entry.warnings.filter(Boolean) : [];
+          warnings.forEach((item) => {
+            rows.push(
+              '<tr>' +
+                '<td><span class="badge bg-warning text-dark">Hinweis</span></td>' +
+                '<td>' + esc(area) + '</td>' +
+                '<td>' + esc(label) + '</td>' +
+                '<td>' + esc(item) + '</td>' +
+              '</tr>'
+            );
+          });
+        });
+
+        if (!rows.length) {
+          return '';
+        }
+
+        return '<table class="table table-sm table-bordered align-middle">' +
+          '<thead class="table-light"><tr><th>Status</th><th>Bereich</th><th>Änderung</th><th>Details</th></tr></thead>' +
+          '<tbody>' + rows.join('') + '</tbody>' +
+        '</table>';
+      }
+
+      function collectAddedSourceColumns(configDiff) {
+        const entries = Array.isArray(configDiff) ? configDiff : [];
+        return entries
+          .filter((entry) => String(entry?.area || '').toLowerCase() === 'source')
+          .flatMap((entry) => Array.isArray(entry.added) ? entry.added : [])
+          .map((item) => String(item || '').trim())
+          .filter(Boolean);
+      }
+
+      function highlightSqlAddedColumns(sqlText, addedColumns) {
+        let html = esc(sqlText || '');
+        const columns = Array.isArray(addedColumns) ? addedColumns : [];
+        columns
+          .filter(Boolean)
+          .sort((a, b) => String(b).length - String(a).length)
+          .forEach((column) => {
+            const escapedColumn = escapeRegExp(String(column));
+            const pattern = new RegExp('(^|[^A-Za-z0-9_])(' + escapedColumn + ')(?=[^A-Za-z0-9_]|$)', 'g');
+            html = html.replace(pattern, '$1<span class="ai-sql-added-column">$2</span>');
+          });
+        return html;
+      }
+
+      function escapeRegExp(value) {
+        const specialChars = '\\\\.^$*+?()[]{}|';
+        return String(value || '')
+          .split('')
+          .map((char) => specialChars.includes(char) ? '\\\\' + char : char)
+          .join('');
       }
 
       function hasDeltaConfig(sourceDefinition) {
@@ -802,13 +950,46 @@ export function renderAISchedulerAssistantModule(): string {
             body: JSON.stringify(result.schedule)
           });
 
-          window.alert('Scheduler erfolgreich erstellt: ' + (response.name || response.id));
+          const expectedSource = normalizePersistedConfig(result.schedule?.sourceDefinition);
+          const persistedSource = normalizePersistedConfig(response?.sourceDefinition);
+          const expectedMapping = normalizePersistedConfig(result.schedule?.mappingDefinition);
+          const persistedMapping = normalizePersistedConfig(response?.mappingDefinition);
+          const mismatches = [];
+          if (expectedSource && persistedSource && expectedSource !== persistedSource) {
+            mismatches.push('SQL/SourceDefinition');
+          }
+          if (expectedMapping && persistedMapping && expectedMapping !== persistedMapping) {
+            mismatches.push('Mapping');
+          }
+
+          if (mismatches.length) {
+            throw new Error('Speichern wurde von Salesforce bestätigt, aber diese Änderungen wurden nicht übernommen: ' + mismatches.join(', '));
+          }
+
+          window.alert(
+            result.mode === 'update'
+              ? 'Scheduler erfolgreich aktualisiert: ' + (response.name || response.id)
+              : 'Scheduler erfolgreich erstellt: ' + (response.name || response.id)
+          );
           clearForm();
           
-          // Refresh parent view wenn vorhanden
-          if (window.refreshSchedules) window.refreshSchedules();
+          if (typeof window.refreshSchedules === 'function') {
+            await window.refreshSchedules({ includeGraph: true, includeRecordsSummary: true });
+          }
         } catch (error) {
           alert('Fehler beim Speichern: ' + (error.message || 'Unbekannter Fehler'));
+        }
+      }
+
+      function normalizePersistedConfig(value) {
+        const raw = String(value || '').trim();
+        if (!raw) {
+          return '';
+        }
+        try {
+          return JSON.stringify(JSON.parse(raw));
+        } catch {
+          return raw.replace(/\s+/g, ' ');
         }
       }
 

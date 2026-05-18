@@ -276,21 +276,27 @@ Akzeptanzkriterien:
 - Aus der Projektverwaltung kann ein gesteuerter Deploy von freigegebenem Setup in die Produktionsinstanz gestartet werden.
 - Der Deploy umfasst mindestens Custom Objects und Custom Fields.
 - Der Deploy ist nur moeglich, wenn Vorbedingungen erfuellt sind (z. B. erfolgreicher Testlauf, Freigabe).
+- Beim Deploy kann der Benutzer auswaehlen, welche Bestandteile der Setup-Version deployt werden sollen (z. B. Projektstammdaten, Connectoren, Scheduler, Migrationen, Dokumentation).
 
 Akzeptanzkriterien:
 
 - [ ] Produktionsdeploy startet aus dem Projektkontext und nutzt die dem Projekt zugeordnete Produktionsinstanz.
 - [ ] Fehlende Vorbedingungen verhindern den Deploy mit eindeutiger Rueckmeldung.
+- [ ] Vor Deployment ist im Projektkontext auswaehlbar, welche Bestandteile deployt werden.
 
 ### F. Setup-Versionierung pro Projekt
 
 - Projekte erhalten eine Versionierung des Setups (z. B. Versionsnummer, Zeitstempel, Autor, Aenderungsumfang).
 - Jede Deployment-Einheit ist einer Setup-Version zuordenbar.
+- In der Projektverwaltung sind Setup-Versionen mit Versionsnummer, Datum und Benutzer auswaehlbar, damit auf eine beliebige Version zurueckgesprungen bzw. diese als Deploy-Basis genutzt werden kann.
+- Beim Erstellen einer Setup-Version gibt es ein Beschreibungsfeld fuer die dokumentierten Aenderungen; ein KI-gestuetzter Vorschlag formuliert die Differenz zur vorherigen Setup-Version.
 
 Akzeptanzkriterien:
 
 - [ ] Mindestens die letzten Setup-Versionen sind pro Projekt nachvollziehbar.
 - [ ] Deploys referenzieren die verwendete Setup-Version.
+- [ ] Eine beliebige vorhandene Setup-Version kann in der Projektverwaltung ausgewaehlt werden.
+- [ ] Die Beschreibung einer Setup-Version kann manuell gepflegt oder aus einem Diff-Vorschlag uebernommen werden.
 
 ### G. Projektdokumentation und Export
 

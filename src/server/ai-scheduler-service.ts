@@ -2,6 +2,7 @@ import {
   ConnectorListItem,
   InstanceMetadataContext,
   PersistedMetadataField,
+  ScheduleListItem,
   Sage100DocumentationContext
 } from "./admin-data-service";
 import { ScheduleMutationInput } from "./admin-data-service";
@@ -35,12 +36,26 @@ export interface AISchedulerRequest {
   targetSystem?: string;
   objectName?: string;
   existingConnectors: ConnectorListItem[];
+  existingSchedules?: ScheduleListItem[];
   metadataContext?: InstanceMetadataContext;
   sage100DocumentationContext?: Sage100DocumentationContext;
 }
 
 export interface AIGenerationResult {
   schedule: ScheduleMutationInput;
+  mode?: "create" | "update";
+  existingSchedule?: {
+    id: string;
+    name: string;
+  };
+  configDiff?: Array<{
+    area: "source" | "target" | "mapping" | "general";
+    label: string;
+    before?: string;
+    after?: string;
+    added?: string[];
+    warnings?: string[];
+  }>;
   connector?: {
     name: string;
     connectorType: string;
@@ -77,6 +92,11 @@ export class AISchedulerService {
     try {
       // Phase 1: Keyword-Analyse
       const analysis = this.analyzePrompt(request.userPrompt, request.metadataContext, request.sage100DocumentationContext);
+
+      const referencedSchedule = this.findReferencedSchedule(request.userPrompt, request.existingSchedules || []);
+      if (referencedSchedule) {
+        return this.modifyExistingSchedule(request, analysis, referencedSchedule);
+      }
 
       // Phase 2: Connector-Matching
       const selectedConnector =
@@ -123,6 +143,502 @@ export class AISchedulerService {
         issues: [{ severity: "error", message: String(error) }],
         requiresUserValidation: true
       };
+    }
+  }
+
+  private findReferencedSchedule(prompt: string, schedules: ScheduleListItem[]): ScheduleListItem | undefined {
+    const raw = String(prompt || "");
+    const explicitIdMatch = raw.match(/\b(SCH-\d{1,8})\b/i);
+    const explicitId = explicitIdMatch?.[1]?.toUpperCase();
+
+    if (explicitId) {
+      const normalizedId = explicitId.replace(/^SCH-0*/, "");
+      return schedules.find((schedule) => {
+        const id = String(schedule.id || "").trim();
+        const name = String(schedule.name || "").trim();
+        return (
+          id.toUpperCase() === explicitId ||
+          name.toUpperCase().includes(explicitId) ||
+          id.replace(/^SCH-0*/i, "") === normalizedId
+        );
+      });
+    }
+
+    const quotedNameMatch = raw.match(/\bScheduler\s+["'`]?([^"'`\n.]+)["'`]?/i);
+    const candidate = String(quotedNameMatch?.[1] || "").trim().toLowerCase();
+    if (!candidate || candidate.length < 3) {
+      return undefined;
+    }
+
+    return schedules.find((schedule) => String(schedule.name || "").toLowerCase().includes(candidate));
+  }
+
+  private modifyExistingSchedule(
+    request: AISchedulerRequest,
+    analysis: ReturnType<typeof this.analyzePrompt>,
+    existing: ScheduleListItem
+  ): AIGenerationResult {
+    const schedule: ScheduleMutationInput = {
+      id: existing.id,
+      name: existing.name,
+      active: existing.active,
+      sourceSystem: existing.sourceSystem,
+      targetSystem: existing.targetSystem,
+      objectName: existing.objectName,
+      operation: existing.operation,
+      connectorId: existing.connectorId,
+      mappingDefinition: existing.mappingDefinition,
+      direction: existing.direction,
+      sourceType: existing.sourceType,
+      targetType: existing.targetType,
+      sourceDefinition: existing.sourceDefinition,
+      targetDefinition: existing.targetDefinition,
+      batchSize: existing.batchSize,
+      nextRunAt: existing.nextRunAt,
+      lastRunAt: existing.lastRunAt,
+      timingDefinition: existing.timingDefinition,
+      parentScheduleId: existing.parentScheduleId,
+      inheritTimingFromParent: existing.inheritTimingFromParent
+    };
+
+    const issues: Array<{ severity: "warning" | "error"; message: string }> = [];
+    const configDiff: NonNullable<AIGenerationResult["configDiff"]> = [];
+    const lowerPrompt = request.userPrompt.toLowerCase();
+    const wantsBillingAddress = /\b(rechnungsadresse|billing\s*address|billingadresse|rechnung)\b/i.test(lowerPrompt);
+    const wantsCustomerNumber = /\b(kundennummer|kunden\s*nummer|customer\s*number|account\s*number|debitor(?:en)?nummer)\b/i.test(lowerPrompt);
+
+    if (!wantsBillingAddress && !wantsCustomerNumber) {
+      issues.push({
+        severity: "warning",
+        message: "Bestehender Scheduler erkannt, aber keine konkrete Konfigurationsaenderung identifiziert."
+      });
+    }
+
+    const targetObject = this.resolveTargetObjectFromSchedule(schedule);
+    const targetFields = this.getPersistedFields(analysis, targetObject);
+    const targetFieldNames = new Set(targetFields.map((field) => field.name.toLowerCase()));
+    const hasTargetMetadata = targetFields.length > 0;
+    const availableSqlColumns = this.extractSelectedSqlColumns(this.extractSourceQueryText(schedule.sourceDefinition));
+    const addedMappingLines: string[] = [];
+    const requiredSourceColumns = new Set<string>();
+    const mappingWarnings: string[] = [];
+
+    if (wantsCustomerNumber) {
+      const targetField = this.resolveCustomerNumberTargetField(targetFields);
+      if (!targetField && hasTargetMetadata) {
+        issues.push({
+          severity: "warning",
+          message: "Kein beschreibbares Salesforce-Zielfeld fuer die Kundennummer gefunden."
+        });
+      } else {
+        const resolvedTarget = targetField || "ERP_Account_Number__c";
+        const sourceColumn = this.resolveSourceColumnForSemantic(availableSqlColumns, "customerNumber") || "Adresse";
+        addedMappingLines.push(`${resolvedTarget};string=${sourceColumn};TRIM`);
+        requiredSourceColumns.add(sourceColumn);
+      }
+    }
+
+    if (wantsBillingAddress) {
+      const billingMappings = [
+        { target: "BillingStreet", semantic: "billingStreet" as const, fallback: "Strasse" },
+        { target: "BillingPostalCode", semantic: "billingPostalCode" as const, fallback: "PLZ" },
+        { target: "BillingCity", semantic: "billingCity" as const, fallback: "Ort" },
+        { target: "BillingCountry", semantic: "billingCountry" as const, fallback: "Land" }
+      ];
+
+      for (const mapping of billingMappings) {
+        if (hasTargetMetadata && !targetFieldNames.has(mapping.target.toLowerCase())) {
+          mappingWarnings.push(`Zielfeld ${mapping.target} existiert in ${targetObject} nicht oder ist nicht verfuegbar.`);
+          continue;
+        }
+        const sourceColumn = this.resolveSourceColumnForSemantic(availableSqlColumns, mapping.semantic) || mapping.fallback;
+        addedMappingLines.push(`${mapping.target};string=${sourceColumn};TRIM`);
+        requiredSourceColumns.add(sourceColumn);
+      }
+    }
+
+    if (addedMappingLines.length > 0) {
+      const beforeMapping = String(schedule.mappingDefinition || "").trim();
+      const nextMapping = this.mergeMappingLines(beforeMapping, addedMappingLines);
+      if (nextMapping.trim() !== beforeMapping.trim()) {
+        schedule.mappingDefinition = nextMapping;
+        configDiff.push({
+          area: "mapping",
+          label: "Mapping angepasst",
+          added: addedMappingLines,
+          warnings: mappingWarnings
+        });
+      }
+    }
+
+    const sourceUpdate = this.addColumnsToSourceDefinition(schedule.sourceDefinition, [...requiredSourceColumns]);
+    if (sourceUpdate.changed) {
+      schedule.sourceDefinition = sourceUpdate.sourceDefinition;
+      configDiff.push({
+        area: "source",
+        label: "SourceDefinition erweitert",
+        added: sourceUpdate.addedColumns,
+        warnings: sourceUpdate.warnings
+      });
+    } else if (sourceUpdate.warnings.length > 0) {
+      issues.push(...sourceUpdate.warnings.map((message) => ({ severity: "warning" as const, message })));
+    }
+
+    const validationIssues = this.validateScheduleConfiguration(schedule, {
+      ...analysis,
+      objectName: schedule.objectName,
+      targetObjectName: targetObject,
+      timing: analysis.timing || (schedule.timingDefinition ? { type: "existing", value: "existing" } : undefined)
+    });
+    issues.push(...validationIssues);
+    for (const warning of mappingWarnings) {
+      issues.push({ severity: "warning", message: warning });
+    }
+
+    const confidence = configDiff.length > 0 ? 0.86 : 0.45;
+    return {
+      schedule,
+      mode: "update",
+      existingSchedule: {
+        id: existing.id,
+        name: existing.name
+      },
+      configDiff,
+      confidence,
+      reasoning:
+        `Bestehender Scheduler ${existing.id} (${existing.name}) wurde geladen. ` +
+        "Die Aenderung wurde als Vorschlag auf Basis der aktiven Konfiguration erzeugt; bitte Diff und Validierung vor dem Speichern pruefen.",
+      issues,
+      requiresUserValidation: true,
+      metadataBasis: this.buildMetadataBasis(request)
+    };
+  }
+
+  private resolveTargetObjectFromSchedule(schedule: ScheduleMutationInput): string {
+    const fromDefinition = this.readJsonObject(schedule.targetDefinition);
+    const objectApiName = String(fromDefinition?.objectApiName || fromDefinition?.sobject || "").trim();
+    return objectApiName || String(schedule.objectName || "Account").trim() || "Account";
+  }
+
+  private resolveCustomerNumberTargetField(fields: PersistedMetadataField[]): string | undefined {
+    const writableFields = fields.filter((field) => field.createable !== false || field.updateable !== false || field.externalId === true);
+    const preferredNames = [
+      "ERP_Account_Number__c",
+      "ERP_Customer_Number__c",
+      "Customer_Number__c",
+      "Kundennummer__c",
+      "AccountNumber"
+    ];
+    for (const preferred of preferredNames) {
+      const match = writableFields.find((field) => field.name.toLowerCase() === preferred.toLowerCase());
+      if (match) {
+        return match.name;
+      }
+    }
+
+    const externalId = writableFields.find((field) => field.externalId === true && /erp|customer|kunde|account|number|nummer/i.test(field.name));
+    if (externalId) {
+      return externalId.name;
+    }
+
+    return writableFields.find((field) => /kundennummer|customer.*number|account.*number|erp.*number|erp.*account/i.test(`${field.name} ${field.label || ""}`))?.name;
+  }
+
+  private extractSourceQueryText(sourceDefinition?: string): string {
+    const raw = String(sourceDefinition || "").trim();
+    if (!raw) {
+      return "";
+    }
+
+    const parsed = this.readJsonObject(raw);
+    if (parsed) {
+      return String(parsed.queryText || parsed.query || parsed.sql || "").trim();
+    }
+
+    return raw;
+  }
+
+  private extractSelectedSqlColumns(queryText: string): string[] {
+    const query = String(queryText || "").trim();
+    const match = query.match(/^\s*select\s+([\s\S]+?)\s+from\s+/i);
+    if (!match?.[1]) {
+      return [];
+    }
+
+    const selectList = match[1].trim();
+    if (!selectList || selectList === "*") {
+      return [];
+    }
+
+    return selectList
+      .split(",")
+      .map((entry) => this.extractSqlColumnAliasOrName(entry))
+      .filter(Boolean);
+  }
+
+  private extractSqlColumnAliasOrName(entry: string): string {
+    const raw = String(entry || "").trim();
+    if (!raw) {
+      return "";
+    }
+
+    const asMatch = raw.match(/\s+as\s+(\[[^\]]+\]|"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s*$/i);
+    if (asMatch?.[1]) {
+      return this.cleanSqlIdentifier(asMatch[1]);
+    }
+
+    const tokens = raw.split(/\s+/).filter(Boolean);
+    if (tokens.length > 1 && /^[A-Za-z_["]/.test(tokens[tokens.length - 1])) {
+      return this.cleanSqlIdentifier(tokens[tokens.length - 1]);
+    }
+
+    return this.cleanSqlIdentifier(raw.replace(/^.*\./, ""));
+  }
+
+  private cleanSqlIdentifier(value: string): string {
+    return String(value || "")
+      .trim()
+      .replace(/^\[|\]$/g, "")
+      .replace(/^"|"$/g, "")
+      .replace(/^'|'$/g, "")
+      .replace(/^.*\./, "")
+      .trim();
+  }
+
+  private resolveSourceColumnForSemantic(
+    availableColumns: string[],
+    semantic:
+      | "customerNumber"
+      | "billingStreet"
+      | "billingPostalCode"
+      | "billingCity"
+      | "billingCountry"
+  ): string | undefined {
+    const columns = availableColumns.map((column) => ({ raw: column, normalized: this.normalizeFieldName(column) }));
+    if (!columns.length) {
+      return undefined;
+    }
+
+    const withoutShipping = columns.filter((column) => !/\bliefer|shipping|delivery\b/i.test(column.raw));
+    const searchSpace = semantic.startsWith("billing") ? withoutShipping : columns;
+    const patterns: Record<typeof semantic, RegExp[]> = {
+      customerNumber: [
+        /\bkunden?\s*nummer\b/i,
+        /\bkundennr\b/i,
+        /\bdebitor(?:en)?\s*nummer\b/i,
+        /\baccount\s*number\b/i,
+        /\bcustomer\s*number\b/i,
+        /^adresse$/i
+      ],
+      billingStreet: [/\brechnungs?\s*strasse\b/i, /\bbilling\s*street\b/i, /^strasse$/i, /^street$/i],
+      billingPostalCode: [/\brechnungs?\s*plz\b/i, /\bbilling\s*postal\b/i, /^plz$/i, /^postal\s*code$/i, /^zip$/i],
+      billingCity: [/\brechnungs?\s*ort\b/i, /\bbilling\s*city\b/i, /^ort$/i, /^city$/i],
+      billingCountry: [/\brechnungs?\s*land\b/i, /\bbilling\s*country\b/i, /^land$/i, /^country$/i]
+    };
+
+    for (const pattern of patterns[semantic]) {
+      const match = searchSpace.find((column) => pattern.test(column.raw) || pattern.test(column.normalized));
+      if (match) {
+        return match.raw;
+      }
+    }
+
+    return undefined;
+  }
+
+  private mergeMappingLines(existingMapping: string, additions: string): string;
+  private mergeMappingLines(existingMapping: string, additions: string[]): string;
+  private mergeMappingLines(existingMapping: string, additions: string | string[]): string {
+    const trimmedExisting = String(existingMapping || "").trim();
+    const nextLines = Array.isArray(additions) ? additions : additions.split(/\r?\n/);
+
+    if (trimmedExisting.startsWith("[")) {
+      const parsed = this.readJsonArray(trimmedExisting);
+      if (parsed) {
+        const targetIndex = new Map<string, number>();
+        parsed.forEach((entry, index) => {
+          const targetField = String(entry?.targetField || "").trim().toLowerCase();
+          if (targetField) {
+            targetIndex.set(targetField, index);
+          }
+        });
+        const merged = [...parsed];
+        for (const rawLine of nextLines) {
+          const line = String(rawLine || "").trim();
+          const rule = this.mappingLineToStoredRule(line);
+          const targetField = String(rule?.targetField || "").trim().toLowerCase();
+          if (!rule || !targetField) {
+            continue;
+          }
+          const existingIndex = targetIndex.get(targetField);
+          if (existingIndex === undefined) {
+            merged.push(rule);
+            targetIndex.set(targetField, merged.length - 1);
+          } else {
+            merged[existingIndex] = {
+              ...merged[existingIndex],
+              ...rule
+            };
+          }
+        }
+        return JSON.stringify(merged, null, 2);
+      }
+    }
+
+    const existingLines = String(existingMapping || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const targetFields = new Set(existingLines.map((line) => line.split(";")[0]?.trim().toLowerCase()).filter(Boolean));
+    const merged = [...existingLines];
+
+    for (const rawLine of nextLines) {
+      const line = String(rawLine || "").trim();
+      if (!line) continue;
+      const targetField = line.split(";")[0]?.trim().toLowerCase();
+      if (!targetField) {
+        continue;
+      }
+      const existingIndex = merged.findIndex((entry) => entry.split(";")[0]?.trim().toLowerCase() === targetField);
+      if (existingIndex === -1) {
+        merged.push(line);
+        targetFields.add(targetField);
+      } else {
+        merged[existingIndex] = line;
+      }
+    }
+
+    return merged.join("\n");
+  }
+
+  private mappingLineToStoredRule(line: string): Record<string, unknown> | undefined {
+    const raw = String(line || "").trim();
+    const match = raw.match(/^([^;=]+);([^=]+)=([^;]+);(.+)$/);
+    if (!match) {
+      return undefined;
+    }
+
+    return {
+      targetField: match[1].trim(),
+      targetType: match[2].trim() || "string",
+      sourceField: match[3].trim(),
+      sourceType: "string",
+      lookupEnabled: false,
+      lookupObject: "",
+      lookupField: "",
+      transformFunction: (match[4].trim() || "NONE").toUpperCase(),
+      transformExpression: "",
+      emailValidationEnabled: false,
+      emailInvalidAction: "EMPTY",
+      picklistMappings: []
+    };
+  }
+
+  private addColumnsToSourceDefinition(
+    sourceDefinition: string | undefined,
+    columns: string[]
+  ): { changed: boolean; sourceDefinition?: string; before: string; after: string; addedColumns: string[]; warnings: string[] } {
+    const before = String(sourceDefinition || "").trim();
+    const uniqueColumns = [...new Set(columns.map((column) => String(column || "").trim()).filter(Boolean))];
+    if (!before || uniqueColumns.length === 0) {
+      return { changed: false, sourceDefinition, before, after: before, addedColumns: [], warnings: [] };
+    }
+
+    const parsed = this.readJsonObject(before);
+    const queryText = parsed ? String(parsed.queryText || parsed.query || "").trim() : before;
+    if (!queryText || !/^\s*select\b/i.test(queryText)) {
+      return {
+        changed: false,
+        sourceDefinition,
+        before,
+        after: before,
+        addedColumns: [],
+        warnings: ["SourceDefinition konnte nicht automatisch erweitert werden, weil keine SELECT-Abfrage erkannt wurde."]
+      };
+    }
+
+    const updated = this.addColumnsToSelectQuery(queryText, uniqueColumns);
+    if (!updated.changed) {
+      return { changed: false, sourceDefinition, before, after: before, addedColumns: [], warnings: [] };
+    }
+
+    if (parsed) {
+      parsed.queryText = updated.query;
+      const nextDefinition = JSON.stringify(parsed, null, 2);
+      return {
+        changed: true,
+        sourceDefinition: nextDefinition,
+        before,
+        after: nextDefinition,
+        addedColumns: updated.addedColumns,
+        warnings: []
+      };
+    }
+
+    return {
+      changed: true,
+      sourceDefinition: updated.query,
+      before,
+      after: updated.query,
+      addedColumns: updated.addedColumns,
+      warnings: []
+    };
+  }
+
+  private addColumnsToSelectQuery(queryText: string, columns: string[]): { changed: boolean; query: string; addedColumns: string[] } {
+    const query = String(queryText || "").trim();
+    const match = query.match(/^\s*select\s+([\s\S]+?)\s+from\s+/i);
+    if (!match?.[1]) {
+      return { changed: false, query, addedColumns: [] };
+    }
+
+    const selectList = match[1].trim();
+    if (selectList === "*") {
+      return { changed: false, query, addedColumns: [] };
+    }
+
+    const existing = new Set(
+      selectList
+        .split(",")
+        .map((entry) => this.extractSqlColumnAliasOrName(entry).toLowerCase())
+        .filter(Boolean)
+    );
+    const addedColumns = columns.filter((column) => !existing.has(column.toLowerCase()));
+    if (addedColumns.length === 0) {
+      return { changed: false, query, addedColumns: [] };
+    }
+
+    const replacement = `SELECT ${selectList}, ${addedColumns.join(", ")} FROM `;
+    return {
+      changed: true,
+      query: query.replace(/^\s*select\s+[\s\S]+?\s+from\s+/i, replacement),
+      addedColumns
+    };
+  }
+
+  private readJsonObject(value?: string): Record<string, any> | undefined {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return undefined;
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private readJsonArray(value?: string): Array<Record<string, any>> | undefined {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return undefined;
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry)) : undefined;
+    } catch {
+      return undefined;
     }
   }
 

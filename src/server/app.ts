@@ -129,6 +129,7 @@ interface DeploymentRunRecord {
   id: string;
   projectId: string;
   sourceVersionId?: string;
+  deployItems?: string[];
   compareRunId?: string;
   precheckRunId?: string;
   status: "started" | "finished" | "blocked";
@@ -577,6 +578,83 @@ function saveProjectSetupVersion(record: ProjectSetupVersionRecord): void {
   const items = readJsonArrayFile<ProjectSetupVersionRecord>(LOCAL_PROJECT_SETUP_VERSIONS_FILE);
   items.push(record);
   writeJsonArrayFile(LOCAL_PROJECT_SETUP_VERSIONS_FILE, items);
+}
+
+function getProjectSetupVersionArtifactFile(versionId: string): string {
+  const safeVersionId = String(versionId || "").trim().replace(/[^a-zA-Z0-9_.-]/g, "_");
+  return path.resolve(process.cwd(), "artifacts/project-setup-versions", `${safeVersionId}.json`);
+}
+
+function saveProjectSetupVersionArtifact(versionId: string, setupDocument: unknown): string {
+  const artifactFile = getProjectSetupVersionArtifactFile(versionId);
+  mkdirSync(path.dirname(artifactFile), { recursive: true });
+  writeFileSync(artifactFile, JSON.stringify(setupDocument, null, 2), "utf8");
+  return `file:${path.relative(process.cwd(), artifactFile)}`;
+}
+
+function readProjectSetupVersionArtifact(record?: ProjectSetupVersionRecord): SetupExportDocument | null {
+  const artifactRef = String(record?.artifactRef || "").trim();
+  if (!artifactRef.startsWith("file:")) {
+    return null;
+  }
+  const relativePath = artifactRef.slice("file:".length);
+  const artifactFile = path.resolve(process.cwd(), relativePath);
+  if (!existsSync(artifactFile)) {
+    return null;
+  }
+  try {
+    return JSON.parse(readFileSync(artifactFile, "utf8")) as SetupExportDocument;
+  } catch {
+    return null;
+  }
+}
+
+function summarizeSetupDocumentDiff(previous: SetupExportDocument | null, current: SetupExportDocument): string {
+  const signature = (item: Record<string, unknown>, keys: string[]): string => keys
+    .map((key) => String(item[key] || "").trim().toLowerCase())
+    .join("|");
+  const describeCollection = (
+    label: string,
+    previousItems: Array<Record<string, unknown>>,
+    currentItems: Array<Record<string, unknown>>,
+    keys: string[]
+  ): string[] => {
+    const previousByKey = new Map(previousItems.map((item) => [signature(item, keys), item]));
+    const currentByKey = new Map(currentItems.map((item) => [signature(item, keys), item]));
+    const added = Array.from(currentByKey.keys()).filter((key) => key && !previousByKey.has(key));
+    const removed = Array.from(previousByKey.keys()).filter((key) => key && !currentByKey.has(key));
+    const changed = Array.from(currentByKey.entries())
+      .filter(([key, item]) => previousByKey.has(key) && JSON.stringify(previousByKey.get(key)) !== JSON.stringify(item));
+    const parts: string[] = [];
+    if (added.length) parts.push(`${added.length} ${label} hinzugefuegt`);
+    if (changed.length) parts.push(`${changed.length} ${label} geaendert`);
+    if (removed.length) parts.push(`${removed.length} ${label} entfernt`);
+    return parts;
+  };
+
+  if (!previous) {
+    return [
+      "Initiale Setup-Version erstellt.",
+      `Enthaelt ${current.connectors?.length || 0} Connectoren und ${current.schedules?.length || 0} Scheduler.`
+    ].join(" ");
+  }
+
+  const connectorSummary = describeCollection(
+    "Connectoren",
+    (previous.connectors || []) as unknown as Array<Record<string, unknown>>,
+    (current.connectors || []) as unknown as Array<Record<string, unknown>>,
+    ["name", "connectorType", "targetSystem", "direction"]
+  );
+  const scheduleSummary = describeCollection(
+    "Scheduler",
+    (previous.schedules || []) as unknown as Array<Record<string, unknown>>,
+    (current.schedules || []) as unknown as Array<Record<string, unknown>>,
+    ["name", "sourceType", "targetType", "objectName", "operation", "direction"]
+  );
+  const summary = [...connectorSummary, ...scheduleSummary];
+  return summary.length
+    ? `Setup-Aenderungen zur vorherigen Version: ${summary.join(", ")}.`
+    : "Keine strukturellen Aenderungen zur vorherigen Setup-Version erkannt.";
 }
 
 function readDeploymentRuns(projectId: string): DeploymentRunRecord[] {
@@ -3444,6 +3522,7 @@ export function createAppServer(
       const adminProjectMigrationsMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/migrations$/);
       const adminProjectMigrationRunMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/migrations\/([^/]+)\/run$/);
       const adminProjectSetupVersionsMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/setup\/versions$/);
+      const adminProjectSetupVersionNoteSuggestionMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/setup\/version-note-suggestion$/);
       const adminProjectRolloutKpisMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/rollout\/kpis$/);
       const adminProjectDeployCompareMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/compare$/);
       const adminProjectDeployCompareByIdMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/compare\/([^/]+)$/);
@@ -4033,13 +4112,46 @@ export function createAppServer(
         return;
       }
 
+      if (adminProjectSetupVersionNoteSuggestionMatch && req.method === "POST") {
+        const projectId = decodeURIComponent(adminProjectSetupVersionNoteSuggestionMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "read")) {
+          sendJson(403, { error: "Projekt-Lesezugriff fehlt" });
+          return;
+        }
+        const body = (await readJsonBody(req)) as { instanceId?: string };
+        const project = adminDataService.getProjectConfig(projectId);
+        if (!project) {
+          sendJson(404, { error: "Projekt nicht gefunden" });
+          return;
+        }
+
+        const instances = adminDataService.listInstances();
+        const selectedInstanceId = String(body.instanceId || "").trim() || String(getProjectPrimaryInstance(projectId, instances)?.id || "").trim();
+        const selectedInstance = getProjectInstances(projectId, instances).find((item) => item.id === selectedInstanceId) || getProjectPrimaryInstance(projectId, instances);
+        if (!selectedInstance) {
+          sendJson(409, { error: "Projekt hat keine zugeordnete Instanz fuer den Setup-Export." });
+          return;
+        }
+
+        const setupDocument = await adminDataService.exportSetup(selectedInstance.id);
+        const previousVersion = readProjectSetupVersions(projectId).at(-1);
+        const previousDocument = readProjectSetupVersionArtifact(previousVersion);
+        sendJson(200, {
+          projectId,
+          instanceId: selectedInstance.id,
+          previousVersionId: previousVersion?.id,
+          note: summarizeSetupDocumentDiff(previousDocument, setupDocument)
+        });
+        return;
+      }
+
       if (adminProjectSetupVersionsMatch && req.method === "POST") {
         const projectId = decodeURIComponent(adminProjectSetupVersionsMatch[1]);
         if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
           sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
           return;
         }
-        const body = (await readJsonBody(req)) as { instanceId?: string; note?: string; artifactRef?: string; author?: string };
+        const body = (await readJsonBody(req)) as { instanceId?: string; note?: string; artifactRef?: string; author?: string; generateNote?: boolean };
         const project = adminDataService.getProjectConfig(projectId);
         if (!project) {
           sendJson(404, { error: "Projekt nicht gefunden" });
@@ -4056,16 +4168,20 @@ export function createAppServer(
 
         const setupDocument = await adminDataService.exportSetup(selectedInstance.id);
         const existingVersions = readProjectSetupVersions(projectId);
+        const generatedNote = body.generateNote === true || !String(body.note || "").trim()
+          ? summarizeSetupDocumentDiff(readProjectSetupVersionArtifact(existingVersions.at(-1)), setupDocument)
+          : "";
         const nextVersion = existingVersions.length ? Math.max(...existingVersions.map((item) => Number(item.version || 0))) + 1 : 1;
         const record: ProjectSetupVersionRecord = {
           id: `setup-${projectId}-${nextVersion}-${Date.now()}`,
           projectId,
           version: nextVersion,
-          artifactRef: String(body.artifactRef || `setup:${projectId}:${nextVersion}`).trim(),
+          artifactRef: String(body.artifactRef || "").trim(),
           author: String(body.author || session?.username || "").trim() || undefined,
-          note: String(body.note || "").trim() || undefined,
+          note: String(body.note || generatedNote || "").trim() || undefined,
           createdAt: new Date().toISOString()
         };
+        record.artifactRef = record.artifactRef || saveProjectSetupVersionArtifact(record.id, setupDocument);
         saveProjectSetupVersion(record);
         await appendAuditHistory({ actor: auditActor, action: "setup.version.create", entityType: "project-setup-version", entityId: record.id, entityName: `${project.name} v${record.version}` });
         sendJson(201, { record, setupDocument });
@@ -4468,6 +4584,27 @@ export function createAppServer(
           sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
           return;
         }
+        const body = (await readJsonBody(req)) as { sourceVersionId?: string; deployItems?: string[] };
+        const requestedVersionId = String(body.sourceVersionId || "").trim();
+        const deployItems = Array.isArray(body.deployItems)
+          ? Array.from(new Set(body.deployItems.map((item) => String(item || "").trim()).filter(Boolean)))
+          : ["project", "connectors", "schedules"];
+        const allowedDeployItems = new Set(["project", "connectors", "schedules", "migrations", "documentation"]);
+        const normalizedDeployItems = deployItems.filter((item) => allowedDeployItems.has(item));
+        if (!normalizedDeployItems.length) {
+          sendJson(400, { error: "Deployment blockiert: Es muss mindestens ein Deployment-Bestandteil ausgewaehlt sein." });
+          return;
+        }
+
+        const setupVersions = readProjectSetupVersions(projectId);
+        const selectedSetupVersion = requestedVersionId
+          ? setupVersions.find((item) => item.id === requestedVersionId)
+          : setupVersions.at(-1);
+        if (requestedVersionId && !selectedSetupVersion) {
+          sendJson(404, { error: "Ausgewaehlte Setup-Version wurde nicht gefunden." });
+          return;
+        }
+
         const compareRuns = readJsonArrayFile<DeploymentCompareRunRecord>(LOCAL_DEPLOYMENT_COMPARE_RUNS_FILE)
           .filter((item) => item.projectId === projectId)
           .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || ""), "de"));
@@ -4513,11 +4650,11 @@ export function createAppServer(
           return;
         }
 
-        const latestSetupVersion = readProjectSetupVersions(projectId).at(-1);
         const deploymentRun: DeploymentRunRecord = {
           id: `dep-${Date.now()}`,
           projectId,
-          sourceVersionId: latestSetupVersion?.id,
+          sourceVersionId: selectedSetupVersion?.id,
+          deployItems: normalizedDeployItems,
           compareRunId: latestCompare.id,
           precheckRunId: latestPrecheck.id,
           status: "started",
@@ -4535,6 +4672,7 @@ export function createAppServer(
           precheckRunId: latestPrecheck.id,
           deploymentRunId: deploymentRun.id,
           sourceVersionId: deploymentRun.sourceVersionId,
+          deployItems: deploymentRun.deployItems,
           startedAt: new Date().toISOString()
         });
         return;
@@ -4831,6 +4969,7 @@ export function createAppServer(
         }
 
         const connectors = await adminDataService.listConnectors(instanceId);
+        const schedules = await adminDataService.listSchedules(instanceId);
         const metadataContext = await adminDataService.getInstanceMetadataContext(instanceId);
         const sage100DocumentationContext = adminDataService.getSage100DocumentationContext(userPrompt);
         const aiService = new AISchedulerService();
@@ -4840,6 +4979,7 @@ export function createAppServer(
           targetSystem: body.targetSystem,
           objectName: body.objectName,
           existingConnectors: connectors,
+          existingSchedules: schedules,
           metadataContext,
           sage100DocumentationContext
         });

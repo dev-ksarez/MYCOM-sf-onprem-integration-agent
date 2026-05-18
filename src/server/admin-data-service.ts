@@ -5268,7 +5268,12 @@ export class AdminDataService {
   public async saveSchedule(
     input: ScheduleMutationInput,
     instanceId?: string
-  ): Promise<{ id: string; action: "created" | "updated" }> {
+  ): Promise<{
+    id: string;
+    action: "created" | "updated";
+    sourceDefinition?: string;
+    mappingDefinition?: string;
+  }> {
     const resolvedInstance = this.resolveInstance(instanceId);
     const client = await this.createClient(resolvedInstance.id);
     const sourceType = normalizeScheduleType(input.sourceType);
@@ -5349,14 +5354,26 @@ export class AdminDataService {
       if (input.active) {
         this.clearScheduleAutoDisabledFlag(input.id);
       }
-      return { id: input.id, action: "updated" };
+      const persisted = await client.queryScheduleById(input.id);
+      return {
+        id: input.id,
+        action: "updated",
+        sourceDefinition: persisted.MSD_SourceDefinition__c,
+        mappingDefinition: persisted.MSD_MappingDefinition__c
+      };
     }
 
     // Create new record - Name field should not be set as it's auto-generated
     const id = await client.createScheduleRecord(fields);
     this.invalidateAdaptiveSalesforceCache(resolvedInstance.id, ["listSchedules", "scheduleFormOptions"]);
     this.saveLocalTimingDefinition(resolvedInstance.id, id, input.timingDefinition);
-    return { id, action: "created" };
+    const persisted = await client.queryScheduleById(id);
+    return {
+      id,
+      action: "created",
+      sourceDefinition: persisted.MSD_SourceDefinition__c,
+      mappingDefinition: persisted.MSD_MappingDefinition__c
+    };
   }
 
   public async duplicateSchedule(
