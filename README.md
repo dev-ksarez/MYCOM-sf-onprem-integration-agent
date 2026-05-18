@@ -352,7 +352,7 @@ Getrennte Host-Verifikation per Docker:
 npm run docker:test:separated-hosts
 ```
 
-Das Compose-Szenario laedt dabei bewusst auch die lokale `.env`, damit die bisherige Default-Salesforce-Konfiguration im Docker-Test identisch zum bestehenden Einzel-Setup verfuegbar ist.
+Das Compose-Szenario gibt Secrets gezielt pro Container weiter und laedt nicht mehr die komplette lokale `.env` in beide Dienste. Vor dem Start muessen mindestens `AGENT_API_TOKEN` und `AGENT_REMOTE_TOKEN` gesetzt sein; beide Werte muessen identisch sein.
 
 Dabei werden zwei Container gestartet:
 
@@ -368,13 +368,9 @@ Dabei werden zwei Container gestartet:
 
 Test-Login im Docker-Szenario:
 
-- Benutzer: `admin`
-- Passwort: `admin123!`
-
-Viewer-Test:
-
-- Benutzer: `viewer`
-- Passwort: `viewer123!`
+- Im Produktionsmodus erzeugt Docker keinen Default-Admin mehr.
+- Lege vor dem Start `artifacts/admin-users.json` an oder setze `ADMIN_UI_USERS_JSON`/`ADMIN_UI_USERS_FILE`.
+- Neue oder ueber die UI gespeicherte lokale Passwoerter werden als `scrypt`-Hash persistiert.
 
 Hinweis fuer Datei-Connectoren:
 
@@ -393,12 +389,7 @@ Artefakt:
 
 - `artifacts/sf-onprem-integration-agent-customer-installer-<version>.zip`
 
-Das Paket enthaelt fuer lokale Admin-Anmeldung standardmaessig eine Bootstrap-Datei `artifacts/admin-users.json` mit:
-
-- Benutzer: `admin`
-- Passwort: `admin123!`
-
-Dieses Passwort sollte nach der ersten Anmeldung direkt ueber die Admin-Benutzerverwaltung geaendert werden.
+Fuer lokale Admin-Anmeldung muss eine Benutzerdatei `artifacts/admin-users.json` vorhanden sein oder ueber `ADMIN_UI_USERS_JSON`/`ADMIN_UI_USERS_FILE` bereitgestellt werden. Neue oder ueber die UI gespeicherte lokale Passwoerter werden als `scrypt`-Hash persistiert.
 
 Optional (groesser, dafuer ohne npm-Install auf Kundensystem):
 

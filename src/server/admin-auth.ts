@@ -307,6 +307,9 @@ function loadUsersFromConfig(): AdminUserRecord[] {
   const username = String(process.env.ADMIN_UI_USERNAME || "").trim();
   const password = String(process.env.ADMIN_UI_PASSWORD || "");
   if (!username || !password) {
+    if (process.env.NODE_ENV === "production") {
+      return [];
+    }
     const bootstrapUser = createBootstrapAdminUser();
     writeUsersFile([bootstrapUser]);
     return [bootstrapUser];
