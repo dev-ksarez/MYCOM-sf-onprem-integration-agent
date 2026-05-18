@@ -2022,6 +2022,47 @@ export class SalesforceClient {
     return result.records;
   }
 
+  public async queryLatestLogsByRunIds(runIds: string[]): Promise<Map<string, SalesforceLogRecord>> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedRunIds = Array.from(new Set(
+      runIds.map((runId) => String(runId || "").trim()).filter(Boolean)
+    ));
+    const latestByRunId = new Map<string, SalesforceLogRecord>();
+
+    for (let index = 0; index < normalizedRunIds.length; index += 100) {
+      const chunk = normalizedRunIds.slice(index, index + 100);
+      const quotedIds = chunk.map((runId) => `'${escapeSoqlLiteral(runId)}'`).join(", ");
+      const soql = `
+        SELECT
+          Id,
+          MSD_Run__c,
+          MSD_Level__c,
+          MSD_Step__c,
+          MSD_Message__c,
+          MSD_RecordKey__c,
+          MSD_CorrelationId__c,
+          CreatedDate
+        FROM MSD_Log__c
+        WHERE MSD_Run__c IN (${quotedIds})
+        ORDER BY CreatedDate DESC
+        LIMIT ${Math.max(1, chunk.length * 10)}
+      `;
+
+      const result = await this.connection.query<SalesforceLogRecord>(soql);
+      for (const record of result.records) {
+        const runId = String(record.MSD_Run__c || "").trim();
+        if (runId && !latestByRunId.has(runId)) {
+          latestByRunId.set(runId, record);
+        }
+      }
+    }
+
+    return latestByRunId;
+  }
+
   public async queryLogsByDateRange(startIso: string, endIso: string, limit = 2000, level?: "ERROR" | "WARN" | "INFO"): Promise<SalesforceLogRecord[]> {
     if (!this.connection) {
       throw new Error("Salesforce connection not initialized. Call login() first.");

@@ -4590,15 +4590,15 @@ export class AdminDataService {
       const inactivityThresholdMs = inactivityThresholdMinutes * 60 * 1000;
       const now = Date.now();
       const runs = await client.queryRunningRuns(limit);
+      const latestLogsByRunId = await client.queryLatestLogsByRunIds(runs.map((run) => run.Id)).catch(() => new Map());
 
-    const staleCandidates = await Promise.all(runs.map(async (run) => {
+    const staleCandidates = runs.map((run) => {
         const startedAt = run.MSD_StartedAt__c;
         const startedAtMs = startedAt ? new Date(startedAt).getTime() : Number.NaN;
         const ageMinutes = Number.isNaN(startedAtMs)
           ? staleThresholdMinutes
           : Math.max(0, Math.round((now - startedAtMs) / 60000));
-        const latestLogs = await client.queryLogsByRunId(run.Id, 1);
-        const latestLogCreatedAt = latestLogs[0]?.CreatedDate;
+        const latestLogCreatedAt = latestLogsByRunId.get(run.Id)?.CreatedDate;
         const latestLogMs = latestLogCreatedAt ? new Date(latestLogCreatedAt).getTime() : Number.NaN;
         const activityReferenceMs = !Number.isNaN(latestLogMs) ? latestLogMs : startedAtMs;
         const inactivityThresholdMinutes = getStaleRunInactivityThresholdMinutesForSchedule(
@@ -4630,7 +4630,7 @@ export class AdminDataService {
           inactivityThresholdMinutes,
           isStale: isStartedAtStale || isInactiveStale
         };
-      }));
+      });
 
       return staleCandidates
         .filter((run) => run.isStale)
