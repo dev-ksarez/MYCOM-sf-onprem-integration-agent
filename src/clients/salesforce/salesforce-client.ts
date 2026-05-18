@@ -885,6 +885,29 @@ export class SalesforceClient {
     return records.map((record) => ({ ...record }));
   }
 
+  public async *queryGenericStream(soql: string): AsyncIterable<Record<string, unknown>> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const trimmedSoql = soql.trim();
+    if (!trimmedSoql) {
+      throw new Error("SOQL query must not be empty");
+    }
+
+    let result = await this.connection.query<Record<string, unknown>>(trimmedSoql);
+    for (const record of result.records) {
+      yield { ...record };
+    }
+
+    while (!result.done && result.nextRecordsUrl) {
+      result = await this.connection.queryMore<Record<string, unknown>>(result.nextRecordsUrl);
+      for (const record of result.records) {
+        yield { ...record };
+      }
+    }
+  }
+
   public async ensurePermissionSetAssigned(permissionSetName: string): Promise<{ assigned: boolean; alreadyExisted: boolean }> {
     if (!this.connection) {
       throw new Error("Salesforce connection not initialized. Call login() first.");
