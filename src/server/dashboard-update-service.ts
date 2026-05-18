@@ -14,6 +14,21 @@ import { fetchRemoteAgentUpdateStatus, isRemoteAgentConfigured, triggerRemoteAge
 const UPDATE_PREPARING_STALE_MS = 90 * 1000;
 const UPDATE_RUNNING_STALE_MS = 15 * 60 * 1000;
 
+function getUpdateManifestTimeoutMs(): number {
+  const configured = Number(process.env.UPDATE_MANIFEST_TIMEOUT_MS || "");
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 10_000;
+}
+
+async function fetchWithTimeout(input: Parameters<typeof fetch>[0], init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), getUpdateManifestTimeoutMs());
+  try {
+    return await fetch(input, { ...init, signal: init.signal || controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export type DashboardUpdateStatus = UpdateServiceStatus;
 
 export interface DashboardUpdateTriggerResult {
@@ -114,7 +129,7 @@ export async function getDashboardUpdateStatus(): Promise<DashboardUpdateStatus>
   const terminalProgress = isTerminalProgressState(progress) ? progress : null;
 
   try {
-    const response = await fetch(DEFAULT_UPDATE_MANIFEST_URL, {
+    const response = await fetchWithTimeout(DEFAULT_UPDATE_MANIFEST_URL, {
       headers: { Accept: "application/json" }
     });
     if (!response.ok) {

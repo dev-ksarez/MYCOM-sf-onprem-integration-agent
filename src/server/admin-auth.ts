@@ -92,6 +92,21 @@ const DEFAULT_PROJECT_MEMBERSHIPS_FILE = path.resolve(process.cwd(), "artifacts/
 const PASSWORD_HASH_PREFIX = "scrypt";
 const PASSWORD_HASH_KEY_LENGTH = 64;
 
+function getAdminAuthHttpTimeoutMs(): number {
+  const configured = Number(process.env.ADMIN_AUTH_HTTP_TIMEOUT_MS || "");
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 15_000;
+}
+
+async function fetchWithTimeout(input: Parameters<typeof fetch>[0], init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), getAdminAuthHttpTimeoutMs());
+  try {
+    return await fetch(input, { ...init, signal: init.signal || controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function hashAdminPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString("hex");
   const derivedKey = crypto.scryptSync(password, salt, PASSWORD_HASH_KEY_LENGTH).toString("hex");
@@ -957,7 +972,7 @@ export async function completeSalesforceLogin(code: string, state: string, confi
     tokenRequestBody.set("code_verifier", pendingState.codeVerifier);
   }
 
-  const tokenResponse = await fetch(tokenEndpoint, {
+  const tokenResponse = await fetchWithTimeout(tokenEndpoint, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: tokenRequestBody
@@ -986,7 +1001,7 @@ export async function completeSalesforceLogin(code: string, state: string, confi
     throw new Error("Salesforce-Identity-URL fehlt in der Token-Antwort.");
   }
 
-  const identityResponse = await fetch(identityUrl, {
+  const identityResponse = await fetchWithTimeout(identityUrl, {
     headers: { Authorization: `Bearer ${tokenPayload.access_token}` }
   });
   const identityPayload = (await identityResponse.json()) as {

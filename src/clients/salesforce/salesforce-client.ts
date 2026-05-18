@@ -2,6 +2,21 @@ import { Connection } from "jsforce";
 import { SalesforceConfig } from "../../infrastructure/config/salesforce-config";
 import { getStaleRunInactivityThresholdMinutesForSchedule } from "../../core/scheduler/stale-run-policy";
 
+function getSalesforceHttpTimeoutMs(): number {
+  const configured = Number(process.env.SALESFORCE_HTTP_TIMEOUT_MS || "");
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 30_000;
+}
+
+async function fetchWithTimeout(input: Parameters<typeof fetch>[0], init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), getSalesforceHttpTimeoutMs());
+  try {
+    return await fetch(input, { ...init, signal: init.signal || controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function normalizeSalesforceLoginUrl(loginUrl?: string): string {
   const rawValue = String(loginUrl || "").trim();
   if (!rawValue) {
@@ -721,7 +736,7 @@ export class SalesforceClient {
           client_secret: clientSecret,
           refresh_token: refreshToken
         });
-        const response = await fetch(tokenUrl, {
+        const response = await fetchWithTimeout(tokenUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/x-www-form-urlencoded"
@@ -764,7 +779,7 @@ export class SalesforceClient {
         client_id: String(this.config.clientId || ""),
         client_secret: String(this.config.clientSecret || "")
       });
-      const response = await fetch(tokenUrl, {
+      const response = await fetchWithTimeout(tokenUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded"

@@ -10,6 +10,21 @@ function getRemoteToken(): string {
   return String(process.env.AGENT_REMOTE_TOKEN || "").trim();
 }
 
+function getRemoteTimeoutMs(): number {
+  const configured = Number(process.env.AGENT_REMOTE_TIMEOUT_MS || "");
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 10_000;
+}
+
+async function fetchWithTimeout(input: Parameters<typeof fetch>[0], init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), getRemoteTimeoutMs());
+  try {
+    return await fetch(input, { ...init, signal: init.signal || controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function isRemoteAgentConfigured(): boolean {
   return Boolean(getRemoteBaseUrl());
 }
@@ -21,7 +36,7 @@ async function remoteRequest<T>(pathname: string, options: RequestInit = {}): Pr
   }
 
   const token = getRemoteToken();
-  const response = await fetch(`${baseUrl}${pathname}`, {
+  const response = await fetchWithTimeout(`${baseUrl}${pathname}`, {
     ...options,
     headers: {
       Accept: "application/json",
