@@ -4,6 +4,8 @@ import { triggerDashboardUpdate, getDashboardUpdateStatus } from "../server/dash
 import { buildSystemHealthSnapshot, HealthSnapshot } from "../server/health-snapshot";
 import { readConfiguredSalesforceInstances, writeConfiguredSalesforceInstances, type SalesforceInstanceEnvConfig } from "../server/admin-data-service";
 
+const failedAuthAttempts = new Map<string, { count: number; resetAt: number }>();
+
 function getAgentApiToken(): string {
   return String(process.env.AGENT_API_TOKEN || "").trim();
 }
@@ -26,6 +28,48 @@ function constantTimeEquals(left: string, right: string): boolean {
     return false;
   }
   return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function getClientKey(req: http.IncomingMessage): string {
+  const forwardedFor = Array.isArray(req.headers["x-forwarded-for"]) ? req.headers["x-forwarded-for"][0] : req.headers["x-forwarded-for"];
+  return String(forwardedFor || req.socket.remoteAddress || "unknown").split(",")[0].trim() || "unknown";
+}
+
+function getAuthRateLimitWindowMs(): number {
+  const configured = Number(process.env.AGENT_API_AUTH_RATE_LIMIT_WINDOW_MS || "");
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 60_000;
+}
+
+function getAuthRateLimitMaxFailures(): number {
+  const configured = Number(process.env.AGENT_API_AUTH_RATE_LIMIT_MAX_FAILURES || "");
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 20;
+}
+
+function isAuthRateLimited(req: http.IncomingMessage): boolean {
+  const entry = failedAuthAttempts.get(getClientKey(req));
+  if (!entry) {
+    return false;
+  }
+  if (entry.resetAt <= Date.now()) {
+    failedAuthAttempts.delete(getClientKey(req));
+    return false;
+  }
+  return entry.count >= getAuthRateLimitMaxFailures();
+}
+
+function recordAuthFailure(req: http.IncomingMessage): void {
+  const key = getClientKey(req);
+  const now = Date.now();
+  const existing = failedAuthAttempts.get(key);
+  if (!existing || existing.resetAt <= now) {
+    failedAuthAttempts.set(key, { count: 1, resetAt: now + getAuthRateLimitWindowMs() });
+    return;
+  }
+  failedAuthAttempts.set(key, { count: existing.count + 1, resetAt: existing.resetAt });
+}
+
+function clearAuthFailures(req: http.IncomingMessage): void {
+  failedAuthAttempts.delete(getClientKey(req));
 }
 
 function isAuthorized(req: http.IncomingMessage): boolean {
@@ -134,10 +178,17 @@ export function createAgentApiServer(getHealthSnapshot: () => HealthSnapshot): h
         res.end(JSON.stringify(payload));
       };
 
+      if (isAuthRateLimited(req)) {
+        sendJson(429, { error: "Zu viele ungueltige Agent-API Token-Versuche" });
+        return;
+      }
+
       if (!isAuthorized(req)) {
+        recordAuthFailure(req);
         sendJson(401, { error: "Agent-API Token fehlt oder ist ungueltig" });
         return;
       }
+      clearAuthFailures(req);
 
       if (req.method === "GET" && requestUrl.pathname === "/api/agent/health") {
         sendJson(200, await buildSystemHealthSnapshot(getHealthSnapshot()));
