@@ -498,6 +498,26 @@ async function archiveFile(originalPath: string, fileName: string, archivePath: 
   await fs.rename(originalPath, assertPathInsideRoot(targetPath, archivePath, "Archivdatei"));
 }
 
+function getMaxFileBytes(): number {
+  const configured = Number(process.env.FILE_CONNECTOR_MAX_FILE_BYTES || "");
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 25 * 1024 * 1024;
+}
+
+async function assertReadableFileSize(absolutePath: string): Promise<void> {
+  const stat = await fs.stat(absolutePath);
+  const maxBytes = getMaxFileBytes();
+  if (stat.size > maxBytes) {
+    throw new Error(`Datei ist zu gross (${stat.size} Bytes, Limit ${maxBytes} Bytes)`);
+  }
+}
+
+function assertBufferSize(buffer: Buffer): void {
+  const maxBytes = getMaxFileBytes();
+  if (buffer.length > maxBytes) {
+    throw new Error(`Datei ist zu gross (${buffer.length} Bytes, Limit ${maxBytes} Bytes)`);
+  }
+}
+
 export async function parseFileFromConnector(
   connectorConfig: ConnectorConfig,
   rawDefinition: string,
@@ -509,6 +529,8 @@ export async function parseFileFromConnector(
   const archiveTargetPath = resolveArchiveTargetPath(definition, runtime);
   const format = definition.format || detectFormatByName(fileName);
   const charset = String(definition.charset || runtime.defaultCharset).trim() || "utf8";
+
+  await assertReadableFileSize(absolutePath);
 
   if (format === "json") {
     const raw = await fs.readFile(absolutePath, { encoding: charset as BufferEncoding });
@@ -660,6 +682,7 @@ export async function writeFileFromConnector(
 }
 
 export function analyzeUploadedFile(fileName: string, content: Buffer): ParsedUploadPayload {
+  assertBufferSize(content);
   const format = detectFormatByName(fileName);
 
   if (format === "json") {
