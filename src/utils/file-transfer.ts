@@ -232,7 +232,7 @@ function normalizeRelativeDirectory(rawValue: unknown): string {
   }
 
   const segments = normalized
-    .split(path.sep)
+    .split(/[\\/]+/)
     .map((segment) => segment.trim())
     .filter(Boolean);
 
@@ -243,6 +243,22 @@ function normalizeRelativeDirectory(rawValue: unknown): string {
   return segments.join(path.sep);
 }
 
+function assertPathInsideRoot(candidatePath: string, rootPath: string, label: string): string {
+  const resolvedCandidate = path.resolve(candidatePath);
+  const resolvedRoot = path.resolve(rootPath);
+  const relativePath = path.relative(resolvedRoot, resolvedCandidate);
+  if (relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))) {
+    return resolvedCandidate;
+  }
+  throw new Error(`${label} darf den Connector-Pfad nicht verlassen`);
+}
+
+function resolveConnectorChildPath(rootPath: string, rawPath: unknown, fallback: string, label: string): string {
+  const value = String(rawPath || fallback).trim() || fallback;
+  const resolved = path.resolve(rootPath, value);
+  return assertPathInsideRoot(resolved, rootPath, label);
+}
+
 function resolveRuntimeConfig(connectorConfig: ConnectorConfig): FileConnectorRuntimeConfig {
   const parameters = connectorConfig.parameters || {};
   const basePath = path.resolve(
@@ -250,9 +266,9 @@ function resolveRuntimeConfig(connectorConfig: ConnectorConfig): FileConnectorRu
     String(parameters.basePath || parameters.fileBasePath || "artifacts/files")
   );
 
-  const importPath = path.resolve(basePath, String(parameters.importPath || "inbound"));
-  const exportPath = path.resolve(basePath, String(parameters.exportPath || "outbound"));
-  const archivePath = path.resolve(basePath, String(parameters.archivePath || "archive"));
+  const importPath = resolveConnectorChildPath(basePath, parameters.importPath, "inbound", "Import-Pfad");
+  const exportPath = resolveConnectorChildPath(basePath, parameters.exportPath, "outbound", "Export-Pfad");
+  const archivePath = resolveConnectorChildPath(basePath, parameters.archivePath, "archive", "Archiv-Pfad");
 
   return {
     basePath,
@@ -447,14 +463,18 @@ function buildAbsoluteFilePath(
     const absolutePath = path.isAbsolute(explicitPath)
       ? explicitPath
       : path.resolve(runtime.basePath, explicitPath);
-    return { absolutePath, fileName: path.basename(absolutePath) };
+    return {
+      absolutePath: assertPathInsideRoot(absolutePath, runtime.basePath, "Dateipfad"),
+      fileName: path.basename(absolutePath)
+    };
   }
 
   const root = mode === "read" ? runtime.importPath : runtime.exportPath;
   const relativeDirectory = normalizeRelativeDirectory(definition.relativeDirectory);
   const targetDirectory = relativeDirectory ? path.resolve(root, relativeDirectory) : root;
+  const absolutePath = path.resolve(targetDirectory, fileName);
   return {
-    absolutePath: path.resolve(targetDirectory, fileName),
+    absolutePath: assertPathInsideRoot(absolutePath, root, "Dateiname"),
     fileName
   };
 }
@@ -466,7 +486,8 @@ function resolveArchiveTargetPath(
   const relativeDirectory = normalizeRelativeDirectory(
     definition.archiveRelativeDirectory || definition.relativeDirectory
   );
-  return relativeDirectory ? path.resolve(runtime.archivePath, relativeDirectory) : runtime.archivePath;
+  const archivePath = relativeDirectory ? path.resolve(runtime.archivePath, relativeDirectory) : runtime.archivePath;
+  return assertPathInsideRoot(archivePath, runtime.archivePath, "Archivpfad");
 }
 
 async function archiveFile(originalPath: string, fileName: string, archivePath: string): Promise<void> {
@@ -474,7 +495,7 @@ async function archiveFile(originalPath: string, fileName: string, archivePath: 
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const archivedName = `${timestamp}-${fileName}`;
   const targetPath = path.resolve(archivePath, archivedName);
-  await fs.rename(originalPath, targetPath);
+  await fs.rename(originalPath, assertPathInsideRoot(targetPath, archivePath, "Archivdatei"));
 }
 
 export async function parseFileFromConnector(
