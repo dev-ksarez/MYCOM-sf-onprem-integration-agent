@@ -71,6 +71,7 @@ const LOCAL_DEPLOYMENT_PRECHECKS_FILE = path.resolve(process.cwd(), "artifacts/d
 const LOCAL_PROJECT_SETUP_VERSIONS_FILE = path.resolve(process.cwd(), "artifacts/project-setup-versions.json");
 const LOCAL_DEPLOYMENT_RUNS_FILE = path.resolve(process.cwd(), "artifacts/deployment-runs.json");
 const LOCAL_PROJECT_DOCUMENTATION_PAGES_FILE = path.resolve(process.cwd(), "artifacts/project-documentation-pages.json");
+const LOCAL_PROJECT_CURRENT_VERSIONS_FILE = path.resolve(process.cwd(), "artifacts/project-current-versions.json");
 const LOCAL_AGENT_HEARTBEATS_FILE = path.resolve(process.cwd(), "artifacts/agent-heartbeats.json");
 const LOCAL_AGENT_COMMANDS_FILE = path.resolve(process.cwd(), "artifacts/agent-commands.json");
 const LOCAL_AGENT_LOG_BUCKETS_FILE = path.resolve(process.cwd(), "artifacts/agent-log-buckets.json");
@@ -138,6 +139,14 @@ interface DeploymentRunRecord {
   finishedAt?: string;
 }
 
+interface ProjectCurrentVersionRecord {
+  projectId: string;
+  testVersionId?: string;
+  productionVersionId?: string;
+  updatedAt: string;
+  updatedBy?: string;
+}
+
 interface ProjectDocumentationPageRecord {
   projectId: string;
   pageId: string;
@@ -148,9 +157,10 @@ interface ConfluencePublishPageResult {
   published: boolean;
   pageId?: string;
   url?: string;
-  mode: "created" | "updated" | "dry-run";
+  mode: "created" | "updated" | "dry-run" | "error";
   title: string;
   error?: string;
+  missingConfig?: string[];
 }
 
 type AgentCommandType = "restart-agent" | "request-update" | "upload-error-log";
@@ -572,6 +582,63 @@ function readProjectSetupVersions(projectId: string): ProjectSetupVersionRecord[
   return readJsonArrayFile<ProjectSetupVersionRecord>(LOCAL_PROJECT_SETUP_VERSIONS_FILE)
     .filter((item) => item.projectId === projectId)
     .sort((a, b) => Number(a.version || 0) - Number(b.version || 0));
+}
+
+function readProjectCurrentVersion(projectId: string): ProjectCurrentVersionRecord | undefined {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) {
+    return undefined;
+  }
+  return readJsonArrayFile<ProjectCurrentVersionRecord>(LOCAL_PROJECT_CURRENT_VERSIONS_FILE)
+    .find((item) => item.projectId === normalizedProjectId);
+}
+
+function saveProjectCurrentVersion(record: ProjectCurrentVersionRecord): void {
+  const items = readJsonArrayFile<ProjectCurrentVersionRecord>(LOCAL_PROJECT_CURRENT_VERSIONS_FILE);
+  const next = items.filter((item) => item.projectId !== record.projectId);
+  next.push(record);
+  writeJsonArrayFile(LOCAL_PROJECT_CURRENT_VERSIONS_FILE, next);
+}
+
+function countSetupDocumentItems(document: SetupExportDocument | null): { connectors: number | null; schedules: number | null } {
+  if (!document) {
+    return { connectors: null, schedules: null };
+  }
+  return {
+    connectors: Array.isArray(document.connectors) ? document.connectors.length : 0,
+    schedules: Array.isArray(document.schedules) ? document.schedules.length : 0
+  };
+}
+
+function buildProjectDeploymentSummary(projectId: string): {
+  versionCount: number;
+  latestVersion?: ProjectSetupVersionRecord;
+  testVersion?: ProjectSetupVersionRecord;
+  productionVersion?: ProjectSetupVersionRecord;
+  versionsDiffer: boolean;
+  connectorCount: number | null;
+  scheduleCount: number | null;
+  lastDeployment?: DeploymentRunRecord;
+} {
+  const versions = readProjectSetupVersions(projectId);
+  const latestVersion = versions.at(-1);
+  const current = readProjectCurrentVersion(projectId);
+  const lastDeployment = readDeploymentRuns(projectId)[0];
+  const testVersion = versions.find((item) => item.id === current?.testVersionId) || latestVersion;
+  const productionVersion = versions.find((item) => item.id === current?.productionVersionId)
+    || versions.find((item) => item.id === lastDeployment?.sourceVersionId);
+  const counts = countSetupDocumentItems(readProjectSetupVersionArtifact(testVersion || latestVersion));
+
+  return {
+    versionCount: versions.length,
+    latestVersion,
+    testVersion,
+    productionVersion,
+    versionsDiffer: Boolean(testVersion?.id && productionVersion?.id && testVersion.id !== productionVersion.id),
+    connectorCount: counts.connectors,
+    scheduleCount: counts.schedules,
+    lastDeployment
+  };
 }
 
 function saveProjectSetupVersion(record: ProjectSetupVersionRecord): void {
@@ -1294,16 +1361,23 @@ async function publishProjectDocumentationToConfluence(input: {
   const parentId = String(input.project?.confluenceParentPageId || process.env.CONFLUENCE_PARENT_ID || "").trim();
   const titlePrefix = String(input.project?.confluencePageTitlePrefix || "").trim();
   const formatTitle = (title: string) => titlePrefix ? `${titlePrefix} ${title}` : title;
+  const missingConfig = [
+    !baseUrl ? "Confluence Base URL" : "",
+    !username ? "Confluence Benutzer" : "",
+    !apiToken ? "Confluence API Token" : ""
+  ].filter(Boolean);
 
-  if (!baseUrl || !username || !apiToken) {
+  if (missingConfig.length > 0) {
     return {
       published: false,
       mode: "dry-run",
       title: formatTitle(input.title),
+      missingConfig,
       childPages: (input.childPages || []).map((page) => ({
         published: false,
         mode: "dry-run",
-        title: formatTitle(page.title)
+        title: formatTitle(page.title),
+        missingConfig
       }))
     };
   }
@@ -1319,50 +1393,21 @@ async function publishProjectDocumentationToConfluence(input: {
   const upsertPage = async (recordKey: string, title: string, html: string, ancestorId?: string): Promise<ConfluencePublishPageResult> => {
     const pageTitle = formatTitle(title);
     const existing = pageMap[recordKey];
-    if (existing?.pageId) {
-      const lookupResponse = await fetch(`${baseUrl}/wiki/rest/api/content/${encodeURIComponent(existing.pageId)}?expand=version`, { headers });
-      if (!lookupResponse.ok) {
-        const status = lookupResponse.status;
-        const text = await lookupResponse.text().catch(() => "");
-        if (status === 404) {
-          // existing page was not found anymore - fall back to create
-          const createResponse = await fetch(`${baseUrl}/wiki/rest/api/content`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-              type: "page",
-              title: pageTitle,
-              space: spaceKey ? { key: spaceKey } : undefined,
-              ancestors: ancestorId ? [{ id: ancestorId }] : undefined,
-              body: { storage: { value: html, representation: "storage" } }
-            })
-          });
-          if (!createResponse.ok) {
-            const ctext = await createResponse.text().catch(() => "");
-            throw new Error(`Confluence-Erstellung fehlgeschlagen (${createResponse.status}): ${ctext}`);
-          }
-          const created = await createResponse.json() as { id?: string };
-          const pageId = String(created.id || "").trim();
-          if (pageId) {
-            saveProjectDocumentationPageRecord({ projectId: recordKey, pageId, updatedAt: new Date().toISOString() });
-            pageMap[recordKey] = { projectId: recordKey, pageId, updatedAt: new Date().toISOString() };
-          }
-          return { published: true, mode: "created", title: pageTitle, pageId: pageId || undefined, url: pageId ? `${baseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}` : undefined };
-        }
-        throw new Error(`Confluence-Seite ${existing.pageId} konnte nicht geladen werden (${lookupResponse.status}): ${text}`);
-      }
-      const content = await lookupResponse.json() as { version?: { number?: number } };
-      const version = Number(content?.version?.number || 1) + 1;
-      const ancestors = ancestorId && String(ancestorId) !== String(existing.pageId) ? (ancestorId ? [{ id: ancestorId }] : undefined) : undefined;
-      const updateResponse = await fetch(`${baseUrl}/wiki/rest/api/content/${encodeURIComponent(existing.pageId)}`, {
+    const rememberPage = (pageId: string) => {
+      saveProjectDocumentationPageRecord({ projectId: recordKey, pageId, updatedAt: new Date().toISOString() });
+      pageMap[recordKey] = { projectId: recordKey, pageId, updatedAt: new Date().toISOString() };
+    };
+    const updatePage = async (pageId: string, currentVersion: number): Promise<ConfluencePublishPageResult> => {
+      const ancestors = ancestorId && String(ancestorId) !== String(pageId) ? [{ id: ancestorId }] : undefined;
+      const updateResponse = await fetch(`${baseUrl}/wiki/rest/api/content/${encodeURIComponent(pageId)}`, {
         method: "PUT",
         headers,
         body: JSON.stringify({
-          id: existing.pageId,
+          id: pageId,
           type: "page",
           title: pageTitle,
-          version: { number: version },
-          ancestors: ancestors,
+          version: { number: currentVersion + 1 },
+          ancestors,
           body: {
             storage: {
               value: html,
@@ -1375,36 +1420,78 @@ async function publishProjectDocumentationToConfluence(input: {
         const text = await updateResponse.text().catch(() => "");
         throw new Error(`Confluence-Update fehlgeschlagen (${updateResponse.status}): ${text}`);
       }
-      return { published: true, mode: "updated", title: pageTitle, pageId: existing.pageId, url: `${baseUrl}/wiki/spaces/${spaceKey}/pages/${existing.pageId}` };
+      rememberPage(pageId);
+      return { published: true, mode: "updated", title: pageTitle, pageId, url: `${baseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}` };
+    };
+    const createPage = async (): Promise<ConfluencePublishPageResult> => {
+      const createResponse = await fetch(`${baseUrl}/wiki/rest/api/content`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          type: "page",
+          title: pageTitle,
+          space: spaceKey ? { key: spaceKey } : undefined,
+          ancestors: ancestorId ? [{ id: ancestorId }] : undefined,
+          body: {
+            storage: {
+              value: html,
+              representation: "storage"
+            }
+          }
+        })
+      });
+      if (!createResponse.ok) {
+        const text = await createResponse.text().catch(() => "");
+        throw new Error(`Confluence-Erstellung fehlgeschlagen (${createResponse.status}): ${text}`);
+      }
+      const created = await createResponse.json() as { id?: string };
+      const pageId = String(created.id || "").trim();
+      if (pageId) {
+        rememberPage(pageId);
+      }
+      return { published: true, mode: "created", title: pageTitle, pageId: pageId || undefined, url: pageId ? `${baseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}` : undefined };
+    };
+    const findPageByTitle = async (): Promise<{ id: string; version: number } | null> => {
+      if (!spaceKey) {
+        return null;
+      }
+      const searchUrl = `${baseUrl}/wiki/rest/api/content?spaceKey=${encodeURIComponent(spaceKey)}&title=${encodeURIComponent(pageTitle)}&type=page&expand=version`;
+      const searchResponse = await fetch(searchUrl, { headers });
+      if (!searchResponse.ok) {
+        const text = await searchResponse.text().catch(() => "");
+        throw new Error(`Confluence-Seitensuche fehlgeschlagen (${searchResponse.status}): ${text}`);
+      }
+      const searchResult = await searchResponse.json() as { results?: Array<{ id?: string; version?: { number?: number } }> };
+      const match = (searchResult.results || []).find((item) => String(item.id || "").trim());
+      if (!match?.id) {
+        return null;
+      }
+      return { id: String(match.id).trim(), version: Number(match.version?.number || 1) };
+    };
+
+    if (existing?.pageId) {
+      const lookupResponse = await fetch(`${baseUrl}/wiki/rest/api/content/${encodeURIComponent(existing.pageId)}?expand=version`, { headers });
+      if (!lookupResponse.ok) {
+        const status = lookupResponse.status;
+        const text = await lookupResponse.text().catch(() => "");
+        if (status === 404) {
+          const titleMatch = await findPageByTitle();
+          if (titleMatch) {
+            return updatePage(titleMatch.id, titleMatch.version);
+          }
+          return createPage();
+        }
+        throw new Error(`Confluence-Seite ${existing.pageId} konnte nicht geladen werden (${lookupResponse.status}): ${text}`);
+      }
+      const content = await lookupResponse.json() as { version?: { number?: number } };
+      return updatePage(existing.pageId, Number(content?.version?.number || 1));
     }
 
-    const createResponse = await fetch(`${baseUrl}/wiki/rest/api/content`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        type: "page",
-        title: pageTitle,
-        space: spaceKey ? { key: spaceKey } : undefined,
-        ancestors: ancestorId ? [{ id: ancestorId }] : undefined,
-        body: {
-          storage: {
-            value: html,
-            representation: "storage"
-          }
-        }
-      })
-    });
-    if (!createResponse.ok) {
-      const text = await createResponse.text().catch(() => "");
-      throw new Error(`Confluence-Erstellung fehlgeschlagen (${createResponse.status}): ${text}`);
+    const titleMatch = await findPageByTitle();
+    if (titleMatch) {
+      return updatePage(titleMatch.id, titleMatch.version);
     }
-    const created = await createResponse.json() as { id?: string };
-    const pageId = String(created.id || "").trim();
-    if (pageId) {
-      saveProjectDocumentationPageRecord({ projectId: recordKey, pageId, updatedAt: new Date().toISOString() });
-      pageMap[recordKey] = { projectId: recordKey, pageId, updatedAt: new Date().toISOString() };
-    }
-    return { published: true, mode: "created", title: pageTitle, pageId: pageId || undefined, url: pageId ? `${baseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}` : undefined };
+    return createPage();
   };
 
   try {
@@ -1421,10 +1508,10 @@ async function publishProjectDocumentationToConfluence(input: {
     const message = e && e.message ? String(e.message) : String(e ?? 'Unbekannter Fehler');
     return {
       published: false,
-      mode: "dry-run",
+      mode: "error",
       title: formatTitle(input.title),
       error: message,
-      childPages: (input.childPages || []).map((p) => ({ published: false, mode: "dry-run", title: formatTitle(p.title) }))
+      childPages: (input.childPages || []).map((p) => ({ published: false, mode: "error", title: formatTitle(p.title), error: message }))
     };
   }
 }
@@ -3504,7 +3591,7 @@ export function createAppServer(
         return;
       }
 
-      const instanceId = requestUrl.searchParams.get("instanceId") || undefined;
+      let instanceId = requestUrl.searchParams.get("instanceId") || undefined;
       const contextProjectId = String(requestUrl.searchParams.get("projectId") || "").trim();
       const contextTargetEnv = String(requestUrl.searchParams.get("targetEnv") || "").trim() === "production" ? "production" : "test";
       const connectorTestMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/test$/) : null;
@@ -3521,7 +3608,9 @@ export function createAppServer(
       const adminProjectMemberItemMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/members\/([^/]+)$/);
       const adminProjectMigrationsMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/migrations$/);
       const adminProjectMigrationRunMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/migrations\/([^/]+)\/run$/);
+      const adminProjectSummaryMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/summary$/);
       const adminProjectSetupVersionsMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/setup\/versions$/);
+      const adminProjectCurrentVersionMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/setup\/current-version$/);
       const adminProjectSetupVersionNoteSuggestionMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/setup\/version-note-suggestion$/);
       const adminProjectRolloutKpisMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/rollout\/kpis$/);
       const adminProjectDeployCompareMatch = requestUrl.pathname.match(/^\/api\/admin\/projects\/([^/]+)\/deploy\/compare$/);
@@ -3552,9 +3641,19 @@ export function createAppServer(
       })();
 
       if (isRuntimeContextEndpoint) {
-        const selectedInstance = instanceId
-          ? adminDataService.listInstances().find((item) => String(item.id || "") === String(instanceId || ""))
+        const instances = adminDataService.listInstances();
+        let selectedInstance = instanceId
+          ? instances.find((item) => String(item.id || "") === String(instanceId || ""))
           : null;
+
+        if (!selectedInstance) {
+          selectedInstance = instances.find((item) => {
+            const itemProjectId = String(item.projectId || "default-project").trim() || "default-project";
+            const itemTargetEnv = item.role === "production" ? "production" : "test";
+            return itemProjectId === contextProjectId && itemTargetEnv === contextTargetEnv;
+          }) || null;
+          instanceId = selectedInstance?.id || undefined;
+        }
 
         if (!selectedInstance) {
           sendJson(409, {
@@ -4077,6 +4176,32 @@ export function createAppServer(
         return;
       }
 
+      if (adminProjectSummaryMatch && req.method === "GET") {
+        const projectId = decodeURIComponent(adminProjectSummaryMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "read")) {
+          sendJson(403, { error: "Projekt-Lesezugriff fehlt" });
+          return;
+        }
+        const project = adminDataService.getProjectConfig(projectId);
+        if (!project) {
+          sendJson(404, { error: "Projekt nicht gefunden" });
+          return;
+        }
+        const summary = buildProjectDeploymentSummary(projectId);
+        sendJson(200, {
+          projectId,
+          connectorCount: summary.connectorCount,
+          scheduleCount: summary.scheduleCount,
+          versionCount: summary.versionCount,
+          latestVersion: summary.latestVersion,
+          testVersion: summary.testVersion,
+          productionVersion: summary.productionVersion,
+          versionsDiffer: summary.versionsDiffer,
+          lastDeployment: summary.lastDeployment
+        });
+        return;
+      }
+
       if (adminProjectSetupVersionsMatch && req.method === "GET") {
         const projectId = decodeURIComponent(adminProjectSetupVersionsMatch[1]);
         if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "read")) {
@@ -4086,6 +4211,67 @@ export function createAppServer(
         sendJson(200, {
           items: readProjectSetupVersions(projectId),
           total: readProjectSetupVersions(projectId).length
+        });
+        return;
+      }
+
+      if (adminProjectCurrentVersionMatch && req.method === "POST") {
+        const projectId = decodeURIComponent(adminProjectCurrentVersionMatch[1]);
+        if (session && !hasPermission(session, "admin") && !hasProjectAccess(session, projectId, "write")) {
+          sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
+          return;
+        }
+        const body = (await readJsonBody(req)) as { targetEnv?: "test" | "production"; versionId?: string };
+        const targetEnv = body.targetEnv === "production" ? "production" : "test";
+        const versionId = String(body.versionId || "").trim();
+        const versions = readProjectSetupVersions(projectId);
+        const selectedVersion = versions.find((item) => item.id === versionId);
+        if (!selectedVersion) {
+          sendJson(404, { error: "Ausgewaehlte Setup-Version wurde nicht gefunden." });
+          return;
+        }
+        const setupDocument = readProjectSetupVersionArtifact(selectedVersion);
+        if (!setupDocument) {
+          sendJson(409, { error: "Zur ausgewaehlten Setup-Version ist kein importierbares Artefakt vorhanden." });
+          return;
+        }
+
+        const projectInstances = getProjectInstances(projectId, adminDataService.listInstances());
+        const targetInstance = targetEnv === "production"
+          ? projectInstances.find((item) => item.role === "production")
+          : projectInstances.find((item) => item.role !== "production");
+        if (!targetInstance) {
+          sendJson(409, { error: `Keine ${targetEnv === "production" ? "Produktions" : "Test"}instanz fuer dieses Projekt konfiguriert.` });
+          return;
+        }
+
+        const importResult = await adminDataService.importSetup(setupDocument, targetInstance.id);
+        const existing = readProjectCurrentVersion(projectId);
+        const next: ProjectCurrentVersionRecord = {
+          projectId,
+          testVersionId: targetEnv === "test" ? selectedVersion.id : existing?.testVersionId,
+          productionVersionId: targetEnv === "production" ? selectedVersion.id : existing?.productionVersionId,
+          updatedAt: new Date().toISOString(),
+          updatedBy: session?.username || undefined
+        };
+        saveProjectCurrentVersion(next);
+        await appendAuditHistory({
+          actor: auditActor,
+          action: `setup.current-version.${targetEnv}`,
+          entityType: "project",
+          entityId: projectId,
+          entityName: `v${selectedVersion.version}`
+        });
+
+        sendJson(200, {
+          ok: true,
+          projectId,
+          targetEnv,
+          version: selectedVersion,
+          current: next,
+          importResult,
+          targetInstance,
+          summary: buildProjectDeploymentSummary(projectId)
         });
         return;
       }
@@ -4662,6 +4848,16 @@ export function createAppServer(
           startedAt: new Date().toISOString()
         };
         saveDeploymentRun(deploymentRun);
+        if (selectedSetupVersion?.id) {
+          const existingCurrent = readProjectCurrentVersion(projectId);
+          saveProjectCurrentVersion({
+            projectId,
+            testVersionId: latestCompare.direction === "production-to-test" ? selectedSetupVersion.id : existingCurrent?.testVersionId,
+            productionVersionId: latestCompare.direction === "test-to-production" ? selectedSetupVersion.id : existingCurrent?.productionVersionId,
+            updatedAt: new Date().toISOString(),
+            updatedBy: session?.username || undefined
+          });
+        }
         await appendAuditHistory({ actor: auditActor, action: "deploy.started", entityType: "deploy-run", entityId: deploymentRun.id, entityName: projectId });
 
         sendJson(202, {

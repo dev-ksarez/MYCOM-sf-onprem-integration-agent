@@ -1,23 +1,40 @@
 import "dotenv/config";
 import pino from "pino";
-import { readAgentHealthSnapshot, getDefaultAgentHealthSnapshot } from "./runtime/agent-health-store";
+import { readAgentHealthSnapshotStatus } from "./runtime/agent-health-store";
 import { fetchRemoteAgentHealth, isRemoteAgentConfigured, syncRemoteAgentInstances } from "./runtime/remote-agent-client";
 import { readConfiguredSalesforceInstances } from "./server/admin-data-service";
 import { createAppServer } from "./server/app";
-import { buildSystemHealthSnapshot } from "./server/health-snapshot";
+import { buildSystemHealthSnapshot, HealthSnapshot } from "./server/health-snapshot";
 
 const logger = pino({
   level: process.env.LOG_LEVEL || "info"
 });
 
 const webUiPort = Number(process.env.WEB_UI_PORT || 8080);
+const webStartedAt = new Date();
+const agentHealthMaxAgeMs = Number(process.env.AGENT_HEALTH_MAX_AGE_MS || 3 * 60 * 1000);
+
+function getWebOnlyHealthSnapshot(): HealthSnapshot {
+  return {
+    service: "ok",
+    scheduler: "idle",
+    startedAt: webStartedAt.toISOString(),
+    uptimeSeconds: process.uptime(),
+    lastRunError: undefined
+  };
+}
 
 async function getHealthSnapshot() {
   if (isRemoteAgentConfigured()) {
     return await fetchRemoteAgentHealth();
   }
 
-  return await buildSystemHealthSnapshot(readAgentHealthSnapshot() || getDefaultAgentHealthSnapshot());
+  const agentHealth = readAgentHealthSnapshotStatus(agentHealthMaxAgeMs);
+  if (agentHealth.snapshot && !agentHealth.stale) {
+    return await buildSystemHealthSnapshot(agentHealth.snapshot);
+  }
+
+  return await buildSystemHealthSnapshot(getWebOnlyHealthSnapshot());
 }
 
 async function main(): Promise<void> {

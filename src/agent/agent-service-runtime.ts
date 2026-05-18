@@ -28,6 +28,26 @@ const BACKOFF_STEP_MULTIPLIER = 2;
 const BACKOFF_MAX_CYCLES_WITHOUT_SCHEDULES = 4; // nach 4 Leerzyklen maximaler Backoff
 const BACKOFF_MAX_MULTIPLIER = 8; // maximal 8x Normalintervall
 
+function formatRuntimeError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "Unknown error";
+  }
+
+  const details: string[] = [error.message || error.name || "Unknown error"];
+  const cause = (error as Error & { cause?: unknown }).cause;
+  if (cause && typeof cause === "object") {
+    const causeRecord = cause as { code?: unknown; name?: unknown; message?: unknown };
+    const causeCode = String(causeRecord.code || causeRecord.name || "").trim();
+    const causeMessage = String(causeRecord.message || "").trim();
+    const causeText = [causeCode, causeMessage].filter(Boolean).join(": ");
+    if (causeText && !details.includes(causeText)) {
+      details.push(causeText);
+    }
+  }
+
+  return details.join(" (") + (details.length > 1 ? ")" : "");
+}
+
 export function createAgentServiceRuntime(options: AgentServiceRuntimeOptions): AgentServiceRuntime {
   const startedAt = new Date();
   let schedulerTimer: NodeJS.Timeout | undefined;
@@ -116,7 +136,7 @@ export function createAgentServiceRuntime(options: AgentServiceRuntimeOptions): 
       }
     } catch (error) {
       lastRunStatus = "error";
-      lastRunError = error instanceof Error ? error.message : "Unknown error";
+      lastRunError = formatRuntimeError(error);
       options.logger.error({ err: error }, "Scheduler cycle failed");
     } finally {
       lastRunFinishedAt = new Date().toISOString();
