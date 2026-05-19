@@ -97,6 +97,19 @@ export interface SaasPortalSnapshot {
     agentVersion?: string;
     lastHeartbeatAt?: string;
   }>;
+  recentRuns: Array<{
+    runId: string;
+    tenantKey: string;
+    projectKey: string;
+    schedulerKey: string;
+    direction: string;
+    status: string;
+    readRecords: number;
+    writtenRecords: number;
+    failedRecords: number;
+    startedAt: string;
+    finishedAt?: string;
+  }>;
 }
 
 function hashAgentToken(token: string, pepper: string): string {
@@ -129,7 +142,7 @@ export function createSaasRepository(options: SaasRepositoryOptions): SaasReposi
     },
 
     async getPortalSnapshot(): Promise<SaasPortalSnapshot> {
-      const [totalsResult, tenantsResult, projectsResult, agentsResult] = await Promise.all([
+      const [totalsResult, tenantsResult, projectsResult, agentsResult, runsResult] = await Promise.all([
         pool.query<{
           tenants: string;
           projects: string;
@@ -244,6 +257,39 @@ export function createSaasRepository(options: SaasRepositoryOptions): SaasReposi
             order by a.last_heartbeat_at desc nulls last, a.updated_at desc
             limit 25
           `
+        ),
+        pool.query<{
+          run_id: string;
+          tenant_key: string;
+          project_key: string;
+          scheduler_key: string;
+          direction: string;
+          status: string;
+          read_records: string;
+          written_records: string;
+          failed_records: string;
+          started_at: Date;
+          finished_at: Date | null;
+        }>(
+          `
+            select
+              r.id as run_id,
+              t.tenant_key,
+              p.project_key,
+              r.scheduler_key,
+              r.direction,
+              r.status,
+              r.read_records,
+              r.written_records,
+              r.failed_records,
+              r.started_at,
+              r.finished_at
+            from scheduler_runs r
+            join tenants t on t.id = r.tenant_id
+            join projects p on p.id = r.project_id
+            order by r.started_at desc
+            limit 50
+          `
         )
       ]);
 
@@ -289,6 +335,19 @@ export function createSaasRepository(options: SaasRepositoryOptions): SaasReposi
           mode: row.mode,
           agentVersion: row.agent_version || undefined,
           lastHeartbeatAt: row.last_heartbeat_at?.toISOString()
+        })),
+        recentRuns: runsResult.rows.map((row) => ({
+          runId: row.run_id,
+          tenantKey: row.tenant_key,
+          projectKey: row.project_key,
+          schedulerKey: row.scheduler_key,
+          direction: row.direction,
+          status: row.status,
+          readRecords: Number(row.read_records || 0),
+          writtenRecords: Number(row.written_records || 0),
+          failedRecords: Number(row.failed_records || 0),
+          startedAt: row.started_at.toISOString(),
+          finishedAt: row.finished_at?.toISOString()
         }))
       };
     },

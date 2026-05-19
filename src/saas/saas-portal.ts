@@ -174,6 +174,27 @@ export function renderSaasPortal(snapshot: SaasPortalSnapshot): string {
         </tbody>
       </table>
     </section>
+
+    <section class="panel">
+      <h2>Scheduler Runs (letzte 50)</h2>
+      <table>
+        <thead><tr><th>Scheduler</th><th>Projekt</th><th>Richtung</th><th>Status</th><th>Gelesen</th><th>Geschrieben</th><th>Fehler</th><th>Gestartet</th></tr></thead>
+        <tbody>
+          ${snapshot.recentRuns.map((run) => `
+            <tr>
+              <td>${esc(run.schedulerKey)}</td>
+              <td><span class="muted">${esc(run.tenantKey)}</span> / ${esc(run.projectKey)}</td>
+              <td>${esc(run.direction)}</td>
+              <td><span class="badge ${badgeClass(run.status)}">${esc(run.status)}</span></td>
+              <td>${esc(run.readRecords)}</td>
+              <td>${esc(run.writtenRecords)}</td>
+              <td>${run.failedRecords > 0 ? `<span class="badge bad">${esc(run.failedRecords)}</span>` : esc(run.failedRecords)}</td>
+              <td>${esc(formatDate(run.startedAt))}</td>
+            </tr>
+          `).join("") || `<tr><td colspan="8" class="muted">Keine Runs vorhanden.</td></tr>`}
+        </tbody>
+      </table>
+    </section>
   </main>
 </body>
 </html>`;
