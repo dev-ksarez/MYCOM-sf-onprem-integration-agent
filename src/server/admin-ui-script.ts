@@ -2894,6 +2894,30 @@ export function renderAdminUiScript(): string {
         return used + '/' + max + (unit ? ' ' + unit : '') + ' (' + percentage + '%, frei ' + remaining + ')';
       }
 
+      function resolveRecordsGrowthMetric() {
+        const bucketTotals = (Array.isArray(state.recordsSummary?.buckets) ? state.recordsSummary.buckets : []).map((bucket) => {
+          const directTotal = Number(bucket?.total);
+          if (Number.isFinite(directTotal)) {
+            return Math.max(0, directTotal);
+          }
+          const connectorTotals = bucket?.connectorTotals && typeof bucket.connectorTotals === 'object'
+            ? Object.values(bucket.connectorTotals).reduce((sum, value) => sum + (Number(value || 0) || 0), 0)
+            : 0;
+          return Math.max(0, Number(connectorTotals || 0));
+        });
+        const latest = bucketTotals.length ? Number(bucketTotals[bucketTotals.length - 1] || 0) : 0;
+        const previous = bucketTotals.length > 1 ? Number(bucketTotals[bucketTotals.length - 2] || 0) : 0;
+        const absolute = latest - previous;
+        const percent = previous > 0 ? (absolute / previous) * 100 : null;
+        return {
+          latest,
+          previous,
+          absolute,
+          percent,
+          hasTrend: bucketTotals.length >= 2
+        };
+      }
+
       function resolveUsagePercentage(value) {
         if (!value || !Number.isFinite(value.max) || value.max <= 0) {
           return 0;
@@ -2957,6 +2981,80 @@ export function renderAdminUiScript(): string {
         valueEl.textContent = percentage + '%';
       }
 
+      function renderApiHourlyAverageGauge(apiUsage) {
+        const gauge = document.getElementById('sf-file-gauge');
+        const valueEl = document.getElementById('sf-file-gauge-value');
+        const detailEl = document.getElementById('sf-api-hourly-average');
+        const used = Number(apiUsage?.used || 0);
+        const max = Number(apiUsage?.max || 0);
+        if (!Number.isFinite(used) || used <= 0 || !Number.isFinite(max) || max <= 0) {
+          if (gauge) {
+            gauge.style.setProperty('--gauge-value', '0');
+            gauge.classList.remove('is-warning', 'is-danger');
+          }
+          if (valueEl) {
+            valueEl.textContent = '-';
+          }
+          if (detailEl) {
+            detailEl.textContent = '-';
+          }
+          return;
+        }
+
+        const hourlyAverage = Math.round(used / 24);
+        const usagePercentage = resolveUsagePercentage(apiUsage);
+        if (gauge) {
+          gauge.style.setProperty('--gauge-value', String(usagePercentage));
+          gauge.classList.toggle('is-warning', usagePercentage >= 70 && usagePercentage < 90);
+          gauge.classList.toggle('is-danger', usagePercentage >= 90);
+        }
+        if (valueEl) {
+          valueEl.textContent = String(hourlyAverage) + '/h';
+        }
+        if (detailEl) {
+          detailEl.textContent = String(hourlyAverage) + ' Calls/h aus ' + String(used) + ' Calls/24h';
+        }
+      }
+
+      function renderDataGrowthGauge() {
+        const gauge = document.getElementById('sf-data-growth-gauge');
+        const valueEl = document.getElementById('sf-data-growth-gauge-value');
+        const detailEl = document.getElementById('sf-data-growth');
+        const growth = resolveRecordsGrowthMetric();
+        if (!growth.hasTrend) {
+          if (gauge) {
+            gauge.style.setProperty('--gauge-value', '0');
+            gauge.classList.remove('is-warning', 'is-danger');
+          }
+          if (valueEl) {
+            valueEl.textContent = '-';
+          }
+          if (detailEl) {
+            detailEl.textContent = growth.latest > 0 ? String(growth.latest) + ' Datensätze im letzten Intervall' : '-';
+          }
+          return;
+        }
+
+        const cappedGaugeValue = growth.percent === null
+          ? Math.min(100, Math.abs(growth.absolute))
+          : Math.min(100, Math.round(Math.abs(growth.percent)));
+        if (gauge) {
+          gauge.style.setProperty('--gauge-value', String(cappedGaugeValue));
+          gauge.classList.toggle('is-warning', growth.absolute > 0);
+          gauge.classList.toggle('is-danger', false);
+        }
+        const prefix = growth.absolute >= 0 ? '+' : '';
+        const percentText = growth.percent === null
+          ? ''
+          : ' (' + (growth.percent >= 0 ? '+' : '') + growth.percent.toFixed(1) + '%)';
+        if (valueEl) {
+          valueEl.textContent = prefix + String(growth.absolute);
+        }
+        if (detailEl) {
+          detailEl.textContent = prefix + String(growth.absolute) + ' Datensätze' + percentText;
+        }
+      }
+
       function renderSalesforceOverview(overview) {
         state.salesforceOverview = overview || null;
 
@@ -2971,13 +3069,11 @@ export function renderAdminUiScript(): string {
         setText('sf-environment', overview?.environment || '-');
         setText('sf-api-usage', formatUsageBlock(overview?.apiUsage));
         setText('sf-data-storage', formatUsageBlock(overview?.dataStorageMb, 'MB'));
-        setText('sf-file-storage', formatUsageBlock(overview?.fileStorageMb, 'MB'));
-        setText('sf-licenses', formatUsageBlock(overview?.licenses));
         renderApiThrottleBadge(overview?.apiUsage);
         renderLimitGauge('sf-api-gauge', 'sf-api-gauge-value', overview?.apiUsage);
         renderLimitGauge('sf-data-gauge', 'sf-data-gauge-value', overview?.dataStorageMb);
-        renderLimitGauge('sf-file-gauge', 'sf-file-gauge-value', overview?.fileStorageMb);
-        renderLimitGauge('sf-license-gauge', 'sf-license-gauge-value', overview?.licenses);
+        renderApiHourlyAverageGauge(overview?.apiUsage);
+        renderDataGrowthGauge();
       }
 
       function isSchedulerMssqlUpsertSelection() {
@@ -7546,6 +7642,8 @@ export function renderAdminUiScript(): string {
         if (state.runtimeContextUnavailableMessage) {
           state.recordsSummary = fallback;
           renderRecordsTrendChart(fallback);
+          renderSalesforceOverview(state.salesforceOverview || {});
+          redrawOverviewGraph();
           if (state.health) {
             renderOverview(state.health);
           }
@@ -7554,6 +7652,8 @@ export function renderAdminUiScript(): string {
         const summary = await safeRequest('/api/dashboard/records-summary?range=' + encodeURIComponent(range), fallback);
         state.recordsSummary = summary;
         renderRecordsTrendChart(summary);
+        renderSalesforceOverview(state.salesforceOverview || {});
+        redrawOverviewGraph();
         if (state.health) {
           renderOverview(state.health);
         }
@@ -9089,10 +9189,11 @@ export function renderAdminUiScript(): string {
         const recordsProcessed = Math.max(0, Number(run.recordsProcessed ?? 0) || 0);
         const recordsSucceeded = Math.max(0, Number(run.recordsSucceeded ?? 0) || 0);
         const recordsFailed = Math.max(0, Number(run.recordsFailed ?? 0) || 0);
+        const plannedTotalRecords = Math.max(0, Number(run.totalRecords ?? run.recordCount ?? 0) || 0);
         const normalizedStatus = normalizeRunStatus(run.status);
         const total = normalizedStatus === 'running' && recordsRead <= 0
-          ? 0
-          : Math.max(recordsRead, recordsProcessed, recordsSucceeded + recordsFailed);
+          ? plannedTotalRecords
+          : Math.max(plannedTotalRecords, recordsRead, recordsProcessed, recordsSucceeded + recordsFailed);
         const completed = Math.max(recordsProcessed, recordsSucceeded + recordsFailed);
         const pending = Math.max(0, total - recordsSucceeded - recordsFailed);
         const completedPercent = total > 0 ? Math.max(0, Math.min(100, (completed / total) * 100)) : 0;

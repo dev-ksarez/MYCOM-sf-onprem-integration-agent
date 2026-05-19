@@ -1818,11 +1818,51 @@ ${renderMenuModuleNavigation()}
 
       <div class="tab-content">
         <section class="tab-pane fade show active" id="tab-overview" role="tabpanel">
-          <div class="row g-3 mb-3">
-              <div class="col-md-3"><div class="card soft-card mini-kpi mini-kpi-service h-100"><div class="card-body"><div class="text-secondary small">Service</div><h5 id="kpi-service" class="mb-0">-</h5><div class="kpi-meter"><div id="kpi-service-cpu-bar" class="kpi-meter-fill" style="width:0%"></div></div><div class="kpi-service-footer"><div id="kpi-service-cpu-text" class="kpi-inline-metric">CPU Last: -</div><div class="kpi-sparkline-wrap" aria-hidden="true"><svg id="kpi-service-cpu-sparkline" class="kpi-sparkline" viewBox="0 0 120 20" preserveAspectRatio="xMidYMid meet"><path id="kpi-service-cpu-sparkline-path" class="kpi-sparkline-path" d=""></path><circle id="kpi-service-cpu-sparkline-dot" class="kpi-sparkline-dot" r="2" cx="0" cy="0"></circle></svg></div></div><div class="kpi-service-meta"><div id="kpi-service-os" class="kpi-inline-metric">OS: -</div><div id="kpi-service-memory" class="kpi-inline-metric">RAM: -</div><div id="kpi-service-disk" class="kpi-inline-metric">Disk: -</div></div><div id="kpi-service-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
-            <div class="col-md-3"><div class="card soft-card mini-kpi h-100"><div class="card-body"><div class="text-secondary small">Scheduler</div><h5 id="kpi-scheduler" class="mb-0">-</h5><div id="kpi-scheduler-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
-            <div class="col-md-3"><div class="card soft-card mini-kpi h-100"><div class="card-body"><div class="text-secondary small">Aktive Scheduler</div><h5 id="kpi-schedules" class="mb-0">0</h5><div id="kpi-schedules-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
-            <div class="col-md-3"><div class="card soft-card mini-kpi h-100"><div class="card-body"><div class="text-secondary small">Connectoren</div><h5 id="kpi-connectors" class="mb-0">0</h5><div id="kpi-connectors-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
+          <div class="row g-3 mb-3 overview-top-grid">
+              <div class="col-xl-3 col-lg-6"><div class="card soft-card mini-kpi mini-kpi-service h-100"><div class="card-body"><div class="text-secondary small">Service</div><h5 id="kpi-service" class="mb-0">-</h5><div class="kpi-meter"><div id="kpi-service-cpu-bar" class="kpi-meter-fill" style="width:0%"></div></div><div class="kpi-service-footer"><div id="kpi-service-cpu-text" class="kpi-inline-metric">CPU Last: -</div><div class="kpi-sparkline-wrap" aria-hidden="true"><svg id="kpi-service-cpu-sparkline" class="kpi-sparkline" viewBox="0 0 120 20" preserveAspectRatio="xMidYMid meet"><path id="kpi-service-cpu-sparkline-path" class="kpi-sparkline-path" d=""></path><circle id="kpi-service-cpu-sparkline-dot" class="kpi-sparkline-dot" r="2" cx="0" cy="0"></circle></svg></div></div><div class="kpi-service-meta"><div id="kpi-service-os" class="kpi-inline-metric">OS: -</div><div id="kpi-service-memory" class="kpi-inline-metric">RAM: -</div><div id="kpi-service-disk" class="kpi-inline-metric">Disk: -</div></div><div id="kpi-service-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
+            <div class="col-xl-2 col-lg-6"><div class="card soft-card mini-kpi h-100"><div class="card-body"><div class="text-secondary small">Scheduler</div><h5 id="kpi-scheduler" class="mb-0">-</h5><div id="kpi-scheduler-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
+            <div class="col-xl-3 col-lg-6">
+              <div class="card soft-card mini-kpi mini-kpi-combined h-100">
+                <div class="card-body">
+                  <div class="text-secondary small">Aktive Scheduler / Connectoren</div>
+                  <div class="kpi-combined-grid">
+                    <div class="kpi-combined-item">
+                      <div class="kpi-combined-label">Scheduler</div>
+                      <h5 id="kpi-schedules" class="mb-0">0</h5>
+                      <div id="kpi-schedules-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div>
+                    </div>
+                    <div class="kpi-combined-item">
+                      <div class="kpi-combined-label">Connectoren</div>
+                      <h5 id="kpi-connectors" class="mb-0">0</h5>
+                      <div id="kpi-connectors-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-xl-4 col-lg-6">
+              <div class="card soft-card mini-kpi mini-kpi-analysis h-100">
+                <div class="card-body">
+                  <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                    <div>
+                      <div class="text-secondary small">Agentenanalyse</div>
+                      <div id="agent-analysis-score" class="agent-analysis-score">-</div>
+                    </div>
+                    <span id="agent-analysis-status" class="badge bg-secondary">-</span>
+                  </div>
+                  <div class="agent-analysis-compact-grid">
+                    <div><span>Laufzeit</span><strong id="agent-analysis-runtime">-</strong></div>
+                    <div><span>Fehler</span><strong id="agent-analysis-errors">-</strong></div>
+                    <div><span>Daten</span><strong id="agent-analysis-growth">-</strong></div>
+                    <div><span>Stand</span><strong id="agent-analysis-updated">-</strong></div>
+                  </div>
+                  <div id="agent-analysis-summary" class="agent-analysis-summary">-</div>
+                  <ul id="agent-analysis-recommendations" class="agent-analysis-recommendations">
+                    <li>-</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
           </div>
           <div class="row g-3 mb-3">
             <div class="col-lg-3 col-md-6">
@@ -1879,50 +1919,6 @@ ${renderMenuModuleNavigation()}
                   <div class="stats-row"><span class="stats-label">SQLite offen</span><span id="kpi-sqlite-pending" class="stats-value">0</span></div>
                   <div class="stats-row"><span class="stats-label">SQLite OK</span><span id="kpi-sqlite-success" class="stats-value text-success">0</span></div>
                   <div class="stats-row mb-0"><span class="stats-label">SQLite Fehler</span><span id="kpi-sqlite-errors" class="stats-value text-danger">0</span></div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="row g-3 mb-3">
-            <div class="col-12">
-              <div class="card soft-card">
-                <div class="card-header bg-white d-flex justify-content-between align-items-center flex-wrap gap-2">
-                  <span class="fw-semibold">Agentenanalyse (KI)</span>
-                  <span id="agent-analysis-status" class="badge bg-secondary">-</span>
-                </div>
-                <div class="card-body">
-                  <div class="row g-3">
-                    <div class="col-lg-2 col-md-4 col-6">
-                      <div class="small text-secondary">Health-Score</div>
-                      <div id="agent-analysis-score" class="h4 mb-0">-</div>
-                    </div>
-                    <div class="col-lg-3 col-md-4 col-6">
-                      <div class="small text-secondary">Laufzeiten</div>
-                      <div id="agent-analysis-runtime" class="small">-</div>
-                    </div>
-                    <div class="col-lg-3 col-md-4 col-12">
-                      <div class="small text-secondary">Fehlerbild</div>
-                      <div id="agent-analysis-errors" class="small">-</div>
-                    </div>
-                    <div class="col-lg-3 col-md-6 col-12">
-                      <div class="small text-secondary">Datenwuchs</div>
-                      <div id="agent-analysis-growth" class="small">-</div>
-                    </div>
-                    <div class="col-lg-1 col-md-6 col-12 text-md-end">
-                      <div class="small text-secondary">Stand</div>
-                      <div id="agent-analysis-updated" class="small">-</div>
-                    </div>
-                    <div class="col-12">
-                      <div class="small text-secondary">KI-Zusammenfassung</div>
-                      <div id="agent-analysis-summary" class="small">-</div>
-                    </div>
-                    <div class="col-12">
-                      <div class="small text-secondary">KI-Empfehlungen</div>
-                      <ul id="agent-analysis-recommendations" class="small mb-0 ps-3">
-                        <li>-</li>
-                      </ul>
-                    </div>
-                  </div>
                 </div>
               </div>
             </div>
@@ -2009,15 +2005,15 @@ ${renderMenuModuleNavigation()}
                       <div id="sf-file-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#7b5ea7;">
                         <div class="limit-gauge-inner"><span id="sf-file-gauge-value" class="limit-gauge-value">0%</span></div>
                       </div>
-                      <div class="limit-gauge-label">Dateispeicher</div>
-                      <div id="sf-file-storage" class="limit-gauge-detail">-</div>
+                      <div class="limit-gauge-label">Ø API Calls/h</div>
+                      <div id="sf-api-hourly-average" class="limit-gauge-detail">-</div>
                     </div>
                     <div class="limit-gauge-card">
-                      <div id="sf-license-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#c26a2d;">
-                        <div class="limit-gauge-inner"><span id="sf-license-gauge-value" class="limit-gauge-value">0%</span></div>
+                      <div id="sf-data-growth-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#c26a2d;">
+                        <div class="limit-gauge-inner"><span id="sf-data-growth-gauge-value" class="limit-gauge-value">-</span></div>
                       </div>
-                      <div class="limit-gauge-label">Lizenzen</div>
-                      <div id="sf-licenses" class="limit-gauge-detail">-</div>
+                      <div class="limit-gauge-label">Datenzuwachs</div>
+                      <div id="sf-data-growth" class="limit-gauge-detail">-</div>
                     </div>
                   </div>
                 </div>
