@@ -32,15 +32,17 @@ Stand: 2026-05-19
 - Agent-Heartbeat mit ausgegebenem Agent-Credential intern getestet: `POST /api/agent/v1/heartbeats` liefert `202`.
 - Domain gesetzt: `v45106.1blu.de` -> `178.254.18.231`.
 - Apache Default-Webserver deaktiviert, damit Caddy Port `80/443` uebernehmen kann.
+- SSH gehaertet: Passwortlogin deaktiviert, Root nur noch per Key.
+- Caddy/TLS aktiv unter `https://v45106.1blu.de`.
+- SaaS Portal aktiv: `https://v45106.1blu.de/portal`.
+- SaaS Overview API aktiv: `https://v45106.1blu.de/api/saas/v1/overview`.
 
-## Bewusst noch nicht gestartet
+## Extern geprueft
 
-- Caddy/TLS wurde noch nicht gestartet.
-
-Gruende:
-
-- Es ist noch keine produktive SaaS-Domain auf den Server geschaltet.
-- Ohne Domain wuerde TLS nicht sauber ausgestellt.
+- `GET https://v45106.1blu.de/health` -> `200`.
+- `GET http://v45106.1blu.de/health` -> `308` auf HTTPS.
+- `GET https://v45106.1blu.de/portal` -> `200`.
+- `GET https://v45106.1blu.de/api/saas/v1/overview` -> `200`.
 
 ## Offene operative Schritte
 
@@ -48,5 +50,6 @@ Gruende:
 - DNS fuer die SaaS-Domain auf `178.254.18.231` setzen.
 - Produktives SaaS-App-Image in Registry veroeffentlichen und in `SAAS_APP_IMAGE` hinterlegen.
 - Danach Caddy/TLS mit `docker compose --env-file .env up -d caddy` starten.
-- Root-Login per Passwort nach erfolgreicher Domain-/Key-Pruefung deaktivieren.
+- Portal-Login und Rollenrechte vor echter Kundennutzung aktivieren.
+- Root-Login vollstaendig deaktivieren, sobald ein zweiter Admin-Key oder Break-Glass-Zugang vorhanden ist.
 - Backup-Ziel optional extern spiegeln.
