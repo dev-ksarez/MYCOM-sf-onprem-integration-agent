@@ -131,7 +131,12 @@ export function createSaasApiServer(repository: SaasRepository): http.Server {
         }
 
         await repository.acceptAgentHeartbeat(body, bearerToken);
-        sendJson(res, 202, { accepted: true, serverTime: new Date().toISOString() });
+        sendJson(res, 202, {
+          accepted: true,
+          serverTime: new Date().toISOString(),
+          commandsAvailable: false,
+          minimumSupportedAgentVersion: "0.2.50"
+        });
         return;
       }
 
