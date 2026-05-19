@@ -10007,13 +10007,13 @@ a,
 body.context-test .agent-topbar,
 body.context-test .agent-topbar-primary {
   background:
-    linear-gradient(90deg, #064e3b 0%, #0f766e 48%, #0284c7 100%);
+    linear-gradient(90deg, var(--sf-navy) 0%, var(--mycom-blue) 48%, var(--sf-blue) 100%);
 }
 
 body.context-production .agent-topbar,
 body.context-production .agent-topbar-primary {
   background:
-    linear-gradient(90deg, #7f1d1d 0%, #b91c1c 52%, #dc2626 100%);
+    linear-gradient(90deg, var(--sf-navy) 0%, var(--mycom-blue) 48%, var(--sf-blue) 100%);
 }
 
 body.context-none .agent-topbar,
@@ -10063,13 +10063,15 @@ body.context-none .agent-topbar-primary {
 }
 
 .active-context-production .active-context-env {
-  background: #ffffff;
-  color: #991b1b;
+  background: #b91c1c;
+  border-color: rgba(255, 255, 255, 0.36);
+  color: #ffffff;
 }
 
 .active-context-test .active-context-env {
-  background: #ffffff;
-  color: #0f766e;
+  background: #0f766e;
+  border-color: rgba(255, 255, 255, 0.36);
+  color: #ffffff;
 }
 
 .active-context-none {
