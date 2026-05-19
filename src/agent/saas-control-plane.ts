@@ -5,7 +5,7 @@ import {
   SaasControlPlaneConfig
 } from "../infrastructure/config/saas-control-plane-config";
 import { HealthSnapshot } from "../server/health-snapshot";
-import { SaasAgentHeartbeat } from "../types/saas-control-plane";
+import { SaasAgentHeartbeat, SaasRunReport } from "../types/saas-control-plane";
 
 export interface SaasControlPlaneRuntimeOptions {
   logger: pino.Logger;
@@ -13,9 +13,29 @@ export interface SaasControlPlaneRuntimeOptions {
   config?: SaasControlPlaneConfig;
 }
 
+export interface SaasRunReportInput {
+  idempotencyKey: string;
+  schedulerId: string;
+  direction: "inbound" | "outbound";
+  status: "success" | "partial" | "failed";
+  startedAt: string;
+  finishedAt: string;
+  counters: {
+    read: number;
+    written: number;
+    skipped: number;
+    failed: number;
+  };
+  errorSummary?: {
+    category: "technical" | "validation" | "auth" | "license" | "timeout" | "unknown";
+    message: string;
+  };
+}
+
 export interface SaasControlPlaneRuntime {
   start(): void;
   stop(): void;
+  reportRun(input: SaasRunReportInput): void;
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -76,6 +96,30 @@ async function postHeartbeat(config: SaasControlPlaneConfig, heartbeat: SaasAgen
   }
 }
 
+async function postRunReport(config: SaasControlPlaneConfig, report: SaasRunReport): Promise<void> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+
+  try {
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl)}/api/agent/v1/runs`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${config.accessToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(report),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`SaaS run report failed with HTTP ${response.status}${text ? `: ${text.slice(0, 300)}` : ""}`);
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function createSaasControlPlaneRuntime(options: SaasControlPlaneRuntimeOptions): SaasControlPlaneRuntime {
   const config = options.config || getSaasControlPlaneConfig();
   let timer: NodeJS.Timeout | undefined;
@@ -124,6 +168,30 @@ export function createSaasControlPlaneRuntime(options: SaasControlPlaneRuntimeOp
         clearInterval(timer);
       }
       timer = undefined;
+    },
+
+    reportRun(input: SaasRunReportInput): void {
+      if (!config.enabled) {
+        return;
+      }
+
+      const report: SaasRunReport = {
+        idempotencyKey: input.idempotencyKey,
+        agentId: config.agentId,
+        tenantKey: config.tenantKey,
+        projectKey: config.projectKey,
+        schedulerId: input.schedulerId,
+        direction: input.direction,
+        status: input.status,
+        startedAt: input.startedAt,
+        finishedAt: input.finishedAt,
+        counters: input.counters,
+        errorSummary: input.errorSummary
+      };
+
+      void postRunReport(config, report).catch((error) => {
+        options.logger.warn({ err: error }, "SaaS run report failed");
+      });
     }
   };
 }

@@ -35,6 +35,19 @@ export interface AgentRunSummary {
   processedSchedules: number;
 }
 
+export interface SaasRunReportInput {
+  idempotencyKey: string;
+  schedulerId: string;
+  direction: "inbound" | "outbound";
+  status: "success" | "partial" | "failed";
+  startedAt: string;
+  finishedAt: string;
+  counters: { read: number; written: number; skipped: number; failed: number };
+  errorSummary?: { category: "technical" | "validation" | "auth" | "license" | "timeout" | "unknown"; message: string };
+}
+
+export type SaasRunReporter = (input: SaasRunReportInput) => void;
+
 export interface ManualRunResult {
   scheduleId: string;
   scheduleName: string;
@@ -758,9 +771,10 @@ async function executeSchedule(
   logger: pino.Logger,
   agentId: string,
   schedule: IntegrationSchedule,
-  options?: { forceRun?: boolean }
+  options?: { forceRun?: boolean; saasRunReporter?: SaasRunReporter }
 ): Promise<boolean> {
   const forceRun = options?.forceRun ?? false;
+  const saasRunReporter = options?.saasRunReporter;
   const latestScheduleRecord = await salesforceClient.queryScheduleById(schedule.id);
   const latestSchedule = mapSchedule(latestScheduleRecord);
   if (!latestSchedule.active) {
@@ -844,11 +858,12 @@ async function executeSchedule(
     return false;
   }
 
+  const runStartedAt = new Date().toISOString();
   const runId = await salesforceClient.createRun({
     scheduleId: schedule.id,
     correlationId: context.correlationId,
     agentId,
-    startedAt: new Date().toISOString()
+    startedAt: runStartedAt
   });
   let lastProgressLogAt = 0;
   let lastProgressRunUpdateAt = 0;
@@ -1258,6 +1273,25 @@ async function executeSchedule(
       });
     }
 
+    if (saasRunReporter) {
+      const direction: "inbound" | "outbound" = /^SALESFORCE/.test(schedule.targetType || "") ? "inbound" : "outbound";
+      const saasStatus = result.status === "Success" ? "success" : result.status === "Partial Success" ? "partial" : "failed";
+      saasRunReporter({
+        idempotencyKey: context.runId,
+        schedulerId: schedule.id,
+        direction,
+        status: saasStatus,
+        startedAt: runStartedAt,
+        finishedAt: finishedAt,
+        counters: {
+          read: result.recordsRead,
+          written: result.recordsSucceeded,
+          skipped: Math.max(0, result.recordsProcessed - result.recordsSucceeded - result.recordsFailed),
+          failed: result.recordsFailed
+        }
+      });
+    }
+
     return true;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
@@ -1331,11 +1365,28 @@ async function executeSchedule(
       );
     }
 
+    if (saasRunReporter) {
+      const direction: "inbound" | "outbound" = /^SALESFORCE/.test(schedule.targetType || "") ? "inbound" : "outbound";
+      const errMsg = errorMessage.slice(0, 500);
+      const errClass = classifyNotificationError(errorMessage);
+      const saasCategory = errClass === "AUTH" ? "auth" : errClass === "VALIDATION" ? "validation" : "technical";
+      saasRunReporter({
+        idempotencyKey: context.runId,
+        schedulerId: schedule.id,
+        direction,
+        status: "failed",
+        startedAt: runStartedAt,
+        finishedAt: failedAt,
+        counters: { read: 0, written: 0, skipped: 0, failed: 0 },
+        errorSummary: { category: saasCategory, message: errMsg }
+      });
+    }
+
     throw error;
   }
 }
 
-export async function runDueSchedulesOnce(logger: pino.Logger, agentId: string): Promise<AgentRunSummary> {
+export async function runDueSchedulesOnce(logger: pino.Logger, agentId: string, saasRunReporter?: SaasRunReporter): Promise<AgentRunSummary> {
   const salesforceConfig = getSalesforceConfig();
   const salesforceClient = new SalesforceClient(salesforceConfig);
   await salesforceClient.login();
@@ -1445,7 +1496,7 @@ export async function runDueSchedulesOnce(logger: pino.Logger, agentId: string):
     }
 
     try {
-      const processed = await executeSchedule(salesforceClient, logger, agentId, schedule);
+      const processed = await executeSchedule(salesforceClient, logger, agentId, schedule, { saasRunReporter });
       executedState.set(schedule.id, processed);
       if (processed) {
         processedSchedules += 1;

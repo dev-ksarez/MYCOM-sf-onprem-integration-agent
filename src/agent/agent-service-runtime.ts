@@ -1,5 +1,5 @@
 import pino from "pino";
-import { runDueSchedulesOnce } from "../agent/agent-runner";
+import { runDueSchedulesOnce, SaasRunReporter } from "../agent/agent-runner";
 import { getSaasControlPlaneConfig } from "../infrastructure/config/saas-control-plane-config";
 import { writeAgentHealthSnapshot } from "../runtime/agent-health-store";
 import { HealthSnapshot } from "../server/health-snapshot";
@@ -127,7 +127,10 @@ export function createAgentServiceRuntime(options: AgentServiceRuntimeOptions): 
     await persistSnapshot();
 
     try {
-      const summary = await runDueSchedulesOnce(options.logger, options.agentId);
+      const saasReporter: SaasRunReporter | undefined = saasControlPlane
+        ? (input) => saasControlPlane!.reportRun(input)
+        : undefined;
+      const summary = await runDueSchedulesOnce(options.logger, options.agentId, saasReporter);
       schedulesFound = summary.schedulesFound;
       dueSchedules = summary.dueSchedules;
       processedSchedules = summary.processedSchedules;
