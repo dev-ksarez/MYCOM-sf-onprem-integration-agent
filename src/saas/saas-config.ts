@@ -2,6 +2,9 @@ export interface SaasServerConfig {
   port: number;
   databaseUrl: string;
   agentTokenPepper: string;
+  portalJwtSecret: string;
+  adminEmail: string;
+  adminPassword: string;
 }
 
 function required(name: string): string {
@@ -21,6 +24,9 @@ export function getSaasServerConfig(): SaasServerConfig {
   return {
     port: positiveNumber(process.env.SAAS_PORT, 9010),
     databaseUrl: required("DATABASE_URL"),
-    agentTokenPepper: required("SAAS_AGENT_TOKEN_PEPPER")
+    agentTokenPepper: required("SAAS_AGENT_TOKEN_PEPPER"),
+    portalJwtSecret: required("PORTAL_JWT_SECRET"),
+    adminEmail: String(process.env.SAAS_ADMIN_EMAIL || "admin@mycom.de").trim(),
+    adminPassword: String(process.env.SAAS_ADMIN_PASSWORD || "").trim()
   };
 }
