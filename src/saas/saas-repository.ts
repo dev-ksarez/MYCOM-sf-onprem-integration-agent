@@ -808,9 +808,9 @@ export function createSaasRepository(options: SaasRepositoryOptions): SaasReposi
     async ensureSystemAdmin(email: string, passwordHash: string): Promise<void> {
       await pool.query(
         `insert into users (email, display_name, password_hash, is_system_admin, status)
-         values ($1, $1, $2, true, 'active')
+         values ($1, $2, $3, true, 'active')
          on conflict (email) do nothing`,
-        [email, passwordHash]
+        [email, email, passwordHash]
       );
     },
 

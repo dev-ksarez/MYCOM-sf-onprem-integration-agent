@@ -25,7 +25,7 @@ export function getSaasServerConfig(): SaasServerConfig {
     port: positiveNumber(process.env.SAAS_PORT, 9010),
     databaseUrl: required("DATABASE_URL"),
     agentTokenPepper: required("SAAS_AGENT_TOKEN_PEPPER"),
-    portalJwtSecret: required("PORTAL_JWT_SECRET"),
+    portalJwtSecret: required(process.env.PORTAL_JWT_SECRET ? "PORTAL_JWT_SECRET" : "SAAS_JWT_SECRET"),
     adminEmail: String(process.env.SAAS_ADMIN_EMAIL || "admin@mycom.de").trim(),
     adminPassword: String(process.env.SAAS_ADMIN_PASSWORD || "").trim()
   };

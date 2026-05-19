@@ -30,6 +30,8 @@ services:
       SAAS_JWT_SECRET: ${SAAS_JWT_SECRET}
       SAAS_AGENT_TOKEN_PEPPER: ${SAAS_AGENT_TOKEN_PEPPER}
       SAAS_ENCRYPTION_KEY: ${SAAS_ENCRYPTION_KEY}
+      SAAS_ADMIN_EMAIL: ${SAAS_ADMIN_EMAIL:-admin@mycom.de}
+      SAAS_ADMIN_PASSWORD: ${SAAS_ADMIN_PASSWORD:-}
     volumes:
       - saas-storage:/app/storage
     networks:
