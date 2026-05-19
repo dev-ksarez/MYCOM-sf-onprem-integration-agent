@@ -25,22 +25,24 @@ Stand: 2026-05-19
 - PostgreSQL-Schema initialisiert.
 - Backup-Service und taeglicher Backup-Timer eingerichtet.
 - Initiales PostgreSQL-Backup erfolgreich erzeugt.
+- SaaS-API-Image auf dem Server aus Branch-Stand gebaut: `sf-agent-saas-api:local`.
+- SaaS-API intern per Docker Compose gestartet.
+- Interner Healthcheck erfolgreich: `GET /health` liefert `200`.
 
 ## Bewusst noch nicht gestartet
 
-- Caddy/TLS und `saas-api` wurden noch nicht gestartet.
+- Caddy/TLS wurde noch nicht gestartet.
 
 Gruende:
 
 - Es ist noch keine produktive SaaS-Domain auf den Server geschaltet.
-- Das finale SaaS-App-Image ist noch nicht gebaut/veroeffentlicht.
 - Ohne Domain wuerde TLS nicht sauber ausgestellt.
 
 ## Offene operative Schritte
 
 - Initiales Server-Passwort nach Abschluss der Arbeiten aendern.
 - DNS fuer die SaaS-Domain auf `178.254.18.231` setzen.
-- Produktives SaaS-App-Image bauen und in `SAAS_APP_IMAGE` hinterlegen.
-- Danach `docker compose --env-file .env up -d` vollstaendig starten.
+- Produktives SaaS-App-Image in Registry veroeffentlichen und in `SAAS_APP_IMAGE` hinterlegen.
+- Danach Caddy/TLS mit `docker compose --env-file .env up -d caddy` starten.
 - Root-Login per Passwort nach erfolgreicher Domain-/Key-Pruefung deaktivieren.
 - Backup-Ziel optional extern spiegeln.
