@@ -3,7 +3,8 @@ import { Pool } from "pg";
 import {
   SaasAgentHeartbeat,
   SaasAgentRegistrationRequest,
-  SaasAgentRegistrationResponse
+  SaasAgentRegistrationResponse,
+  SaasRunReport
 } from "../types/saas-control-plane";
 
 export interface SaasRepository {
@@ -12,6 +13,7 @@ export interface SaasRepository {
   getPortalSnapshot(): Promise<SaasPortalSnapshot>;
   claimAgentRegistration(request: SaasAgentRegistrationRequest): Promise<SaasAgentRegistrationResponse>;
   acceptAgentHeartbeat(heartbeat: SaasAgentHeartbeat, bearerToken: string): Promise<void>;
+  recordSchedulerRun(run: SaasRunReport, bearerToken: string): Promise<string>;
 }
 
 export interface SaasRepositoryOptions {
@@ -518,6 +520,66 @@ export function createSaasRepository(options: SaasRepositoryOptions): SaasReposi
         "update agent_credentials set last_used_at = now() where agent_id = $1 and credential_hash = $2",
         [heartbeat.agentId, credentialHash]
       );
+    },
+
+    async recordSchedulerRun(run: SaasRunReport, bearerToken: string): Promise<string> {
+      const credentialHash = hashAgentToken(bearerToken, options.agentTokenPepper);
+      const authResult = await pool.query<AgentAuthRecord>(
+        `
+          select a.tenant_id, a.project_id, t.tenant_key, p.project_key
+          from agent_credentials c
+          join agents a on a.id = c.agent_id
+          join tenants t on t.id = a.tenant_id
+          join projects p on p.id = a.project_id
+          where c.agent_id = $1
+            and c.credential_hash = $2
+            and c.status = 'active'
+            and a.status <> 'revoked'
+            and (c.expires_at is null or c.expires_at > now())
+          limit 1
+        `,
+        [run.agentId, credentialHash]
+      );
+
+      const auth = authResult.rows[0];
+      if (!auth || auth.tenant_key !== run.tenantKey || auth.project_key !== run.projectKey) {
+        throw new Error("Invalid agent credential");
+      }
+
+      const runResult = await pool.query<{ id: string }>(
+        `
+          insert into scheduler_runs (
+            tenant_id, project_id, agent_id, scheduler_key, direction, status,
+            total_records, read_records, written_records, skipped_records, failed_records,
+            started_at, finished_at, error_category, error_message
+          )
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+          returning id
+        `,
+        [
+          auth.tenant_id,
+          auth.project_id,
+          run.agentId,
+          run.schedulerId,
+          run.direction,
+          run.status,
+          run.counters?.total ?? null,
+          run.counters?.read ?? 0,
+          run.counters?.written ?? 0,
+          run.counters?.skipped ?? 0,
+          run.counters?.failed ?? 0,
+          run.startedAt,
+          run.finishedAt ?? null,
+          run.errorSummary?.category ?? null,
+          run.errorSummary?.message ?? null
+        ]
+      );
+
+      const runId = runResult.rows[0]?.id;
+      if (!runId) {
+        throw new Error("Failed to record scheduler run");
+      }
+      return runId;
     }
   };
 }

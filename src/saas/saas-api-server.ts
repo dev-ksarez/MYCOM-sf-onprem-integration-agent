@@ -1,5 +1,5 @@
 import http from "node:http";
-import { SaasAgentHeartbeat, SaasAgentRegistrationRequest } from "../types/saas-control-plane";
+import { SaasAgentHeartbeat, SaasAgentRegistrationRequest, SaasRunReport } from "../types/saas-control-plane";
 import { SaasRepository } from "./saas-repository";
 import { renderSaasPortal } from "./saas-portal";
 
@@ -66,6 +66,20 @@ function isHeartbeat(value: unknown): value is SaasAgentHeartbeat {
     && typeof candidate.mode === "string";
 }
 
+function isRunReport(value: unknown): value is SaasRunReport {
+  const candidate = value as Partial<SaasRunReport>;
+  return !!candidate
+    && typeof candidate === "object"
+    && typeof candidate.idempotencyKey === "string"
+    && typeof candidate.agentId === "string"
+    && typeof candidate.tenantKey === "string"
+    && typeof candidate.projectKey === "string"
+    && typeof candidate.schedulerId === "string"
+    && typeof candidate.direction === "string"
+    && typeof candidate.status === "string"
+    && typeof candidate.startedAt === "string";
+}
+
 function isRegistrationClaim(value: unknown): value is SaasAgentRegistrationRequest {
   const candidate = value as Partial<SaasAgentRegistrationRequest>;
   return !!candidate
@@ -118,6 +132,24 @@ export function createSaasApiServer(repository: SaasRepository): http.Server {
 
         await repository.acceptAgentHeartbeat(body, bearerToken);
         sendJson(res, 202, { accepted: true, serverTime: new Date().toISOString() });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/agent/v1/runs") {
+        const bearerToken = extractBearerToken(req);
+        if (!bearerToken) {
+          sendJson(res, 401, { error: "missing_bearer_token" });
+          return;
+        }
+
+        const body = await readJsonBody(req);
+        if (!isRunReport(body)) {
+          sendJson(res, 400, { error: "invalid_run_report" });
+          return;
+        }
+
+        const runId = await repository.recordSchedulerRun(body, bearerToken);
+        sendJson(res, 201, { runId, accepted: true });
         return;
       }
 
