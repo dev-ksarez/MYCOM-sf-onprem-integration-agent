@@ -96,6 +96,64 @@ export interface CustomerDashboard {
   }>;
 }
 
+export interface RunDetail {
+  run: {
+    runId: string; schedulerKey: string; projectKey: string; direction: string;
+    status: string; readRecords: number; writtenRecords: number; failedRecords: number;
+    startedAt: string; finishedAt: string | null; errorCategory: string | null; errorMessage: string | null;
+  };
+  logs: Array<{ id: string; level: string; code: string | null; message: string; occurredAt: string }>;
+  failedRecords: Array<{ id: string; recordKey: string | null; status: string | null; errorCode: string | null; message: string | null; createdAt: string }>;
+}
+
+export interface ConnectorConfigRecord {
+  id: string;
+  projectId: string;
+  projectKey: string;
+  connectorKey: string;
+  type: string;
+  displayName: string;
+  metadataJson: unknown;
+  secretPolicy: string;
+  status: string;
+  createdAt: string;
+}
+
+export interface ConnectorInput {
+  connectorKey: string;
+  type: string;
+  displayName: string;
+  metadataJson?: unknown;
+  secretPolicy?: string;
+}
+
+export interface SchedulerConfigRecord {
+  id: string;
+  projectId: string;
+  projectKey: string;
+  schedulerKey: string;
+  name: string;
+  direction: string;
+  active: boolean;
+  scheduleExpression: string | null;
+  connectorKey: string | null;
+  objectName: string | null;
+  configJson: unknown;
+  status: string;
+  createdAt: string;
+}
+
+export interface SchedulerInput {
+  schedulerKey: string;
+  name: string;
+  direction: string;
+  active: boolean;
+  scheduleExpression?: string | null;
+  connectorKey?: string | null;
+  objectName?: string | null;
+  configJson?: unknown;
+}
+
 export interface RegistrationTokenInfo {
   id: string;
   projectKey: string;
@@ -141,6 +199,16 @@ export interface SaasRepository {
   listAllUsers(): Promise<Array<{ id: string; email: string; displayName: string; isSystemAdmin: boolean; status: string }>>;
   findTenantByKey(tenantKey: string): Promise<{ id: string } | null>;
   listTenantRegistrationTokens(tenantId: string): Promise<RegistrationTokenInfo[]>;
+  // Run detail
+  getRunDetail(runId: string, tenantId: string): Promise<RunDetail | null>;
+  // Connectors
+  listTenantConnectors(tenantId: string): Promise<ConnectorConfigRecord[]>;
+  upsertConnector(tenantId: string, projectId: string, input: ConnectorInput): Promise<void>;
+  deleteConnector(tenantId: string, connectorId: string): Promise<void>;
+  // Schedulers
+  listTenantSchedulers(tenantId: string): Promise<SchedulerConfigRecord[]>;
+  upsertScheduler(tenantId: string, projectId: string, input: SchedulerInput): Promise<void>;
+  deleteScheduler(tenantId: string, schedulerId: string): Promise<void>;
 }
 
 export interface SaasRepositoryOptions {
@@ -1135,6 +1203,155 @@ export function createSaasRepository(options: SaasRepositoryOptions): SaasReposi
         token: null, status: r.status,
         expiresAt: r.expires_at.toISOString(), createdAt: r.created_at.toISOString()
       }));
+    },
+
+    // ── Run detail ───────────────────────────────────────────────────────
+
+    async getRunDetail(runId: string, tenantId: string): Promise<RunDetail | null> {
+      const [runResult, logsResult, failedResult] = await Promise.all([
+        pool.query<{
+          run_id: string; scheduler_key: string; project_key: string; direction: string;
+          status: string; read_records: string; written_records: string; failed_records: string;
+          started_at: Date; finished_at: Date | null; error_category: string | null; error_message: string | null;
+        }>(
+          `select r.id as run_id, r.scheduler_key, p.project_key, r.direction, r.status,
+                  r.read_records, r.written_records, r.failed_records,
+                  r.started_at, r.finished_at, r.error_category, r.error_message
+           from scheduler_runs r join projects p on p.id = r.project_id
+           where r.id = $1 and r.tenant_id = $2 limit 1`,
+          [runId, tenantId]
+        ),
+        pool.query<{ id: string; level: string; code: string | null; message: string; occurred_at: Date }>(
+          `select id, level, code, message, occurred_at
+           from log_events where run_id = $1 and tenant_id = $2
+           order by occurred_at asc limit 500`,
+          [runId, tenantId]
+        ),
+        pool.query<{ id: string; record_key: string | null; status: string | null; error_code: string | null; message: string | null; created_at: Date }>(
+          `select id, record_key, status, error_code, message, created_at
+           from failed_records where run_id = $1 and tenant_id = $2
+           order by created_at asc limit 200`,
+          [runId, tenantId]
+        )
+      ]);
+
+      const row = runResult.rows[0];
+      if (!row) return null;
+      return {
+        run: {
+          runId: row.run_id, schedulerKey: row.scheduler_key, projectKey: row.project_key,
+          direction: row.direction, status: row.status,
+          readRecords: Number(row.read_records || 0), writtenRecords: Number(row.written_records || 0),
+          failedRecords: Number(row.failed_records || 0),
+          startedAt: row.started_at.toISOString(), finishedAt: row.finished_at?.toISOString() ?? null,
+          errorCategory: row.error_category, errorMessage: row.error_message
+        },
+        logs: logsResult.rows.map((r) => ({
+          id: r.id, level: r.level, code: r.code, message: r.message, occurredAt: r.occurred_at.toISOString()
+        })),
+        failedRecords: failedResult.rows.map((r) => ({
+          id: r.id, recordKey: r.record_key, status: r.status,
+          errorCode: r.error_code, message: r.message, createdAt: r.created_at.toISOString()
+        }))
+      };
+    },
+
+    // ── Connectors ───────────────────────────────────────────────────────
+
+    async listTenantConnectors(tenantId: string): Promise<ConnectorConfigRecord[]> {
+      const result = await pool.query<{
+        id: string; project_id: string; project_key: string; connector_key: string;
+        type: string; display_name: string; metadata_json: unknown;
+        secret_policy: string; status: string; created_at: Date;
+      }>(
+        `select c.id, c.project_id, p.project_key, c.connector_key, c.type,
+                c.display_name, c.metadata_json, c.secret_policy, c.status, c.created_at
+         from connector_configs c join projects p on p.id = c.project_id
+         where c.tenant_id = $1 and c.status <> 'deleted'
+         order by p.project_key, c.display_name`,
+        [tenantId]
+      );
+      return result.rows.map((r) => ({
+        id: r.id, projectId: r.project_id, projectKey: r.project_key,
+        connectorKey: r.connector_key, type: r.type, displayName: r.display_name,
+        metadataJson: r.metadata_json, secretPolicy: r.secret_policy,
+        status: r.status, createdAt: r.created_at.toISOString()
+      }));
+    },
+
+    async upsertConnector(tenantId: string, projectId: string, input: ConnectorInput): Promise<void> {
+      await pool.query(
+        `insert into connector_configs (tenant_id, project_id, connector_key, type, display_name, metadata_json, secret_policy)
+         values ($1, $2, $3, $4, $5, $6::jsonb, $7)
+         on conflict (tenant_id, project_id, connector_key) do update set
+           type = excluded.type, display_name = excluded.display_name,
+           metadata_json = excluded.metadata_json, secret_policy = excluded.secret_policy,
+           status = 'active', updated_at = now()`,
+        [
+          tenantId, projectId, input.connectorKey, input.type, input.displayName,
+          JSON.stringify(input.metadataJson ?? {}),
+          input.secretPolicy || "local-only"
+        ]
+      );
+    },
+
+    async deleteConnector(tenantId: string, connectorId: string): Promise<void> {
+      await pool.query(
+        "update connector_configs set status = 'deleted', updated_at = now() where id = $1 and tenant_id = $2",
+        [connectorId, tenantId]
+      );
+    },
+
+    // ── Schedulers ───────────────────────────────────────────────────────
+
+    async listTenantSchedulers(tenantId: string): Promise<SchedulerConfigRecord[]> {
+      const result = await pool.query<{
+        id: string; project_id: string; project_key: string; scheduler_key: string;
+        name: string; direction: string; active: boolean; schedule_expression: string | null;
+        connector_key: string | null; object_name: string | null; config_json: unknown;
+        status: string; created_at: Date;
+      }>(
+        `select s.id, s.project_id, p.project_key, s.scheduler_key, s.name, s.direction,
+                s.active, s.schedule_expression, s.connector_key, s.object_name,
+                s.config_json, s.status, s.created_at
+         from scheduler_configs s join projects p on p.id = s.project_id
+         where s.tenant_id = $1 and s.status <> 'deleted'
+         order by p.project_key, s.name`,
+        [tenantId]
+      );
+      return result.rows.map((r) => ({
+        id: r.id, projectId: r.project_id, projectKey: r.project_key,
+        schedulerKey: r.scheduler_key, name: r.name, direction: r.direction,
+        active: r.active, scheduleExpression: r.schedule_expression,
+        connectorKey: r.connector_key, objectName: r.object_name,
+        configJson: r.config_json, status: r.status, createdAt: r.created_at.toISOString()
+      }));
+    },
+
+    async upsertScheduler(tenantId: string, projectId: string, input: SchedulerInput): Promise<void> {
+      await pool.query(
+        `insert into scheduler_configs
+           (tenant_id, project_id, scheduler_key, name, direction, active,
+            schedule_expression, connector_key, object_name, config_json)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+         on conflict (tenant_id, project_id, scheduler_key) do update set
+           name = excluded.name, direction = excluded.direction, active = excluded.active,
+           schedule_expression = excluded.schedule_expression, connector_key = excluded.connector_key,
+           object_name = excluded.object_name, config_json = excluded.config_json,
+           status = 'active', updated_at = now()`,
+        [
+          tenantId, projectId, input.schedulerKey, input.name, input.direction,
+          input.active, input.scheduleExpression ?? null, input.connectorKey ?? null,
+          input.objectName ?? null, JSON.stringify(input.configJson ?? {})
+        ]
+      );
+    },
+
+    async deleteScheduler(tenantId: string, schedulerId: string): Promise<void> {
+      await pool.query(
+        "update scheduler_configs set status = 'deleted', updated_at = now() where id = $1 and tenant_id = $2",
+        [schedulerId, tenantId]
+      );
     }
   };
 }

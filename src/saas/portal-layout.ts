@@ -103,8 +103,10 @@ function customerNav(current: string): string {
     ${navLink("/portal/customer", "Dashboard", current)}
     ${navLink("/portal/customer/agents", "Agenten", current)}
     ${navLink("/portal/customer/runs", "Runs", current)}
+    ${navLink("/portal/customer/connectors", "Connectors", current)}
+    ${navLink("/portal/customer/schedulers", "Scheduler", current)}
     ${navLink("/portal/customer/contract", "Vertrag & Lizenz", current)}
-    ${navLink("/portal/customer/tokens", "Registration Tokens", current)}
+    ${navLink("/portal/customer/tokens", "Tokens", current)}
   `;
 }
 

@@ -9,7 +9,8 @@ import {
 import { renderAdminDashboard, renderAdminTenants, renderAdminTenantDetail, renderAdminUsers } from "./portal-admin";
 import {
   renderCustomerDashboard, renderCustomerAgents, renderCustomerRuns,
-  renderCustomerContract, renderCustomerTokens
+  renderCustomerContract, renderCustomerTokens,
+  renderCustomerRunDetail, renderCustomerConnectors, renderCustomerSchedulers
 } from "./portal-customer";
 import { loginPage } from "./portal-layout";
 
@@ -401,6 +402,85 @@ export function createSaasApiServer(repository: SaasRepository, config: SaasServ
 
           const tokens = await repository.listTenantRegistrationTokens(tenantId);
           sendHtml(res, 200, renderCustomerTokens(tokens, projects, session, getFlash(requestUrl)));
+          return;
+        }
+
+        // ── Run detail ────────────────────────────────────────────────────
+        const runDetailMatch = /^\/portal\/customer\/runs\/([0-9a-f-]{36})$/.exec(path);
+        if (method === "GET" && runDetailMatch) {
+          const detail = await repository.getRunDetail(runDetailMatch[1], tenantId);
+          if (!detail) { sendJson(res, 404, { error: "not_found" }); return; }
+          sendHtml(res, 200, renderCustomerRunDetail(detail, session));
+          return;
+        }
+
+        // ── Connectors ────────────────────────────────────────────────────
+        if (path === "/portal/customer/connectors") {
+          const tenantDetails = await repository.getTenantDetails(tenantId);
+          const projects = tenantDetails?.projects.map((p) => ({ id: p.id, projectKey: p.projectKey, name: p.name })) ?? [];
+          if (method === "POST") {
+            const form = await readFormBody(req);
+            const projectId = (form.get("projectId") || "").trim();
+            const connectorKey = (form.get("connectorKey") || "").trim().toLowerCase();
+            const type = (form.get("type") || "other").trim();
+            const displayName = (form.get("displayName") || "").trim();
+            const secretPolicy = (form.get("secretPolicy") || "local-only").trim();
+            let metadataJson: unknown = {};
+            try { metadataJson = JSON.parse(form.get("metadataJson") || "{}"); } catch { /* ignore */ }
+            if (!projectId || !connectorKey || !displayName) {
+              const connectors = await repository.listTenantConnectors(tenantId);
+              sendHtml(res, 400, renderCustomerConnectors(connectors, projects, session, { type: "err", msg: "Projekt, Key und Name sind Pflichtfelder" }));
+              return;
+            }
+            await repository.upsertConnector(tenantId, projectId, { connectorKey, type, displayName, metadataJson, secretPolicy });
+            redirect(res, flashUrl("/portal/customer/connectors", "ok", `Connector „${displayName}" gespeichert`));
+            return;
+          }
+          const connectors = await repository.listTenantConnectors(tenantId);
+          sendHtml(res, 200, renderCustomerConnectors(connectors, projects, session, getFlash(requestUrl)));
+          return;
+        }
+
+        const connectorDeleteMatch = /^\/portal\/customer\/connectors\/([0-9a-f-]{36})\/delete$/.exec(path);
+        if (method === "POST" && connectorDeleteMatch) {
+          await repository.deleteConnector(tenantId, connectorDeleteMatch[1]);
+          redirect(res, flashUrl("/portal/customer/connectors", "ok", "Connector gelöscht"));
+          return;
+        }
+
+        // ── Schedulers ────────────────────────────────────────────────────
+        if (path === "/portal/customer/schedulers") {
+          const tenantDetails = await repository.getTenantDetails(tenantId);
+          const projects = tenantDetails?.projects.map((p) => ({ id: p.id, projectKey: p.projectKey, name: p.name })) ?? [];
+          const connectors = await repository.listTenantConnectors(tenantId);
+
+          if (method === "POST") {
+            const form = await readFormBody(req);
+            const projectId = (form.get("projectId") || "").trim();
+            const schedulerKey = (form.get("schedulerKey") || "").trim().toLowerCase();
+            const name = (form.get("name") || "").trim();
+            const direction = (form.get("direction") || "outbound").trim();
+            const active = form.get("active") !== "false";
+            const scheduleExpression = (form.get("scheduleExpression") || "").trim() || null;
+            const connectorKey = (form.get("connectorKey") || "").trim() || null;
+            const objectName = (form.get("objectName") || "").trim() || null;
+            if (!projectId || !schedulerKey || !name) {
+              sendHtml(res, 400, renderCustomerSchedulers(await repository.listTenantSchedulers(tenantId), connectors, projects, session, { type: "err", msg: "Projekt, Key und Name sind Pflichtfelder" }));
+              return;
+            }
+            await repository.upsertScheduler(tenantId, projectId, { schedulerKey, name, direction, active, scheduleExpression, connectorKey, objectName });
+            redirect(res, flashUrl("/portal/customer/schedulers", "ok", `Scheduler „${name}" gespeichert`));
+            return;
+          }
+          const schedulers = await repository.listTenantSchedulers(tenantId);
+          sendHtml(res, 200, renderCustomerSchedulers(schedulers, connectors, projects, session, getFlash(requestUrl)));
+          return;
+        }
+
+        const schedulerDeleteMatch = /^\/portal\/customer\/schedulers\/([0-9a-f-]{36})\/delete$/.exec(path);
+        if (method === "POST" && schedulerDeleteMatch) {
+          await repository.deleteScheduler(tenantId, schedulerDeleteMatch[1]);
+          redirect(res, flashUrl("/portal/customer/schedulers", "ok", "Scheduler gelöscht"));
           return;
         }
 
