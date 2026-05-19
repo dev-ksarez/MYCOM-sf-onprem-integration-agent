@@ -30,6 +30,8 @@ Stand: 2026-05-19
 - Interner Healthcheck erfolgreich: `GET /health` liefert `200`.
 - Agent-Registration intern getestet: `POST /api/agent/v1/registrations/claim`.
 - Agent-Heartbeat mit ausgegebenem Agent-Credential intern getestet: `POST /api/agent/v1/heartbeats` liefert `202`.
+- Domain gesetzt: `v45106.1blu.de` -> `178.254.18.231`.
+- Apache Default-Webserver deaktiviert, damit Caddy Port `80/443` uebernehmen kann.
 
 ## Bewusst noch nicht gestartet
 
