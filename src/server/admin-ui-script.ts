@@ -11402,6 +11402,8 @@ export function renderAdminUiScript(): string {
           state.instanceId = previousInstanceId;
         } else if (contextInstanceId) {
           state.instanceId = contextInstanceId;
+        } else if (previousProjectId && previousProjectId !== 'default-project') {
+          state.instanceId = '';
         } else if (defaultInstance) {
           state.instanceId = String(defaultInstance.id || '').trim();
         } else {
@@ -11409,7 +11411,7 @@ export function renderAdminUiScript(): string {
         }
         select.value = state.instanceId;
 
-        syncHeaderContextFromSelectedInstance();
+        syncHeaderContextFromSelectedInstance({ updateFromSelectedInstance: Boolean(state.instanceId) });
 
         populateProjectInstanceSelectors(state.editingProjectId || String(document.getElementById('prj-id')?.value || '').trim());
         renderProjectTable();
@@ -11707,9 +11709,10 @@ export function renderAdminUiScript(): string {
         }
       }
 
-      function syncHeaderContextFromSelectedInstance() {
+      function syncHeaderContextFromSelectedInstance(options = {}) {
         const selectedInstance = (state.instances || []).find((item) => String(item.id || '') === String(state.instanceId || ''));
-        if (selectedInstance) {
+        const updateFromSelectedInstance = options.updateFromSelectedInstance !== false;
+        if (selectedInstance && updateFromSelectedInstance) {
           state.headerProjectId = String(selectedInstance.projectId || 'default-project').trim() || 'default-project';
           state.headerTargetEnv = selectedInstance.role === 'production' ? 'production' : 'test';
         }
@@ -13316,7 +13319,7 @@ export function renderAdminUiScript(): string {
 
       document.getElementById('instance-select').addEventListener('change', async (event) => {
         state.instanceId = event.target.value;
-        syncHeaderContextFromSelectedInstance();
+        syncHeaderContextFromSelectedInstance({ updateFromSelectedInstance: false });
         await refresh();
       });
       bindEventListenerOnce('context-project-select', 'change', async (event) => {
@@ -13328,7 +13331,7 @@ export function renderAdminUiScript(): string {
         if (instanceSelect) {
           instanceSelect.value = nextInstanceId || '';
         }
-        syncHeaderContextFromSelectedInstance();
+        syncHeaderContextFromSelectedInstance({ updateFromSelectedInstance: false });
         await refresh();
       });
       bindEventListenerOnce('context-target-env-select', 'change', async (event) => {
