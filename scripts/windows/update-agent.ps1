@@ -583,6 +583,7 @@ $backupRoot = Join-Path $appRootResolved "backups\$runId"
     @{ Source = (Join-Path $appRootResolved "artifacts\templates"); Backup = (Join-Path $backupRoot "artifacts\templates"); Target = (Join-Path $appRootResolved "artifacts\templates"); Payload = (Join-Path $payloadRoot "artifacts\templates") },
     @{ Source = (Join-Path $appRootResolved "artifacts\file-examples"); Backup = (Join-Path $backupRoot "artifacts\file-examples"); Target = (Join-Path $appRootResolved "artifacts\file-examples"); Payload = (Join-Path $payloadRoot "artifacts\file-examples") },
     @{ Source = (Join-Path $appRootResolved "package.json"); Backup = (Join-Path $backupRoot "package.json"); Target = (Join-Path $appRootResolved "package.json"); Payload = (Join-Path $payloadRoot "package.json") },
+    @{ Source = (Join-Path $appRootResolved "package-lock.json"); Backup = (Join-Path $backupRoot "package-lock.json"); Target = (Join-Path $appRootResolved "package-lock.json"); Payload = (Join-Path $payloadRoot "package-lock.json") },
     @{ Source = (Join-Path $appRootResolved "node_modules"); Backup = (Join-Path $backupRoot "node_modules"); Target = (Join-Path $appRootResolved "node_modules"); Payload = (Join-Path $payloadRoot "node_modules") }
   )
 

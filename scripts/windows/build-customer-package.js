@@ -164,6 +164,7 @@ async function main() {
   await fsp.cp(path.join(appRoot, "package.json"), path.join(stagingAppRoot, "package.json"), {
     force: true,
   });
+  await copyIfExists(path.join(appRoot, "package-lock.json"), path.join(stagingAppRoot, "package-lock.json"));
   await copyIfExists(path.join(appRoot, ".env.example"), path.join(stagingAppRoot, ".env.example"));
   await copyIfExists(
     path.join(appRoot, "WINDOWS_DEPLOYMENT.md"),
