@@ -162,6 +162,18 @@ export function getRecordValueByField(record: Record<string, unknown>, field: st
     return record[directMatch];
   }
 
+  const fieldSegments = trimmed.split(".").map((token) => token.trim().replace(/^\[|\]$/g, "")).filter(Boolean);
+  const lastSegment = fieldSegments[fieldSegments.length - 1];
+  if (lastSegment) {
+    if (lastSegment in record) {
+      return record[lastSegment];
+    }
+    const lastSegmentMatch = Object.keys(record).find((key) => key.toLowerCase() === lastSegment.toLowerCase());
+    if (lastSegmentMatch) {
+      return record[lastSegmentMatch];
+    }
+  }
+
   const tokens = trimmed.split(".").map((token) => token.trim()).filter(Boolean);
   let current: unknown = record;
   for (const token of tokens) {
