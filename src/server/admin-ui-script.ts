@@ -33,6 +33,7 @@ export function renderAdminUiScript(): string {
         previousOverviewSnapshot: null,
         overviewStatsRange: 'month',
         graphData: { nodes: [], edges: [] },
+        runtimeContextUnavailableMessage: '',
         overviewConnectorFilterId: '',
         schedulerConnectorFilterId: '',
         schedulerActiveFilter: 'all',
@@ -7062,6 +7063,14 @@ export function renderAdminUiScript(): string {
       async function loadRecordsSummary() {
         const range = getRecordsChartRange();
         const fallback = { range, buckets: [], connectors: [] };
+        if (state.runtimeContextUnavailableMessage) {
+          state.recordsSummary = fallback;
+          renderRecordsTrendChart(fallback);
+          if (state.health) {
+            renderOverview(state.health);
+          }
+          return;
+        }
         const summary = await safeRequest('/api/dashboard/records-summary?range=' + encodeURIComponent(range), fallback);
         state.recordsSummary = summary;
         renderRecordsTrendChart(summary);
@@ -7335,6 +7344,12 @@ export function renderAdminUiScript(): string {
           window.localStorage.setItem(LOG_CHART_RANGE_STORAGE_KEY, range);
         } catch {
           // Ignore storage errors in restricted browser contexts.
+        }
+        if (state.runtimeContextUnavailableMessage) {
+          const fallback = { range, buckets: [], connectors: [] };
+          state.logSummary = fallback;
+          renderLogChart(fallback);
+          return;
         }
         let summary = await safeRequest('/api/logs/summary?range=' + encodeURIComponent(range), { range, buckets: [], connectors: [] });
         if (isEmptyLogSummary(summary)) {
@@ -8507,7 +8522,7 @@ export function renderAdminUiScript(): string {
 
         const body = document.getElementById('overview-runs-body');
         if (!scopedRuns.length) {
-          body.innerHTML = '<tr><td colspan="4" class="text-secondary">Keine Runs im gewählten Zeitraum gefunden.</td></tr>';
+          body.innerHTML = '<tr><td colspan="4" class="text-secondary">' + esc(state.runtimeContextUnavailableMessage || 'Keine Runs im gewählten Zeitraum gefunden.') + '</td></tr>';
           return;
         }
 
@@ -8695,7 +8710,7 @@ export function renderAdminUiScript(): string {
         });
 
         if (!filteredSchedules.length) {
-          body.innerHTML = '<tr><td colspan="6" class="text-secondary">Keine Scheduler gefunden.</td></tr>';
+          body.innerHTML = '<tr><td colspan="6" class="text-secondary">' + esc(state.runtimeContextUnavailableMessage || 'Keine Scheduler gefunden.') + '</td></tr>';
           return;
         }
 
@@ -8880,7 +8895,7 @@ export function renderAdminUiScript(): string {
         const body = document.getElementById('runs-body');
         const select = document.getElementById('log-run-select');
         if (!state.runs.length) {
-          body.innerHTML = '<tr><td colspan="7" class="text-secondary">Keine Runs gefunden.</td></tr>';
+          body.innerHTML = '<tr><td colspan="7" class="text-secondary">' + esc(state.runtimeContextUnavailableMessage || 'Keine Runs gefunden.') + '</td></tr>';
           select.innerHTML = '<option value="">Keine Runs</option>';
           return;
         }
@@ -8971,7 +8986,7 @@ export function renderAdminUiScript(): string {
 
         const staleRuns = Array.isArray(state.staleRuns) ? state.staleRuns : [];
         if (!staleRuns.length) {
-          body.innerHTML = '<tr><td colspan="4" class="text-secondary">Keine stale Runs gefunden.</td></tr>';
+          body.innerHTML = '<tr><td colspan="4" class="text-secondary">' + esc(state.runtimeContextUnavailableMessage || 'Keine stale Runs gefunden.') + '</td></tr>';
           return;
         }
 
@@ -11736,8 +11751,23 @@ export function renderAdminUiScript(): string {
         if (byRole) {
           return String(byRole.id || '').trim();
         }
-        if (candidates.length === 1) {
-          return String(candidates[0].id || '').trim();
+        return '';
+      }
+
+      function getRuntimeContextUnavailableMessage() {
+        const normalizedProjectId = String(state.headerProjectId || '').trim() || 'default-project';
+        const expectedRole = state.headerTargetEnv === 'production' ? 'production' : 'test';
+        const activeProject = (state.projects || []).find((item) => String(item.id || '') === normalizedProjectId);
+        const projectName = String(activeProject?.name || normalizedProjectId || 'Default-Projekt');
+        const envLabel = expectedRole === 'production' ? 'Produktion' : 'Test';
+        const selectedInstance = (state.instances || []).find((item) => String(item.id || '') === String(state.instanceId || '').trim());
+        if (!selectedInstance) {
+          return 'Fuer Projekt "' + projectName + '" und Umgebung "' + envLabel + '" ist keine passende Salesforce-Instanz konfiguriert.';
+        }
+        const selectedProjectId = String(selectedInstance.projectId || 'default-project').trim() || 'default-project';
+        const selectedRole = selectedInstance.role === 'production' ? 'production' : 'test';
+        if (selectedProjectId !== normalizedProjectId || selectedRole !== expectedRole) {
+          return 'Die ausgewaehlte Salesforce-Instanz passt nicht zum Header-Kontext "' + projectName + ' / ' + envLabel + '".';
         }
         return '';
       }
@@ -12991,6 +13021,35 @@ export function renderAdminUiScript(): string {
         state.installerSummary = installerSummary;
         renderInstallerSummary();
         applyInstallerScenarioDefaults();
+        state.runtimeContextUnavailableMessage = getRuntimeContextUnavailableMessage();
+        if (state.runtimeContextUnavailableMessage) {
+          state.schedules = [];
+          state.connectors = [];
+          state.runs = [];
+          state.staleRuns = [];
+          state.migrations = [];
+          state.graphData = { nodes: [], edges: [] };
+          state.salesforceOverview = null;
+          if (includeSalesforceOverview) {
+            renderSalesforceOverview({});
+          }
+          renderContextSelectionSummary();
+          renderOverview(healthData);
+          renderInstallerSummary();
+          renderSchedules();
+          renderConnectors();
+          renderRuns();
+          renderStaleRuns();
+          renderOverviewConnectorFilter();
+          redrawOverviewGraph();
+          if (includeRecordsSummary) {
+            await loadRecordsSummary();
+          }
+          if (shouldRefreshChart) {
+            await loadLogSummary();
+          }
+          return;
+        }
         const schedules = await safeRequest('/api/schedules', { items: [] });
         const connectors = await safeRequest('/api/connectors', { items: [] });
         const runs = await safeRequest('/api/runs', { items: [] });
@@ -13012,6 +13071,7 @@ export function renderAdminUiScript(): string {
         state.staleRuns = staleRuns.items || [];
         state.migrations = migrations.items || [];
         state.graphData = graph;
+        state.runtimeContextUnavailableMessage = '';
         if (includeSalesforceOverview) {
           renderSalesforceOverview(salesforceOverview || {});
         }
@@ -13319,7 +13379,7 @@ export function renderAdminUiScript(): string {
 
       document.getElementById('instance-select').addEventListener('change', async (event) => {
         state.instanceId = event.target.value;
-        syncHeaderContextFromSelectedInstance({ updateFromSelectedInstance: false });
+        syncHeaderContextFromSelectedInstance();
         await refresh();
       });
       bindEventListenerOnce('context-project-select', 'change', async (event) => {

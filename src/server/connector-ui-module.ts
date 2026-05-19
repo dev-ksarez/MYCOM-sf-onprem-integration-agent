@@ -21,7 +21,7 @@ export function renderConnectorUiModule(): string {
         }
 
         if (!state.connectors.length) {
-          panels.innerHTML = '<div class="col-12"><div class="alert alert-light border text-secondary mb-0">Keine Connectoren gefunden.</div></div>';
+          panels.innerHTML = '<div class="col-12"><div class="alert alert-light border text-secondary mb-0">' + esc(state.runtimeContextUnavailableMessage || 'Keine Connectoren gefunden.') + '</div></div>';
           return;
         }
 
