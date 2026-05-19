@@ -137,6 +137,10 @@ export interface SaasRepository {
   getCustomerDashboard(tenantId: string): Promise<CustomerDashboard>;
   // Config bundle
   getActiveConfigBundle(agentId: string, bearerToken: string): Promise<{ version: string; config: unknown } | null>;
+  // User list
+  listAllUsers(): Promise<Array<{ id: string; email: string; displayName: string; isSystemAdmin: boolean; status: string }>>;
+  findTenantByKey(tenantKey: string): Promise<{ id: string } | null>;
+  listTenantRegistrationTokens(tenantId: string): Promise<RegistrationTokenInfo[]>;
 }
 
 export interface SaasRepositoryOptions {
@@ -1095,6 +1099,42 @@ export function createSaasRepository(options: SaasRepositoryOptions): SaasReposi
       }
       const cv = cvResult.rows[0];
       return { version: String(cv.version_no), config: cv.config_json };
+    },
+
+    async listAllUsers(): Promise<Array<{ id: string; email: string; displayName: string; isSystemAdmin: boolean; status: string }>> {
+      const result = await pool.query<{ id: string; email: string; display_name: string; is_system_admin: boolean; status: string }>(
+        "select id, email, display_name, is_system_admin, status from users order by email"
+      );
+      return result.rows.map((r) => ({
+        id: r.id, email: r.email, displayName: r.display_name,
+        isSystemAdmin: r.is_system_admin, status: r.status
+      }));
+    },
+
+    async findTenantByKey(tenantKey: string): Promise<{ id: string } | null> {
+      const result = await pool.query<{ id: string }>(
+        "select id from tenants where tenant_key = $1 and status <> 'deleted' limit 1",
+        [tenantKey]
+      );
+      return result.rows[0] ?? null;
+    },
+
+    async listTenantRegistrationTokens(tenantId: string): Promise<RegistrationTokenInfo[]> {
+      const result = await pool.query<{
+        id: string; project_key: string; project_name: string;
+        status: string; expires_at: Date; created_at: Date;
+      }>(
+        `select rt.id, p.project_key, p.name as project_name, rt.status, rt.expires_at, rt.created_at
+         from registration_tokens rt join projects p on p.id = rt.project_id
+         where p.tenant_id = $1
+         order by rt.created_at desc limit 50`,
+        [tenantId]
+      );
+      return result.rows.map((r) => ({
+        id: r.id, projectKey: r.project_key, projectName: r.project_name,
+        token: null, status: r.status,
+        expiresAt: r.expires_at.toISOString(), createdAt: r.created_at.toISOString()
+      }));
     }
   };
 }
