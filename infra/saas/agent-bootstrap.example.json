@@ -1,0 +1,7 @@
+{
+  "baseUrl": "https://saas.example.com",
+  "tenantKey": "tenant-demo",
+  "projectKey": "project-demo",
+  "agentId": "agent-generated-by-saas",
+  "accessToken": "replace-with-issued-agent-token"
+}

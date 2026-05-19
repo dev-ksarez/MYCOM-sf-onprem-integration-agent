@@ -14,6 +14,7 @@ Dieses Verzeichnis enthaelt die technische Startbasis fuer die SaaS-Control-Plan
 - `.env.example`: Vorlage fuer Runtime-Secrets und Domain.
 - `docker-compose.yml`: PostgreSQL, SaaS-App-Container und Caddy/TLS.
 - `Caddyfile`: TLS-Reverse-Proxy-Konfiguration.
+- `agent-bootstrap.example.json`: Beispiel fuer eine lokale Agent-Bootstrap-Datei ohne Kundensystem-Secrets.
 - `postgres/schema.sql`: initiales PostgreSQL-Schema.
 - `scripts/setup-ubuntu-saas-host.sh`: Ubuntu-Haertung, Docker, Firewall, Fail2ban.
 - `scripts/backup-postgres.sh`: komprimiertes PostgreSQL-Backup mit Retention.
@@ -41,3 +42,13 @@ docker compose --env-file .env up -d
 - Registration Tokens sind kurzlebig und einmalig nutzbar.
 - Agenten erhalten nach Registrierung rotierbare Credentials.
 - SaaS speichert nur Connector-Metadaten und Secret-Status, nicht die lokalen Zugangsdaten.
+
+## Agent-Bootstrap
+
+Der Agent liest im SaaS-Modus entweder Umgebungsvariablen oder eine lokale Datei:
+
+- `AGENT_SAAS_CONTROL_PLANE_ENABLED=1`
+- `AGENT_SAAS_BOOTSTRAP_FILE=artifacts/saas-bootstrap.json`
+- alternativ direkt `AGENT_SAAS_BASE_URL`, `AGENT_SAAS_TENANT_KEY`, `AGENT_SAAS_PROJECT_KEY`, `AGENT_SAAS_AGENT_ID`, `AGENT_SAAS_ACCESS_TOKEN`
+
+Diese Datei enthaelt nur SaaS-Endpunkt, Tenant-/Projektkennung und Agent-Credential. MSSQL-, SAGE100-, File- und Salesforce-Secrets bleiben lokal in der bestehenden Agent-Konfiguration.

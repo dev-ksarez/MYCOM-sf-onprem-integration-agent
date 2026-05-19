@@ -27,7 +27,8 @@ const agentRuntime = createAgentServiceRuntime({
   })(),
   salesforceControlPlaneEnabled: isEnabled(process.env.AGENT_SALESFORCE_CONTROL_PLANE_ENABLED, true),
   salesforceHealthIntervalMs: Number(process.env.AGENT_HEALTH_PULSE_INTERVAL_MS || 300_000),
-  salesforceCommandPollIntervalMs: Number(process.env.AGENT_COMMAND_POLL_INTERVAL_MS || 60_000)
+  salesforceCommandPollIntervalMs: Number(process.env.AGENT_COMMAND_POLL_INTERVAL_MS || 60_000),
+  saasControlPlaneEnabled: isEnabled(process.env.AGENT_SAAS_CONTROL_PLANE_ENABLED, false)
 });
 
 async function main(): Promise<void> {
