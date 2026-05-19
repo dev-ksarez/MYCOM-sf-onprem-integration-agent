@@ -22,6 +22,8 @@ export interface SaasRepositoryOptions {
 interface AgentAuthRecord {
   tenant_id: string;
   project_id: string;
+  tenant_key: string;
+  project_key: string;
 }
 
 interface RegistrationRecord {
@@ -449,9 +451,11 @@ export function createSaasRepository(options: SaasRepositoryOptions): SaasReposi
       const credentialHash = hashAgentToken(bearerToken, options.agentTokenPepper);
       const authResult = await pool.query<AgentAuthRecord>(
         `
-          select a.tenant_id, a.project_id
+          select a.tenant_id, a.project_id, t.tenant_key, p.project_key
           from agent_credentials c
           join agents a on a.id = c.agent_id
+          join tenants t on t.id = a.tenant_id
+          join projects p on p.id = a.project_id
           where c.agent_id = $1
             and c.credential_hash = $2
             and c.status = 'active'
@@ -463,7 +467,7 @@ export function createSaasRepository(options: SaasRepositoryOptions): SaasReposi
       );
 
       const auth = authResult.rows[0];
-      if (!auth || auth.tenant_id !== heartbeat.tenantId || auth.project_id !== heartbeat.projectId) {
+      if (!auth || auth.tenant_key !== heartbeat.tenantKey || auth.project_key !== heartbeat.projectKey) {
         throw new Error("Invalid agent credential");
       }
 
@@ -483,8 +487,8 @@ export function createSaasRepository(options: SaasRepositoryOptions): SaasReposi
           values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9)
         `,
         [
-          heartbeat.tenantId,
-          heartbeat.projectId,
+          auth.tenant_id,
+          auth.project_id,
           heartbeat.agentId,
           heartbeat.status,
           heartbeat.mode,

@@ -59,8 +59,8 @@ function isHeartbeat(value: unknown): value is SaasAgentHeartbeat {
     && typeof candidate === "object"
     && typeof candidate.idempotencyKey === "string"
     && typeof candidate.agentId === "string"
-    && typeof candidate.tenantId === "string"
-    && typeof candidate.projectId === "string"
+    && typeof candidate.tenantKey === "string"
+    && typeof candidate.projectKey === "string"
     && typeof candidate.sentAt === "string"
     && typeof candidate.status === "string"
     && typeof candidate.mode === "string";

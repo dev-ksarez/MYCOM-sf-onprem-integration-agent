@@ -74,8 +74,8 @@ export interface SaasAgentRegistrationResponse {
 export interface SaasAgentHeartbeat {
   idempotencyKey: string;
   agentId: string;
-  tenantId: string;
-  projectId: string;
+  tenantKey: string;
+  projectKey: string;
   mode: SaasMode;
   status: AgentStatus;
   agentVersion: string;
@@ -106,8 +106,8 @@ export interface SaasRunCounters {
 export interface SaasRunReport {
   idempotencyKey: string;
   agentId: string;
-  tenantId: string;
-  projectId: string;
+  tenantKey: string;
+  projectKey: string;
   schedulerId: string;
   configVersion?: string;
   direction: "inbound" | "outbound";

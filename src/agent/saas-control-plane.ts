@@ -29,8 +29,8 @@ function buildHeartbeat(config: SaasControlPlaneConfig, snapshot: HealthSnapshot
   return {
     idempotencyKey: `hb-${config.agentId}-${now}`,
     agentId: config.agentId,
-    tenantId: config.tenantKey,
-    projectId: config.projectKey,
+    tenantKey: config.tenantKey,
+    projectKey: config.projectKey,
     mode: "hybrid",
     status: "online",
     agentVersion: process.env.npm_package_version || "unknown",
