@@ -52,7 +52,7 @@ jobs:
           RELEASE_DIR="artifacts"
           mkdir -p "$RELEASE_DIR"
           rm -f "$RELEASE_DIR"/sf-onprem-integration-agent-customer-installer-*.zip
-          node scripts/windows/build-customer-package.js --output-dir "$RELEASE_DIR" --include-node-modules
+          node scripts/windows/build-customer-package.js --output-dir "$RELEASE_DIR"
           ZIP_PATH=$(ls -1 "$RELEASE_DIR"/sf-onprem-integration-agent-customer-installer-*.zip | head -n 1)
           if [ ! -f "$ZIP_PATH" ]; then
             echo "ERROR: Customer ZIP not created at $ZIP_PATH"
@@ -123,8 +123,9 @@ jobs:
             ### Erstinstallation (einmalig beim Kunden)
             1. `${{ steps.customer_zip.outputs.zip_path }}` herunterladen und entpacken
             2. `install-customer-package.cmd` oder `install-customer-package.ps1` als Admin ausführen
-            3. `.env` aus `.env.example` anlegen und befüllen, falls der Installer sie nicht interaktiv erzeugt
-            4. Als Admin: `npm run win:register-updater` mit der Manifest-URL ausführen, falls der Updater nicht bereits registriert wurde:
+            3. Falls `node_modules` fehlt: im App-Verzeichnis `npm ci --omit=dev` ausführen
+            4. `.env` aus `.env.example` anlegen und befüllen, falls der Installer sie nicht interaktiv erzeugt
+            5. Als Admin: `npm run win:register-updater` mit der Manifest-URL ausführen, falls der Updater nicht bereits registriert wurde:
                ```
                https://github.com/${{ github.repository }}/releases/latest/download/update-manifest.json
                ```
