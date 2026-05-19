@@ -1,0 +1,65 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - saas-internal
+
+  saas-api:
+    image: ${SAAS_APP_IMAGE}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      SAAS_PUBLIC_URL: ${SAAS_PUBLIC_URL}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      SAAS_JWT_SECRET: ${SAAS_JWT_SECRET}
+      SAAS_AGENT_TOKEN_PEPPER: ${SAAS_AGENT_TOKEN_PEPPER}
+      SAAS_ENCRYPTION_KEY: ${SAAS_ENCRYPTION_KEY}
+    volumes:
+      - saas-storage:/app/storage
+    networks:
+      - saas-internal
+      - saas-edge
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - saas-api
+    environment:
+      SAAS_DOMAIN: ${SAAS_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - saas-edge
+
+volumes:
+  postgres-data:
+  saas-storage:
+  caddy-data:
+  caddy-config:
+
+networks:
+  saas-internal:
+    internal: true
+  saas-edge:

@@ -83,11 +83,26 @@ Beispiel fuer Limits:
 {
   "projects": 5,
   "agents": 20,
+  "connectors": 25,
   "schedulers": 200,
+  "recordsPerMonth": 1000000,
   "users": 25,
   "failedRecordRetentionDays": 30
 }
 ```
+
+Phase-1-Felder fuer direkte Limitpruefung:
+
+- `max_connectors`
+- `max_schedulers`
+- `max_records_per_month`
+
+Phase-1-Featureflags:
+
+- `feature_ai`
+- `feature_migration`
+- `feature_custom_connector`
+- `feature_custom_scheduler`
 
 Regeln:
 
