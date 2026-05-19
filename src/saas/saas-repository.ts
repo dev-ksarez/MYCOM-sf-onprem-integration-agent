@@ -9,6 +9,7 @@ import {
 export interface SaasRepository {
   close(): Promise<void>;
   checkHealth(): Promise<void>;
+  getPortalSnapshot(): Promise<SaasPortalSnapshot>;
   claimAgentRegistration(request: SaasAgentRegistrationRequest): Promise<SaasAgentRegistrationResponse>;
   acceptAgentHeartbeat(heartbeat: SaasAgentHeartbeat, bearerToken: string): Promise<void>;
 }
@@ -50,6 +51,50 @@ interface LicenseRecord {
   feature_custom_scheduler: boolean;
 }
 
+export interface SaasPortalSnapshot {
+  generatedAt: string;
+  totals: {
+    tenants: number;
+    projects: number;
+    agents: number;
+    onlineAgents: number;
+    schedulerRuns24h: number;
+    failedRuns24h: number;
+  };
+  tenants: Array<{
+    tenantId: string;
+    tenantKey: string;
+    name: string;
+    status: string;
+    plan: string;
+    projectCount: number;
+    agentCount: number;
+    onlineAgentCount: number;
+    lastHeartbeatAt?: string;
+  }>;
+  projects: Array<{
+    projectId: string;
+    tenantKey: string;
+    projectKey: string;
+    name: string;
+    mode: string;
+    status: string;
+    agentCount: number;
+    onlineAgentCount: number;
+    lastHeartbeatAt?: string;
+  }>;
+  recentAgents: Array<{
+    agentId: string;
+    tenantKey: string;
+    projectKey: string;
+    name: string;
+    status: string;
+    mode: string;
+    agentVersion?: string;
+    lastHeartbeatAt?: string;
+  }>;
+}
+
 function hashAgentToken(token: string, pepper: string): string {
   return crypto.createHash("sha256").update(`${pepper}:${token}`).digest("hex");
 }
@@ -77,6 +122,171 @@ export function createSaasRepository(options: SaasRepositoryOptions): SaasReposi
 
     async checkHealth(): Promise<void> {
       await pool.query("select 1");
+    },
+
+    async getPortalSnapshot(): Promise<SaasPortalSnapshot> {
+      const [totalsResult, tenantsResult, projectsResult, agentsResult] = await Promise.all([
+        pool.query<{
+          tenants: string;
+          projects: string;
+          agents: string;
+          online_agents: string;
+          scheduler_runs_24h: string;
+          failed_runs_24h: string;
+        }>(
+          `
+            select
+              (select count(*) from tenants where status <> 'deleted') as tenants,
+              (select count(*) from projects where status <> 'deleted') as projects,
+              (select count(*) from agents where status <> 'revoked') as agents,
+              (select count(*) from agents where status = 'online' and last_heartbeat_at > now() - interval '15 minutes') as online_agents,
+              (select count(*) from scheduler_runs where started_at > now() - interval '24 hours') as scheduler_runs_24h,
+              (select count(*) from scheduler_runs where started_at > now() - interval '24 hours' and status in ('failed', 'partial')) as failed_runs_24h
+          `
+        ),
+        pool.query<{
+          tenant_id: string;
+          tenant_key: string;
+          name: string;
+          status: string;
+          plan: string | null;
+          project_count: string;
+          agent_count: string;
+          online_agent_count: string;
+          last_heartbeat_at: Date | null;
+        }>(
+          `
+            select
+              t.id as tenant_id,
+              t.tenant_key,
+              t.name,
+              t.status,
+              coalesce(l.plan, 'unlicensed') as plan,
+              count(distinct p.id) as project_count,
+              count(distinct a.id) as agent_count,
+              count(distinct a.id) filter (where a.status = 'online' and a.last_heartbeat_at > now() - interval '15 minutes') as online_agent_count,
+              max(a.last_heartbeat_at) as last_heartbeat_at
+            from tenants t
+            left join projects p on p.tenant_id = t.id and p.status <> 'deleted'
+            left join agents a on a.tenant_id = t.id and a.status <> 'revoked'
+            left join lateral (
+              select plan
+              from licenses
+              where tenant_id = t.id
+              order by created_at desc
+              limit 1
+            ) l on true
+            where t.status <> 'deleted'
+            group by t.id, t.tenant_key, t.name, t.status, l.plan
+            order by t.created_at desc
+            limit 50
+          `
+        ),
+        pool.query<{
+          project_id: string;
+          tenant_key: string;
+          project_key: string;
+          name: string;
+          mode: string;
+          status: string;
+          agent_count: string;
+          online_agent_count: string;
+          last_heartbeat_at: Date | null;
+        }>(
+          `
+            select
+              p.id as project_id,
+              t.tenant_key,
+              p.project_key,
+              p.name,
+              p.mode,
+              p.status,
+              count(distinct a.id) as agent_count,
+              count(distinct a.id) filter (where a.status = 'online' and a.last_heartbeat_at > now() - interval '15 minutes') as online_agent_count,
+              max(a.last_heartbeat_at) as last_heartbeat_at
+            from projects p
+            join tenants t on t.id = p.tenant_id
+            left join agents a on a.project_id = p.id and a.status <> 'revoked'
+            where p.status <> 'deleted'
+            group by p.id, t.tenant_key, p.project_key, p.name, p.mode, p.status
+            order by p.updated_at desc
+            limit 100
+          `
+        ),
+        pool.query<{
+          agent_id: string;
+          tenant_key: string;
+          project_key: string;
+          name: string;
+          status: string;
+          mode: string;
+          agent_version: string | null;
+          last_heartbeat_at: Date | null;
+        }>(
+          `
+            select
+              a.id as agent_id,
+              t.tenant_key,
+              p.project_key,
+              a.name,
+              a.status,
+              a.mode,
+              a.agent_version,
+              a.last_heartbeat_at
+            from agents a
+            join tenants t on t.id = a.tenant_id
+            join projects p on p.id = a.project_id
+            where a.status <> 'revoked'
+            order by a.last_heartbeat_at desc nulls last, a.updated_at desc
+            limit 25
+          `
+        )
+      ]);
+
+      const totals = totalsResult.rows[0];
+      return {
+        generatedAt: new Date().toISOString(),
+        totals: {
+          tenants: Number(totals?.tenants || 0),
+          projects: Number(totals?.projects || 0),
+          agents: Number(totals?.agents || 0),
+          onlineAgents: Number(totals?.online_agents || 0),
+          schedulerRuns24h: Number(totals?.scheduler_runs_24h || 0),
+          failedRuns24h: Number(totals?.failed_runs_24h || 0)
+        },
+        tenants: tenantsResult.rows.map((row) => ({
+          tenantId: row.tenant_id,
+          tenantKey: row.tenant_key,
+          name: row.name,
+          status: row.status,
+          plan: row.plan || "unlicensed",
+          projectCount: Number(row.project_count || 0),
+          agentCount: Number(row.agent_count || 0),
+          onlineAgentCount: Number(row.online_agent_count || 0),
+          lastHeartbeatAt: row.last_heartbeat_at?.toISOString()
+        })),
+        projects: projectsResult.rows.map((row) => ({
+          projectId: row.project_id,
+          tenantKey: row.tenant_key,
+          projectKey: row.project_key,
+          name: row.name,
+          mode: row.mode,
+          status: row.status,
+          agentCount: Number(row.agent_count || 0),
+          onlineAgentCount: Number(row.online_agent_count || 0),
+          lastHeartbeatAt: row.last_heartbeat_at?.toISOString()
+        })),
+        recentAgents: agentsResult.rows.map((row) => ({
+          agentId: row.agent_id,
+          tenantKey: row.tenant_key,
+          projectKey: row.project_key,
+          name: row.name,
+          status: row.status,
+          mode: row.mode,
+          agentVersion: row.agent_version || undefined,
+          lastHeartbeatAt: row.last_heartbeat_at?.toISOString()
+        }))
+      };
     },
 
     async claimAgentRegistration(request: SaasAgentRegistrationRequest): Promise<SaasAgentRegistrationResponse> {

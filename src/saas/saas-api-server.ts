@@ -1,6 +1,7 @@
 import http from "node:http";
 import { SaasAgentHeartbeat, SaasAgentRegistrationRequest } from "../types/saas-control-plane";
 import { SaasRepository } from "./saas-repository";
+import { renderSaasPortal } from "./saas-portal";
 
 const MAX_JSON_BYTES = 512 * 1024;
 
@@ -11,6 +12,14 @@ function sendJson(res: http.ServerResponse, statusCode: number, body: unknown): 
     "cache-control": "no-store"
   });
   res.end(payload);
+}
+
+function sendHtml(res: http.ServerResponse, statusCode: number, html: string): void {
+  res.writeHead(statusCode, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store"
+  });
+  res.end(html);
 }
 
 function extractBearerToken(req: http.IncomingMessage): string {
@@ -79,6 +88,18 @@ export function createSaasApiServer(repository: SaasRepository): http.Server {
       if (req.method === "GET" && requestUrl.pathname === "/health") {
         await repository.checkHealth();
         sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (req.method === "GET" && (requestUrl.pathname === "/" || requestUrl.pathname === "/portal")) {
+        const snapshot = await repository.getPortalSnapshot();
+        sendHtml(res, 200, renderSaasPortal(snapshot));
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/api/saas/v1/overview") {
+        const snapshot = await repository.getPortalSnapshot();
+        sendJson(res, 200, snapshot);
         return;
       }
 
