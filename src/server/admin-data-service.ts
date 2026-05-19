@@ -1873,6 +1873,16 @@ async function validateRequiredSalesforceFieldMappings(
 
   }
 
+  const externalIdField = String(resolvedTargetDefinition?.externalIdField || "").trim().toLowerCase();
+  if (
+    objectName === "PricebookEntry" &&
+    operation === "upsert" &&
+    externalIdField === "productcode" &&
+    providedTargetFields.has("productcode")
+  ) {
+    providedTargetFields.add("product2id");
+  }
+
   const missingRequiredFields = objectFields
     .filter((field) => field.requiredOnCreate)
     .map((field) => String(field.name || "").trim())

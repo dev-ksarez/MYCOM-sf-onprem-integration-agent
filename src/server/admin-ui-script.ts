@@ -4150,6 +4150,13 @@ export function renderAdminUiScript(): string {
         return provided;
       }
 
+      function isPricebookEntryProductCodeUpsertSelection() {
+        const objectName = String(document.getElementById('sch-object')?.value || '').trim();
+        const operation = String(normalizeOperationValue(document.getElementById('sch-operation')?.value || '') || '').trim().toLowerCase();
+        const externalIdField = String(document.getElementById('sch-external-id-field')?.value || '').trim().toLowerCase();
+        return objectName === 'PricebookEntry' && operation === 'upsert' && externalIdField === 'productcode';
+      }
+
       function getMissingRequiredSchedulerTargetFields() {
         const requiredFields = getRequiredSalesforceTargetFields();
         if (!requiredFields.length) {
@@ -4157,7 +4164,17 @@ export function renderAdminUiScript(): string {
         }
 
         const providedTargetFieldKeys = getProvidedSchedulerTargetFieldKeys();
-        return requiredFields.filter((field) => !providedTargetFieldKeys.has(normalizeFieldKey(field?.name)));
+        return requiredFields.filter((field) => {
+          const fieldKey = normalizeFieldKey(field?.name);
+          if (
+            fieldKey === 'product2id' &&
+            isPricebookEntryProductCodeUpsertSelection() &&
+            providedTargetFieldKeys.has('productcode')
+          ) {
+            return false;
+          }
+          return !providedTargetFieldKeys.has(fieldKey);
+        });
       }
 
       function getRequiredSalesforceFieldSaveMessage() {
