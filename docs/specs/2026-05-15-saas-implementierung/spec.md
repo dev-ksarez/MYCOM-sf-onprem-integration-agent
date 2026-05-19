@@ -98,6 +98,7 @@ Vertiefende Phase-0-Dokumente:
 - [SaaS Kundenportal](./customer-portal.md)
 - [KI-Assistent fuer Konfigurationspruefung und -anpassung](./ai-assistant-config-editing.md)
 - [SaaS Server-Vorbereitung](./server-preparation.md)
+- [SaaS Server-Vorbereitung Log](./server-preparation-log.md)
 
 Technische Leitplanken:
 

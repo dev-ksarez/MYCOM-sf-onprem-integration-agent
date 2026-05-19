@@ -4,6 +4,7 @@ set -euo pipefail
 APP_USER="${APP_USER:-sfagent}"
 APP_ROOT="${APP_ROOT:-/opt/sf-agent-saas}"
 SSH_PORT="${SSH_PORT:-22}"
+TIMEZONE="${TIMEZONE:-Europe/Berlin}"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run as root or with sudo." >&2
@@ -11,6 +12,11 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 apt-get update
+export DEBIAN_FRONTEND=noninteractive
+export TZ="${TIMEZONE}"
+ln -snf "/usr/share/zoneinfo/${TIMEZONE}" /etc/localtime
+echo "${TIMEZONE}" >/etc/timezone
+
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
   ca-certificates \
   curl \

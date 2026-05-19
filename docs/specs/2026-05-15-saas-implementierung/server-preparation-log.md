@@ -1,0 +1,46 @@
+# SaaS Server-Vorbereitung Log
+
+Stand: 2026-05-19
+
+## Server
+
+- Host: `178.254.18.231`
+- Hostname: `v45106.1blu.de`
+- OS: Ubuntu 24.04.3 LTS
+- App-Pfad: `/opt/sf-agent-saas`
+- Betriebsnutzer: `sfagent`
+
+## Umgesetzt
+
+- SSH-Key fuer Root-Erstzugang hinterlegt.
+- SSH-Key fuer Betriebsnutzer `sfagent` hinterlegt.
+- `sfagent` angelegt und in Docker-Gruppe aufgenommen.
+- SaaS-Artefakte nach `/opt/sf-agent-saas` kopiert.
+- `.env` auf dem Server aus `.env.example` erzeugt und mit zufaelligen Secrets befuellt.
+- Docker Engine und Docker Compose Plugin installiert.
+- UFW aktiviert: eingehend nur `22/tcp`, `80/tcp`, `443/tcp`.
+- Fail2ban fuer SSH aktiviert.
+- Unattended Security Updates aktiviert.
+- PostgreSQL per Docker Compose gestartet.
+- PostgreSQL-Schema initialisiert.
+- Backup-Service und taeglicher Backup-Timer eingerichtet.
+- Initiales PostgreSQL-Backup erfolgreich erzeugt.
+
+## Bewusst noch nicht gestartet
+
+- Caddy/TLS und `saas-api` wurden noch nicht gestartet.
+
+Gruende:
+
+- Es ist noch keine produktive SaaS-Domain auf den Server geschaltet.
+- Das finale SaaS-App-Image ist noch nicht gebaut/veroeffentlicht.
+- Ohne Domain wuerde TLS nicht sauber ausgestellt.
+
+## Offene operative Schritte
+
+- Initiales Server-Passwort nach Abschluss der Arbeiten aendern.
+- DNS fuer die SaaS-Domain auf `178.254.18.231` setzen.
+- Produktives SaaS-App-Image bauen und in `SAAS_APP_IMAGE` hinterlegen.
+- Danach `docker compose --env-file .env up -d` vollstaendig starten.
+- Root-Login per Passwort nach erfolgreicher Domain-/Key-Pruefung deaktivieren.
+- Backup-Ziel optional extern spiegeln.
