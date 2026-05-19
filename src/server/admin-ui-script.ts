@@ -4350,22 +4350,44 @@ export function renderAdminUiScript(): string {
           return;
         }
 
+        const isShareObject = (item) => {
+          const value = String(item?.name || '').trim();
+          const label = String(item?.label || value).trim();
+          return /__share$/i.test(value) || /\bshare:/i.test(label);
+        };
         const items = Array.isArray(objects) ? objects : [];
-        select.innerHTML = '<option value="">- Wählen -</option>' + items.map((item) => {
+        state.schedulerTargetObjects = items;
+        const selected = String(selectedValue || select.value || '').trim();
+        const selectedIsShareObject = selected && items.some((item) => String(item?.name || '').trim() === selected && isShareObject(item));
+        const selectableItems = items.filter((item) => !isShareObject(item) || String(item?.name || '').trim() === selected);
+        const filterTerm = String(document.getElementById('sch-object-filter')?.value || '').trim().toLowerCase();
+        const visibleItems = filterTerm
+          ? selectableItems.filter((item) => {
+              const value = String(item?.name || '').trim();
+              const label = String(item?.label || value).trim();
+              return (value + ' ' + label).toLowerCase().includes(filterTerm);
+            })
+          : selectableItems;
+        const selectedItem = selected && !visibleItems.some((item) => String(item?.name || '').trim() === selected)
+          ? items.find((item) => String(item?.name || '').trim() === selected)
+          : null;
+        const optionItems = selectedItem ? [selectedItem, ...visibleItems] : visibleItems;
+
+        select.innerHTML = '<option value="">- Wählen -</option>' + optionItems.map((item) => {
           const value = String(item?.name || '').trim();
           const label = String(item?.label || value).trim();
           return '<option value="' + esc(value) + '">' + esc(label) + '</option>';
         }).join('');
 
-        if (selectedValue && items.some((item) => String(item?.name || '') === selectedValue)) {
-          select.value = selectedValue;
-        } else if (selectedValue) {
-          select.innerHTML = '<option value="">- Wählen -</option><option value="' + esc(selectedValue) + '">' + esc(selectedValue) + '</option>' + items.map((item) => {
+        if (selected && (selectedIsShareObject || selectableItems.some((item) => String(item?.name || '') === selected))) {
+          select.value = selected;
+        } else if (selected) {
+          select.innerHTML = '<option value="">- Wählen -</option><option value="' + esc(selected) + '">' + esc(selected) + '</option>' + visibleItems.map((item) => {
             const value = String(item?.name || '').trim();
             const label = String(item?.label || value).trim();
             return '<option value="' + esc(value) + '">' + esc(label) + '</option>';
           }).join('');
-          select.value = selectedValue;
+          select.value = selected;
         }
       }
 
@@ -4465,6 +4487,54 @@ export function renderAdminUiScript(): string {
           }
           renderSelectOptions('sch-object', state.scheduleOptions.objectNames || [], selectedObjectName || '');
           renderSchedulerMappingAssistant();
+        }
+      }
+
+      async function refreshSchedulerSalesforceMetadata() {
+        clearModalError();
+        const instanceId = String(state.instanceId || '').trim();
+        if (!instanceId) {
+          showModalError('Bitte zuerst eine Salesforce-Instanz auswählen.');
+          return;
+        }
+
+        const button = document.getElementById('sch-refresh-sf-metadata');
+        const previousLabel = button ? button.textContent : '';
+        if (button) {
+          button.disabled = true;
+          button.textContent = 'Lade...';
+        }
+
+        try {
+          const selectedObject = String(document.getElementById('sch-object')?.value || '').trim();
+          const baseObjects = ['Account', 'Contact', 'Lead', 'Opportunity', 'Order', 'Product2', 'Pricebook2', 'PricebookEntry'];
+          const objectNames = Array.from(new Set([selectedObject, ...baseObjects].map((item) => String(item || '').trim()).filter(Boolean)));
+          const snapshot = await requestJson('/api/admin/sf-instances/' + encodeURIComponent(instanceId) + '/metadata', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              objectNames,
+              includeAllFields: false,
+              maxFieldObjects: 80
+            })
+          });
+          state.instanceMetadataSnapshots[instanceId] = snapshot;
+          state.schedulerLookupObjectsLoaded = false;
+          state.schedulerLookupObjects = [];
+          state.schedulerLookupObjectsLoadPromise = null;
+          state.schedulerLookupExternalIdFieldsByObject = {};
+          state.schedulerLookupExternalIdFieldPromises = {};
+          await loadTargetObjects(selectedObject);
+          await loadTargetFields();
+          renderSchedulerMappingManager();
+          showInfo('Metadaten aktualisiert: ' + String(snapshot.objectCount || 0) + ' Objekte, ' + String(snapshot.fieldCount || 0) + ' Felder.');
+        } catch (error) {
+          showModalError('Metadaten-Refresh fehlgeschlagen: ' + (error.message || 'Unbekannter Fehler'));
+        } finally {
+          if (button) {
+            button.disabled = false;
+            button.textContent = previousLabel || 'Metadaten neu laden';
+          }
         }
       }
 
@@ -4825,6 +4895,176 @@ export function renderAdminUiScript(): string {
           .join('; ');
       }
 
+      function normalizeSchedulerCustomFieldApiName(value) {
+        const base = String(value || '')
+          .trim()
+          .replace(/[^A-Za-z0-9_]/g, '_')
+          .replace(/_+/g, '_')
+          .replace(/^_+|_+$/g, '');
+        const withStart = /^[A-Za-z]/.test(base) ? base : ('Field_' + base);
+        const withoutSuffix = withStart.replace(/__c$/i, '');
+        return (withoutSuffix || 'New_Field') + '__c';
+      }
+
+      function inferSchedulerFieldCreationType(source, rule) {
+        const sourceType = String(source?.type || rule?.sourceType || '').trim().toLowerCase();
+        const targetName = String(rule?.targetField || source?.name || '').trim().toLowerCase();
+        if (sourceType.includes('date') && sourceType.includes('time')) return 'DateTime';
+        if (sourceType.includes('date')) return 'Date';
+        if (sourceType.includes('bool') || sourceType === 'bit') return 'Checkbox';
+        if (sourceType.includes('money') || targetName.includes('currency')) return 'Currency';
+        if (sourceType.includes('decimal') || sourceType.includes('number') || sourceType.includes('int') || sourceType.includes('float')) return 'Number';
+        if (targetName.includes('email')) return 'Email';
+        if (targetName.includes('phone') || targetName.includes('mobile')) return 'Phone';
+        if (targetName.includes('url') || targetName.includes('website')) return 'Url';
+        return 'Text';
+      }
+
+      function parseSchedulerSourceTypeDimensions(sourceType) {
+        const normalized = String(sourceType || '').trim().toLowerCase();
+        const parenMatch = normalized.match(/\((\d+)(?:\s*,\s*(\d+))?\)/);
+        const first = parenMatch ? Number(parenMatch[1]) : null;
+        const second = parenMatch && parenMatch[2] !== undefined ? Number(parenMatch[2]) : null;
+        return {
+          length: Number.isFinite(first) ? first : null,
+          precision: Number.isFinite(first) ? first : null,
+          scale: Number.isFinite(second) ? second : null
+        };
+      }
+
+      function getSchedulerFieldCreationDefaults(source, rule) {
+        const inferredType = inferSchedulerFieldCreationType(source, rule);
+        const sourceDimensions = parseSchedulerSourceTypeDimensions(source?.type || rule?.sourceType || '');
+        const sourceName = String(source?.name || rule?.sourceField || 'New_Field').trim();
+        const fieldApiName = normalizeSchedulerCustomFieldApiName(sourceName);
+        const length = inferredType === 'Text'
+          ? Math.max(1, Math.min(255, Number(sourceDimensions.length || 255)))
+          : 255;
+        const precision = ['Number', 'Currency', 'Percent'].includes(inferredType)
+          ? Math.max(1, Math.min(18, Number(sourceDimensions.precision || 18)))
+          : 18;
+        const scale = ['Currency', 'Percent'].includes(inferredType)
+          ? Math.max(0, Math.min(precision - 1, Number(sourceDimensions.scale ?? 2)))
+          : Math.max(0, Math.min(precision - 1, Number(sourceDimensions.scale ?? 0)));
+        return {
+          fieldApiName,
+          fieldType: inferredType,
+          length,
+          precision,
+          scale,
+          picklistValues: getSchedulerSourceDistinctValues(sourceName, 80)
+        };
+      }
+
+      function getSchedulerFieldCreationTypeOptions(selectedType) {
+        return ['Text', 'Number', 'Date', 'DateTime', 'Checkbox', 'Currency', 'Percent', 'Email', 'Phone', 'Url', 'Picklist']
+          .map((type) => '<option value="' + esc(type) + '"' + (type === selectedType ? ' selected' : '') + '>' + esc(type) + '</option>')
+          .join('');
+      }
+
+      function syncSchedulerCreateFieldPanel(row) {
+        const fieldType = String(row.querySelector('[data-sch-create-field-type]')?.value || 'Text').trim();
+        row.querySelectorAll('[data-sch-create-config]').forEach((element) => {
+          const configType = String(element.getAttribute('data-sch-create-config') || '').trim();
+          const visible = configType === 'text'
+            ? fieldType === 'Text'
+            : configType === 'number'
+              ? ['Number', 'Currency', 'Percent'].includes(fieldType)
+              : configType === 'picklist'
+                ? fieldType === 'Picklist'
+                : false;
+          element.classList.toggle('d-none', !visible);
+        });
+      }
+
+      function getSchedulerSourceDistinctValues(sourceName, limit) {
+        const normalizedSource = String(sourceName || '').trim();
+        const values = [];
+        const seen = new Set();
+        (Array.isArray(state.sourcePreviewRows) ? state.sourcePreviewRows : []).forEach((row) => {
+          const rawValue = row && Object.prototype.hasOwnProperty.call(row, normalizedSource) ? row[normalizedSource] : undefined;
+          const value = String(rawValue ?? '').trim();
+          const key = value.toLowerCase();
+          if (value && !seen.has(key)) {
+            seen.add(key);
+            values.push(value);
+          }
+        });
+        return values.slice(0, Number(limit || 80));
+      }
+
+      async function createSchedulerSalesforceFieldFromRow(row, source, rule) {
+        clearModalError();
+        const objectApiName = String(document.getElementById('sch-object')?.value || '').trim();
+        const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
+        if (targetType !== 'SALESFORCE' || !objectApiName) {
+          showModalError('Salesforce-Felder können nur bei Salesforce-Zielen mit gewähltem Objekt angelegt werden.');
+          return;
+        }
+
+        const fieldApiName = normalizeSchedulerCustomFieldApiName(row.querySelector('[data-sch-create-field-api]')?.value || '');
+        if (!fieldApiName) {
+          showModalError('Bitte API-Name für das neue Salesforce-Feld angeben.');
+          return;
+        }
+
+        const fieldType = String(row.querySelector('[data-sch-create-field-type]')?.value || 'Text').trim() || 'Text';
+        const length = Number(row.querySelector('[data-sch-create-field-length]')?.value || 255);
+        const precision = Number(row.querySelector('[data-sch-create-field-precision]')?.value || 18);
+        const scale = Number(row.querySelector('[data-sch-create-field-scale]')?.value || 0);
+        const picklistValues = fieldType === 'Picklist'
+          ? String(row.querySelector('[data-sch-create-field-picklist]')?.value || '')
+              .split(/[,\\n\\r]/)
+              .map((value) => value.trim())
+              .filter(Boolean)
+          : [];
+        if (fieldType === 'Picklist' && !picklistValues.length) {
+          showModalError('Für Picklist-Felder müssen Werte angegeben werden.');
+          return;
+        }
+
+        const button = row.querySelector('[data-sch-manager-create-field]');
+        const previousLabel = button ? button.textContent : '';
+        if (button) {
+          button.disabled = true;
+          button.textContent = 'Lege an...';
+        }
+
+        try {
+          await requestJson('/api/salesforce/create-field', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              objectApiName,
+              fieldApiName,
+              fieldType,
+              length,
+              precision,
+              scale,
+              picklistValues,
+              instanceId: state.instanceId
+            })
+          });
+          await loadTargetFields();
+          const sourceName = String(source?.name || row.getAttribute('data-sch-map-source') || '').trim();
+          const currentRule = findSchedulerMappingRuleBySource(sourceName) || createMappingRuleFromSource(source || { name: sourceName, type: 'string' });
+          currentRule.targetField = fieldApiName;
+          currentRule.targetType = fieldType === 'Picklist' ? 'picklist' : fieldType.toLowerCase();
+          if (!findSchedulerMappingRuleBySource(sourceName)) {
+            state.mappingRules.push(currentRule);
+          }
+          renderMappingRulesTable();
+          showInfo(objectApiName + '.' + fieldApiName + ' angelegt und Berechtigung gesetzt.');
+        } catch (error) {
+          showModalError('Feld konnte nicht angelegt werden: ' + (error.message || 'Unbekannter Fehler'));
+        } finally {
+          if (button) {
+            button.disabled = false;
+            button.textContent = previousLabel || 'Feld anlegen';
+          }
+        }
+      }
+
       function findSchedulerMappingRuleBySource(sourceName) {
         const sourceKey = normalizeFieldKey(sourceName);
         if (!sourceKey) {
@@ -4835,28 +5075,83 @@ export function renderAdminUiScript(): string {
         ) || null;
       }
 
-      function getSchedulerMappingTargetOptions(selectedValue) {
+      function getSchedulerMappingTargetOptions(selectedValue, filterTerm) {
         const selected = String(selectedValue || '').trim();
+        const filter = String(filterTerm || '').trim().toLowerCase();
         const fields = Array.isArray(state.targetFields) ? state.targetFields : [];
         const visibleFields = fields
           .filter((field) => isSchedulerMappingTargetFieldVisible(field, selected))
+          .filter((field) => {
+            if (!filter) {
+              return true;
+            }
+            const name = String(field?.name || '').trim();
+            const label = String(field?.label || name).trim();
+            const type = String(field?.type || '').trim();
+            const group = getSchedulerTargetFieldGroup(field);
+            return [name, label, type, group].join(' ').toLowerCase().includes(filter);
+          })
           .slice()
-          .sort((a, b) => {
-            const left = String(a?.label || a?.name || '').trim();
-            const right = String(b?.label || b?.name || '').trim();
-            return left.localeCompare(right, 'de', { sensitivity: 'base', numeric: true });
-          });
+          .sort(compareSchedulerTargetFields);
         const hasSelected = selected && visibleFields.some((field) => String(field?.name || '') === selected);
-        return '<option value=""' + (!selected ? ' selected' : '') + '>Zielfeld wählen</option>' + visibleFields.map((field) => {
+        const groups = [
+          { key: 'externalId', label: 'External IDs' },
+          { key: 'lookup', label: 'Lookup-Felder' },
+          { key: 'custom', label: 'Customfelder' },
+          { key: 'standard', label: 'Standardfelder' },
+          { key: 'other', label: 'Weitere Felder' }
+        ];
+        const groupedOptions = groups.map((group) => {
+          const options = visibleFields
+            .filter((field) => getSchedulerTargetFieldGroup(field) === group.key)
+            .map((field) => getSchedulerTargetFieldOptionHtml(field, selected))
+            .join('');
+          return options ? '<optgroup label="' + esc(group.label) + '">' + options + '</optgroup>' : '';
+        }).join('');
+        return '<option value=""' + (!selected ? ' selected' : '') + '>Zielfeld wählen</option>' + groupedOptions + (!hasSelected && selected ? '<option value="' + esc(selected) + '" selected>Manuell: ' + esc(selected) + '</option>' : '');
+      }
+
+      function getSchedulerTargetFieldOptionHtml(field, selected) {
           const name = String(field?.name || '').trim();
           const label = String(field?.label || '').trim();
           const display = label && label !== name ? label + ' - ' + name : name;
           const meta = [
             field?.requiredOnCreate === true ? 'Pflicht' : '',
-            field?.isExternalId === true ? 'External ID' : ''
+            field?.isExternalId === true ? 'External ID' : '',
+            getSchedulerTargetFieldGroup(field) === 'lookup' ? 'Lookup' : '',
+            getSchedulerTargetFieldGroup(field) === 'custom' ? 'Custom' : ''
           ].filter(Boolean).join(', ');
           return '<option value="' + esc(name) + '"' + (name === selected ? ' selected' : '') + '>' + esc(display + (meta ? ' (' + meta + ')' : '')) + '</option>';
-        }).join('') + (!hasSelected && selected ? '<option value="' + esc(selected) + '" selected>Manuell: ' + esc(selected) + '</option>' : '');
+      }
+
+      function getSchedulerTargetFieldGroup(field) {
+        const name = String(field?.name || '').trim();
+        const type = String(field?.type || '').trim().toLowerCase();
+        if (!name) {
+          return 'other';
+        }
+        if (field?.isExternalId === true) {
+          return 'externalId';
+        }
+        if (type === 'reference' || Array.isArray(field?.referenceTo) && field.referenceTo.length > 0) {
+          return 'lookup';
+        }
+        if (/__c$/i.test(name)) {
+          return 'custom';
+        }
+        return 'standard';
+      }
+
+      function compareSchedulerTargetFields(a, b) {
+        const groupOrder = { externalId: 0, lookup: 1, custom: 2, standard: 3, other: 4 };
+        const leftGroup = groupOrder[getSchedulerTargetFieldGroup(a)] ?? 9;
+        const rightGroup = groupOrder[getSchedulerTargetFieldGroup(b)] ?? 9;
+        if (leftGroup !== rightGroup) {
+          return leftGroup - rightGroup;
+        }
+        const left = String(a?.label || a?.name || '').trim();
+        const right = String(b?.label || b?.name || '').trim();
+        return left.localeCompare(right, 'de', { sensitivity: 'base', numeric: true });
       }
 
       function isSchedulerMappingTargetFieldVisible(field, selectedValue) {
@@ -4991,6 +5286,18 @@ export function renderAdminUiScript(): string {
         }).join('') + (!hasSelected && selected ? '<option value="' + esc(selected) + '" selected>' + esc(selected + ' (gespeichert)') + '</option>' : '');
       }
 
+      function getSchedulerLookupObjectDatalistOptions(selectedValue) {
+        const selected = String(selectedValue || '').trim();
+        const objects = Array.isArray(state.schedulerLookupObjects) ? state.schedulerLookupObjects : [];
+        const hasSelected = selected && objects.some((item) => String(item?.name || '') === selected);
+        return objects.map((item) => {
+          const name = String(item?.name || '').trim();
+          const label = String(item?.label || name).trim();
+          const optionLabel = label && label !== name ? label : '';
+          return '<option value="' + esc(name) + '"' + (optionLabel ? ' label="' + esc(optionLabel) + '"' : '') + '></option>';
+        }).join('') + (!hasSelected && selected ? '<option value="' + esc(selected) + '" label="gespeichert"></option>' : '');
+      }
+
       function getSchedulerLookupFieldOptions(lookupObject, selectedValue) {
         const selected = String(selectedValue || '').trim();
         const normalizedObject = String(lookupObject || '').trim();
@@ -5007,6 +5314,21 @@ export function renderAdminUiScript(): string {
         }).join('') + (!hasSelected && selected ? '<option value="' + esc(selected) + '" selected>' + esc(fallbackLabel) + '</option>' : '');
       }
 
+      function getSchedulerLookupFieldDatalistOptions(lookupObject, selectedValue) {
+        const selected = String(selectedValue || '').trim();
+        const normalizedObject = String(lookupObject || '').trim();
+        const fields = normalizedObject && Array.isArray(state.schedulerLookupExternalIdFieldsByObject?.[normalizedObject])
+          ? state.schedulerLookupExternalIdFieldsByObject[normalizedObject]
+          : [];
+        const hasSelected = selected && fields.some((item) => String(item?.name || '') === selected);
+        return fields.map((item) => {
+          const name = String(item?.name || '').trim();
+          const label = String(item?.label || name).trim();
+          const optionLabel = label && label !== name ? label : '';
+          return '<option value="' + esc(name) + '"' + (optionLabel ? ' label="' + esc(optionLabel) + '"' : '') + '></option>';
+        }).join('') + (!hasSelected && selected ? '<option value="' + esc(selected) + '" label="gespeichert"></option>' : '');
+      }
+
       function renderSchedulerMappingManager() {
         const shell = document.getElementById('sch-mapping-manager');
         if (!shell) {
@@ -5014,6 +5336,20 @@ export function renderAdminUiScript(): string {
         }
 
         const sources = getSchedulerMappingManagerSources();
+        const previousFilter = String(shell.querySelector('[data-sch-map-filter]')?.value || '').trim();
+        const openDetailSources = new Set(
+          Array.from(shell.querySelectorAll('[data-sch-map-row] details[open]'))
+            .map((details) => String(details.closest('[data-sch-map-row]')?.getAttribute('data-sch-map-source') || '').trim())
+            .filter(Boolean)
+        );
+        const targetFieldFilters = new Map(
+          Array.from(shell.querySelectorAll('[data-sch-map-row]'))
+            .map((row) => [
+              String(row.getAttribute('data-sch-map-source') || '').trim(),
+              String(row.querySelector('[data-sch-manager-target-filter]')?.value || '').trim()
+            ])
+            .filter(([sourceName]) => Boolean(sourceName))
+        );
         const useLookupSelection = canUseSchedulerLookupSelection();
         if (useLookupSelection && !state.schedulerLookupObjectsLoaded && !state.schedulerLookupObjectsLoadPromise) {
           loadSchedulerLookupObjects().then(() => {
@@ -5089,7 +5425,7 @@ export function renderAdminUiScript(): string {
               '<div class="small text-secondary">Quellfelder links, Zielfelder rechts. Details nur öffnen, wenn Lookup, Transform oder Picklist gebraucht werden.</div>' +
             '</div>' +
             '<div class="d-flex gap-2 align-items-center">' +
-              '<input class="form-control form-control-sm migration-mapping-search" type="search" placeholder="Quelle oder Ziel suchen" data-sch-map-filter>' +
+              '<input class="form-control form-control-sm migration-mapping-search" type="search" placeholder="Quelle oder Ziel suchen" value="' + esc(previousFilter) + '" data-sch-map-filter>' +
               '<button id="sch-mapping-preview-btn" type="button" class="btn btn-outline-secondary btn-sm sch-btn-iconized"><svg class="sch-btn-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3C3.7 3 1.4 7.2 1 8c.4.8 2.7 5 7 5s6.6-4.2 7-5c-.4-.8-2.7-5-7-5m0 8a3 3 0 1 1 0-6 3 3 0 0 1 0 6"/></svg><span>Vorschau</span></button>' +
               '<button id="sch-automapping" type="button" class="btn btn-outline-success btn-sm sch-btn-iconized"><svg class="sch-btn-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M7.1 1.2a.75.75 0 0 1 .8 0l4.5 2.6a.75.75 0 0 1 0 1.3L7.9 7.7a.75.75 0 0 1-.8 0L2.6 5.1a.75.75 0 0 1 0-1.3zm-3 5 3 1.7v3.4l-4.5-2.6a.75.75 0 0 1-.4-.65V6.2a.75.75 0 0 0 1.9 0zm7.8 0a.75.75 0 0 0 1.9 0v1.85a.75.75 0 0 1-.4.65l-4.5 2.6V7.9z"/></svg><span>Auto-Mapping</span></button>' +
               '<button id="sch-manager-load-fields" type="button" class="btn btn-outline-secondary btn-sm sch-btn-iconized"><svg class="sch-btn-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1a7 7 0 1 0 6.3 10h-2.1A5 5 0 1 1 8 3v2.2l3.3-2.8L8 0z"/></svg><span>Aktualisieren</span></button>' +
@@ -5137,7 +5473,15 @@ export function renderAdminUiScript(): string {
               const rowStatusClass = targetField ? 'text-bg-success' : 'text-bg-light';
               const rowStatusLabel = targetField ? 'Gemappt' : 'Offen';
               const targetType = targetMeta?.type || (targetField ? 'manuell' : '');
+              const targetFieldIsMissing = Boolean(targetField)
+                && !(Array.isArray(state.targetFields) ? state.targetFields : []).some((field) => normalizeFieldKey(field?.name) === normalizeFieldKey(targetField));
+              const canCreateTargetField = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase() === 'SALESFORCE'
+                && String(document.getElementById('sch-object')?.value || '').trim();
+              const createFieldDefaults = getSchedulerFieldCreationDefaults(source, rule || {});
+              const isPicklistTarget = ['picklist', 'multipicklist'].includes(String(targetMeta?.type || '').trim().toLowerCase());
               const rowSearchText = [source.name, source.label, source.type, targetField, targetType, transformFunction, lookupObject, lookupField].join(' ').toLowerCase();
+              const rowHidden = previousFilter && !rowSearchText.includes(previousFilter.toLowerCase());
+              const targetFieldFilter = targetFieldFilters.get(source.name) || '';
               const lookupFieldMeta = lookupObject ? state.schedulerLookupExternalIdFieldsByObject?.[lookupObject] : null;
               const lookupFieldMissing = useLookupSelection
                 && lookupEnabled
@@ -5153,7 +5497,10 @@ export function renderAdminUiScript(): string {
               const exampleHtml = exampleValue
                 ? '<span class="sch-manager-example-value" title="Beispielwert aus Quelle">' + esc(exampleValue.length > 28 ? exampleValue.slice(0, 28) + '…' : exampleValue) + '</span>'
                 : '';
-              return '<section class="migration-mapping-row scheduler-mapping-row" data-sch-map-row data-sch-map-source="' + esc(source.name) + '" data-sch-map-search="' + esc(rowSearchText) + '">' +
+              const lookupDatalistKey = String(source.name || '').replace(/[^A-Za-z0-9_-]/g, '_');
+              const lookupObjectListId = 'sch-lookup-objects-' + lookupDatalistKey;
+              const lookupFieldListId = 'sch-lookup-fields-' + lookupDatalistKey;
+              return '<section class="migration-mapping-row scheduler-mapping-row' + (rowHidden ? ' d-none' : '') + '" data-sch-map-row data-sch-map-source="' + esc(source.name) + '" data-sch-map-search="' + esc(rowSearchText) + '">' +
                 '<div class="migration-mapping-row-main">' +
                   '<div class="migration-mapping-source">' +
                     '<span class="badge ' + rowStatusClass + '">' + esc(rowStatusLabel) + '</span>' +
@@ -5162,10 +5509,56 @@ export function renderAdminUiScript(): string {
                     exampleHtml +
                   '</div>' +
                   '<div class="migration-mapping-arrow" aria-hidden="true">&rarr;</div>' +
-                  '<div class="migration-mapping-target">' +
-                    '<select class="form-select form-select-sm" data-sch-manager-target>' + getSchedulerMappingTargetOptions(targetField) + '</select>' +
-                    '<span class="badge bg-secondary migration-mapping-type">' + esc(targetType) + (targetMeta?.requiredOnCreate === true ? ' *' : '') + '</span>' +
-                  '</div>' +
+	                  '<div class="migration-mapping-target">' +
+	                    '<div class="migration-mapping-target-inputs">' +
+	                      '<input class="form-control form-control-sm" type="search" placeholder="Zielfeld filtern" value="' + esc(targetFieldFilter) + '" data-sch-manager-target-filter>' +
+	                      '<select class="form-select form-select-sm" data-sch-manager-target>' + getSchedulerMappingTargetOptions(targetField, targetFieldFilter) + '</select>' +
+	                    '</div>' +
+	                    (canCreateTargetField
+	                      ? '<details class="scheduler-create-field-panel mt-2">' +
+	                          '<summary class="small fw-semibold">' + (targetFieldIsMissing ? 'Fehlendes Salesforce-Feld konfigurieren' : 'Neues Salesforce-Feld anlegen') + '</summary>' +
+	                          '<div class="border rounded p-2 mt-2 bg-light-subtle">' +
+	                            '<div class="row g-2 align-items-end">' +
+	                              '<div class="col-md-5">' +
+	                                '<label class="form-label form-label-sm mb-1">API-Name</label>' +
+	                                '<input class="form-control form-control-sm" value="' + esc(createFieldDefaults.fieldApiName) + '" data-sch-create-field-api>' +
+	                              '</div>' +
+	                              '<div class="col-md-3">' +
+	                                '<label class="form-label form-label-sm mb-1">Datentyp</label>' +
+	                                '<select class="form-select form-select-sm" data-sch-create-field-type>' + getSchedulerFieldCreationTypeOptions(createFieldDefaults.fieldType) + '</select>' +
+	                              '</div>' +
+	                              '<div class="col-md-2" data-sch-create-config="text">' +
+	                                '<label class="form-label form-label-sm mb-1">Länge</label>' +
+	                                '<input class="form-control form-control-sm" type="number" min="1" max="255" value="' + esc(String(createFieldDefaults.length)) + '" data-sch-create-field-length>' +
+	                              '</div>' +
+	                              '<div class="col-md-2">' +
+	                                '<button type="button" class="btn btn-sm btn-primary w-100" data-sch-manager-create-field>Anlegen</button>' +
+	                              '</div>' +
+	                            '</div>' +
+	                            '<div class="row g-2 mt-1" data-sch-create-config="number">' +
+	                              '<div class="col-md-3">' +
+	                                '<label class="form-label form-label-sm mb-1">Gesamtstellen</label>' +
+	                                '<input class="form-control form-control-sm" type="number" min="1" max="18" value="' + esc(String(createFieldDefaults.precision)) + '" data-sch-create-field-precision>' +
+	                              '</div>' +
+	                              '<div class="col-md-3">' +
+	                                '<label class="form-label form-label-sm mb-1">Dezimalstellen</label>' +
+	                                '<input class="form-control form-control-sm" type="number" min="0" max="17" value="' + esc(String(createFieldDefaults.scale)) + '" data-sch-create-field-scale>' +
+	                              '</div>' +
+	                              '<div class="col-md-6 small text-secondary d-flex align-items-end">Für Number, Currency und Percent.</div>' +
+	                            '</div>' +
+	                            '<div class="mt-2" data-sch-create-config="picklist">' +
+	                              '<div class="d-flex align-items-center justify-content-between mb-1">' +
+	                                '<label class="form-label form-label-sm mb-0">Picklist-Werte</label>' +
+	                                '<span class="small text-secondary">Komma oder Zeilenumbruch</span>' +
+	                              '</div>' +
+	                              '<textarea class="form-control form-control-sm" rows="4" data-sch-create-field-picklist>' + esc(createFieldDefaults.picklistValues.join('\\n')) + '</textarea>' +
+	                            '</div>' +
+	                            '<div class="small text-secondary mt-2">Name und Typ werden aus dem Quellfeld vorbelegt. Vor dem Anlegen können sie angepasst werden.</div>' +
+	                          '</div>' +
+	                        '</details>'
+	                      : '') +
+	                    '<span class="badge bg-secondary migration-mapping-type">' + esc(targetType) + (targetMeta?.requiredOnCreate === true ? ' *' : '') + '</span>' +
+	                  '</div>' +
                   '<div class="migration-mapping-transform">' +
                     '<label class="form-label form-label-sm mb-1">Umwandlung</label>' +
                     '<select class="form-select form-select-sm" data-sch-manager-transform>' +
@@ -5175,7 +5568,7 @@ export function renderAdminUiScript(): string {
                     '</select>' +
                   '</div>' +
                 '</div>' +
-                '<details class="migration-mapping-details">' +
+                '<details class="migration-mapping-details"' + (openDetailSources.has(source.name) ? ' open' : '') + '>' +
                   '<summary>Details</summary>' +
                   '<div class="migration-mapping-detail-grid">' +
                     '<div>' +
@@ -5186,16 +5579,19 @@ export function renderAdminUiScript(): string {
                       '<div class="form-check mb-2"><input class="form-check-input" type="checkbox" data-sch-manager-lookup-enabled' + (lookupEnabled ? ' checked' : '') + '><label class="form-check-label small">Lookup aktivieren</label></div>' +
                       '<div class="migration-mapping-detail-grid migration-mapping-detail-grid-compact">' +
                         (useLookupSelection
-                          ? '<select class="form-select form-select-sm" data-sch-manager-lookup-object>' + getSchedulerLookupObjectOptions(lookupObject) + '</select>'
+                          ? '<div><input class="form-control form-control-sm" list="' + esc(lookupObjectListId) + '" placeholder="SF Objekt suchen" value="' + esc(lookupObject) + '" data-sch-manager-lookup-object><datalist id="' + esc(lookupObjectListId) + '">' + getSchedulerLookupObjectDatalistOptions(lookupObject) + '</datalist></div>'
                           : '<input class="form-control form-control-sm" placeholder="Lookup Objekt" value="' + esc(lookupObject) + '" data-sch-manager-lookup-object>') +
                         (useLookupSelection
-                          ? '<select class="form-select form-select-sm" data-sch-manager-lookup-field>' + getSchedulerLookupFieldOptions(lookupObject, lookupField) + '</select>'
+                          ? '<div><input class="form-control form-control-sm" list="' + esc(lookupFieldListId) + '" placeholder="Lookup Feld suchen" value="' + esc(lookupField) + '" data-sch-manager-lookup-field><datalist id="' + esc(lookupFieldListId) + '">' + getSchedulerLookupFieldDatalistOptions(lookupObject, lookupField) + '</datalist></div>'
                           : '<input class="form-control form-control-sm" placeholder="Lookup Feld / External ID" value="' + esc(lookupField) + '" data-sch-manager-lookup-field>') +
                       '</div>' +
                       (lookupFieldMissing ? '<div class="small text-warning mt-1">Gespeichertes Lookup-Feld ist keine External ID mehr.</div>' : '') +
                     '</div>' +
                     '<div>' +
-                      '<label class="form-label form-label-sm mb-1">Picklist-Mapping</label>' +
+                      '<div class="d-flex align-items-center justify-content-between gap-2 mb-1">' +
+                        '<label class="form-label form-label-sm mb-0">Picklist-Mapping</label>' +
+                        (isPicklistTarget ? '<button type="button" class="btn btn-sm btn-outline-secondary" data-sch-manager-picklist-autofill>Werte übernehmen</button>' : '') +
+                      '</div>' +
                       '<div style="max-height: 200px; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 0.25rem; margin-bottom: 0.5rem;">' +
                         '<table class="table table-sm mb-0" data-sch-manager-picklist-table>' +
                           '<thead style="position: sticky; top: 0; background: #f8f9fa;">' +
@@ -5266,9 +5662,15 @@ export function renderAdminUiScript(): string {
           rule.targetType = getSchedulerMappingRuleTargetType({ ...rule, targetField, targetType: targetMeta?.type || rule.targetType });
           rule.transformFunction = String(row.querySelector('[data-sch-manager-transform]')?.value || 'NONE').trim() || 'NONE';
           rule.transformExpression = String(row.querySelector('[data-sch-manager-transform-expression]')?.value || '').trim();
-          rule.lookupEnabled = lookupAllowedForTarget && Boolean(row.querySelector('[data-sch-manager-lookup-enabled]')?.checked);
           rule.lookupObject = String(row.querySelector('[data-sch-manager-lookup-object]')?.value || '').trim();
           rule.lookupField = String(row.querySelector('[data-sch-manager-lookup-field]')?.value || '').trim();
+          const targetReferenceObjects = Array.isArray(targetMeta?.referenceTo)
+            ? targetMeta.referenceTo.map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+          if (lookupAllowedForTarget && targetReferenceObjects.length && (!rule.lookupObject || !targetReferenceObjects.includes(rule.lookupObject))) {
+            rule.lookupObject = targetReferenceObjects[0];
+          }
+          rule.lookupEnabled = lookupAllowedForTarget && (Boolean(row.querySelector('[data-sch-manager-lookup-enabled]')?.checked) || Boolean(rule.lookupObject || rule.lookupField));
           if (!rule.lookupEnabled) {
             rule.lookupObject = '';
             rule.lookupField = '';
@@ -5307,6 +5709,48 @@ export function renderAdminUiScript(): string {
           renderMappingRulesTable();
         };
 
+        const fillPicklistMappingsFromTarget = (row) => {
+          const sourceName = String(row.getAttribute('data-sch-map-source') || '').trim();
+          const targetField = String(row.querySelector('[data-sch-manager-target]')?.value || '').trim();
+          if (!sourceName || !targetField) {
+            return;
+          }
+          const targetMeta = (Array.isArray(state.targetFields) ? state.targetFields : []).find((field) =>
+            normalizeFieldKey(field?.name) === normalizeFieldKey(targetField)
+          );
+          const targetValues = Array.isArray(targetMeta?.picklistValues)
+            ? targetMeta.picklistValues
+                .map((entry) => String(entry?.value || entry?.label || '').trim())
+                .filter(Boolean)
+            : [];
+          if (!targetValues.length) {
+            showModalError('Für ' + targetField + ' wurden keine Picklist-Werte in den Salesforce-Metadaten gefunden. Bitte Metadaten neu laden.');
+            return;
+          }
+
+          const sourceValues = getSchedulerSourceDistinctValues(sourceName, 200);
+          const sourceValuesByKey = new Map(sourceValues.map((value) => [value.toLowerCase(), value]));
+          const existing = findSchedulerMappingRuleBySource(sourceName);
+          const source = sources.find((item) => normalizeFieldKey(item.name) === normalizeFieldKey(sourceName)) || { name: sourceName, type: 'string' };
+          const rule = existing || createMappingRuleFromSource(source);
+          const existingMappings = Array.isArray(rule.picklistMappings) ? rule.picklistMappings : [];
+          const existingKeys = new Set(existingMappings.map((entry) => (String(entry?.source || '').trim() + '=>' + String(entry?.target || '').trim()).toLowerCase()));
+          const generated = targetValues.map((targetValue) => ({
+            source: sourceValuesByKey.get(targetValue.toLowerCase()) || targetValue,
+            target: targetValue
+          }));
+          rule.picklistMappings = [
+            ...existingMappings,
+            ...generated.filter((entry) => !existingKeys.has((entry.source + '=>' + entry.target).toLowerCase()))
+          ];
+          rule.targetField = targetField;
+          rule.targetType = getSchedulerMappingRuleTargetType({ ...rule, targetField, targetType: targetMeta?.type || rule.targetType });
+          if (!existing) {
+            state.mappingRules.push(rule);
+          }
+          renderMappingRulesTable();
+        };
+
         shell.querySelector('[data-sch-map-filter]')?.addEventListener('input', (event) => {
           const term = String(event.target?.value || '').trim().toLowerCase();
           shell.querySelectorAll('[data-sch-map-row]').forEach((row) => {
@@ -5316,8 +5760,37 @@ export function renderAdminUiScript(): string {
         });
         document.getElementById('sch-manager-load-fields')?.addEventListener('click', loadMappingFields);
         shell.querySelectorAll('[data-sch-map-row]').forEach((row) => {
+          syncSchedulerCreateFieldPanel(row);
+          row.querySelector('[data-sch-create-field-type]')?.addEventListener('change', () => syncSchedulerCreateFieldPanel(row));
+          row.querySelector('[data-sch-create-field-api]')?.addEventListener('blur', (event) => {
+            event.target.value = normalizeSchedulerCustomFieldApiName(event.target.value || '');
+          });
+          row.querySelector('[data-sch-manager-target-filter]')?.addEventListener('input', (event) => {
+            const targetSelect = row.querySelector('[data-sch-manager-target]');
+            if (!targetSelect) {
+              return;
+            }
+            const currentTarget = String(targetSelect.value || '').trim();
+            targetSelect.innerHTML = getSchedulerMappingTargetOptions(currentTarget, event.target?.value || '');
+            if (currentTarget) {
+              targetSelect.value = currentTarget;
+            }
+          });
+          row.querySelector('[data-sch-manager-create-field]')?.addEventListener('click', async () => {
+            const sourceName = String(row.getAttribute('data-sch-map-source') || '').trim();
+            const source = sources.find((item) => normalizeFieldKey(item.name) === normalizeFieldKey(sourceName)) || { name: sourceName, type: 'string' };
+            const rule = findSchedulerMappingRuleBySource(sourceName);
+            await createSchedulerSalesforceFieldFromRow(row, source, rule);
+          });
+          row.querySelector('[data-sch-manager-picklist-autofill]')?.addEventListener('click', () => {
+            fillPicklistMappingsFromTarget(row);
+          });
+
           row.querySelectorAll('[data-sch-manager-target], [data-sch-manager-transform], [data-sch-manager-transform-expression], [data-sch-manager-lookup-enabled], [data-sch-manager-lookup-field], [data-sch-manager-email-validation], [data-sch-manager-email-invalid-action]').forEach((field) => {
             field.addEventListener('change', () => updateRuleFromRow(row));
+          });
+          row.querySelectorAll('input[data-sch-manager-lookup-field]').forEach((field) => {
+            field.addEventListener('blur', () => updateRuleFromRow(row));
           });
 
           // Picklist table inputs
@@ -5398,11 +5871,18 @@ export function renderAdminUiScript(): string {
                 const lookupFieldSelect = row.querySelector('[data-sch-manager-lookup-field]');
                 if (lookupFieldSelect) {
                   const currentLookupField = String(lookupFieldSelect.value || '').trim();
-                  lookupFieldSelect.innerHTML = getSchedulerLookupFieldOptions(selectedLookupObject, currentLookupField);
+                  const listId = String(lookupFieldSelect.getAttribute('list') || '').trim();
+                  const datalist = listId ? document.getElementById(listId) : null;
+                  if (datalist) {
+                    datalist.innerHTML = getSchedulerLookupFieldDatalistOptions(selectedLookupObject, currentLookupField);
+                  } else {
+                    lookupFieldSelect.innerHTML = getSchedulerLookupFieldOptions(selectedLookupObject, currentLookupField);
+                  }
                 }
               }
               updateRuleFromRow(row);
             });
+            lookupObjectSelect.addEventListener('blur', () => updateRuleFromRow(row));
           }
         });
       }
@@ -5722,7 +6202,7 @@ export function renderAdminUiScript(): string {
           deltaHelp.textContent = usesMutableSalesforceTimestamp
             ? 'Warnung: After Export plus LastModifiedDate/SystemModstamp fuehrt auf demselben Salesforce-Objekt leicht zu Wiederholungsschleifen. Fuer produktive Exporte besser ID oder ein separates fachliches Delta-Feld verwenden.'
             : deltaStrategy && deltaField.trim()
-              ? 'Delta aktiv: ' + deltaStrategy + ' auf Feld ' + deltaField.trim() + '. Der letzte Wert wird nach jedem Lauf gespeichert.'
+              ? 'Delta aktiv: ' + deltaStrategy + ' auf Feld ' + deltaField.trim() + '. Ohne gespeicherten Checkpoint laeuft der erste Lauf voll; danach wird der letzte Ergebniswert gespeichert. Bei SQL muss das Feld in der SELECT-Liste enthalten sein, am besten mit eindeutigem Alias.'
               : 'Optional: Delta-Lauf ueber ein Feld aktivieren. Unterstuetzt Datum, Timestamp und ID.';
         }
 
@@ -8609,7 +9089,10 @@ export function renderAdminUiScript(): string {
         const recordsProcessed = Math.max(0, Number(run.recordsProcessed ?? 0) || 0);
         const recordsSucceeded = Math.max(0, Number(run.recordsSucceeded ?? 0) || 0);
         const recordsFailed = Math.max(0, Number(run.recordsFailed ?? 0) || 0);
-        const total = Math.max(recordsRead, recordsProcessed, recordsSucceeded + recordsFailed);
+        const normalizedStatus = normalizeRunStatus(run.status);
+        const total = normalizedStatus === 'running' && recordsRead <= 0
+          ? 0
+          : Math.max(recordsRead, recordsProcessed, recordsSucceeded + recordsFailed);
         const completed = Math.max(recordsProcessed, recordsSucceeded + recordsFailed);
         const pending = Math.max(0, total - recordsSucceeded - recordsFailed);
         const completedPercent = total > 0 ? Math.max(0, Math.min(100, (completed / total) * 100)) : 0;
@@ -8629,7 +9112,7 @@ export function renderAdminUiScript(): string {
           successPercent,
           failedPercent,
           pendingPercent,
-          normalizedStatus: normalizeRunStatus(run.status)
+          normalizedStatus
         };
       }
 
@@ -8662,11 +9145,14 @@ export function renderAdminUiScript(): string {
         }
 
         if (metrics.normalizedStatus === 'running') {
+          const runningSummary = metrics.recordsProcessed > 0
+            ? 'läuft, ' + metrics.recordsProcessed + ' verarbeitet, Gesamtzahl noch unbekannt'
+            : 'läuft, Gesamtzahl noch unbekannt';
           return '<div class="' + wrapperClassName + '">' +
             '<div class="run-mini-gauge run-mini-gauge-activity" title="Gesamtmenge aktuell noch unbekannt">' +
               '<span class="run-mini-gauge-activity-indicator"></span>' +
             '</div>' +
-            '<div class="run-mini-gauge-meta">' + esc(metaPrefix + 'läuft, Gesamtzahl noch unbekannt') + '</div>' +
+            '<div class="run-mini-gauge-meta">' + esc(metaPrefix + runningSummary) + '</div>' +
           '</div>';
         }
 
@@ -8792,6 +9278,7 @@ export function renderAdminUiScript(): string {
               '<td><div class="d-flex flex-wrap gap-1">' +
                 '<button class="btn btn-sm btn-outline-primary" data-edit-schedule="' + esc(item.id) + '">Öffnen</button>' +
                 '<button class="btn btn-sm btn-outline-secondary" data-dup-schedule="' + esc(item.id) + '">Dupl.</button>' +
+                '<button class="btn btn-sm btn-outline-secondary" data-dup-reverse-schedule="' + esc(item.id) + '">Richtung dupl.</button>' +
                 '<button class="btn btn-sm btn-outline-success" data-run-now="' + esc(item.id) + '">Run</button>' +
                 '<button class="btn btn-sm btn-outline-info" data-dry-run="' + esc(item.id) + '">Dry-Run</button>' +
                 '<button class="btn btn-sm btn-outline-danger" data-delete-schedule="' + esc(item.id) + '">Löschen</button>' +
@@ -8824,6 +9311,12 @@ export function renderAdminUiScript(): string {
           button.addEventListener('click', async () => {
             await requestJson('/api/schedules/' + encodeURIComponent(button.getAttribute('data-dup-schedule')) + '/duplicate', { method: 'POST' });
             await refresh();
+          });
+        });
+
+        body.querySelectorAll('button[data-dup-reverse-schedule]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            await openReverseDirectionScheduleDraft(button.getAttribute('data-dup-reverse-schedule'));
           });
         });
 
@@ -9240,10 +9733,10 @@ export function renderAdminUiScript(): string {
         }
 
         const baseX = 30;
-        const columnGap = 320;
+        const columnGap = 400;
         const baseY = 26;
-        const rowGap = 18;
-        const nodeHeight = 82;
+        const rowGap = 24;
+        const nodeHeight = 118;
         const rootGap = 36;
         const connectors = nodes.filter((node) => node.kind === 'connector');
         const schedulers = nodes.filter((node) => node.kind === 'scheduler');
@@ -9436,6 +9929,46 @@ export function renderAdminUiScript(): string {
               return timeB - timeA;
             })[0] || null;
         };
+        const getAverageScheduleRunDurationMs = (scheduleId) => {
+          const durations = (state.runs || [])
+            .filter((run) => String(run.scheduleId || '') === String(scheduleId || '') && run.finishedAt && run.startedAt)
+            .map((run) => getRunDurationMs(run))
+            .filter((duration) => duration !== null);
+          if (!durations.length) {
+            return null;
+          }
+          return durations.reduce((sum, duration) => sum + duration, 0) / durations.length;
+        };
+        const formatGraphDateShort = (value) => {
+          if (!value) {
+            return '-';
+          }
+          const date = new Date(value);
+          if (Number.isNaN(date.getTime())) {
+            return '-';
+          }
+          return date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }) + ' ' +
+            date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+        };
+        const getGraphProgressLabel = (run) => {
+          const metrics = buildRunProgressMetrics(run);
+          if (!metrics || metrics.normalizedStatus !== 'running') {
+            return '';
+          }
+          if (metrics.total > 0) {
+            return metrics.completed + '/' + metrics.total + ' (' + Math.round(metrics.completedPercent) + '%)';
+          }
+          return metrics.recordsProcessed > 0
+            ? metrics.recordsProcessed + ' verarbeitet'
+            : 'wartet auf Daten';
+        };
+        const getGraphRecordCountLabel = (run) => {
+          const metrics = buildRunProgressMetrics(run);
+          if (!metrics || metrics.total <= 0) {
+            return '-';
+          }
+          return String(metrics.total);
+        };
         const getScheduleGraphStatus = (scheduleId) => {
           const schedule = scheduleById.get(String(scheduleId || ''));
           const latestRun = latestRunByScheduleId.get(String(scheduleId || ''));
@@ -9459,8 +9992,8 @@ export function renderAdminUiScript(): string {
           return { key: 'scheduled', label: 'Geplant' };
         };
         const nodeMap = new Map(nodes.map((node) => [node.id, node]));
-        const nodeWidth = 260;
-        const nodeHeight = 82;
+        const nodeWidth = 330;
+        const nodeHeight = 118;
         const maxY = Math.max(360, ...nodes.map((node) => Number(node.y) + nodeHeight + 20));
         const maxX = Math.max(920, ...nodes.map((node) => Number(node.x) + nodeWidth + 24));
         svg.setAttribute('height', String(maxY));
@@ -9586,31 +10119,56 @@ export function renderAdminUiScript(): string {
           const failedRunErrorMessage = failedRun?.errorMessage
             ? String(failedRun.errorMessage).trim()
             : '';
-          const titleY = 28;
-          const subtitleY = titleLines.length > 1 ? 60 : 48;
-          const metaY = titleLines.length > 1 ? 74 : 68;
+          const titleY = 26;
+          const subtitleY = titleLines.length > 1 ? 55 : 48;
+          const metaY = titleLines.length > 1 ? 68 : 61;
           const titleMarkup = renderGraphText('graph-title', 58, titleY, titleLines, 14);
           const subtitleMarkup = renderGraphText('graph-subtitle', 58, subtitleY, subtitleLines, 13);
           const metaMarkup = renderGraphText('graph-meta', 58, metaY, metaLines, 12);
           const pillRun = schedulerStatus?.key === 'running' ? runningRun : failedRun;
           const pillAction = schedulerStatus?.key === 'running' ? 'cancel' : (failedRun?.id ? 'logs' : '');
-          const statusPillMarkup = node.kind === 'scheduler'
-            ? '<g class="graph-status-pill graph-status-pill-' + esc(schedulerStatus.key) + (pillRun?.id ? ' graph-status-pill-clickable' : '') + '" transform="translate(156,8)"' +
+          const statusColorMap = {
+            running: '#1d7ed6',
+            failed: '#d13f45',
+            inactive: '#8793a0',
+            due: '#d78c1d',
+            success: '#2e9b4d',
+            scheduled: '#5f6b76'
+          };
+          const statusColor = statusColorMap[schedulerStatus?.key] || statusColorMap.scheduled;
+          const statusIconMarkup = node.kind === 'scheduler'
+            ? '<g class="graph-status-pill graph-status-pill-' + esc(schedulerStatus.key) + (pillRun?.id ? ' graph-status-pill-clickable' : '') + '" transform="translate(302,14)"' +
                 (pillRun?.id ? ' data-run-id="' + esc(pillRun.id) + '"' : '') +
                 (pillAction ? ' data-pill-action="' + esc(pillAction) + '"' : '') +
                 (failedRunErrorMessage ? ' data-error-message="' + esc(failedRunErrorMessage) + '"' : '') +
                 (pillRun?.id ? ' data-schedule-name="' + esc(node.label || node.refId || '') + '"' : '') +
                 '>' +
-                '<rect class="graph-status-pill-bg" width="92" height="22" rx="11" />' +
-                '<circle class="graph-status-pill-dot" cx="11" cy="10" r="4" />' +
-                '<text class="graph-status-pill-label" x="20" y="13">' + esc(schedulerStatus.label) + '</text>' +
+                '<title>' + esc(schedulerStatus.label) + '</title>' +
+                '<circle cx="10" cy="10" r="9" style="fill:' + statusColor + ';stroke:rgba(47,64,80,0.18);stroke-width:1" />' +
+                '<circle cx="10" cy="10" r="3" style="fill:#ffffff;opacity:0.92" />' +
               '</g>'
             : '';
-          const togglePillMarkup = node.kind === 'scheduler'
-            ? '<g class="graph-status-pill graph-status-pill-clickable" transform="translate(152,38)" data-toggle-schedule-id="' + esc(node.refId || '') + '" data-next-active="' + esc(String(!node.active)) + '">' +
-                '<text class="graph-status-pill-label" x="0" y="12" style="fill:#5f6b76;font-size:10px;font-weight:700">Aktiv</text>' +
-                '<rect x="40" y="0" width="46" height="20" rx="10" style="fill:' + (node.active ? '#2e9b4d' : '#a0aab5') + ';opacity:0.95" />' +
-                '<circle cx="' + (node.active ? '74' : '52') + '" cy="10" r="7" style="fill:#ffffff;stroke:rgba(47,64,80,0.15);stroke-width:1" />' +
+          const directionBadgeMarkup = node.kind === 'scheduler'
+            ? '<g class="graph-direction-badge" transform="translate(188,10)">' +
+                '<rect width="102" height="26" rx="8" style="fill:' + (isInbound ? '#dcebff' : '#dcf3e0') + ';stroke:' + (isInbound ? '#2276d2' : '#2e9b4d') + ';stroke-width:1" />' +
+                '<text x="51" y="17" text-anchor="middle" style="fill:' + (isInbound ? '#1d62ad' : '#1f7c3d') + ';font-size:11px;font-weight:850">' + esc(isInbound ? 'Inbound' : 'Outbound') + '</text>' +
+              '</g>'
+            : '';
+          const schedule = node.kind === 'scheduler' ? scheduleById.get(String(node.refId || '')) : null;
+          const latestRun = node.kind === 'scheduler' ? latestRunByScheduleId.get(String(node.refId || '')) : null;
+          const averageDurationMs = node.kind === 'scheduler' ? getAverageScheduleRunDurationMs(node.refId) : null;
+          const averageDurationLabel = averageDurationMs === null ? '-' : formatDurationMinSec(averageDurationMs);
+          const progressLabel = node.kind === 'scheduler' ? getGraphProgressLabel(runningRun) : '';
+          const nextRunLabel = node.kind === 'scheduler'
+            ? formatGraphDateShort(node.nextRunAt || schedule?.nextRunAt)
+            : '-';
+          const statusKpiLabel = progressLabel || schedulerStatus?.label || '-';
+          const recordCountLabel = getGraphRecordCountLabel(runningRun || latestRun);
+          const schedulerStatsMarkup = node.kind === 'scheduler'
+            ? '<g class="graph-scheduler-stats" transform="translate(58,74)">' +
+                '<rect width="260" height="34" rx="7" style="fill:rgba(255,255,255,0.78);stroke:rgba(47,64,80,0.12);stroke-width:1" />' +
+                '<text x="8" y="14" style="fill:#2f4050;font-size:10.5px;font-weight:850">' + esc(statusKpiLabel + ' · Ø ' + averageDurationLabel) + '</text>' +
+                '<text x="8" y="28" style="fill:#4f5f6d;font-size:10px;font-weight:750">' + esc('DS ' + recordCountLabel + ' · Start ' + nextRunLabel) + '</text>' +
               '</g>'
             : '';
 
@@ -9650,15 +10208,16 @@ export function renderAdminUiScript(): string {
 
           return (
             '<g class="graph-node ' + directionClass + '" data-kind="' + esc(node.kind) + '" data-ref-id="' + esc(node.refId) + '" data-connector-type="' + esc(node.connectorType || '') + '" transform="translate(' + Number(node.x) + ',' + Number(node.y) + ')" title="' + esc(node.label) + '">' +
-              '<rect class="graph-card-bg" style="' + cardBgStyle + '" width="' + nodeWidth + '" height="' + nodeHeight + '" rx="16" />' +
+              '<rect class="graph-card-bg" style="' + cardBgStyle + '" width="' + nodeWidth + '" height="' + nodeHeight + '" rx="8" />' +
               '<rect class="graph-accent" style="' + accentStyle + '" width="10" height="' + nodeHeight + '" rx="8" />' +
-              '<circle class="graph-icon-badge" style="' + badgeStyle + '" cx="30" cy="41" r="18" />' +
-              '<text class="graph-icon" style="' + iconStyle + '" x="30" y="47">' + esc(icon) + '</text>' +
-              statusPillMarkup +
-              togglePillMarkup +
-              titleMarkup.replace('<text ', '<text style="fill:#2f4050;font-weight:700;font-size:12px" ') +
-              subtitleMarkup.replace('<text ', '<text style="fill:#66717d;font-size:11px" ') +
-              metaMarkup.replace('<text ', '<text style="' + metaStyle + ';font-size:10px;font-weight:700;letter-spacing:0.6px" ') +
+              '<circle class="graph-icon-badge" style="' + badgeStyle + '" cx="30" cy="52" r="20" />' +
+              '<text class="graph-icon" style="' + iconStyle + '" x="30" y="59">' + esc(icon) + '</text>' +
+              directionBadgeMarkup +
+              statusIconMarkup +
+              schedulerStatsMarkup +
+              titleMarkup.replace('<text ', '<text style="fill:#2f4050;font-weight:800;font-size:13px" ') +
+              subtitleMarkup.replace('<text ', '<text style="fill:#66717d;font-size:11.5px;font-weight:600" ') +
+              (node.kind === 'scheduler' ? '' : metaMarkup.replace('<text ', '<text style="' + metaStyle + ';font-size:10.5px;font-weight:800;letter-spacing:0.6px" ')) +
             '</g>'
           );
         }).join('');
@@ -9698,21 +10257,6 @@ export function renderAdminUiScript(): string {
               return '[' + (log.level || 'INFO') + '] ' + (log.step || '') + ': ' + (log.message || '');
             }).join('\\n');
             window.alert('Fehlerdetails für ' + (scheduleName || 'diesen Scheduler') + ':\\n\\n' + (logList || 'Keine Fehlerdetails vorhanden.'));
-          });
-        });
-        svg.querySelectorAll('g.graph-status-pill[data-toggle-schedule-id]').forEach((pillEl) => {
-          pillEl.addEventListener('click', async (event) => {
-            event.stopPropagation();
-            const scheduleId = String(pillEl.getAttribute('data-toggle-schedule-id') || '').trim();
-            const nextActive = String(pillEl.getAttribute('data-next-active') || '').trim() === 'true';
-            if (!scheduleId) {
-              return;
-            }
-            try {
-              await setScheduleActive(scheduleId, nextActive);
-            } catch (error) {
-              showError(error.message || 'Scheduler-Status konnte nicht geändert werden');
-            }
           });
         });
         svg.querySelectorAll('g.graph-node').forEach((nodeEl) => {
@@ -9853,6 +10397,34 @@ export function renderAdminUiScript(): string {
           row.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
         return true;
+      }
+
+      async function openReverseDirectionScheduleDraft(scheduleId, scheduleDraftOverride) {
+        const normalizedScheduleId = String(scheduleId || '').trim();
+        if (!normalizedScheduleId) {
+          return;
+        }
+
+        const requestOptions = {
+          method: 'POST'
+        };
+        if (scheduleDraftOverride && typeof scheduleDraftOverride === 'object') {
+          requestOptions.headers = { 'Content-Type': 'application/json' };
+          requestOptions.body = JSON.stringify({ schedule: scheduleDraftOverride });
+        }
+        const draftResult = await requestJson('/api/schedules/' + encodeURIComponent(normalizedScheduleId) + '/duplicate-reverse-draft', requestOptions);
+        const draft = draftResult && typeof draftResult === 'object' ? draftResult.schedule : null;
+        if (!draft || typeof draft !== 'object') {
+          throw new Error('Reverse-Draft konnte nicht erzeugt werden.');
+        }
+
+        await openScheduleModal('', draft, { wizardStep: 1 });
+        const warnings = Array.isArray(draftResult.warnings) ? draftResult.warnings.filter(Boolean) : [];
+        if (warnings.length) {
+          showInfo('Entwurf mit gedrehter Richtung erzeugt. Hinweis: ' + warnings.join(' '));
+        } else {
+          showToast('Entwurf mit gedrehter Richtung erzeugt.');
+        }
       }
 
       async function openScheduleModal(scheduleId, templateDraft, options) {
@@ -13337,6 +13909,10 @@ export function renderAdminUiScript(): string {
         ensureSalesforceTargetDefinition();
         await syncSchedulerExternalIdUi();
       });
+      bindEventListenerOnce('sch-object-filter', 'input', () => {
+        renderTargetObjectOptions(state.schedulerTargetObjects || [], document.getElementById('sch-object')?.value || '');
+      });
+      bindEventListenerOnce('sch-refresh-sf-metadata', 'click', refreshSchedulerSalesforceMetadata);
       bindEventListenerOnce('sch-operation', 'change', async () => {
         ensureSalesforceTargetDefinition();
         await syncSchedulerExternalIdUi();
@@ -13937,6 +14513,18 @@ export function renderAdminUiScript(): string {
         await requestJson('/api/schedules/' + encodeURIComponent(scheduleId) + '/duplicate', { method: 'POST' });
         scheduleModal.hide();
         await refresh();
+      });
+      document.getElementById('duplicate-reverse-schedule').addEventListener('click', async () => {
+        const scheduleId = document.getElementById('sch-id').value;
+        if (!scheduleId) {
+          return;
+        }
+        const confirmed = window.confirm('Scheduler duplizieren und Quelle/Ziel sowie Mapping-Richtung drehen? Es wird ein neuer Entwurf im Assistenten geöffnet.');
+        if (!confirmed) {
+          return;
+        }
+        syncMappingDefinitionFromRules();
+        await openReverseDirectionScheduleDraft(scheduleId, collectScheduleFormPayload());
       });
       document.getElementById('test-connector').addEventListener('click', saveAndValidateConnector);
 

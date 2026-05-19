@@ -851,10 +851,38 @@ async function executeSchedule(
     startedAt: new Date().toISOString()
   });
   let lastProgressLogAt = 0;
+  let lastProgressRunUpdateAt = 0;
   const writeTransferProgressLog: TransferContext["onProgress"] = async (progress) => {
     const now = Date.now();
     const isSourceRead = progress.phase === "source-read";
     const isComplete = progress.totalRecords !== undefined && progress.processedRecords >= progress.totalRecords;
+    const shouldUpdateRun = isSourceRead || isComplete || now - lastProgressRunUpdateAt >= 30_000;
+    if (shouldUpdateRun) {
+      const recordsProcessed = Math.max(0, Number(progress.processedRecords || 0));
+      const runUpdate: {
+        recordsRead?: number;
+        recordsProcessed?: number;
+      } = {
+        recordsProcessed
+      };
+
+      if (progress.totalRecords !== undefined) {
+        runUpdate.recordsRead = Math.max(0, Number(progress.totalRecords || 0));
+      }
+
+      await salesforceClient.updateRun(runId, runUpdate).catch((error) => {
+        logger.warn(
+          {
+            runId,
+            scheduleId: schedule.id,
+            error: error instanceof Error ? error.message : String(error)
+          },
+          "Failed to update run progress"
+        );
+      });
+      lastProgressRunUpdateAt = now;
+    }
+
     if (!isSourceRead && !isComplete && now - lastProgressLogAt < 60_000) {
       return;
     }
@@ -865,7 +893,7 @@ async function executeSchedule(
       level: "INFO",
       step: progress.phase === "source-read" ? "SOURCE_READ" : "BATCH_PROGRESS",
       message: progress.phase === "source-read"
-        ? `Source records loaded: records=${progress.totalRecords ?? 0}`
+        ? `Source records loaded: records=${progress.totalRecords ?? "unknown"}`
         : `Batch progress: records=${progress.processedRecords}/${progress.totalRecords ?? "?"}, batchSize=${progress.batchSize ?? 0}`,
       correlationId: context.correlationId
     });
@@ -1210,7 +1238,7 @@ async function executeSchedule(
       const checkpointValue = result.lastProcessedRecord.value;
       const checkpointRecordId = deltaStrategy === "datetime"
         ? result.lastProcessedRecord.recordId
-        : undefined;
+        : result.lastProcessedRecord.recordId || checkpointValue;
 
       await salesforceClient.upsertCheckpoint({
         checkpointId: checkpoint?.id,

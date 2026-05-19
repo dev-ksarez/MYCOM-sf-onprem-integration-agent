@@ -2038,6 +2038,7 @@ export interface GraphNode {
   connectorType?: string;
   sourceType?: string;
   targetType?: string;
+  nextRunAt?: string;
   x: number;
   y: number;
   refId: string;
@@ -5464,7 +5465,337 @@ export class AdminDataService {
 
     this.copyLocalTimingDefinition(resolvedInstance.id, scheduleId, id);
 
+    this.invalidateAdaptiveSalesforceCache(resolvedInstance.id, ["listSchedules", "scheduleFormOptions"]);
+
     return { id, action: "created" };
+  }
+
+  public async duplicateScheduleWithDirectionChange(
+    scheduleId: string,
+    newName?: string,
+    instanceId?: string
+  ): Promise<{ id: string; action: "created"; warnings: string[] }> {
+    const draft = await this.buildDirectionChangedScheduleDraft(scheduleId, newName, instanceId);
+    const resolvedInstance = this.resolveInstance(instanceId);
+    const client = await this.createClient(resolvedInstance.id);
+
+    const id = await client.createScheduleRecord({
+      Name: draft.schedule.name,
+      Active__c: false,
+      SourceSystem__c: draft.schedule.sourceSystem,
+      TargetSystem__c: draft.schedule.targetSystem,
+      ObjectName__c: draft.schedule.objectName,
+      Operation__c: draft.schedule.operation,
+      MSD_Connector__c: draft.schedule.connectorId,
+      MSD_MappingDefinition__c: draft.schedule.mappingDefinition,
+      MSD_Direction__c: draft.schedule.direction,
+      MSD_SourceType__c: draft.schedule.sourceType,
+      MSD_TargetType__c: draft.schedule.targetType,
+      MSD_SourceDefinition__c: draft.schedule.sourceDefinition,
+      MSD_TargetDefinition__c: this.mergeScheduleEnvelope(draft.schedule.targetDefinition, {
+        timingDefinition: draft.schedule.timingDefinition,
+        parentScheduleId: undefined,
+        inheritTimingFromParent: false
+      }),
+      BatchSize__c: draft.schedule.batchSize,
+      NextRunAt__c: draft.schedule.nextRunAt
+    });
+
+    this.copyLocalTimingDefinition(resolvedInstance.id, scheduleId, id);
+    this.invalidateAdaptiveSalesforceCache(resolvedInstance.id, ["listSchedules", "scheduleFormOptions"]);
+
+    return { id, action: "created", warnings: draft.warnings };
+  }
+
+  public async buildDirectionChangedScheduleDraft(
+    scheduleId: string,
+    newName?: string,
+    instanceId?: string,
+    draftInput?: ScheduleMutationInput
+  ): Promise<{ schedule: Omit<IntegrationSchedule, "id"> & { id?: string }; warnings: string[] }> {
+    const resolvedInstance = this.resolveInstance(instanceId);
+    const client = await this.createClient(resolvedInstance.id);
+    const persistedRecord = scheduleId ? await client.queryScheduleById(scheduleId) : undefined;
+    const record = draftInput
+      ? this.scheduleInputToSalesforceScheduleRecord(draftInput, persistedRecord, scheduleId)
+      : persistedRecord;
+    if (!record) {
+      throw new Error("Scheduler-Draft konnte nicht erzeugt werden: Scheduler nicht gefunden.");
+    }
+    const mapping = this.buildReversedScheduleMapping(record.MSD_MappingDefinition__c || "");
+    const connector = record.MSD_Connector__c
+      ? await client.queryConnector(record.MSD_Connector__c)
+      : undefined;
+    const reversed = this.buildDirectionChangedSchedule(record, mapping, connector);
+    const cloneName = newName?.trim() || `${record.Name} (${reversed.direction})`;
+
+    return {
+      schedule: {
+        name: cloneName,
+        active: false,
+        sourceSystem: reversed.sourceSystem,
+        targetSystem: reversed.targetSystem,
+        objectName: reversed.objectName,
+        operation: reversed.operation,
+        connectorId: record.MSD_Connector__c,
+        mappingDefinition: reversed.mappingDefinition,
+        direction: reversed.direction,
+        sourceType: reversed.sourceType,
+        targetType: reversed.targetType,
+        sourceDefinition: reversed.sourceDefinition,
+        targetDefinition: reversed.targetDefinition,
+        batchSize: record.BatchSize__c || 100,
+        nextRunAt: record.NextRunAt__c,
+        timingDefinition: this.extractTimingDefinition(record.MSD_TargetDefinition__c),
+        parentScheduleId: undefined,
+        inheritTimingFromParent: false
+      },
+      warnings: reversed.warnings
+    };
+  }
+
+  private scheduleInputToSalesforceScheduleRecord(
+    input: ScheduleMutationInput,
+    fallback: SalesforceScheduleRecord | undefined,
+    scheduleId: string
+  ): SalesforceScheduleRecord {
+    return {
+      Id: scheduleId || fallback?.Id || "",
+      Name: String(input.name || fallback?.Name || "Scheduler").trim() || "Scheduler",
+      Active__c: input.active ?? fallback?.Active__c ?? false,
+      SourceSystem__c: input.sourceSystem || fallback?.SourceSystem__c,
+      TargetSystem__c: input.targetSystem || fallback?.TargetSystem__c,
+      ObjectName__c: input.objectName || fallback?.ObjectName__c,
+      Operation__c: input.operation || fallback?.Operation__c,
+      MSD_Connector__c: input.connectorId || fallback?.MSD_Connector__c,
+      MSD_MappingDefinition__c: input.mappingDefinition || fallback?.MSD_MappingDefinition__c,
+      MSD_Direction__c: input.direction || fallback?.MSD_Direction__c,
+      MSD_SourceType__c: input.sourceType || fallback?.MSD_SourceType__c,
+      MSD_TargetType__c: input.targetType || fallback?.MSD_TargetType__c,
+      MSD_SourceDefinition__c: input.sourceDefinition || fallback?.MSD_SourceDefinition__c,
+      MSD_TargetDefinition__c: this.mergeScheduleEnvelope(input.targetDefinition || fallback?.MSD_TargetDefinition__c, {
+        timingDefinition: input.timingDefinition || this.extractTimingDefinition(fallback?.MSD_TargetDefinition__c),
+        parentScheduleId: input.parentScheduleId,
+        inheritTimingFromParent: input.inheritTimingFromParent
+      }),
+      BatchSize__c: input.batchSize || fallback?.BatchSize__c,
+      NextRunAt__c: input.nextRunAt || fallback?.NextRunAt__c,
+      LastRunAt__c: input.lastRunAt || fallback?.LastRunAt__c
+    };
+  }
+
+  private buildReversedScheduleMapping(mappingDefinition: string): {
+    mappingDefinition: string;
+    sourceFields: string[];
+    targetFields: string[];
+    skippedRules: number;
+  } {
+    const parsed = new MappingDefinitionParser().parse(String(mappingDefinition || ""));
+    const reversedRules: Array<{ sourceField: string; targetField: string; targetType: MappingTargetType; transformFunction: "NONE" }> = parsed.lines
+      .flatMap((line) => {
+        const sourceField = String(line.sourceField || "").trim();
+        const targetField = String(line.targetField || "").trim();
+        if (!sourceField || !targetField || line.transform.type === "STATIC") {
+          return [];
+        }
+
+        return [{
+          sourceField: targetField,
+          targetField: sourceField,
+          targetType: line.targetType || "string",
+          transformFunction: "NONE"
+        }];
+      });
+
+    const sourceFields = [...new Set(reversedRules.map((rule) => rule.sourceField).filter(Boolean))];
+    const targetFields = [...new Set(reversedRules.map((rule) => rule.targetField).filter(Boolean))];
+
+    return {
+      mappingDefinition: JSON.stringify(reversedRules, null, 2),
+      sourceFields,
+      targetFields,
+      skippedRules: parsed.lines.length - reversedRules.length
+    };
+  }
+
+  private buildDirectionChangedSchedule(
+    record: SalesforceScheduleRecord,
+    mapping: {
+      mappingDefinition: string;
+      sourceFields: string[];
+      targetFields: string[];
+      skippedRules: number;
+    },
+    connector?: ConnectorConfig
+  ): {
+    sourceSystem: string;
+    targetSystem: string;
+    objectName: string;
+    operation: string;
+    direction: string;
+    sourceType: string;
+    targetType: string;
+    sourceDefinition: string;
+    targetDefinition: string;
+    mappingDefinition: string;
+    warnings: string[];
+  } {
+    const originalSourceType = normalizeScheduleType(record.MSD_SourceType__c).toUpperCase();
+    const originalTargetType = normalizeScheduleType(record.MSD_TargetType__c).toUpperCase();
+    const originalDirection = String(record.MSD_Direction__c || "").trim().toLowerCase();
+    const nextDirection = originalDirection === "inbound" ? "Outbound" : "Inbound";
+    const warnings: string[] = [];
+
+    if (!mapping.sourceFields.length) {
+      throw new Error("Richtung kann nicht gedreht werden: Das Mapping enthaelt keine invertierbaren Feldzuordnungen.");
+    }
+
+    if (mapping.skippedRules > 0) {
+      warnings.push(`${mapping.skippedRules} Mapping-Regel(n) mit STATIC oder leerem Quell-/Zielfeld wurden nicht invertiert.`);
+    }
+
+    const sourceSystem = record.TargetSystem__c || (originalTargetType === "SALESFORCE" ? "Salesforce" : "");
+    const targetSystem = record.SourceSystem__c || (originalSourceType === "SALESFORCE_SOQL" ? "Salesforce" : "");
+    const sourceType = originalTargetType === "SALESFORCE"
+      ? "SALESFORCE_SOQL"
+      : originalTargetType;
+    const targetType = originalSourceType === "SALESFORCE_SOQL"
+      ? "SALESFORCE"
+      : originalSourceType === "MSSQL_SQL"
+        ? "MSSQL"
+        : originalSourceType;
+
+    let sourceDefinition = "";
+    let targetDefinition = "{}";
+    let objectName = record.ObjectName__c || "";
+    let operation = record.Operation__c || "";
+
+    if (sourceType === "SALESFORCE_SOQL") {
+      const targetDefinitionRecord = resolveSelectedSalesforceTargetDefinition(String(record.MSD_TargetDefinition__c || "{}"));
+      const objectApiName = String(targetDefinitionRecord.objectApiName || record.ObjectName__c || "").trim();
+      if (!objectApiName) {
+        throw new Error("Richtung kann nicht gedreht werden: Salesforce-Zielobjekt konnte nicht aus der TargetDefinition ermittelt werden.");
+      }
+
+      sourceDefinition = this.buildSalesforceSoqlSourceDefinition(objectApiName, mapping.sourceFields);
+      objectName = this.resolveMssqlTargetObjectName(connector, record.ObjectName__c);
+      operation = "Upsert";
+      targetDefinition = JSON.stringify({
+        upsertKey: this.resolveMssqlReverseUpsertKey(record, mapping)
+      }, null, 2);
+    } else if (sourceType === "MSSQL" || sourceType === "MSSQL_SQL") {
+      sourceDefinition = this.buildMssqlSqlSourceDefinition(connector, mapping.sourceFields);
+      const sourceObjectName = this.extractSalesforceObjectName(parseQuerySourceDefinition(String(record.MSD_SourceDefinition__c || "")).queryText);
+      objectName = sourceObjectName || record.ObjectName__c || "";
+      operation = record.Operation__c || "Upsert";
+      targetDefinition = JSON.stringify({
+        objectApiName: objectName,
+        operation: String(operation || "Upsert").toLowerCase(),
+        externalIdField: this.resolveSalesforceReverseExternalIdField(record, mapping)
+      }, null, 2);
+    } else {
+      throw new Error(`Richtung kann fuer TargetType ${originalTargetType || "-"} noch nicht automatisch gedreht werden.`);
+    }
+
+    return {
+      sourceSystem,
+      targetSystem,
+      objectName,
+      operation,
+      direction: nextDirection,
+      sourceType,
+      targetType,
+      sourceDefinition,
+      targetDefinition,
+      mappingDefinition: mapping.mappingDefinition,
+      warnings
+    };
+  }
+
+  private buildSalesforceSoqlSourceDefinition(objectApiName: string, fields: string[]): string {
+    const selectedFields = [...new Set(["Id", ...fields])]
+      .map((field) => String(field || "").trim())
+      .filter((field) => /^[A-Za-z_][A-Za-z0-9_.]*$/.test(field));
+    if (!selectedFields.length) {
+      throw new Error("SOQL konnte nicht erzeugt werden: keine gueltigen Salesforce-Felder im Mapping.");
+    }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(objectApiName)) {
+      throw new Error(`SOQL konnte nicht erzeugt werden: ungueltiger Salesforce-Objektname ${objectApiName}.`);
+    }
+
+    return [
+      "SELECT",
+      `  ${selectedFields.join(",\n  ")}`,
+      `FROM ${objectApiName}`
+    ].join("\n");
+  }
+
+  private buildMssqlSqlSourceDefinition(connector: ConnectorConfig | undefined, fields: string[]): string {
+    const parameters = connector?.parameters || {};
+    const schemaName = String(parameters.schema || parameters.schemaName || "dbo").trim() || "dbo";
+    const tableName = String(parameters.table || parameters.tableName || "").trim();
+    if (!tableName) {
+      throw new Error("SQL konnte nicht erzeugt werden: Der MSSQL-Connector enthaelt keinen table/tableName Parameter.");
+    }
+    const quoteIdentifier = (value: string, label: string): string => {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+        throw new Error(`SQL konnte nicht erzeugt werden: ungueltiger MSSQL-Identifier fuer ${label}: ${value}.`);
+      }
+      return `[${value}]`;
+    };
+    const selectedFields = [...new Set(fields)]
+      .map((field) => String(field || "").trim())
+      .filter(Boolean)
+      .map((field) => quoteIdentifier(field, "Feld"));
+
+    if (!selectedFields.length) {
+      throw new Error("SQL konnte nicht erzeugt werden: keine gueltigen MSSQL-Felder im Mapping.");
+    }
+
+    return [
+      "SELECT",
+      `  ${selectedFields.join(",\n  ")}`,
+      `FROM ${quoteIdentifier(schemaName, "Schema")}.${quoteIdentifier(tableName, "Tabelle")}`
+    ].join("\n");
+  }
+
+  private resolveMssqlTargetObjectName(connector: ConnectorConfig | undefined, fallback?: string): string {
+    const parameters = connector?.parameters || {};
+    return String(parameters.table || parameters.tableName || fallback || "MSSQL_Target").trim() || "MSSQL_Target";
+  }
+
+  private resolveMssqlReverseUpsertKey(
+    record: SalesforceScheduleRecord,
+    mapping: { targetFields: string[] }
+  ): string {
+    const resolvedTargetDefinition = resolveSelectedSalesforceTargetDefinition(String(record.MSD_TargetDefinition__c || "{}"));
+    const externalIdField = String(resolvedTargetDefinition.externalIdField || "").trim().toLowerCase();
+    if (externalIdField) {
+      const parsed = new MappingDefinitionParser().parse(String(record.MSD_MappingDefinition__c || ""));
+      const externalIdMapping = parsed.lines.find((line) => String(line.targetField || "").trim().toLowerCase() === externalIdField);
+      const sourceField = String(externalIdMapping?.sourceField || "").trim();
+      if (sourceField) {
+        return sourceField;
+      }
+    }
+
+    return mapping.targetFields[0] || "external_key";
+  }
+
+  private resolveSalesforceReverseExternalIdField(
+    record: SalesforceScheduleRecord,
+    mapping: { sourceFields: string[] }
+  ): string {
+    const parsedSource = parseQuerySourceDefinition(String(record.MSD_SourceDefinition__c || "")).queryText;
+    const selectedSourceFields = this.extractSalesforceSelectedFields(parsedSource);
+    const idField = selectedSourceFields.find((field) => String(field.alias || field.expression || "").trim().toLowerCase() === "id");
+    if (idField) {
+      return String(idField.alias || idField.expression || "Id").trim();
+    }
+
+    return mapping.sourceFields.find((field) => String(field || "").trim().toLowerCase() === "id")
+      || mapping.sourceFields[0]
+      || "Id";
   }
 
   public async deleteSchedule(scheduleId: string, instanceId?: string): Promise<DeleteScheduleResult> {
@@ -6318,6 +6649,7 @@ export class AdminDataService {
       objectName: schedule.objectName,
       sourceType: schedule.sourceType,
       targetType: schedule.targetType,
+      nextRunAt: schedule.nextRunAt,
       directionIcon: this.toDirectionIcon(schedule.direction),
       x: 456 + (scheduleDepth.get(schedule.id) || 0) * 300,
       y: 70 + index * 104,
@@ -7381,7 +7713,7 @@ export class AdminDataService {
     targetObject?: string,
     connectorId?: string,
     instanceId?: string
-  ): Promise<{ fields: Array<{ name: string; type: string; label?: string; requiredOnCreate?: boolean; nillable?: boolean; isExternalId?: boolean; createable?: boolean; updateable?: boolean; calculated?: boolean; autoNumber?: boolean; defaultedOnCreate?: boolean }> }> {
+  ): Promise<{ fields: Array<{ name: string; type: string; label?: string; requiredOnCreate?: boolean; nillable?: boolean; isExternalId?: boolean; createable?: boolean; updateable?: boolean; calculated?: boolean; autoNumber?: boolean; defaultedOnCreate?: boolean; referenceTo?: string[]; picklistValues?: Array<{ value: string; label: string }> }> }> {
     const normalizedTargetSystem = this.normalizeTargetSystem(targetSystem);
 
     if (!normalizedTargetSystem) {
@@ -7403,7 +7735,9 @@ export class AdminDataService {
           updateable: field.updateable === true,
           calculated: field.calculated === true,
           autoNumber: field.autoNumber === true,
-          defaultedOnCreate: field.defaultedOnCreate === true
+          defaultedOnCreate: field.defaultedOnCreate === true,
+          referenceTo: Array.isArray(field.referenceTo) ? field.referenceTo : undefined,
+          picklistValues: Array.isArray(field.picklistValues) ? field.picklistValues : undefined
         }))
       };
     }
@@ -7856,7 +8190,14 @@ export class AdminDataService {
     objectApiName: string,
     fieldApiName: string,
     fieldType: string,
-    options?: { picklistValues?: string[]; externalId?: boolean; unique?: boolean },
+    options?: {
+      picklistValues?: string[];
+      length?: number;
+      precision?: number;
+      scale?: number;
+      externalId?: boolean;
+      unique?: boolean;
+    },
     instanceId?: string
   ): Promise<unknown> {
     const client = await this.createClient(instanceId);
@@ -7867,6 +8208,17 @@ export class AdminDataService {
       type: sfType.type,
       ...sfType.extra
     };
+    if (metadata.type === "Text" && Number.isFinite(Number(options?.length))) {
+      metadata.length = Math.max(1, Math.min(255, Math.trunc(Number(options?.length))));
+    }
+    if (["Number", "Currency", "Percent"].includes(String(metadata.type || ""))) {
+      if (Number.isFinite(Number(options?.precision))) {
+        metadata.precision = Math.max(1, Math.min(18, Math.trunc(Number(options?.precision))));
+      }
+      if (Number.isFinite(Number(options?.scale))) {
+        metadata.scale = Math.max(0, Math.min(Number(metadata.precision || 18) - 1, Math.trunc(Number(options?.scale))));
+      }
+    }
     if (options?.externalId) {
       metadata.externalId = true;
       metadata.unique = options.unique !== false;

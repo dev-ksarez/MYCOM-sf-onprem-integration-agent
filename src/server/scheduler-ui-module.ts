@@ -37,7 +37,7 @@ export function renderSchedulerUiModule(): string {
         });
 
         if (!filteredSchedules.length) {
-          body.innerHTML = '<tr><td colspan="6" class="text-secondary">Keine Scheduler gefunden.</td></tr>';
+          body.innerHTML = '<tr><td colspan="6" class="text-secondary">' + esc(state.runtimeContextUnavailableMessage || 'Keine Scheduler gefunden.') + '</td></tr>';
           return;
         }
 
@@ -125,6 +125,7 @@ export function renderSchedulerUiModule(): string {
               '<td><div class="d-flex flex-wrap gap-1">' +
                 '<button class="btn btn-sm btn-outline-primary" data-edit-schedule="' + esc(item.id) + '">Öffnen</button>' +
                 '<button class="btn btn-sm btn-outline-secondary" data-dup-schedule="' + esc(item.id) + '">Dupl.</button>' +
+                '<button class="btn btn-sm btn-outline-secondary" data-dup-reverse-schedule="' + esc(item.id) + '">Richtung dupl.</button>' +
                 '<button class="btn btn-sm btn-outline-success" data-run-now="' + esc(item.id) + '">Run</button>' +
                 '<button class="btn btn-sm btn-outline-info" data-dry-run="' + esc(item.id) + '">Dry-Run</button>' +
                 '<button class="btn btn-sm btn-outline-danger" data-delete-schedule="' + esc(item.id) + '">Löschen</button>' +
@@ -157,6 +158,12 @@ export function renderSchedulerUiModule(): string {
           button.addEventListener('click', async () => {
             await requestJson('/api/schedules/' + encodeURIComponent(button.getAttribute('data-dup-schedule')) + '/duplicate', { method: 'POST' });
             await refresh();
+          });
+        });
+
+        body.querySelectorAll('button[data-dup-reverse-schedule]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            await openReverseDirectionScheduleDraft(button.getAttribute('data-dup-reverse-schedule'));
           });
         });
 

@@ -2894,7 +2894,14 @@ ${renderAISchedulerAssistantModule()}
               <div class="tab-pane fade" id="sch-tab-target" data-sch-step-panel="3" role="tabpanel">
                 <div class="row g-2">
                   <div class="col-md-4"><label class="form-label">Target System</label><select id="sch-target-system" class="form-select"><option value="">- Wählen -</option></select></div>
-                  <div class="col-md-4"><label class="form-label">Objekt</label><select id="sch-object" class="form-select"><option value="">- Wählen -</option></select></div>
+                  <div class="col-md-4">
+                    <div class="d-flex align-items-center justify-content-between gap-2">
+                      <label class="form-label mb-0" for="sch-object">Objekt</label>
+                      <button id="sch-refresh-sf-metadata" type="button" class="btn btn-sm btn-outline-secondary">Metadaten neu laden</button>
+                    </div>
+                    <input id="sch-object-filter" class="form-control form-control-sm mt-1" type="search" placeholder="Objekt schnell filtern" autocomplete="off" />
+                    <select id="sch-object" class="form-select mt-1"><option value="">- Wählen -</option></select>
+                  </div>
                   <div class="col-md-4"><label class="form-label">Operation</label><select id="sch-operation" class="form-select"><option value="">- Wählen -</option></select></div>
                   <div class="col-md-4"><label class="form-label">Target Type</label><select id="sch-target-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE">SALESFORCE</option><option value="SALESFORCE_GLOBAL_PICKLIST">SALESFORCE_GLOBAL_PICKLIST</option><option value="MSSQL">MSSQL</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
                   <div class="col-md-4"><label class="form-label">Direction</label><select id="sch-direction" class="form-select"><option value="">- Wählen -</option></select></div>
@@ -3100,6 +3107,7 @@ ${renderAISchedulerAssistantModule()}
             </div>
             <div class="connector-wizard-footer-group connector-wizard-footer-end">
               <button id="duplicate-schedule" type="button" class="btn btn-outline-secondary">Duplizieren</button>
+              <button id="duplicate-reverse-schedule" type="button" class="btn btn-outline-secondary">Duplizieren + Richtung ändern</button>
               <button id="save-schedule-template" type="button" class="btn btn-outline-primary">Als Vorlage speichern</button>
               <button type="button" class="btn btn-light" data-bs-dismiss="modal">Schließen</button>
               <button id="save-schedule" type="button" class="btn btn-primary d-none">Speichern</button>
@@ -3621,6 +3629,8 @@ export function createAppServer(
       const connectorDeleteMatch = req.method === "DELETE" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)$/) : null;
       const scheduleRunMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/run$/) : null;
       const scheduleDryRunMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/dry-run$/) : null;
+      const scheduleDuplicateReverseDraftMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/duplicate-reverse-draft$/) : null;
+      const scheduleDuplicateReverseMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/duplicate-reverse$/) : null;
       const scheduleDuplicateMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/duplicate$/) : null;
       const scheduleDeleteMatch = req.method === "DELETE" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)$/) : null;
       const projectArchiveMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/archive$/) : null;
@@ -3717,6 +3727,8 @@ export function createAppServer(
           requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/active$/)
           || requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/checkpoint$/)
           || requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/duplicate$/)
+          || requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/duplicate-reverse-draft$/)
+          || requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/duplicate-reverse$/)
           || requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/cancel$/)
         )) {
           return true;
@@ -5334,6 +5346,23 @@ export function createAppServer(
         return;
       }
 
+      if (scheduleDuplicateReverseDraftMatch) {
+        const scheduleId = decodeURIComponent(scheduleDuplicateReverseDraftMatch[1]);
+        const body = (await readJsonBody(req)) as { name?: string; schedule?: ScheduleMutationInput };
+        const result = await adminDataService.buildDirectionChangedScheduleDraft(scheduleId, body.name, instanceId, body.schedule);
+        sendJson(200, result);
+        return;
+      }
+
+      if (scheduleDuplicateReverseMatch) {
+        const scheduleId = decodeURIComponent(scheduleDuplicateReverseMatch[1]);
+        const body = (await readJsonBody(req)) as { name?: string };
+        const result = await adminDataService.duplicateScheduleWithDirectionChange(scheduleId, body.name, instanceId);
+        await appendAuditHistory({ actor: auditActor, action: "duplicate-reverse", entityType: "schedule", entityId: scheduleId, entityName: body.name });
+        sendJson(200, result);
+        return;
+      }
+
       if (scheduleRunMatch) {
         const scheduleId = decodeURIComponent(scheduleRunMatch[1]);
         const result = await adminDataService.triggerScheduleNow(
@@ -5518,6 +5547,9 @@ export function createAppServer(
           fieldApiName?: string;
           fieldType?: string;
           picklistValues?: string[];
+          length?: number;
+          precision?: number;
+          scale?: number;
           externalId?: boolean;
           unique?: boolean;
         };
@@ -5533,7 +5565,14 @@ export function createAppServer(
           body.objectApiName,
           body.fieldApiName,
           body.fieldType || "Text",
-          { picklistValues: body.picklistValues, externalId: body.externalId, unique: body.unique },
+          {
+            picklistValues: body.picklistValues,
+            length: body.length,
+            precision: body.precision,
+            scale: body.scale,
+            externalId: body.externalId,
+            unique: body.unique
+          },
           instanceId
         );
         sendJson(200, result);

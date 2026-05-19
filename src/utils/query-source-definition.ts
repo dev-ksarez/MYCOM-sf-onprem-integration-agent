@@ -147,30 +147,53 @@ export function normalizeCheckpointValue(value: unknown): string | undefined {
   return undefined;
 }
 
+function normalizeSqlLikeFieldToken(value: string): string {
+  return String(value || "")
+    .trim()
+    .replace(/^\[|\]$/g, "")
+    .replace(/^["'`]|["'`]$/g, "");
+}
+
+function getFieldLookupCandidates(field: string): string[] {
+  const trimmed = String(field || "").trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const candidates = new Set<string>([trimmed]);
+  const aliasMatch = /\bas\s+(\[[^\]]+\]|["`][^"`]+["`]|[A-Za-z_][A-Za-z0-9_]*)\s*$/i.exec(trimmed);
+  if (aliasMatch?.[1]) {
+    candidates.add(normalizeSqlLikeFieldToken(aliasMatch[1]));
+  }
+
+  trimmed
+    .split(".")
+    .map(normalizeSqlLikeFieldToken)
+    .filter(Boolean)
+    .forEach((part) => candidates.add(part));
+
+  const lastSegment = trimmed.split(".").map(normalizeSqlLikeFieldToken).filter(Boolean).pop();
+  if (lastSegment) {
+    candidates.add(lastSegment);
+  }
+
+  return Array.from(candidates).filter(Boolean);
+}
+
 export function getRecordValueByField(record: Record<string, unknown>, field: string): unknown {
   const trimmed = String(field || "").trim();
   if (!trimmed) {
     return undefined;
   }
 
-  if (trimmed in record) {
-    return record[trimmed];
-  }
-
-  const directMatch = Object.keys(record).find((key) => key.toLowerCase() === trimmed.toLowerCase());
-  if (directMatch) {
-    return record[directMatch];
-  }
-
-  const fieldSegments = trimmed.split(".").map((token) => token.trim().replace(/^\[|\]$/g, "")).filter(Boolean);
-  const lastSegment = fieldSegments[fieldSegments.length - 1];
-  if (lastSegment) {
-    if (lastSegment in record) {
-      return record[lastSegment];
+  for (const candidate of getFieldLookupCandidates(trimmed)) {
+    if (candidate in record) {
+      return record[candidate];
     }
-    const lastSegmentMatch = Object.keys(record).find((key) => key.toLowerCase() === lastSegment.toLowerCase());
-    if (lastSegmentMatch) {
-      return record[lastSegmentMatch];
+
+    const directMatch = Object.keys(record).find((key) => key.toLowerCase() === candidate.toLowerCase());
+    if (directMatch) {
+      return record[directMatch];
     }
   }
 

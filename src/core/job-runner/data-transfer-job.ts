@@ -99,9 +99,12 @@ export class DataTransferJob {
 
     const parsedDefinition = this.mappingDefinitionParser.parse(mappingDefinition);
     const lookupLines = parsedDefinition.lines.filter((line) => line.transform.type === "LOOKUP");
+    const canReadSourceCountWithoutExtraRequest = !this.sourceAdapter.readRecordStream;
     const needsLookupPreload = lookupLines.length > 0 && Boolean(this.bulkLookupResolver);
     const bufferedSourceRecords = needsLookupPreload ? await this.readAllSourceRecords(context) : undefined;
-    const totalRecords = bufferedSourceRecords?.length;
+    const sourceRecords = bufferedSourceRecords
+      || (canReadSourceCountWithoutExtraRequest ? await this.readAllSourceRecords(context) : undefined);
+    const totalRecords = sourceRecords?.length;
 
     await context.onProgress?.({
       phase: "source-read",
@@ -109,11 +112,11 @@ export class DataTransferJob {
       totalRecords
     });
 
-    if (bufferedSourceRecords) {
+    if (sourceRecords) {
       this.logger.info(
         {
           runId: context.runId,
-          recordsRead: bufferedSourceRecords.length
+          recordsRead: sourceRecords.length
         },
         "Source records loaded"
       );
@@ -215,7 +218,7 @@ export class DataTransferJob {
       await context.onProgress?.({
         phase: "batch-written",
         processedRecords,
-        totalRecords: totalRecords ?? recordsRead,
+        totalRecords,
         batchStart,
         batchSize: sourceChunk.length
       });
@@ -248,7 +251,7 @@ export class DataTransferJob {
     };
 
     let sourceChunk: GenericRecord[] = [];
-    const sourceIterable = bufferedSourceRecords || this.readSourceRecordStream(context);
+    const sourceIterable = sourceRecords || this.readSourceRecordStream(context);
     for await (const sourceRecord of sourceIterable) {
       recordsRead += 1;
       sourceChunk.push(sourceRecord);

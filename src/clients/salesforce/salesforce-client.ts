@@ -335,7 +335,7 @@ export interface CreateRunInput {
 }
 
 export interface UpdateRunInput {
-  status: "Running" | "Success" | "Partial Success" | "Failed";
+  status?: "Running" | "Success" | "Partial Success" | "Failed";
   finishedAt?: string;
   recordsRead?: number;
   recordsProcessed?: number;
@@ -2147,7 +2147,7 @@ export class SalesforceClient {
       throw new Error("Salesforce connection not initialized. Call login() first.");
     }
 
-    const result = await this.connection.sobject("MSD_Run__c").update({
+    const payload = buildSalesforceRecordPayload({
       Id: runId,
       MSD_Status__c: input.status,
       MSD_FinishedAt__c: input.finishedAt,
@@ -2156,7 +2156,8 @@ export class SalesforceClient {
       MSD_RecordsSucceeded__c: input.recordsSucceeded,
       MSD_RecordsFailed__c: input.recordsFailed,
       MSD_ErrorMessage__c: input.errorMessage
-    });
+    }) as { Id: string; [key: string]: unknown };
+    const result = await this.connection.sobject("MSD_Run__c").update(payload);
 
     if (!result.success) {
       throw new Error(`Failed to update MSD_Run__c record: ${runId}`);
