@@ -1,5 +1,5 @@
 import http from "node:http";
-import { SaasAgentHeartbeat } from "../types/saas-control-plane";
+import { SaasAgentHeartbeat, SaasAgentRegistrationRequest } from "../types/saas-control-plane";
 import { SaasRepository } from "./saas-repository";
 
 const MAX_JSON_BYTES = 512 * 1024;
@@ -57,6 +57,20 @@ function isHeartbeat(value: unknown): value is SaasAgentHeartbeat {
     && typeof candidate.mode === "string";
 }
 
+function isRegistrationClaim(value: unknown): value is SaasAgentRegistrationRequest {
+  const candidate = value as Partial<SaasAgentRegistrationRequest>;
+  return !!candidate
+    && typeof candidate === "object"
+    && typeof candidate.tenantKey === "string"
+    && typeof candidate.projectKey === "string"
+    && typeof candidate.registrationToken === "string"
+    && typeof candidate.agentInstallationId === "string"
+    && typeof candidate.agentVersion === "string"
+    && typeof candidate.hostFingerprint === "string"
+    && typeof candidate.preferredMode === "string"
+    && Array.isArray(candidate.capabilities);
+}
+
 export function createSaasApiServer(repository: SaasRepository): http.Server {
   return http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url || "/", "http://127.0.0.1");
@@ -86,10 +100,26 @@ export function createSaasApiServer(repository: SaasRepository): http.Server {
         return;
       }
 
+      if (req.method === "POST" && requestUrl.pathname === "/api/agent/v1/registrations/claim") {
+        const body = await readJsonBody(req);
+        if (!isRegistrationClaim(body)) {
+          sendJson(res, 400, { error: "invalid_registration_claim" });
+          return;
+        }
+
+        const registration = await repository.claimAgentRegistration(body);
+        sendJson(res, 201, registration);
+        return;
+      }
+
       sendJson(res, 404, { error: "not_found" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Internal server error";
-      const status = message === "Invalid agent credential" ? 403 : 500;
+      const status = message === "Invalid agent credential"
+        ? 403
+        : message === "Invalid registration token"
+          ? 403
+          : 500;
       sendJson(res, status, { error: status === 403 ? "forbidden" : "internal_error" });
     }
   });

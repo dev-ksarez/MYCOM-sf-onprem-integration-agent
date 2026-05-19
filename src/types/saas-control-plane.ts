@@ -47,6 +47,7 @@ export interface SaasLicenseSnapshot {
 
 export interface SaasAgentRegistrationRequest {
   tenantKey: string;
+  projectKey: string;
   registrationToken: string;
   agentInstallationId: string;
   agentVersion: string;
