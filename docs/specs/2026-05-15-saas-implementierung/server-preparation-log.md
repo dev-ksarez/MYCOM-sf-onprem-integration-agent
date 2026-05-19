@@ -28,6 +28,8 @@ Stand: 2026-05-19
 - SaaS-API-Image auf dem Server aus Branch-Stand gebaut: `sf-agent-saas-api:local`.
 - SaaS-API intern per Docker Compose gestartet.
 - Interner Healthcheck erfolgreich: `GET /health` liefert `200`.
+- Agent-Registration intern getestet: `POST /api/agent/v1/registrations/claim`.
+- Agent-Heartbeat mit ausgegebenem Agent-Credential intern getestet: `POST /api/agent/v1/heartbeats` liefert `202`.
 
 ## Bewusst noch nicht gestartet
 
