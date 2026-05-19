@@ -1,6 +1,6 @@
 {
-  "version": "0.2.58",
-  "packageUrl": "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/download/v0.2.58/sf-onprem-integration-agent-customer-installer-0.2.58.zip",
-  "sha256": "35f3f2231e69756e174d06b88c208568eb6630ae272a99f24cf076916a7b3216",
-  "releasedAt": "2026-05-18T19:49:15Z"
+  "version": "0.2.59",
+  "packageUrl": "https://github.com/dev-ksarez/MYCOM-sf-onprem-integration-agent/releases/download/v0.2.59/sf-onprem-integration-agent-customer-installer-0.2.59.zip",
+  "sha256": "c66c2a964a7186ceff658e9693f526ff9f25cda50fc1033bd29c15c7d3ffa76f",
+  "releasedAt": "2026-05-19T00:00:00Z"
 }

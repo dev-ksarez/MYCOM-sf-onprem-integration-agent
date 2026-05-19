@@ -60,6 +60,14 @@ export class SalesforceSoqlSourceAdapter implements SourceAdapter {
   }
 
   public async readRecords(context: TransferContext): Promise<GenericRecord[]> {
+    const records: GenericRecord[] = [];
+    for await (const record of this.readRecordStream(context)) {
+      records.push(record);
+    }
+    return records;
+  }
+
+  public async *readRecordStream(context: TransferContext): AsyncIterable<GenericRecord> {
     const delta = this.definition.delta;
     const checkpointCursor = delta?.strategy === "datetime"
       ? context.checkpoint?.value
@@ -68,11 +76,11 @@ export class SalesforceSoqlSourceAdapter implements SourceAdapter {
     const queryText = delta
       ? buildDeltaOrderedSoql(this.definition.queryText, delta, checkpointCursor, checkpointRecordId)
       : this.definition.queryText;
-    const queryResult = await this.salesforceClient.queryGeneric(queryText);
 
-    return queryResult.map((record) => ({
-      values: record as Record<string, unknown>,
-      checkpoint: delta
+    for await (const record of this.salesforceClient.queryGenericStream(queryText)) {
+      yield {
+        values: record as Record<string, unknown>,
+        checkpoint: delta
         ? (() => {
             const rawRecord = record as Record<string, unknown>;
             const checkpointValue = normalizeCheckpointValue(getRecordValueByField(rawRecord, delta.field));
@@ -85,6 +93,7 @@ export class SalesforceSoqlSourceAdapter implements SourceAdapter {
             };
           })()
         : undefined
-    }));
+      };
+    }
   }
 }

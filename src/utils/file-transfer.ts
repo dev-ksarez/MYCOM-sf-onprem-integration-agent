@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import { ConnectorConfig } from "../clients/salesforce/salesforce-client";
 
 export type FileDataFormat = "csv" | "excel" | "json";
@@ -232,7 +232,7 @@ function normalizeRelativeDirectory(rawValue: unknown): string {
   }
 
   const segments = normalized
-    .split(path.sep)
+    .split(/[\\/]+/)
     .map((segment) => segment.trim())
     .filter(Boolean);
 
@@ -243,6 +243,22 @@ function normalizeRelativeDirectory(rawValue: unknown): string {
   return segments.join(path.sep);
 }
 
+function assertPathInsideRoot(candidatePath: string, rootPath: string, label: string): string {
+  const resolvedCandidate = path.resolve(candidatePath);
+  const resolvedRoot = path.resolve(rootPath);
+  const relativePath = path.relative(resolvedRoot, resolvedCandidate);
+  if (relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))) {
+    return resolvedCandidate;
+  }
+  throw new Error(`${label} darf den Connector-Pfad nicht verlassen`);
+}
+
+function resolveConnectorChildPath(rootPath: string, rawPath: unknown, fallback: string, label: string): string {
+  const value = String(rawPath || fallback).trim() || fallback;
+  const resolved = path.resolve(rootPath, value);
+  return assertPathInsideRoot(resolved, rootPath, label);
+}
+
 function resolveRuntimeConfig(connectorConfig: ConnectorConfig): FileConnectorRuntimeConfig {
   const parameters = connectorConfig.parameters || {};
   const basePath = path.resolve(
@@ -250,9 +266,9 @@ function resolveRuntimeConfig(connectorConfig: ConnectorConfig): FileConnectorRu
     String(parameters.basePath || parameters.fileBasePath || "artifacts/files")
   );
 
-  const importPath = path.resolve(basePath, String(parameters.importPath || "inbound"));
-  const exportPath = path.resolve(basePath, String(parameters.exportPath || "outbound"));
-  const archivePath = path.resolve(basePath, String(parameters.archivePath || "archive"));
+  const importPath = resolveConnectorChildPath(basePath, parameters.importPath, "inbound", "Import-Pfad");
+  const exportPath = resolveConnectorChildPath(basePath, parameters.exportPath, "outbound", "Export-Pfad");
+  const archivePath = resolveConnectorChildPath(basePath, parameters.archivePath, "archive", "Archiv-Pfad");
 
   return {
     basePath,
@@ -382,6 +398,63 @@ function rowsToObjects(rows: unknown[][], headers: string[]): Record<string, unk
   });
 }
 
+async function readExcelWorkbook(content: Buffer): Promise<ExcelJS.Workbook> {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(content as unknown as ExcelJS.Buffer);
+  return workbook;
+}
+
+function worksheetToRows(worksheet: ExcelJS.Worksheet): string[][] {
+  const columnCount = Math.max(worksheet.actualColumnCount, worksheet.columnCount || 0);
+  const rows: string[][] = [];
+  worksheet.eachRow({ includeEmpty: false }, (row) => {
+    const values: string[] = [];
+    for (let index = 1; index <= columnCount; index += 1) {
+      values.push(String(row.getCell(index).text ?? "").trim());
+    }
+    if (values.some((value) => value !== "")) {
+      rows.push(values);
+    }
+  });
+  return rows;
+}
+
+function workbookSheetNames(workbook: ExcelJS.Workbook): string[] {
+  return workbook.worksheets.map((worksheet) => worksheet.name).filter(Boolean);
+}
+
+function getWorksheet(workbook: ExcelJS.Workbook, sheetName?: string): ExcelJS.Worksheet | undefined {
+  const normalizedSheetName = String(sheetName || "").trim();
+  if (normalizedSheetName) {
+    return workbook.getWorksheet(normalizedSheetName);
+  }
+  return workbook.worksheets[0];
+}
+
+export async function parseExcelBuffer(
+  content: Buffer,
+  sheetName?: string
+): Promise<{ sheetName: string; availableSheetNames: string[]; headers: string[]; rows: Record<string, unknown>[]; recordCount: number }> {
+  assertBufferSize(content);
+  const workbook = await readExcelWorkbook(content);
+  const availableSheetNames = workbookSheetNames(workbook);
+  const worksheet = getWorksheet(workbook, sheetName);
+  const resolvedSheetName = String(sheetName || worksheet?.name || "").trim();
+  if (!resolvedSheetName || !worksheet) {
+    throw new Error(`Excel-Datei enthaelt kein lesbares Tabellenblatt: ${resolvedSheetName || "(leer)"}`);
+  }
+  const rawRows = worksheetToRows(worksheet);
+  const headers = (rawRows[0] || []).map((value, index) => normalizeHeader(value, index));
+  const rows = rowsToObjects(rawRows.slice(1), headers);
+  return {
+    sheetName: resolvedSheetName,
+    availableSheetNames,
+    headers,
+    rows,
+    recordCount: rows.length
+  };
+}
+
 function escapeCsvValue(value: unknown, delimiter: string, textQualifier: string): string {
   const text = value === null || value === undefined ? "" : String(value);
   if (!textQualifier) {
@@ -447,14 +520,18 @@ function buildAbsoluteFilePath(
     const absolutePath = path.isAbsolute(explicitPath)
       ? explicitPath
       : path.resolve(runtime.basePath, explicitPath);
-    return { absolutePath, fileName: path.basename(absolutePath) };
+    return {
+      absolutePath: assertPathInsideRoot(absolutePath, runtime.basePath, "Dateipfad"),
+      fileName: path.basename(absolutePath)
+    };
   }
 
   const root = mode === "read" ? runtime.importPath : runtime.exportPath;
   const relativeDirectory = normalizeRelativeDirectory(definition.relativeDirectory);
   const targetDirectory = relativeDirectory ? path.resolve(root, relativeDirectory) : root;
+  const absolutePath = path.resolve(targetDirectory, fileName);
   return {
-    absolutePath: path.resolve(targetDirectory, fileName),
+    absolutePath: assertPathInsideRoot(absolutePath, root, "Dateiname"),
     fileName
   };
 }
@@ -466,7 +543,8 @@ function resolveArchiveTargetPath(
   const relativeDirectory = normalizeRelativeDirectory(
     definition.archiveRelativeDirectory || definition.relativeDirectory
   );
-  return relativeDirectory ? path.resolve(runtime.archivePath, relativeDirectory) : runtime.archivePath;
+  const archivePath = relativeDirectory ? path.resolve(runtime.archivePath, relativeDirectory) : runtime.archivePath;
+  return assertPathInsideRoot(archivePath, runtime.archivePath, "Archivpfad");
 }
 
 async function archiveFile(originalPath: string, fileName: string, archivePath: string): Promise<void> {
@@ -474,7 +552,27 @@ async function archiveFile(originalPath: string, fileName: string, archivePath: 
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const archivedName = `${timestamp}-${fileName}`;
   const targetPath = path.resolve(archivePath, archivedName);
-  await fs.rename(originalPath, targetPath);
+  await fs.rename(originalPath, assertPathInsideRoot(targetPath, archivePath, "Archivdatei"));
+}
+
+function getMaxFileBytes(): number {
+  const configured = Number(process.env.FILE_CONNECTOR_MAX_FILE_BYTES || "");
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 25 * 1024 * 1024;
+}
+
+async function assertReadableFileSize(absolutePath: string): Promise<void> {
+  const stat = await fs.stat(absolutePath);
+  const maxBytes = getMaxFileBytes();
+  if (stat.size > maxBytes) {
+    throw new Error(`Datei ist zu gross (${stat.size} Bytes, Limit ${maxBytes} Bytes)`);
+  }
+}
+
+function assertBufferSize(buffer: Buffer): void {
+  const maxBytes = getMaxFileBytes();
+  if (buffer.length > maxBytes) {
+    throw new Error(`Datei ist zu gross (${buffer.length} Bytes, Limit ${maxBytes} Bytes)`);
+  }
 }
 
 export async function parseFileFromConnector(
@@ -488,6 +586,8 @@ export async function parseFileFromConnector(
   const archiveTargetPath = resolveArchiveTargetPath(definition, runtime);
   const format = definition.format || detectFormatByName(fileName);
   const charset = String(definition.charset || runtime.defaultCharset).trim() || "utf8";
+
+  await assertReadableFileSize(absolutePath);
 
   if (format === "json") {
     const raw = await fs.readFile(absolutePath, { encoding: charset as BufferEncoding });
@@ -522,14 +622,14 @@ export async function parseFileFromConnector(
 
   if (format === "excel") {
     const buffer = await fs.readFile(absolutePath);
-    const workbook = XLSX.read(buffer, { type: "buffer" });
-    const sheetName = String(definition.sheetName || workbook.SheetNames[0] || "").trim();
-    if (!sheetName || !workbook.Sheets[sheetName]) {
+    const workbook = await readExcelWorkbook(buffer);
+    const worksheet = getWorksheet(workbook, definition.sheetName);
+    const sheetName = String(definition.sheetName || worksheet?.name || "").trim();
+    if (!sheetName || !worksheet) {
       throw new Error(`Excel-Sheet nicht gefunden: ${sheetName || "(leer)"}`);
     }
 
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, defval: "" });
+    const rows = worksheetToRows(worksheet);
     const hasHeader = definition.hasHeader !== false;
     const headerRow = hasHeader ? (rows[0] || []) : [];
     const headers = hasHeader
@@ -603,11 +703,17 @@ export async function writeFileFromConnector(
     const content = JSON.stringify(rows.map((row) => ({ ...(row || {}) })), null, 2);
     await fs.writeFile(absolutePath, content, { encoding: charset as BufferEncoding });
   } else if (format === "excel") {
-    const worksheet = XLSX.utils.json_to_sheet(rows, { header: headers.length ? headers : undefined });
-    const workbook = XLSX.utils.book_new();
+    const workbook = new ExcelJS.Workbook();
     const sheetName = String(definition.sheetName || "Sheet1").trim() || "Sheet1";
-    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
-    XLSX.writeFile(workbook, absolutePath);
+    const worksheet = workbook.addWorksheet(sheetName);
+    if (headers.length) {
+      worksheet.addRow(headers);
+    }
+    rows.forEach((row) => {
+      worksheet.addRow(headers.map((header) => row?.[header] ?? ""));
+    });
+    const buffer = await workbook.xlsx.writeBuffer();
+    await fs.writeFile(absolutePath, Buffer.from(buffer));
   } else {
     const delimiter = String(definition.delimiter || runtime.defaultDelimiter || ";");
     const textQualifier = String(definition.textQualifier || '"').slice(0, 1) || '"';
@@ -638,7 +744,8 @@ export async function writeFileFromConnector(
   };
 }
 
-export function analyzeUploadedFile(fileName: string, content: Buffer): ParsedUploadPayload {
+export async function analyzeUploadedFile(fileName: string, content: Buffer): Promise<ParsedUploadPayload> {
+  assertBufferSize(content);
   const format = detectFormatByName(fileName);
 
   if (format === "json") {
@@ -660,24 +767,16 @@ export function analyzeUploadedFile(fileName: string, content: Buffer): ParsedUp
   }
 
   if (format === "excel") {
-    const workbook = XLSX.read(content, { type: "buffer" });
-    const sheets = workbook.SheetNames
-      .map((sheetName) => {
-        const sheet = workbook.Sheets[sheetName];
-        if (!sheet) {
-          return null;
-        }
-
-        const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, defval: "" });
+    const workbook = await readExcelWorkbook(content);
+    const sheets = workbook.worksheets
+      .map((sheet) => {
+        const rows = worksheetToRows(sheet);
         const headerRow = (rows[0] || []) as unknown[];
         const headers = headerRow.map((value, index) => normalizeHeader(value, index));
-        const recordCount = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-          defval: "",
-          raw: false
-        }).length;
+        const recordCount = Math.max(0, rows.length - 1);
 
         return {
-          sheetName,
+          sheetName: sheet.name,
           headers,
           recordCount
         } satisfies ParsedUploadSheetPayload;

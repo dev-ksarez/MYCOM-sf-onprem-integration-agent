@@ -97,35 +97,39 @@ export class DataTransferJob {
       "Starting source read phase"
     );
 
-    const sourceRecords = await this.sourceAdapter.readRecords(context);
+    const parsedDefinition = this.mappingDefinitionParser.parse(mappingDefinition);
+    const lookupLines = parsedDefinition.lines.filter((line) => line.transform.type === "LOOKUP");
+    const needsLookupPreload = lookupLines.length > 0 && Boolean(this.bulkLookupResolver);
+    const bufferedSourceRecords = needsLookupPreload ? await this.readAllSourceRecords(context) : undefined;
+    const totalRecords = bufferedSourceRecords?.length;
+
     await context.onProgress?.({
       phase: "source-read",
       processedRecords: 0,
-      totalRecords: sourceRecords.length
+      totalRecords
     });
 
-    this.logger.info(
-      {
-        runId: context.runId,
-        recordsRead: sourceRecords.length
-      },
-      "Source records loaded"
-    );
+    if (bufferedSourceRecords) {
+      this.logger.info(
+        {
+          runId: context.runId,
+          recordsRead: bufferedSourceRecords.length
+        },
+        "Source records loaded"
+      );
+    }
 
     this.logger.info(
       {
         runId: context.runId,
         scheduleId: context.scheduleId,
         phase: "mapping",
-        recordsRead: sourceRecords.length
+        recordsRead: totalRecords
       },
       "Starting record mapping phase"
     );
 
-    const parsedDefinition = this.mappingDefinitionParser.parse(mappingDefinition);
-    const lookupLines = parsedDefinition.lines.filter((line) => line.transform.type === "LOOKUP");
-
-    if (lookupLines.length > 0 && sourceRecords.length > 0 && this.bulkLookupResolver) {
+    if (lookupLines.length > 0 && bufferedSourceRecords && bufferedSourceRecords.length > 0 && this.bulkLookupResolver) {
       const lookupRequestMap = new Map<string, { objectName: string; field: string; values: Set<string> }>();
 
       for (const line of lookupLines) {
@@ -143,7 +147,7 @@ export class DataTransferJob {
           values: new Set<string>()
         };
 
-        for (const sourceRecord of sourceRecords) {
+        for (const sourceRecord of bufferedSourceRecords) {
           const rawValue = readSourceValue(sourceRecord?.values || {}, line.sourceField);
           if (rawValue === undefined || rawValue === null || rawValue === "") {
             continue;
@@ -183,9 +187,11 @@ export class DataTransferJob {
     const results: ConnectorResult[] = [];
     const successfulSourceRecords: GenericRecord[] = [];
     const failedRecords: FailedJobRecord[] = [];
+    let recordsRead = 0;
+    let processedRecords = 0;
+    let lastProcessedRecord: GenericRecord["checkpoint"] | undefined;
 
-    for (let index = 0; index < sourceRecords.length; index += chunkSize) {
-      const sourceChunk = sourceRecords.slice(index, index + chunkSize);
+    const processChunk = async (sourceChunk: GenericRecord[], batchStart: number): Promise<void> => {
       const mappedChunk: GenericRecord[] = await Promise.all(
         sourceChunk.map(async (record) => {
           const mapped = await this.mappingDefinitionEngine.mapRecord(record.values, parsedDefinition.lines);
@@ -197,7 +203,7 @@ export class DataTransferJob {
         {
           runId: context.runId,
           scheduleId: context.scheduleId,
-          batchStart: index,
+          batchStart,
           batchSize: sourceChunk.length
         },
         "Writing batch"
@@ -205,11 +211,12 @@ export class DataTransferJob {
 
       const batchResults = await this.targetAdapter.writeRecords(mappedChunk, context);
       results.push(...batchResults);
+      processedRecords += sourceChunk.length;
       await context.onProgress?.({
         phase: "batch-written",
-        processedRecords: Math.min(index + sourceChunk.length, sourceRecords.length),
-        totalRecords: sourceRecords.length,
-        batchStart: index,
+        processedRecords,
+        totalRecords: totalRecords ?? recordsRead,
+        batchStart,
         batchSize: sourceChunk.length
       });
 
@@ -223,9 +230,12 @@ export class DataTransferJob {
 
         if (result.success) {
           successfulSourceRecords.push(sourceRecord);
+          if (sourceRecord?.checkpoint?.value) {
+            lastProcessedRecord = sourceRecord.checkpoint;
+          }
         } else {
           failedRecords.push({
-            rowIndex: index + batchIndex,
+            rowIndex: batchStart + batchIndex,
             externalKey: result.externalKey,
             statusCode: result.statusCode,
             message: result.message,
@@ -235,6 +245,23 @@ export class DataTransferJob {
           });
         }
       }
+    };
+
+    let sourceChunk: GenericRecord[] = [];
+    const sourceIterable = bufferedSourceRecords || this.readSourceRecordStream(context);
+    for await (const sourceRecord of sourceIterable) {
+      recordsRead += 1;
+      sourceChunk.push(sourceRecord);
+      if (sourceChunk.length >= chunkSize) {
+        const batchStart = recordsRead - sourceChunk.length;
+        await processChunk(sourceChunk, batchStart);
+        sourceChunk = [];
+      }
+    }
+
+    if (sourceChunk.length > 0) {
+      const batchStart = recordsRead - sourceChunk.length;
+      await processChunk(sourceChunk, batchStart);
     }
 
     this.logger.info(
@@ -242,7 +269,7 @@ export class DataTransferJob {
         runId: context.runId,
         scheduleId: context.scheduleId,
         phase: "target-write",
-        mappedRecords: sourceRecords.length,
+        mappedRecords: recordsRead,
         chunkSize
       },
       "Target write phase completed in batches"
@@ -263,20 +290,36 @@ export class DataTransferJob {
       "Data transfer job finished"
     );
 
-    const lastCheckpointRecord = [...successfulSourceRecords]
-      .reverse()
-      .find((record) => record.checkpoint && record.checkpoint.value);
-
     return {
-      recordsRead: sourceRecords.length,
+      recordsRead,
       recordsProcessed: results.length,
       recordsSucceeded: successCount,
       recordsFailed: errorCount,
       status,
       connectorResults: results,
-      lastProcessedRecord: lastCheckpointRecord?.checkpoint,
+      lastProcessedRecord,
       successfulSourceRecords,
       failedRecords
     };
+  }
+
+  private async *readSourceRecordStream(context: TransferContext): AsyncIterable<GenericRecord> {
+    if (this.sourceAdapter.readRecordStream) {
+      yield* this.sourceAdapter.readRecordStream(context);
+      return;
+    }
+
+    const records = await this.sourceAdapter.readRecords(context);
+    for (const record of records) {
+      yield record;
+    }
+  }
+
+  private async readAllSourceRecords(context: TransferContext): Promise<GenericRecord[]> {
+    const records: GenericRecord[] = [];
+    for await (const record of this.readSourceRecordStream(context)) {
+      records.push(record);
+    }
+    return records;
   }
 }

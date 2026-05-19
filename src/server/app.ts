@@ -1517,9 +1517,26 @@ async function publishProjectDocumentationToConfluence(input: {
 }
 
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+  const contentType = String(req.headers["content-type"] || "").toLowerCase();
+  if (contentType && !contentType.includes("application/json")) {
+    const error = new Error("Content-Type muss application/json sein.") as Error & { statusCode?: number };
+    error.statusCode = 415;
+    throw error;
+  }
+
+  const configuredLimit = Number(process.env.WEB_JSON_BODY_LIMIT_BYTES || "");
+  const limitBytes = Number.isFinite(configuredLimit) && configuredLimit > 0 ? Math.floor(configuredLimit) : 10 * 1024 * 1024;
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > limitBytes) {
+      const error = new Error("Request Body ist zu gross.") as Error & { statusCode?: number };
+      error.statusCode = 413;
+      throw error;
+    }
+    chunks.push(buffer);
   }
 
   if (chunks.length === 0) {
@@ -1527,7 +1544,13 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   }
 
   const raw = Buffer.concat(chunks).toString("utf8").trim();
-  return raw ? (JSON.parse(raw) as unknown) : {};
+  try {
+    return raw ? (JSON.parse(raw) as unknown) : {};
+  } catch {
+    const error = new Error("JSON Body ist ungueltig.") as Error & { statusCode?: number };
+    error.statusCode = 400;
+    throw error;
+  }
 }
 
 function escapeHtml(value: string): string {
@@ -5944,7 +5967,10 @@ export function createAppServer(
 
       sendJson(404, { error: "Not Found" });
     })().catch((error) => {
-      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+      const statusCode = typeof (error as { statusCode?: unknown })?.statusCode === "number"
+        ? Math.trunc((error as { statusCode: number }).statusCode)
+        : 500;
+      res.writeHead(statusCode >= 400 && statusCode < 600 ? statusCode : 500, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown server error" }));
     });
   });

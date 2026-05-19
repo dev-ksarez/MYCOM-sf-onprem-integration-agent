@@ -26,6 +26,7 @@ export interface AdminUserRecord {
   id: string;
   username: string;
   password?: string;
+  passwordHash?: string;
   displayName?: string;
   roles: string[];
   permissions: AdminPermission[];
@@ -88,6 +89,66 @@ export interface ProjectMembershipDetail extends ProjectMembershipRecord {
 
 const DEFAULT_ADMIN_USERS_FILE = path.resolve(process.cwd(), "artifacts/admin-users.json");
 const DEFAULT_PROJECT_MEMBERSHIPS_FILE = path.resolve(process.cwd(), "artifacts/project-memberships.json");
+const PASSWORD_HASH_PREFIX = "scrypt";
+const PASSWORD_HASH_KEY_LENGTH = 64;
+
+function getAdminAuthHttpTimeoutMs(): number {
+  const configured = Number(process.env.ADMIN_AUTH_HTTP_TIMEOUT_MS || "");
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 15_000;
+}
+
+async function fetchWithTimeout(input: Parameters<typeof fetch>[0], init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), getAdminAuthHttpTimeoutMs());
+  try {
+    return await fetch(input, { ...init, signal: init.signal || controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function hashAdminPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const derivedKey = crypto.scryptSync(password, salt, PASSWORD_HASH_KEY_LENGTH).toString("hex");
+  return `${PASSWORD_HASH_PREFIX}$${salt}$${derivedKey}`;
+}
+
+function verifyAdminPassword(password: string, storedPassword?: string, storedPasswordHash?: string): boolean {
+  const candidate = String(password || "");
+  const hash = String(storedPasswordHash || "").trim();
+  if (hash.startsWith(`${PASSWORD_HASH_PREFIX}$`)) {
+    const parts = hash.split("$");
+    if (parts.length !== 3 || !parts[1] || !parts[2]) {
+      return false;
+    }
+    const expectedBuffer = Buffer.from(parts[2], "hex");
+    if (expectedBuffer.length !== PASSWORD_HASH_KEY_LENGTH) {
+      return false;
+    }
+    const candidateBuffer = crypto.scryptSync(candidate, parts[1], PASSWORD_HASH_KEY_LENGTH);
+    return constantTimeEquals(candidateBuffer.toString("hex"), expectedBuffer.toString("hex"));
+  }
+
+  return Boolean(storedPassword) && constantTimeEquals(candidate, String(storedPassword || ""));
+}
+
+function normalizeUserForStorage(user: AdminUserRecord): AdminUserRecord {
+  const password = String(user.password || "");
+  const passwordHash = String(user.passwordHash || "").trim();
+  return {
+    ...user,
+    password: undefined,
+    passwordHash: passwordHash || (password ? hashAdminPassword(password) : undefined)
+  };
+}
+
+function publicAdminUser(user: AdminUserRecord): AdminUserRecord {
+  return {
+    ...user,
+    password: undefined,
+    passwordHash: undefined
+  };
+}
 
 function formatSalesforceOauthError(error?: string, description?: string, loginUrl?: string): string {
   const normalizedError = String(error || "").trim();
@@ -192,6 +253,7 @@ function normalizeUsers(input: unknown): AdminUserRecord[] {
         id: String(candidate.id || `user-${index + 1}`),
         username,
         password: candidate.password ? String(candidate.password) : undefined,
+        passwordHash: candidate.passwordHash ? String(candidate.passwordHash) : undefined,
         displayName: candidate.displayName ? String(candidate.displayName) : undefined,
         roles,
         permissions: permissions.length ? permissions : ["read"],
@@ -218,14 +280,14 @@ function readUsersFile(filePath = getAdminUsersFilePath()): AdminUserRecord[] {
 
 function writeUsersFile(users: AdminUserRecord[], filePath = getAdminUsersFilePath()): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(users, null, 2), "utf8");
+  fs.writeFileSync(filePath, JSON.stringify(users.map(normalizeUserForStorage), null, 2), "utf8");
 }
 
 function createBootstrapAdminUser(): AdminUserRecord {
   return {
     id: "local-admin",
     username: "admin",
-    password: "admin123!",
+    passwordHash: hashAdminPassword("admin123!"),
     displayName: "Lokaler Admin",
     roles: ["admin"],
     permissions: ["admin", "read", "write", "delete"],
@@ -260,6 +322,9 @@ function loadUsersFromConfig(): AdminUserRecord[] {
   const username = String(process.env.ADMIN_UI_USERNAME || "").trim();
   const password = String(process.env.ADMIN_UI_PASSWORD || "");
   if (!username || !password) {
+    if (process.env.NODE_ENV === "production") {
+      return [];
+    }
     const bootstrapUser = createBootstrapAdminUser();
     writeUsersFile([bootstrapUser]);
     return [bootstrapUser];
@@ -268,7 +333,7 @@ function loadUsersFromConfig(): AdminUserRecord[] {
   return [{
     id: "local-admin",
     username,
-    password,
+    passwordHash: hashAdminPassword(password),
     displayName: username,
     roles: ["admin"],
     permissions: ["admin", "read", "write", "delete"],
@@ -638,10 +703,7 @@ export function hasModuleAccess(session: AdminSession | null | undefined, module
 }
 
 export function listAdminUsers(): AdminUserRecord[] {
-  return getAdminAuthConfig().users.map((user) => ({
-    ...user,
-    password: undefined
-  }));
+  return getAdminAuthConfig().users.map(publicAdminUser);
 }
 
 export function isProjectMembershipRestricted(): boolean {
@@ -800,14 +862,15 @@ export function saveAdminUser(input: AdminUserMutationInput): AdminUserRecord {
   const saved: AdminUserRecord = {
     id: existing?.id || id,
     username,
-    password: input.password ? String(input.password) : existing?.password,
+    passwordHash: input.password ? hashAdminPassword(String(input.password)) : existing?.passwordHash,
+    password: input.password ? undefined : existing?.password,
     displayName: String(input.displayName || existing?.displayName || username).trim(),
     roles,
     permissions: permissions.length ? permissions : ["read"],
     modules
   };
 
-  if (!saved.password) {
+  if (!saved.password && !saved.passwordHash) {
     throw new Error("Passwort ist fuer lokale Benutzer erforderlich.");
   }
 
@@ -815,7 +878,7 @@ export function saveAdminUser(input: AdminUserMutationInput): AdminUserRecord {
     ? users.map((user) => user.id === existing.id ? saved : user)
     : [...users, saved];
   writeUsersFile(nextUsers);
-  return { ...saved, password: undefined };
+  return publicAdminUser(saved);
 }
 
 export function deleteAdminUser(id: string): boolean {
@@ -839,11 +902,11 @@ export function deleteAdminUser(id: string): boolean {
 export function authenticateLocalAdminUser(username: string, password: string, config = getAdminAuthConfig()): AdminUserRecord | null {
   const normalizedUsername = String(username || "").trim().toLowerCase();
   const candidate = config.users.find((user) => user.username.trim().toLowerCase() === normalizedUsername);
-  if (!candidate || !candidate.password) {
+  if (!candidate || (!candidate.password && !candidate.passwordHash)) {
     return null;
   }
 
-  return constantTimeEquals(password, candidate.password) ? candidate : null;
+  return verifyAdminPassword(password, candidate.password, candidate.passwordHash) ? candidate : null;
 }
 
 function createState(store: Map<string, OAuthStateEntry>, redirectUri: string, codeVerifier?: string): string {
@@ -909,7 +972,7 @@ export async function completeSalesforceLogin(code: string, state: string, confi
     tokenRequestBody.set("code_verifier", pendingState.codeVerifier);
   }
 
-  const tokenResponse = await fetch(tokenEndpoint, {
+  const tokenResponse = await fetchWithTimeout(tokenEndpoint, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: tokenRequestBody
@@ -938,7 +1001,7 @@ export async function completeSalesforceLogin(code: string, state: string, confi
     throw new Error("Salesforce-Identity-URL fehlt in der Token-Antwort.");
   }
 
-  const identityResponse = await fetch(identityUrl, {
+  const identityResponse = await fetchWithTimeout(identityUrl, {
     headers: { Authorization: `Bearer ${tokenPayload.access_token}` }
   });
   const identityPayload = (await identityResponse.json()) as {

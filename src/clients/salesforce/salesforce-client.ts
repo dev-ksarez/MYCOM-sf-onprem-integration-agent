@@ -2,6 +2,21 @@ import { Connection } from "jsforce";
 import { SalesforceConfig } from "../../infrastructure/config/salesforce-config";
 import { getStaleRunInactivityThresholdMinutesForSchedule } from "../../core/scheduler/stale-run-policy";
 
+function getSalesforceHttpTimeoutMs(): number {
+  const configured = Number(process.env.SALESFORCE_HTTP_TIMEOUT_MS || "");
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 30_000;
+}
+
+async function fetchWithTimeout(input: Parameters<typeof fetch>[0], init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), getSalesforceHttpTimeoutMs());
+  try {
+    return await fetch(input, { ...init, signal: init.signal || controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function normalizeSalesforceLoginUrl(loginUrl?: string): string {
   const rawValue = String(loginUrl || "").trim();
   if (!rawValue) {
@@ -721,7 +736,7 @@ export class SalesforceClient {
           client_secret: clientSecret,
           refresh_token: refreshToken
         });
-        const response = await fetch(tokenUrl, {
+        const response = await fetchWithTimeout(tokenUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/x-www-form-urlencoded"
@@ -764,7 +779,7 @@ export class SalesforceClient {
         client_id: String(this.config.clientId || ""),
         client_secret: String(this.config.clientSecret || "")
       });
-      const response = await fetch(tokenUrl, {
+      const response = await fetchWithTimeout(tokenUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded"
@@ -868,6 +883,29 @@ export class SalesforceClient {
     }
 
     return records.map((record) => ({ ...record }));
+  }
+
+  public async *queryGenericStream(soql: string): AsyncIterable<Record<string, unknown>> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const trimmedSoql = soql.trim();
+    if (!trimmedSoql) {
+      throw new Error("SOQL query must not be empty");
+    }
+
+    let result = await this.connection.query<Record<string, unknown>>(trimmedSoql);
+    for (const record of result.records) {
+      yield { ...record };
+    }
+
+    while (!result.done && result.nextRecordsUrl) {
+      result = await this.connection.queryMore<Record<string, unknown>>(result.nextRecordsUrl);
+      for (const record of result.records) {
+        yield { ...record };
+      }
+    }
   }
 
   public async ensurePermissionSetAssigned(permissionSetName: string): Promise<{ assigned: boolean; alreadyExisted: boolean }> {
@@ -1622,6 +1660,64 @@ export class SalesforceClient {
     };
   }
 
+  public async getCheckpoints(
+    schedules: Array<{ scheduleId: string; objectName: string }>
+  ): Promise<Map<string, CheckpointData>> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedSchedules = schedules
+      .map((item) => ({
+        scheduleId: String(item.scheduleId || "").trim(),
+        objectName: String(item.objectName || "").trim()
+      }))
+      .filter((item) => item.scheduleId && item.objectName);
+    if (normalizedSchedules.length === 0) {
+      return new Map();
+    }
+
+    const expectedKeys = new Set(normalizedSchedules.map((item) => `${item.scheduleId}::${item.objectName}`));
+    const scheduleIds = Array.from(new Set(normalizedSchedules.map((item) => item.scheduleId)));
+    const checkpoints = new Map<string, CheckpointData>();
+
+    for (let index = 0; index < scheduleIds.length; index += 100) {
+      const chunk = scheduleIds.slice(index, index + 100);
+      const quotedScheduleIds = chunk.map((id) => `'${escapeSoqlLiteral(id)}'`).join(", ");
+      const soql = `
+        SELECT
+          Id,
+          Name,
+          MSD_Schedule__c,
+          MSD_ObjectName__c,
+          MSD_LastCheckpoint__c,
+          MSD_LastRecordId__c,
+          MSD_Run__c
+        FROM MSD_Checkpoint__c
+        WHERE MSD_Schedule__c IN (${quotedScheduleIds})
+        ORDER BY CreatedDate DESC
+      `;
+
+      const result = await this.connection.query<SalesforceCheckpointRecord>(soql);
+      for (const record of result.records) {
+        const key = `${record.MSD_Schedule__c || ""}::${record.MSD_ObjectName__c || ""}`;
+        if (!expectedKeys.has(key) || checkpoints.has(key)) {
+          continue;
+        }
+        checkpoints.set(key, {
+          id: record.Id,
+          scheduleId: record.MSD_Schedule__c,
+          objectName: record.MSD_ObjectName__c,
+          lastCheckpoint: record.MSD_LastCheckpoint__c,
+          lastRecordId: record.MSD_LastRecordId__c,
+          lastRunId: record.MSD_Run__c
+        });
+      }
+    }
+
+    return checkpoints;
+  }
+
   public async upsertCheckpoint(input: UpsertCheckpointInput): Promise<string> {
     if (!this.connection) {
       throw new Error("Salesforce connection not initialized. Call login() first.");
@@ -1924,6 +2020,47 @@ export class SalesforceClient {
 
     const result = await this.connection.query<SalesforceLogRecord>(soql);
     return result.records;
+  }
+
+  public async queryLatestLogsByRunIds(runIds: string[]): Promise<Map<string, SalesforceLogRecord>> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const normalizedRunIds = Array.from(new Set(
+      runIds.map((runId) => String(runId || "").trim()).filter(Boolean)
+    ));
+    const latestByRunId = new Map<string, SalesforceLogRecord>();
+
+    for (let index = 0; index < normalizedRunIds.length; index += 100) {
+      const chunk = normalizedRunIds.slice(index, index + 100);
+      const quotedIds = chunk.map((runId) => `'${escapeSoqlLiteral(runId)}'`).join(", ");
+      const soql = `
+        SELECT
+          Id,
+          MSD_Run__c,
+          MSD_Level__c,
+          MSD_Step__c,
+          MSD_Message__c,
+          MSD_RecordKey__c,
+          MSD_CorrelationId__c,
+          CreatedDate
+        FROM MSD_Log__c
+        WHERE MSD_Run__c IN (${quotedIds})
+        ORDER BY CreatedDate DESC
+        LIMIT ${Math.max(1, chunk.length * 10)}
+      `;
+
+      const result = await this.connection.query<SalesforceLogRecord>(soql);
+      for (const record of result.records) {
+        const runId = String(record.MSD_Run__c || "").trim();
+        if (runId && !latestByRunId.has(runId)) {
+          latestByRunId.set(runId, record);
+        }
+      }
+    }
+
+    return latestByRunId;
   }
 
   public async queryLogsByDateRange(startIso: string, endIso: string, limit = 2000, level?: "ERROR" | "WARN" | "INFO"): Promise<SalesforceLogRecord[]> {
