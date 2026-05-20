@@ -3,22 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { ConnectorConfig, CreateLogInput, SalesforceClient, SalesforceScheduleRecord } from "../clients/salesforce/salesforce-client";
 import { ConnectorRegistry } from "../core/connector-registry/connector-registry";
-import { BulkLookupResolverFn, DataTransferJob } from "../core/job-runner/data-transfer-job";
-import { LookupResolverFn } from "../core/mapping-dsl/mapping-definition-engine";
-import { AccountExportJob } from "../core/job-runner/account-export-job";
 import { isScheduleDue } from "../core/scheduler/is-schedule-due";
 import { getSalesforceConfig } from "../infrastructure/config/salesforce-config";
-import { MssqlConnector } from "../connectors/mssql/mssql-connector";
-import { SalesforceAccountSource } from "../source/salesforce/salesforce-account-source";
-import { SalesforceSoqlSourceAdapter } from "../source-adapters/salesforce/salesforce-soql-source-adapter";
-import { MssqlQuerySourceAdapter } from "../source-adapters/mssql/mssql-query-source-adapter";
-import { RestApiSourceAdapter } from "../source-adapters/rest/rest-api-source-adapter";
 import { SalesforceScheduleSource } from "../source/salesforce/salesforce-schedule-source";
-import { MssqlTargetAdapter } from "../target-adapters/mssql/mssql-target-adapter";
-import { FileSourceAdapter } from "../source-adapters/file/file-source-adapter";
-import { FileTargetAdapter } from "../target-adapters/file/file-target-adapter";
-import { SalesforceTargetAdapter } from "../target-adapters/salesforce/salesforce-target-adapter";
-import { SalesforceGlobalPicklistTargetAdapter } from "../target-adapters/salesforce/salesforce-global-picklist-target-adapter";
 import { calculateNextRunAtFromTiming } from "../core/scheduler/schedule-timing";
 import { JobContext } from "../types/job-context";
 import { TransferContext } from "../types/transfer-context";
@@ -30,6 +17,7 @@ import { ConnectorResult } from "../types/connector-result";
 import { FailedJobRecord } from "../types/job-execution-result";
 import { parseQuerySourceDefinition, resolveAfterExportValue } from "../utils/query-source-definition";
 import { LocalScheduleHealthRepository, LocalScheduleHealthItem } from "../core/scheduler/local-schedule-health-repository";
+import { JobExecutorFactory } from "../core/scheduler/job-executor-factory";
 
 
 export interface AgentRunSummary {
@@ -926,203 +914,23 @@ async function executeSchedule(
 
     let result;
 
-    if (isGenericSalesforceToMssql || isGenericSalesforceToFile) {
-      if (!schedule.sourceDefinition?.trim()) {
-        throw new Error(`Schedule ${schedule.name} is missing MSD_SourceDefinition__c`);
-      }
-
-      if (!schedule.mappingDefinition?.trim()) {
-        throw new Error(`Schedule ${schedule.name} is missing MSD_MappingDefinition__c`);
-      }
-
-      if (isGenericSalesforceToMssql && !(connector instanceof MssqlConnector)) {
-        throw new Error(`Connector type ${connectorConfig.connectorType} is not supported by MssqlTargetAdapter`);
-      }
-
-      if (isGenericSalesforceToFile && !schedule.targetDefinition?.trim()) {
-        throw new Error(`Schedule ${schedule.name} is missing MSD_TargetDefinition__c`);
-      }
-
-      const transferContext: TransferContext = {
-        runId: context.runId,
-        correlationId: context.correlationId,
-        scheduleId: context.scheduleId,
-        direction: schedule.direction || "Outbound",
-        sourceType: schedule.sourceType || "SALESFORCE_SOQL",
-        targetType: schedule.targetType || (isGenericSalesforceToFile ? "FILE_CSV" : "MSSQL"),
-        batchSize: context.batchSize,
-        maxRetries: context.maxRetries,
-        checkpoint: {
-          value: lastCheckpoint,
-          recordId: lastRecordId
-        },
-        onProgress: writeTransferProgressLog
-      };
-
-      const sourceAdapter = new SalesforceSoqlSourceAdapter(salesforceClient, schedule.sourceDefinition);
-      const targetAdapter = isGenericSalesforceToFile
-        ? new FileTargetAdapter(connectorConfig, schedule.targetDefinition || "")
-        : new MssqlTargetAdapter(connector as MssqlConnector, schedule.targetDefinition);
-      const job = new DataTransferJob(logger, sourceAdapter, targetAdapter);
-      result = await job.execute(transferContext, schedule.mappingDefinition);
-    } else if (
-      isGenericMssqlToSalesforce ||
-      isGenericMssqlToGlobalPicklist ||
-      isGenericMssqlToFile ||
-      isGenericRestToSalesforce ||
-      isGenericRestToGlobalPicklist ||
-      isGenericFileToSalesforce ||
-      isGenericFileToGlobalPicklist ||
-      isGenericFileToMssql
-    ) {
-      if (!schedule.sourceDefinition?.trim()) {
-        throw new Error(`Schedule ${schedule.name} is missing MSD_SourceDefinition__c`);
-      }
-
-      if (!schedule.mappingDefinition?.trim()) {
-        throw new Error(`Schedule ${schedule.name} is missing MSD_MappingDefinition__c`);
-      }
-
-      if (!schedule.targetDefinition?.trim()) {
-        throw new Error(`Schedule ${schedule.name} is missing MSD_TargetDefinition__c`);
-      }
-
-      if ((isGenericFileToMssql || isGenericMssqlToFile) && !(connector instanceof MssqlConnector) && !isFileConnector) {
-        throw new Error(`Connector type ${connectorConfig.connectorType} is not supported by MssqlTargetAdapter`);
-      }
-
-      const transferContext: TransferContext = {
-        runId: context.runId,
-        correlationId: context.correlationId,
-        scheduleId: context.scheduleId,
-        direction: schedule.direction || "Inbound",
-        sourceType: schedule.sourceType || (isFileSource ? "FILE_CSV" : isRestSource ? "REST_API" : "MSSQL_SQL"),
-        targetType:
-          schedule.targetType ||
-          (isGenericMssqlToGlobalPicklist || isGenericFileToGlobalPicklist
-            ? "SALESFORCE_GLOBAL_PICKLIST"
-            : isGenericMssqlToFile
-              ? "FILE_CSV"
-              : isGenericFileToMssql
-                ? "MSSQL"
-                : "SALESFORCE"),
-        batchSize: context.batchSize,
-        maxRetries: context.maxRetries,
-        checkpoint: {
-          value: lastCheckpoint,
-          recordId: lastRecordId
-        },
-        onProgress: writeTransferProgressLog
-      };
-
-      const sourceAdapter = isFileSource
-        ? new FileSourceAdapter(connectorConfig, schedule.sourceDefinition)
-        : isRestSource
-          ? new RestApiSourceAdapter(connectorConfig, schedule.sourceDefinition)
-        : new MssqlQuerySourceAdapter(connectorConfig, schedule.sourceDefinition);
-
-      const targetAdapter = isGenericMssqlToFile
-        ? new FileTargetAdapter(connectorConfig, schedule.targetDefinition)
-        : isGenericFileToMssql
-          ? new MssqlTargetAdapter(connector as MssqlConnector, schedule.targetDefinition)
-          : isGenericMssqlToGlobalPicklist || isGenericRestToGlobalPicklist || isGenericFileToGlobalPicklist
-            ? new SalesforceGlobalPicklistTargetAdapter(salesforceClient, schedule.targetDefinition, schedule.lastRunAt)
-            : new SalesforceTargetAdapter(salesforceClient, schedule.targetDefinition, connectorConfig, schedule.lastRunAt);
-
-      const salesforceLookupResolver: LookupResolverFn = async (objectName, field, value) => {
-        const escapedValue = String(value).replace(/'/g, "\\'");
-        const soql = `SELECT Id FROM ${objectName} WHERE ${field} = '${escapedValue}' LIMIT 1`;
-        try {
-          logger.debug({ scheduleId: schedule.id, runId, objectName, field, rawValue: value, soql }, "Lookup resolver: executing SOQL");
-          const records = await salesforceClient.queryGeneric(soql);
-          logger.debug(
-            { scheduleId: schedule.id, runId, soql, found: records.length > 0, recordsCount: records.length, sample: records[0] ?? null },
-            "Lookup resolver: result"
-          );
-          return records.length > 0 ? String(records[0].Id) : null;
-        } catch (err) {
-          logger.error({ scheduleId: schedule.id, runId, soql, error: err instanceof Error ? err.message : String(err) }, "Lookup resolver: query failed");
-          return null;
-        }
-      };
-
-      const salesforceBulkLookupResolver: BulkLookupResolverFn = async (requests) => {
-        const cache = new Map<string, string | null>();
-        const chunkSize = Math.max(1, Math.min(200, Math.trunc(context.batchSize || 100)));
-
-        for (const request of requests) {
-          const objectName = String(request.objectName || "").trim();
-          const field = String(request.field || "").trim();
-          if (!objectName || !field || !isValidSalesforceIdentifier(objectName) || !isValidSalesforceIdentifier(field)) {
-            continue;
-          }
-
-          const values = Array.from(new Set((request.values || [])
-            .map((value) => String(value ?? "").trim())
-            .filter((value) => value.length > 0)));
-
-          if (values.length === 0) {
-            continue;
-          }
-
-          for (const value of values) {
-            cache.set(`${objectName}|${field}|${value}`, null);
-          }
-
-          for (let index = 0; index < values.length; index += chunkSize) {
-            const chunk = values.slice(index, index + chunkSize);
-            const inClause = chunk.map((value) => `'${value.replace(/'/g, "\\'")}'`).join(", ");
-            const soql = `SELECT Id, ${field} FROM ${objectName} WHERE ${field} IN (${inClause})`;
-
-            try {
-              const records = await salesforceClient.queryGeneric(soql);
-              for (const record of records) {
-                const rawLookupValue = record[field];
-                if (rawLookupValue === undefined || rawLookupValue === null || rawLookupValue === "") {
-                  continue;
-                }
-
-                const normalizedLookupValue = String(rawLookupValue).trim();
-                const id = String(record.Id || "").trim();
-                if (!id) {
-                  continue;
-                }
-
-                cache.set(`${objectName}|${field}|${normalizedLookupValue}`, id);
-              }
-            } catch (err) {
-              logger.error(
-                {
-                  scheduleId: schedule.id,
-                  runId,
-                  objectName,
-                  field,
-                  chunkStart: index,
-                  chunkSize: chunk.length,
-                  error: err instanceof Error ? err.message : String(err)
-                },
-                "Bulk lookup preload failed for chunk"
-              );
-            }
-          }
-        }
-
-        return cache;
-      };
-
-      const job = new DataTransferJob(
-        logger,
-        sourceAdapter,
-        targetAdapter,
-        salesforceLookupResolver,
-        salesforceBulkLookupResolver
-      );
-      result = await job.execute(transferContext, schedule.mappingDefinition);
-    } else {
-      const source = new SalesforceAccountSource(salesforceClient);
-      const job = new AccountExportJob(logger, source, connector!);
-      result = await job.execute(context, lastCheckpoint, lastRecordId, schedule.mappingDefinition);
+    const jobExecutorFactory = new JobExecutorFactory();
+    const executor = jobExecutorFactory.getExecutor(schedule);
+    if (!executor) {
+      throw new Error(`No executor found for schedule ${schedule.name}`);
     }
+
+    result = await executor.execute({
+      salesforceClient,
+      logger,
+      schedule,
+      context,
+      connectorConfig,
+      connector,
+      lastCheckpoint,
+      lastRecordId,
+      onProgress: writeTransferProgressLog
+    });
 
     persistFailedRunRecords(runId, schedule, connectorConfig, result.failedRecords);
 
