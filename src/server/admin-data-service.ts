@@ -26,7 +26,6 @@ import {
   SalesforceConfig
 } from "../infrastructure/config/salesforce-config";
 import { calculateNextRunAtFromTiming } from "../core/scheduler/schedule-timing";
-import { isImportProfileSchedulerRuleDue, type SchedulerDay } from "../core/scheduler/import-profile-scheduler";
 import { getDefaultStaleRunInactivityThresholdMinutes, getStaleRunInactivityThresholdMinutesForSchedule } from "../core/scheduler/stale-run-policy";
 import { MigrationStagingSqlite } from "../infrastructure/db/migration-staging-sqlite";
 import { MssqlDatabase } from "../infrastructure/db/mssql";
@@ -7362,11 +7361,6 @@ export class AdminDataService {
       return "inactive";
     }
 
-    const profileSchedulerDue = this.isSelectedImportProfileSchedulerDue(schedule.targetDefinition, schedule.lastRunAt);
-    if (profileSchedulerDue === false) {
-      return "scheduled";
-    }
-
     if (schedule.nextRunAt) {
       const timestamp = new Date(schedule.nextRunAt).getTime();
       if (!Number.isNaN(timestamp)) {
@@ -7379,80 +7373,6 @@ export class AdminDataService {
     }
 
     return "due";
-  }
-
-  private isSelectedImportProfileSchedulerDue(targetDefinition?: string, lastRunAt?: string): boolean | undefined {
-    const raw = String(targetDefinition || "").trim();
-    if (!raw || !raw.startsWith("{")) {
-      return undefined;
-    }
-
-    try {
-      const parsed = JSON.parse(raw) as {
-        selectedImportProfileName?: unknown;
-        importProfiles?: Array<{
-          name?: unknown;
-          active?: unknown;
-          schedulerEnabled?: unknown;
-          nextRunAt?: unknown;
-          scheduler?: {
-            mode?: unknown;
-            rules?: Array<{
-              days?: unknown;
-              startTime?: unknown;
-              endTime?: unknown;
-              intervalMinutes?: unknown;
-            }>;
-          };
-        }>;
-      };
-
-      if (!Array.isArray(parsed.importProfiles) || parsed.importProfiles.length === 0) {
-        return undefined;
-      }
-
-      const selectedName = String(parsed.selectedImportProfileName || "").trim();
-      const selectedProfile = (selectedName
-        ? parsed.importProfiles.find((profile) => String(profile?.name || "").trim() === selectedName)
-        : parsed.importProfiles[0]) || parsed.importProfiles[0];
-
-      if (!selectedProfile) {
-        return undefined;
-      }
-
-      if (selectedProfile.active === false || selectedProfile.schedulerEnabled === false) {
-        return false;
-      }
-
-      const rules = Array.isArray(selectedProfile.scheduler?.rules)
-        ? selectedProfile.scheduler?.rules
-        : [];
-
-      if (!rules.length) {
-        const nextRunAt = String(selectedProfile.nextRunAt || "").trim();
-        if (!nextRunAt) {
-          return true;
-        }
-
-        const nextRunTimestamp = new Date(nextRunAt).getTime();
-        return Number.isNaN(nextRunTimestamp) ? true : nextRunTimestamp <= Date.now();
-      }
-
-      const normalizedRules = rules.map((rule) => ({
-        days: Array.isArray(rule?.days)
-          ? rule.days
-              .map((day) => String(day || "").trim().toLowerCase())
-              .filter((day): day is SchedulerDay => ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].includes(day))
-          : [],
-        startTime: String(rule?.startTime || "").trim(),
-        endTime: String(rule?.endTime || "").trim(),
-        intervalMinutes: Number(rule?.intervalMinutes)
-      }));
-
-      return isImportProfileSchedulerRuleDue(normalizedRules, new Date(), lastRunAt);
-    } catch {
-      return undefined;
-    }
   }
 
   private removeLocalTimingDefinition(instanceId: string, scheduleId: string): void {

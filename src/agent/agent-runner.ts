@@ -26,6 +26,7 @@ import { IntegrationSchedule } from "../types/integration-schedule";
 import { isFileScheduleType } from "../types/file-schedule-type";
 import { SalesforceConfig } from "../infrastructure/config/salesforce-config";
 import { GenericRecord } from "../types/generic-record";
+import { ConnectorResult } from "../types/connector-result";
 import { FailedJobRecord } from "../types/job-execution-result";
 import { parseQuerySourceDefinition, resolveAfterExportValue } from "../utils/query-source-definition";
 
@@ -70,6 +71,14 @@ interface FailedRunRecordsDocument {
   createdAt: string;
   total: number;
   items: FailedRunRecordEntry[];
+}
+
+interface AggregatedConnectorErrorGroup {
+  key: string;
+  statusCode: string;
+  title: string;
+  retryable: boolean;
+  items: ConnectorResult[];
 }
 
 interface LocalScheduleHealthItem {
@@ -753,6 +762,114 @@ function isValidSalesforceIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_.]*$/.test(value);
 }
 
+function getAggregatedConnectorErrorKey(result: ConnectorResult): string | undefined {
+  const statusCode = String(result.statusCode || "").trim();
+  const message = String(result.message || "").trim();
+  const normalizedMessage = message.toLowerCase();
+
+  if (statusCode === "SKIPPED_MISSING_PRODUCT") {
+    return "missing-product2-for-pricebookentry";
+  }
+
+  if (normalizedMessage.includes("missing required account lookup for contact.accountid")) {
+    return "missing-account-lookup-for-contact";
+  }
+
+  if (normalizedMessage.includes("missing required") && normalizedMessage.includes("lookup")) {
+    return `missing-lookup:${message}`;
+  }
+
+  return undefined;
+}
+
+function summarizeAggregatedConnectorErrors(results: ConnectorResult[]): {
+  aggregated: AggregatedConnectorErrorGroup[];
+  individual: ConnectorResult[];
+} {
+  const grouped = new Map<string, AggregatedConnectorErrorGroup>();
+  const individual: ConnectorResult[] = [];
+
+  for (const result of results) {
+    const key = getAggregatedConnectorErrorKey(result);
+    if (!key) {
+      individual.push(result);
+      continue;
+    }
+
+    const statusCode = String(result.statusCode || "UNKNOWN_STATUS");
+    const title = key === "missing-product2-for-pricebookentry"
+      ? "PricebookEntry rows skipped because matching Product2 records are missing"
+      : key === "missing-account-lookup-for-contact"
+        ? "Contact rows skipped because matching Account lookups are missing"
+        : "Rows skipped because required Salesforce lookups are missing";
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.items.push(result);
+      existing.retryable = existing.retryable || Boolean(result.retryable);
+    } else {
+      grouped.set(key, {
+        key,
+        statusCode,
+        title,
+        retryable: Boolean(result.retryable),
+        items: [result]
+      });
+    }
+  }
+
+  return {
+    aggregated: Array.from(grouped.values()),
+    individual
+  };
+}
+
+function buildAggregatedConnectorErrorLogs(group: AggregatedConnectorErrorGroup, runId: string, correlationId: string): CreateLogInput[] {
+  const keys = Array.from(new Set(
+    group.items
+      .map((item) => String(item.externalKey || "").trim())
+      .filter(Boolean)
+  ));
+  const retryableText = group.retryable ? "retryable=true" : "retryable=false";
+  const keyChunks: string[][] = [];
+  const chunkSize = 100;
+  for (let index = 0; index < keys.length; index += chunkSize) {
+    keyChunks.push(keys.slice(index, index + chunkSize));
+  }
+
+  if (keyChunks.length === 0) {
+    return [{
+      runId,
+      level: "ERROR",
+      step: "RECORD_ERROR_SUMMARY",
+      message: `${group.statusCode}: ${group.title}. Betroffene Datensaetze: ${group.items.length}. (${retryableText})`,
+      correlationId
+    }];
+  }
+
+  return keyChunks.map((chunk, chunkIndex) => ({
+    runId,
+    level: "ERROR",
+    step: "RECORD_ERROR_SUMMARY",
+    message: `${group.statusCode}: ${group.title}. Betroffene Datensaetze: ${group.items.length}. Fehlende Keys ${chunkIndex + 1}/${keyChunks.length}: ${chunk.join(", ")} (${retryableText})`,
+    correlationId
+  }));
+}
+
+function buildConnectorErrorLog(result: ConnectorResult, runId: string, correlationId: string): CreateLogInput {
+  const statusCode = result.statusCode || "UNKNOWN_STATUS";
+  const message = result.message || "Unknown connector error";
+  const retryableText = result.retryable ? "retryable=true" : "retryable=false";
+
+  return {
+    runId,
+    level: "ERROR",
+    step: "RECORD_ERROR",
+    message: `${statusCode}: ${message} (${retryableText})`,
+    correlationId,
+    recordKey: result.externalKey
+  };
+}
+
 async function executeSchedule(
   salesforceClient: SalesforceClient,
   logger: pino.Logger,
@@ -1021,7 +1138,7 @@ async function executeSchedule(
         ? new FileTargetAdapter(connectorConfig, schedule.targetDefinition)
         : isGenericFileToMssql
           ? new MssqlTargetAdapter(connector as MssqlConnector, schedule.targetDefinition)
-          : isGenericMssqlToGlobalPicklist || isGenericFileToGlobalPicklist
+          : isGenericMssqlToGlobalPicklist || isGenericRestToGlobalPicklist || isGenericFileToGlobalPicklist
             ? new SalesforceGlobalPicklistTargetAdapter(salesforceClient, schedule.targetDefinition, schedule.lastRunAt)
             : new SalesforceTargetAdapter(salesforceClient, schedule.targetDefinition, connectorConfig, schedule.lastRunAt);
 
@@ -1106,34 +1223,6 @@ async function executeSchedule(
         return cache;
       };
 
-      if (
-        !forceRun &&
-        (targetAdapter instanceof SalesforceTargetAdapter || targetAdapter instanceof SalesforceGlobalPicklistTargetAdapter) &&
-        !targetAdapter.isProfileSchedulerDue()
-      ) {
-        logger.info(
-          { scheduleId: schedule.id, profileName: targetAdapter.getActiveProfileName() },
-          "Skipping schedule because selected import profile scheduler is not active/due"
-        );
-
-        await salesforceClient.updateRun(runId, {
-          status: "Success",
-          finishedAt: new Date().toISOString(),
-          recordsRead: 0,
-          recordsProcessed: 0,
-          recordsSucceeded: 0,
-          recordsFailed: 0
-        });
-
-        const skippedFinishedAt = new Date().toISOString();
-        await salesforceClient.updateScheduleRecord(
-          schedule.id,
-          buildScheduleRunTimestampFields(schedule, skippedFinishedAt)
-        );
-
-        return false;
-      }
-
       const job = new DataTransferJob(
         logger,
         sourceAdapter,
@@ -1152,20 +1241,11 @@ async function executeSchedule(
 
     const failedConnectorResults = result.connectorResults.filter((connectorResult) => !connectorResult.success);
     if (failedConnectorResults.length > 0) {
-      const errorLogInputs: CreateLogInput[] = failedConnectorResults.map((connectorResult) => {
-        const statusCode = connectorResult.statusCode || "UNKNOWN_STATUS";
-        const message = connectorResult.message || "Unknown connector error";
-        const retryableText = connectorResult.retryable ? "retryable=true" : "retryable=false";
-
-        return {
-          runId,
-          level: "ERROR",
-          step: "RECORD_ERROR",
-          message: `${statusCode}: ${message} (${retryableText})`,
-          correlationId: context.correlationId,
-          recordKey: connectorResult.externalKey
-        };
-      });
+      const summarizedErrors = summarizeAggregatedConnectorErrors(failedConnectorResults);
+      const errorLogInputs: CreateLogInput[] = [
+        ...summarizedErrors.aggregated.flatMap((group) => buildAggregatedConnectorErrorLogs(group, runId, context.correlationId)),
+        ...summarizedErrors.individual.map((connectorResult) => buildConnectorErrorLog(connectorResult, runId, context.correlationId))
+      ];
 
       try {
         await salesforceClient.createLogsBulk(errorLogInputs);

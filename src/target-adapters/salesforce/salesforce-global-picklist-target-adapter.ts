@@ -1,5 +1,4 @@
 import {
-  isImportProfileSchedulerRuleDue,
   type SchedulerDay
 } from "../../core/scheduler/import-profile-scheduler";
 import { ConnectorResult } from "../../types/connector-result";
@@ -240,26 +239,6 @@ export class SalesforceGlobalPicklistTargetAdapter implements TargetAdapter {
     this.activeProfile = this.resolveActiveImportProfile();
   }
 
-  public isProfileSchedulerDue(now = Date.now()): boolean {
-    if (!this.activeProfile.active) {
-      return false;
-    }
-
-    if (!this.activeProfile.schedulerEnabled) {
-      return false;
-    }
-
-    if (this.activeProfile.scheduler?.mode === "rules") {
-      return isImportProfileSchedulerRuleDue(this.activeProfile.scheduler.rules, new Date(now), this.lastRunAt);
-    }
-
-    if (!this.activeProfile.nextRunAt) {
-      return true;
-    }
-
-    return new Date(this.activeProfile.nextRunAt).getTime() <= now;
-  }
-
   public getActiveProfileName(): string {
     return this.activeProfile.name;
   }
@@ -348,12 +327,12 @@ export class SalesforceGlobalPicklistTargetAdapter implements TargetAdapter {
       return selected;
     }
 
-    const firstActive = this.targetDefinition.importProfiles.find((profile) => profile.active);
-    if (firstActive) {
-      return firstActive;
+    const firstProfile = this.targetDefinition.importProfiles[0];
+    if (!firstProfile) {
+      throw new Error("No import profile found in global picklist target definition");
     }
 
-    throw new Error("No active import profile found in global picklist target definition");
+    return firstProfile;
   }
 
   private isRuleBasedSchedulerDue(now: Date): boolean {

@@ -3162,27 +3162,48 @@ body.context-none .agent-topbar {
   font-weight: 700;
   font-size: 0.87rem;
   letter-spacing: 0.2px;
+  min-height: 44px;
+  padding: 0.58rem 0.85rem;
+}
+
+.soft-card .card-body {
+  padding: 0.85rem;
+}
+
+.overview-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.overview-panel .card-body {
+  min-height: 0;
+}
+
+.overview-primary-grid {
+  align-items: stretch;
+}
+
+.overview-connector-filter {
+  width: 260px;
+  max-width: 28vw;
 }
 
 .mini-kpi {
-  min-height: 146px;
-  height: 146px;
+  min-height: 158px;
+  height: 158px;
   position: relative;
   overflow: hidden;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .mini-kpi::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(135deg, rgba(46, 95, 143, 0.08) 0%, rgba(26, 179, 148, 0.02) 54%, rgba(255, 255, 255, 0) 100%);
+  display: none;
 }
 
 .mini-kpi:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 16px rgba(22, 39, 60, 0.08);
+  transform: none;
+  box-shadow: 0 1px 2px rgba(22, 39, 60, 0.06);
 }
 
 .mini-kpi .card-body {
@@ -3190,7 +3211,8 @@ body.context-none .agent-topbar {
   z-index: 1;
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .mini-kpi-service .card-body {
@@ -3275,7 +3297,7 @@ body.context-none .agent-topbar {
 }
 
 .mini-kpi-service {
-  border-color: #cddbe9;
+  border-color: var(--layout-card-border);
 }
 
 .kpi-combined-grid {
@@ -3478,6 +3500,17 @@ body.context-none .agent-topbar {
   border-radius: 8px;
   border: 1px solid var(--layout-card-border);
   background: var(--layout-surface-soft);
+  width: 100%;
+  min-height: 360px;
+  height: 42vh;
+  max-height: 470px;
+  overflow: hidden;
+}
+
+.graph-wrap svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .stats-card .card-body {
@@ -3640,6 +3673,113 @@ body.context-none .agent-topbar {
   gap: 0.85rem;
 }
 
+.sf-compact-meta {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.45rem;
+  margin-bottom: 0.75rem;
+}
+
+.sf-compact-meta > div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 6.2rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.65rem;
+}
+
+.sf-compact-meta span {
+  color: var(--layout-text-muted);
+  font-size: 0.77rem;
+  font-weight: 800;
+}
+
+.sf-compact-meta strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--layout-text);
+  font-size: 0.92rem;
+  font-weight: 800;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.limits-compact-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.55rem;
+}
+
+.limit-compact-card {
+  min-width: 0;
+  padding: 0.52rem 0.6rem;
+  border: 1px solid var(--layout-card-border);
+  border-radius: 8px;
+  background: var(--layout-surface-soft);
+}
+
+.limit-compact-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.32rem;
+}
+
+.limit-compact-head span {
+  color: var(--layout-text);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.limit-compact-head strong {
+  color: var(--layout-text);
+  font-size: 0.86rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.limit-compact-meter {
+  --gauge-value: 0;
+  --gauge-color: #2f69a8;
+  width: 100%;
+  height: 0.46rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--layout-surface-muted);
+}
+
+.limit-compact-meter span {
+  display: block;
+  width: calc(var(--gauge-value) * 1%);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--gauge-color);
+  transition: width 0.35s ease;
+}
+
+.limit-compact-meter.is-warning span,
+.limit-gauge.is-warning {
+  --gauge-color: #c28b2c;
+}
+
+.limit-compact-meter.is-danger span,
+.limit-gauge.is-danger {
+  --gauge-color: #c24a4a;
+}
+
+.limit-compact-detail {
+  margin-top: 0.28rem;
+  overflow: hidden;
+  color: var(--layout-text-muted);
+  font-size: 0.7rem;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .limit-gauge-card {
   display: flex;
   flex-direction: column;
@@ -3709,6 +3849,56 @@ body.context-none .agent-topbar {
 
   .migration-mapping-overview {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 1200px) {
+  .overview-top-grid {
+    --bs-gutter-y: 0.75rem;
+  }
+
+  .overview-top-grid .mini-kpi {
+    height: 142px;
+    min-height: 142px;
+  }
+
+  .overview-top-grid .mini-kpi h5 {
+    font-size: 1.62rem;
+  }
+
+  .overview-top-grid .mini-kpi .card-body {
+    padding: 0.75rem 0.85rem;
+  }
+
+  .overview-top-grid .agent-analysis-score {
+    font-size: 1.55rem;
+  }
+
+  .overview-primary-grid {
+    --bs-gutter-y: 0.75rem;
+  }
+
+  .overview-salesforce-card .card-body,
+  .overview-graph-card .card-body {
+    padding: 0.7rem;
+  }
+}
+
+@media (min-width: 1600px) {
+  .graph-wrap {
+    height: 430px;
+    max-height: 430px;
+  }
+}
+
+@media (max-width: 1199.98px) {
+  .overview-connector-filter {
+    width: 220px;
+    max-width: 48vw;
+  }
+
+  .graph-wrap {
+    overflow: auto;
   }
 }
 

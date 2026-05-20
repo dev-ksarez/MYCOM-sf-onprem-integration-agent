@@ -1819,12 +1819,31 @@ ${renderMenuModuleNavigation()}
       <div class="tab-content">
         <section class="tab-pane fade show active" id="tab-overview" role="tabpanel">
           <div class="row g-3 mb-3 overview-top-grid">
-              <div class="col-xl-3 col-lg-6"><div class="card soft-card mini-kpi mini-kpi-service h-100"><div class="card-body"><div class="text-secondary small">Service</div><h5 id="kpi-service" class="mb-0">-</h5><div class="kpi-meter"><div id="kpi-service-cpu-bar" class="kpi-meter-fill" style="width:0%"></div></div><div class="kpi-service-footer"><div id="kpi-service-cpu-text" class="kpi-inline-metric">CPU Last: -</div><div class="kpi-sparkline-wrap" aria-hidden="true"><svg id="kpi-service-cpu-sparkline" class="kpi-sparkline" viewBox="0 0 120 20" preserveAspectRatio="xMidYMid meet"><path id="kpi-service-cpu-sparkline-path" class="kpi-sparkline-path" d=""></path><circle id="kpi-service-cpu-sparkline-dot" class="kpi-sparkline-dot" r="2" cx="0" cy="0"></circle></svg></div></div><div class="kpi-service-meta"><div id="kpi-service-os" class="kpi-inline-metric">OS: -</div><div id="kpi-service-memory" class="kpi-inline-metric">RAM: -</div><div id="kpi-service-disk" class="kpi-inline-metric">Disk: -</div></div><div id="kpi-service-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
-            <div class="col-xl-2 col-lg-6"><div class="card soft-card mini-kpi h-100"><div class="card-body"><div class="text-secondary small">Scheduler</div><h5 id="kpi-scheduler" class="mb-0">-</h5><div id="kpi-scheduler-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div></div></div></div>
+            <div class="col-xl-3 col-lg-6">
+              <div class="card soft-card mini-kpi mini-kpi-service h-100">
+                <div class="card-header bg-white fw-semibold">Service</div>
+                <div class="card-body">
+                  <h5 id="kpi-service" class="mb-0">-</h5>
+                  <div class="kpi-meter"><div id="kpi-service-cpu-bar" class="kpi-meter-fill" style="width:0%"></div></div>
+                  <div class="kpi-service-footer"><div id="kpi-service-cpu-text" class="kpi-inline-metric">CPU Last: -</div><div class="kpi-sparkline-wrap" aria-hidden="true"><svg id="kpi-service-cpu-sparkline" class="kpi-sparkline" viewBox="0 0 120 20" preserveAspectRatio="xMidYMid meet"><path id="kpi-service-cpu-sparkline-path" class="kpi-sparkline-path" d=""></path><circle id="kpi-service-cpu-sparkline-dot" class="kpi-sparkline-dot" r="2" cx="0" cy="0"></circle></svg></div></div>
+                  <div class="kpi-service-meta"><div id="kpi-service-os" class="kpi-inline-metric">OS: -</div><div id="kpi-service-memory" class="kpi-inline-metric">RAM: -</div><div id="kpi-service-disk" class="kpi-inline-metric">Disk: -</div></div>
+                  <div id="kpi-service-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-xl-2 col-lg-6">
+              <div class="card soft-card mini-kpi h-100">
+                <div class="card-header bg-white fw-semibold">Scheduler</div>
+                <div class="card-body">
+                  <h5 id="kpi-scheduler" class="mb-0">-</h5>
+                  <div id="kpi-scheduler-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div>
+                </div>
+              </div>
+            </div>
             <div class="col-xl-3 col-lg-6">
               <div class="card soft-card mini-kpi mini-kpi-combined h-100">
+                <div class="card-header bg-white fw-semibold">Aktive Scheduler / Connectoren</div>
                 <div class="card-body">
-                  <div class="text-secondary small">Aktive Scheduler / Connectoren</div>
                   <div class="kpi-combined-grid">
                     <div class="kpi-combined-item">
                       <div class="kpi-combined-label">Scheduler</div>
@@ -1842,13 +1861,15 @@ ${renderMenuModuleNavigation()}
             </div>
             <div class="col-xl-4 col-lg-6">
               <div class="card soft-card mini-kpi mini-kpi-analysis h-100">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                  <span class="fw-semibold">Agentenanalyse</span>
+                  <span id="agent-analysis-status" class="badge bg-secondary">-</span>
+                </div>
                 <div class="card-body">
                   <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
                     <div>
-                      <div class="text-secondary small">Agentenanalyse</div>
                       <div id="agent-analysis-score" class="agent-analysis-score">-</div>
                     </div>
-                    <span id="agent-analysis-status" class="badge bg-secondary">-</span>
                   </div>
                   <div class="agent-analysis-compact-grid">
                     <div><span>Laufzeit</span><strong id="agent-analysis-runtime">-</strong></div>
@@ -1860,6 +1881,72 @@ ${renderMenuModuleNavigation()}
                   <ul id="agent-analysis-recommendations" class="agent-analysis-recommendations">
                     <li>-</li>
                   </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="row g-3 mb-3 overview-primary-grid">
+            <div class="col-xl-8">
+              <div class="card soft-card overview-panel overview-graph-card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                  <span class="fw-semibold">Verknüpfungsübersicht</span>
+                  <div class="d-flex align-items-center gap-2">
+                    <span id="overview-visible-schedule-count" class="badge bg-secondary">0 Scheduler sichtbar</span>
+                    <select id="overview-connector-filter" class="form-select form-select-sm overview-connector-filter">
+                      <option value="">Alle Connectoren</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="card-body">
+                  <div class="graph-wrap"><svg id="graph" width="920" height="360"></svg></div>
+                </div>
+              </div>
+            </div>
+            <div class="col-xl-4">
+              <div class="card soft-card overview-panel overview-salesforce-card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center gap-2">
+                  <span class="fw-semibold">Salesforce Org + Limits</span>
+                  <span id="sf-api-throttle-badge" class="badge rounded-pill bg-secondary">Adaptive Cache: -</span>
+                </div>
+                <div class="card-body">
+                  <div class="sf-compact-meta">
+                    <div><span>Domain</span><strong id="sf-domain">-</strong></div>
+                    <div><span>Umgebung</span><strong id="sf-environment">-</strong></div>
+                  </div>
+                  <div class="limits-compact-grid">
+                    <div class="limit-compact-card">
+                      <div class="limit-compact-head">
+                        <span>API Calls</span>
+                        <strong id="sf-api-gauge-value">0%</strong>
+                      </div>
+                      <div id="sf-api-gauge" class="limit-compact-meter" style="--gauge-value:0; --gauge-color:#2f69a8;"><span></span></div>
+                      <div id="sf-api-usage" class="limit-compact-detail">-</div>
+                    </div>
+                    <div class="limit-compact-card">
+                      <div class="limit-compact-head">
+                        <span>Datenspeicher</span>
+                        <strong id="sf-data-gauge-value">0%</strong>
+                      </div>
+                      <div id="sf-data-gauge" class="limit-compact-meter" style="--gauge-value:0; --gauge-color:#1f7d57;"><span></span></div>
+                      <div id="sf-data-storage" class="limit-compact-detail">-</div>
+                    </div>
+                    <div class="limit-compact-card">
+                      <div class="limit-compact-head">
+                        <span>Ø API Calls/h</span>
+                        <strong id="sf-file-gauge-value">0%</strong>
+                      </div>
+                      <div id="sf-file-gauge" class="limit-compact-meter" style="--gauge-value:0; --gauge-color:#7b5ea7;"><span></span></div>
+                      <div id="sf-api-hourly-average" class="limit-compact-detail">-</div>
+                    </div>
+                    <div class="limit-compact-card">
+                      <div class="limit-compact-head">
+                        <span>Datenzuwachs</span>
+                        <strong id="sf-data-growth-gauge-value">-</strong>
+                      </div>
+                      <div id="sf-data-growth-gauge" class="limit-compact-meter" style="--gauge-value:0; --gauge-color:#c26a2d;"><span></span></div>
+                      <div id="sf-data-growth" class="limit-compact-detail">-</div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1955,76 +2042,6 @@ ${renderMenuModuleNavigation()}
                   <div class="records-chart-wrap">
                     <canvas id="records-chart"></canvas>
                   </div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="row g-3">
-            <div class="col-lg-7">
-              <div class="card soft-card">
-                <div class="card-header bg-white d-flex justify-content-between align-items-center">
-                  <span class="fw-semibold">Verknüpfungsübersicht</span>
-                  <div class="d-flex align-items-center gap-2">
-                    <span id="overview-visible-schedule-count" class="badge bg-secondary">0 Scheduler sichtbar</span>
-                    <select id="overview-connector-filter" class="form-select form-select-sm" style="max-width: 280px;">
-                      <option value="">Alle Connectoren</option>
-                    </select>
-                  </div>
-                </div>
-                <div class="card-body">
-                  <div class="graph-wrap"><svg id="graph" width="920" height="360"></svg></div>
-                  <div class="small text-secondary mt-2">Klick auf einen Knoten öffnet die passende Konfiguration im Modal. CSV/XLSX-Dateien koennen auf Datei-Connectoren gezogen werden, um automatisch einen Datei-Scheduler anzulegen.</div>
-                </div>
-              </div>
-            </div>
-            <div class="col-lg-5">
-              <div class="card soft-card mb-3">
-                <div class="card-header bg-white d-flex justify-content-between align-items-center">
-                  <span class="fw-semibold">Salesforce Org + Limits</span>
-                  <span id="sf-api-throttle-badge" class="badge rounded-pill bg-secondary">Adaptive Cache: -</span>
-                </div>
-                <div class="card-body">
-                  <div class="stats-row"><span class="stats-label">Domain</span><span id="sf-domain" class="stats-value">-</span></div>
-                  <div class="stats-row mb-3"><span class="stats-label">Umgebung</span><span id="sf-environment" class="stats-value">-</span></div>
-                  <div class="limits-gauge-grid">
-                    <div class="limit-gauge-card">
-                      <div id="sf-api-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#2f69a8;">
-                        <div class="limit-gauge-inner"><span id="sf-api-gauge-value" class="limit-gauge-value">0%</span></div>
-                      </div>
-                      <div class="limit-gauge-label">API Calls</div>
-                      <div id="sf-api-usage" class="limit-gauge-detail">-</div>
-                    </div>
-                    <div class="limit-gauge-card">
-                      <div id="sf-data-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#1f7d57;">
-                        <div class="limit-gauge-inner"><span id="sf-data-gauge-value" class="limit-gauge-value">0%</span></div>
-                      </div>
-                      <div class="limit-gauge-label">Datenspeicher</div>
-                      <div id="sf-data-storage" class="limit-gauge-detail">-</div>
-                    </div>
-                    <div class="limit-gauge-card">
-                      <div id="sf-file-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#7b5ea7;">
-                        <div class="limit-gauge-inner"><span id="sf-file-gauge-value" class="limit-gauge-value">0%</span></div>
-                      </div>
-                      <div class="limit-gauge-label">Ø API Calls/h</div>
-                      <div id="sf-api-hourly-average" class="limit-gauge-detail">-</div>
-                    </div>
-                    <div class="limit-gauge-card">
-                      <div id="sf-data-growth-gauge" class="limit-gauge" style="--gauge-value:0; --gauge-color:#c26a2d;">
-                        <div class="limit-gauge-inner"><span id="sf-data-growth-gauge-value" class="limit-gauge-value">-</span></div>
-                      </div>
-                      <div class="limit-gauge-label">Datenzuwachs</div>
-                      <div id="sf-data-growth" class="limit-gauge-detail">-</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div class="card soft-card">
-                <div class="card-header bg-white fw-semibold">Letzte Runs</div>
-                <div class="card-body p-0">
-                  <table id="overview-runs-table" class="table table-sm mb-0">
-                    <thead><tr><th>Schedule</th><th>Status</th><th>Dauer</th><th>Start</th></tr></thead>
-                    <tbody id="overview-runs-body"></tbody>
-                  </table>
                 </div>
               </div>
             </div>
@@ -2903,6 +2920,7 @@ ${renderAISchedulerAssistantModule()}
                   <div class="col-md-4"><label class="form-label">Direction</label><select id="sch-direction" class="form-select"><option value="">- Wählen -</option></select></div>
                   <div id="sch-external-id-wrap" class="col-md-4 d-none"><label id="sch-external-id-label" class="form-label">Upsert Feld</label><select id="sch-external-id-field" class="form-select"><option value="">- Upsert Feld wählen -</option></select><div id="sch-external-id-help" class="form-text">Wählen Sie das Feld, das für Upsert verwendet werden soll.</div></div>
                   <div id="sch-pricebook2id-wrap" class="col-md-4 d-none"><label class="form-label">Pricebook</label><select id="sch-pricebook2id" class="form-select"><option value="">- Pricebook wählen -</option></select><div id="sch-pricebook2id-help" class="form-text">Optional als festes Ziel-Pricebook für PricebookEntry-Upserts.</div></div>
+                  <div id="sch-missing-product-strategy-wrap" class="col-md-4 d-none"><label class="form-label">Fehlende Produkte</label><select id="sch-missing-product-strategy" class="form-select"><option value="error">als Fehler protokollieren</option><option value="skip">überspringen</option></select><div class="form-text">Gilt für PricebookEntry per ProductCode, wenn kein Product2 gefunden wird.</div></div>
                   <div class="col-md-12">
                     <details class="json-field-collapsible">
                       <summary class="json-field-summary">Target Definition (JSON)</summary>

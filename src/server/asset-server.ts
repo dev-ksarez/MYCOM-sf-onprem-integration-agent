@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 
-export const UI_ASSET_VERSION = "20260519-dashboard-salesforce-blue-context-badges";
+export const UI_ASSET_VERSION = "20260520-dashboard-hd-overview";
 
 const INLINE_ASSET_FALLBACKS: Record<string, string> = {
   "/assets/login.js": `(function () {

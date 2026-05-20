@@ -271,8 +271,7 @@ export function isOperationallyRelevantLog(input: Pick<CreateLogInput, "level" |
   if (
     message.includes("no records processed") ||
     message.includes("checkpoint unchanged") ||
-    message.includes("no checkpoint found") ||
-    message.includes("run skipped because selected import profile scheduler is not active/due")
+    message.includes("no checkpoint found")
   ) {
     return false;
   }

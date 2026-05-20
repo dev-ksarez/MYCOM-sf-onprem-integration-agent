@@ -3100,6 +3100,7 @@ export function renderAdminUiScript(): string {
         const raw = String(targetDefinitionInput?.value || '').trim();
         const upsertField = String(document.getElementById('sch-external-id-field')?.value || '').trim();
         const pricebook2Id = String(document.getElementById('sch-pricebook2id')?.value || '').trim();
+        const missingProductStrategy = String(document.getElementById('sch-missing-product-strategy')?.value || 'error').trim();
         const operation = String(normalizeOperationValue(document.getElementById('sch-operation')?.value || 'Upsert') || 'Upsert').toLowerCase();
         const nextDefinition = isSalesforce
           ? {
@@ -3116,6 +3117,9 @@ export function renderAdminUiScript(): string {
 
         if (isSalesforce && objectApiName === 'PricebookEntry' && pricebook2Id) {
           nextDefinition.pricebook2Id = pricebook2Id;
+        }
+        if (isSalesforce && objectApiName === 'PricebookEntry' && missingProductStrategy === 'skip') {
+          nextDefinition.missingProductStrategy = 'skip';
         }
 
         if (isMssql && upsertField) {
@@ -3151,6 +3155,11 @@ export function renderAdminUiScript(): string {
               targetDefinition.pricebook2Id = pricebook2Id;
             } else if ('pricebook2Id' in targetDefinition) {
               delete targetDefinition.pricebook2Id;
+            }
+            if (objectApiName === 'PricebookEntry' && missingProductStrategy === 'skip') {
+              targetDefinition.missingProductStrategy = 'skip';
+            } else if ('missingProductStrategy' in targetDefinition) {
+              delete targetDefinition.missingProductStrategy;
             }
           }
           if (isMssql) {
@@ -3375,6 +3384,22 @@ export function renderAdminUiScript(): string {
           return String(targetDefinition?.pricebook2Id || '').trim();
         } catch {
           return '';
+        }
+      }
+
+      function getSchedulerTargetDefinitionMissingProductStrategyValue() {
+        const raw = String(document.getElementById('sch-target-definition')?.value || '').trim();
+        if (!raw) {
+          return 'error';
+        }
+
+        try {
+          const parsed = JSON.parse(raw);
+          const targetDefinition = getSchedulerSelectedTargetDefinitionContainer(parsed) || parsed;
+          const strategy = String(targetDefinition?.missingProductStrategy || 'error').trim().toLowerCase();
+          return strategy === 'skip' ? 'skip' : 'error';
+        } catch {
+          return 'error';
         }
       }
 
@@ -3639,6 +3664,8 @@ export function renderAdminUiScript(): string {
         const pricebookWrap = document.getElementById('sch-pricebook2id-wrap');
         const pricebookInput = document.getElementById('sch-pricebook2id');
         const pricebookHelp = document.getElementById('sch-pricebook2id-help');
+        const missingProductStrategyWrap = document.getElementById('sch-missing-product-strategy-wrap');
+        const missingProductStrategyInput = document.getElementById('sch-missing-product-strategy');
         const isSalesforce = isSchedulerSalesforceUpsertSelection();
         const isMssql = isSchedulerMssqlUpsertSelection();
         const objectApiName = String(document.getElementById('sch-object')?.value || '').trim();
@@ -3665,6 +3692,12 @@ export function renderAdminUiScript(): string {
           if (pricebookInput) {
             pricebookInput.value = '';
           }
+          if (missingProductStrategyWrap) {
+            missingProductStrategyWrap.classList.add('d-none');
+          }
+          if (missingProductStrategyInput) {
+            missingProductStrategyInput.value = 'error';
+          }
           return;
         }
 
@@ -3690,6 +3723,14 @@ export function renderAdminUiScript(): string {
             ? 'Festes Ziel-Pricebook für PricebookEntry-Upserts auswählen. Leer lassen, wenn Pricebook2Id aus dem Mapping kommt.'
             : 'Optional als festes Ziel-Pricebook für PricebookEntry-Upserts.';
           pricebookHelp.textContent = pricebookHelp.dataset.baseText;
+        }
+        if (missingProductStrategyWrap) {
+          missingProductStrategyWrap.classList.toggle('d-none', !showPricebook2Id);
+        }
+        if (missingProductStrategyInput) {
+          missingProductStrategyInput.value = showPricebook2Id
+            ? getSchedulerTargetDefinitionMissingProductStrategyValue()
+            : 'error';
         }
 
         if (isMssql) {
@@ -9101,6 +9142,9 @@ export function renderAdminUiScript(): string {
         };
 
         const body = document.getElementById('overview-runs-body');
+        if (!body) {
+          return;
+        }
         if (!scopedRuns.length) {
           body.innerHTML = '<tr><td colspan="4" class="text-secondary">' + esc(state.runtimeContextUnavailableMessage || 'Keine Runs im gewählten Zeitraum gefunden.') + '</td></tr>';
           return;
@@ -10099,6 +10143,8 @@ export function renderAdminUiScript(): string {
         const maxX = Math.max(920, ...nodes.map((node) => Number(node.x) + nodeWidth + 24));
         svg.setAttribute('height', String(maxY));
         svg.setAttribute('width', String(maxX));
+        svg.setAttribute('viewBox', '0 0 ' + String(maxX) + ' ' + String(maxY));
+        svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
 
         const defs = '<defs>' +
           '<marker id="arrowInbound" markerWidth="14" markerHeight="10" refX="12" refY="5" orient="auto" markerUnits="userSpaceOnUse">' +
@@ -10565,6 +10611,7 @@ export function renderAdminUiScript(): string {
         const parsedTargetDefinition = parseScheduleTargetDefinition(entry?.targetType || '', entry?.targetDefinition || '');
         document.getElementById('sch-target-definition').value = parsedTargetDefinition.editorText || '';
         document.getElementById('sch-pricebook2id').value = '';
+        document.getElementById('sch-missing-product-strategy').value = 'error';
         document.getElementById('sch-target-relative-directory').value = parsedTargetDefinition.relativeDirectory || '';
         document.getElementById('sch-target-archive-relative-directory').value = parsedTargetDefinition.archiveRelativeDirectory || '';
         document.getElementById('sch-target-file-name').value = parsedTargetDefinition.fileName || '';
@@ -14025,6 +14072,10 @@ export function renderAdminUiScript(): string {
       bindEventListenerOnce('sch-pricebook2id', 'change', async () => {
         ensureSalesforceTargetDefinition();
         await syncSchedulerExternalIdUi();
+      });
+      bindEventListenerOnce('sch-missing-product-strategy', 'change', () => {
+        ensureSalesforceTargetDefinition();
+        updateSchedulerExternalIdValidationState();
       });
       bindEventListenerOnce('sch-target-definition', 'change', async () => {
         await syncSchedulerExternalIdUi();
