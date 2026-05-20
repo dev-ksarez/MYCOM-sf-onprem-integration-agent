@@ -1819,41 +1819,106 @@ ${renderMenuModuleNavigation()}
       <div class="tab-content">
         <section class="tab-pane fade show active" id="tab-overview" role="tabpanel">
           <div class="row g-3 mb-3 overview-top-grid">
-            <div class="col-xl-3 col-lg-6">
-              <div class="card soft-card mini-kpi mini-kpi-service h-100">
+            <div class="col-xl-4 col-lg-6">
+              <div class="card soft-card overview-panel overview-service-card h-100">
                 <div class="card-header bg-white fw-semibold">Service</div>
                 <div class="card-body">
-                  <h5 id="kpi-service" class="mb-0">-</h5>
-                  <div class="kpi-meter"><div id="kpi-service-cpu-bar" class="kpi-meter-fill" style="width:0%"></div></div>
-                  <div class="kpi-service-footer"><div id="kpi-service-cpu-text" class="kpi-inline-metric">CPU Last: -</div><div class="kpi-sparkline-wrap" aria-hidden="true"><svg id="kpi-service-cpu-sparkline" class="kpi-sparkline" viewBox="0 0 120 20" preserveAspectRatio="xMidYMid meet"><path id="kpi-service-cpu-sparkline-path" class="kpi-sparkline-path" d=""></path><circle id="kpi-service-cpu-sparkline-dot" class="kpi-sparkline-dot" r="2" cx="0" cy="0"></circle></svg></div></div>
-                  <div class="kpi-service-meta"><div id="kpi-service-os" class="kpi-inline-metric">OS: -</div><div id="kpi-service-memory" class="kpi-inline-metric">RAM: -</div><div id="kpi-service-disk" class="kpi-inline-metric">Disk: -</div></div>
-                  <div id="kpi-service-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div>
-                </div>
-              </div>
-            </div>
-            <div class="col-xl-2 col-lg-6">
-              <div class="card soft-card mini-kpi h-100">
-                <div class="card-header bg-white fw-semibold">Scheduler</div>
-                <div class="card-body">
-                  <h5 id="kpi-scheduler" class="mb-0">-</h5>
-                  <div id="kpi-scheduler-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div>
-                </div>
-              </div>
-            </div>
-            <div class="col-xl-3 col-lg-6">
-              <div class="card soft-card mini-kpi mini-kpi-combined h-100">
-                <div class="card-header bg-white fw-semibold">Aktive Scheduler / Connectoren</div>
-                <div class="card-body">
-                  <div class="kpi-combined-grid">
-                    <div class="kpi-combined-item">
-                      <div class="kpi-combined-label">Scheduler</div>
-                      <h5 id="kpi-schedules" class="mb-0">0</h5>
-                      <div id="kpi-schedules-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div>
+                  <div class="sf-org-compact-meta mb-2">
+                    <div>
+                      <span>Status</span>
+                      <strong id="kpi-service">-</strong>
                     </div>
-                    <div class="kpi-combined-item">
-                      <div class="kpi-combined-label">Connectoren</div>
-                      <h5 id="kpi-connectors" class="mb-0">0</h5>
-                      <div id="kpi-connectors-trend" class="kpi-trend kpi-trend-neutral">• warten auf Daten</div>
+                    <div>
+                      <span>Version</span>
+                      <strong id="kpi-service-version">v${escapeHtml(APP_VERSION)}</strong>
+                    </div>
+                  </div>
+                  <div class="limits-compact-grid" style="grid-template-columns: 1fr 1fr;">
+                    <div class="limit-compact-card">
+                      <div class="limit-compact-head">
+                        <span>CPU</span>
+                        <strong id="kpi-service-cpu-value">-</strong>
+                      </div>
+                      <div class="limit-compact-meter"><canvas id="kpi-service-cpu-gauge"></canvas></div>
+                      <div id="kpi-service-cpu-text" class="limit-compact-detail">-</div>
+                    </div>
+                    <div class="limit-compact-card">
+                      <div class="limit-compact-head">
+                        <span>RAM</span>
+                        <strong id="kpi-service-memory-value">-</strong>
+                      </div>
+                      <div class="limit-compact-meter"><canvas id="kpi-service-memory-gauge"></canvas></div>
+                      <div id="kpi-service-memory" class="limit-compact-detail">-</div>
+                    </div>
+                    <div class="limit-compact-card">
+                      <div class="limit-compact-head">
+                        <span>Disk</span>
+                        <strong id="kpi-service-disk-value">-</strong>
+                      </div>
+                      <div class="limit-compact-meter"><canvas id="kpi-service-disk-gauge"></canvas></div>
+                      <div id="kpi-service-disk" class="limit-compact-detail">-</div>
+                    </div>
+                    <div class="limit-compact-card">
+                      <div class="limit-compact-head">
+                        <span>OS</span>
+                        <strong id="kpi-service-os-kind">-</strong>
+                      </div>
+                      <div id="kpi-service-os" class="service-os-detail">-</div>
+                      <div id="kpi-service-trend" class="limit-compact-detail">• warten auf Daten</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-xl-4 col-lg-6">
+              <div class="card soft-card overview-panel overview-salesforce-card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center gap-2">
+                  <span class="fw-semibold">Salesforce Org + Limits</span>
+                  <span id="sf-api-throttle-badge" class="badge rounded-pill bg-secondary">Adaptive Cache: -</span>
+                </div>
+                <div class="card-body">
+                  <div class="sf-org-compact-meta mb-2">
+                    <div>
+                      <span>URL</span>
+                      <a id="sf-org-url" href="#" target="_blank" rel="noopener noreferrer">-</a>
+                    </div>
+                    <div>
+                      <span>Umgebung</span>
+                      <strong id="sf-org-environment">-</strong>
+                    </div>
+                  </div>
+                  <div class="limits-compact-grid" style="grid-template-columns: 1fr 1fr;">
+                    <div class="limit-compact-card">
+                      <div class="limit-compact-head">
+                        <span>API Calls</span>
+                        <strong id="sf-api-gauge-value">0%</strong>
+                      </div>
+                      <div class="limit-compact-meter"><canvas id="sf-api-gauge"></canvas></div>
+                      <div id="sf-api-gauge-detail" class="limit-compact-detail">-</div>
+                    </div>
+                    <div class="limit-compact-card">
+                      <div class="limit-compact-head">
+                        <span>Datenspeicher</span>
+                        <strong id="sf-data-gauge-value">0%</strong>
+                      </div>
+                      <div class="limit-compact-meter"><canvas id="sf-data-gauge"></canvas></div>
+                      <div id="sf-data-gauge-detail" class="limit-compact-detail">-</div>
+                    </div>
+                    <div class="limit-compact-card">
+                      <div class="limit-compact-head">
+                        <span>Ø API Calls/h</span>
+                        <strong id="sf-file-gauge-value">0%</strong>
+                      </div>
+                      <div class="limit-compact-meter"><canvas id="sf-file-gauge"></canvas></div>
+                      <div id="sf-api-hourly-average" class="limit-compact-detail">-</div>
+                    </div>
+                    <div class="limit-compact-card">
+                      <div class="limit-compact-head">
+                        <span>Datenzuwachs</span>
+                        <strong id="sf-data-growth-gauge-value">-</strong>
+                      </div>
+                      <div class="limit-compact-meter"><canvas id="sf-data-growth-gauge"></canvas></div>
+                      <div id="sf-data-growth" class="limit-compact-detail">-</div>
                     </div>
                   </div>
                 </div>
@@ -1886,7 +1951,7 @@ ${renderMenuModuleNavigation()}
             </div>
           </div>
           <div class="row g-3 mb-3 overview-primary-grid">
-            <div class="col-xl-8">
+            <div class="col-xl-12">
               <div class="card soft-card overview-panel overview-graph-card h-100">
                 <div class="card-header d-flex justify-content-between align-items-center">
                   <span class="fw-semibold">Verknüpfungsübersicht</span>
@@ -1902,50 +1967,38 @@ ${renderMenuModuleNavigation()}
                 </div>
               </div>
             </div>
-            <div class="col-xl-4">
-              <div class="card soft-card overview-panel overview-salesforce-card h-100">
-                <div class="card-header d-flex justify-content-between align-items-center gap-2">
-                  <span class="fw-semibold">Salesforce Org + Limits</span>
-                  <span id="sf-api-throttle-badge" class="badge rounded-pill bg-secondary">Adaptive Cache: -</span>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-lg-6">
+              <div class="card soft-card h-100">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                  <span class="fw-semibold">Fehler je Connector</span>
+                  <select id="log-chart-range" class="form-select form-select-sm" style="max-width: 220px;">
+                    <option value="last_hour">Letzte Stunde</option>
+                    <option value="last_24h" selected>Letzte 24h</option>
+                    <option value="last_30d">Letzte 30 Tage</option>
+                  </select>
                 </div>
                 <div class="card-body">
-                  <div class="sf-compact-meta">
-                    <div><span>Domain</span><strong id="sf-domain">-</strong></div>
-                    <div><span>Umgebung</span><strong id="sf-environment">-</strong></div>
+                  <div class="logs-chart-wrap logs-chart-wrap-compact">
+                    <canvas id="logs-chart"></canvas>
                   </div>
-                  <div class="limits-compact-grid">
-                    <div class="limit-compact-card">
-                      <div class="limit-compact-head">
-                        <span>API Calls</span>
-                        <strong id="sf-api-gauge-value">0%</strong>
-                      </div>
-                      <div id="sf-api-gauge" class="limit-compact-meter" style="--gauge-value:0; --gauge-color:#2f69a8;"><span></span></div>
-                      <div id="sf-api-usage" class="limit-compact-detail">-</div>
-                    </div>
-                    <div class="limit-compact-card">
-                      <div class="limit-compact-head">
-                        <span>Datenspeicher</span>
-                        <strong id="sf-data-gauge-value">0%</strong>
-                      </div>
-                      <div id="sf-data-gauge" class="limit-compact-meter" style="--gauge-value:0; --gauge-color:#1f7d57;"><span></span></div>
-                      <div id="sf-data-storage" class="limit-compact-detail">-</div>
-                    </div>
-                    <div class="limit-compact-card">
-                      <div class="limit-compact-head">
-                        <span>Ø API Calls/h</span>
-                        <strong id="sf-file-gauge-value">0%</strong>
-                      </div>
-                      <div id="sf-file-gauge" class="limit-compact-meter" style="--gauge-value:0; --gauge-color:#7b5ea7;"><span></span></div>
-                      <div id="sf-api-hourly-average" class="limit-compact-detail">-</div>
-                    </div>
-                    <div class="limit-compact-card">
-                      <div class="limit-compact-head">
-                        <span>Datenzuwachs</span>
-                        <strong id="sf-data-growth-gauge-value">-</strong>
-                      </div>
-                      <div id="sf-data-growth-gauge" class="limit-compact-meter" style="--gauge-value:0; --gauge-color:#c26a2d;"><span></span></div>
-                      <div id="sf-data-growth" class="limit-compact-detail">-</div>
-                    </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-lg-6">
+              <div class="card soft-card h-100">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                  <span class="fw-semibold">Datensätze Verlauf</span>
+                  <div id="overview-stats-range" class="btn-group btn-group-sm overview-stats-range" role="group" aria-label="Dashboard Zeitraum">
+                    <button type="button" class="btn btn-outline-secondary" data-range="day">Heute</button>
+                    <button type="button" class="btn btn-outline-secondary active" data-range="month">Monat</button>
+                    <button type="button" class="btn btn-outline-secondary" data-range="year">Jahr</button>
+                  </div>
+                </div>
+                <div class="card-body">
+                  <div class="records-chart-wrap">
+                    <canvas id="records-chart"></canvas>
                   </div>
                 </div>
               </div>
@@ -1992,6 +2045,7 @@ ${renderMenuModuleNavigation()}
                 <div class="card-body">
                   <div class="stats-row"><span class="stats-label">Inbound</span><span id="kpi-inbound-count" class="stats-value">0</span></div>
                   <div class="stats-row"><span class="stats-label">Outbound</span><span id="kpi-outbound-count" class="stats-value">0</span></div>
+                  <div class="stats-row"><span class="stats-label">Datensätze heute</span><span id="kpi-daily-record-count" class="stats-value">0</span></div>
                   <div class="stats-row"><span class="stats-label">Durchschnitt Laufzeit</span><span id="kpi-average-run-duration" class="stats-value">-</span></div>
                   <div class="stats-row"><span class="stats-label">Auto-Deaktiviert</span><span id="kpi-auto-disabled-count" class="stats-value text-warning">0</span></div>
                   <div class="stats-row mb-0"><span class="stats-label">Letzter Run</span><span id="kpi-last-run-at" class="stats-value">-</span></div>
@@ -2006,42 +2060,6 @@ ${renderMenuModuleNavigation()}
                   <div class="stats-row"><span class="stats-label">SQLite offen</span><span id="kpi-sqlite-pending" class="stats-value">0</span></div>
                   <div class="stats-row"><span class="stats-label">SQLite OK</span><span id="kpi-sqlite-success" class="stats-value text-success">0</span></div>
                   <div class="stats-row mb-0"><span class="stats-label">SQLite Fehler</span><span id="kpi-sqlite-errors" class="stats-value text-danger">0</span></div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="row g-3 mb-3">
-            <div class="col-lg-6">
-              <div class="card soft-card h-100">
-                <div class="card-header bg-white d-flex justify-content-between align-items-center">
-                  <span class="fw-semibold">Fehler je Connector</span>
-                  <select id="log-chart-range" class="form-select form-select-sm" style="max-width: 220px;">
-                    <option value="last_hour">Letzte Stunde</option>
-                    <option value="last_24h" selected>Letzte 24h</option>
-                    <option value="last_30d">Letzte 30 Tage</option>
-                  </select>
-                </div>
-                <div class="card-body">
-                  <div class="logs-chart-wrap logs-chart-wrap-compact">
-                    <canvas id="logs-chart"></canvas>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div class="col-lg-6">
-              <div class="card soft-card h-100">
-                <div class="card-header bg-white d-flex justify-content-between align-items-center gap-2 flex-wrap">
-                  <span class="fw-semibold">Datensätze Verlauf</span>
-                  <div id="overview-stats-range" class="btn-group btn-group-sm overview-stats-range" role="group" aria-label="Dashboard Zeitraum">
-                    <button type="button" class="btn btn-outline-secondary" data-range="day">Heute</button>
-                    <button type="button" class="btn btn-outline-secondary active" data-range="month">Monat</button>
-                    <button type="button" class="btn btn-outline-secondary" data-range="year">Jahr</button>
-                  </div>
-                </div>
-                <div class="card-body">
-                  <div class="records-chart-wrap">
-                    <canvas id="records-chart"></canvas>
-                  </div>
                 </div>
               </div>
             </div>
@@ -3769,7 +3787,11 @@ export function createAppServer(
           : "last_24h";
 
       if (req.method === "GET" && requestUrl.pathname === "/api/system/health") {
-        sendJson(200, await getHealthSnapshot());
+        const healthSnapshot = await getHealthSnapshot();
+        sendJson(200, {
+          ...healthSnapshot,
+          agentVersion: healthSnapshot.agentVersion || APP_VERSION
+        });
         return;
       }
 
@@ -3989,7 +4011,11 @@ export function createAppServer(
           sendJson(403, { error: "Projekt-Lesezugriff fehlt" });
           return;
         }
-        const result = await adminDataService.runInstanceReadinessCheck(instanceId, body || {});
+        const readinessTimeoutMs = 120_000;
+        const result = await Promise.race([
+          adminDataService.runInstanceReadinessCheck(instanceId, body || {}),
+          new Promise<never>((_, reject) => setTimeout(() => reject(Object.assign(new Error("Readiness-Check Timeout nach 120 s. Salesforce-Verbindung oder Metadaten-API prüfen."), { statusCode: 504 })), readinessTimeoutMs))
+        ]);
         await appendAuditHistory({
           actor: auditActor,
           action: "validate",
@@ -4043,7 +4069,11 @@ export function createAppServer(
           sendJson(403, { error: "Projekt-Schreibzugriff fehlt" });
           return;
         }
-        const result = await adminDataService.runInstanceMsdSetup(instanceId, body || {});
+        const setupTimeoutMs = 300_000;
+        const result = await Promise.race([
+          adminDataService.runInstanceMsdSetup(instanceId, body || {}),
+          new Promise<never>((_, reject) => setTimeout(() => reject(Object.assign(new Error("MSD-Setup Timeout nach 300 s. Salesforce-Verbindung oder Metadaten-API prüfen."), { statusCode: 504 })), setupTimeoutMs))
+        ]);
         await appendAuditHistory({
           actor: auditActor,
           action: body?.mode === "dry-run" ? "validate" : "update",

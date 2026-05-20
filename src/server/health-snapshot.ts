@@ -12,6 +12,7 @@ export interface HealthSnapshot {
   memoryTotalBytes?: number;
   diskUsedBytes?: number;
   diskTotalBytes?: number;
+  agentVersion?: string;
   lastRunStartedAt?: string;
   lastRunFinishedAt?: string;
   lastRunStatus?: "success" | "error";

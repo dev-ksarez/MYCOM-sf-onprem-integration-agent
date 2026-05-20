@@ -1315,6 +1315,7 @@ export function renderAdminUiScript(): string {
 
       let logsChart;
       let recordsChart;
+      const salesforceGaugeCharts = {};
 
       function applyUiTheme(themeName) {
         const normalized = themeName === 'industrial' || themeName === 'midnight' ? themeName : 'corporate';
@@ -2895,26 +2896,17 @@ export function renderAdminUiScript(): string {
       }
 
       function resolveRecordsGrowthMetric() {
-        const bucketTotals = (Array.isArray(state.recordsSummary?.buckets) ? state.recordsSummary.buckets : []).map((bucket) => {
-          const directTotal = Number(bucket?.total);
-          if (Number.isFinite(directTotal)) {
-            return Math.max(0, directTotal);
-          }
-          const connectorTotals = bucket?.connectorTotals && typeof bucket.connectorTotals === 'object'
-            ? Object.values(bucket.connectorTotals).reduce((sum, value) => sum + (Number(value || 0) || 0), 0)
-            : 0;
-          return Math.max(0, Number(connectorTotals || 0));
-        });
-        const latest = bucketTotals.length ? Number(bucketTotals[bucketTotals.length - 1] || 0) : 0;
-        const previous = bucketTotals.length > 1 ? Number(bucketTotals[bucketTotals.length - 2] || 0) : 0;
-        const absolute = latest - previous;
-        const percent = previous > 0 ? (absolute / previous) * 100 : null;
+        const daily = state.recordsSummary?.daily || {};
+        const latest = Math.max(0, Number(daily.succeeded || 0) || 0);
+        const previous = Math.max(0, Number(daily.previousSucceeded || 0) || 0);
+        const absolute = Number.isFinite(Number(daily.growth)) ? Number(daily.growth) : latest - previous;
+        const percent = Number.isFinite(Number(daily.growthPercent)) ? Number(daily.growthPercent) : (previous > 0 ? (absolute / previous) * 100 : null);
         return {
           latest,
           previous,
           absolute,
           percent,
-          hasTrend: bucketTotals.length >= 2
+          hasTrend: latest > 0 || previous > 0
         };
       }
 
@@ -2925,6 +2917,22 @@ export function renderAdminUiScript(): string {
         const max = Number(value.max);
         const used = Number(value.used || 0);
         return Math.max(0, Math.min(100, Math.round((used / max) * 100)));
+      }
+
+      function formatNumber(value) {
+        const number = Number(value || 0);
+        if (!Number.isFinite(number)) {
+          return '-';
+        }
+        return number.toLocaleString('de-DE');
+      }
+
+      function formatUsageBasis(usage, unit) {
+        if (!usage || !Number.isFinite(usage.max) || usage.max <= 0) {
+          return '-';
+        }
+        const suffix = unit ? ' ' + unit : '';
+        return formatNumber(usage.used) + suffix + ' genutzt von ' + formatNumber(usage.max) + suffix + ' · Rest ' + formatNumber(usage.remaining) + suffix;
       }
 
       function resolveApiThrottlePolicy(apiUsage) {
@@ -2960,38 +2968,101 @@ export function renderAdminUiScript(): string {
         badge.className = 'badge rounded-pill ' + policy.badgeClass;
       }
 
-      function renderLimitGauge(gaugeId, valueId, usage) {
-        const gauge = document.getElementById(gaugeId);
+      function resolveGaugeColor(percentage, fallbackColor) {
+        if (percentage >= 90) {
+          return '#c24a4a';
+        }
+        if (percentage >= 70) {
+          return '#c28b2c';
+        }
+        return fallbackColor;
+      }
+
+      function renderSalesforceGaugeChart(canvasId, percentage, color) {
+        const canvas = document.getElementById(canvasId);
+        if (!canvas || typeof window.Chart !== 'function') {
+          return;
+        }
+
+        const value = Math.max(0, Math.min(100, Number(percentage || 0)));
+        const rest = Math.max(0, 100 - value);
+        const data = [value, rest];
+        const backgroundColor = [color, 'rgba(148, 163, 184, 0.22)'];
+
+        if (salesforceGaugeCharts[canvasId]) {
+          salesforceGaugeCharts[canvasId].data.datasets[0].data = data;
+          salesforceGaugeCharts[canvasId].data.datasets[0].backgroundColor = backgroundColor;
+          salesforceGaugeCharts[canvasId].update('none');
+          return;
+        }
+
+        salesforceGaugeCharts[canvasId] = new window.Chart(canvas, {
+          type: 'doughnut',
+          data: {
+            labels: ['Genutzt', 'Verfuegbar'],
+            datasets: [{
+              data,
+              backgroundColor,
+              borderWidth: 0,
+              hoverOffset: 0
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            rotation: -90,
+            circumference: 180,
+            cutout: '72%',
+            layout: {
+              padding: 0
+            },
+            animation: {
+              duration: 180
+            },
+            plugins: {
+              legend: {
+                display: false
+              },
+              tooltip: {
+                enabled: false
+              }
+            }
+          }
+        });
+      }
+
+      function renderLimitGauge(gaugeId, valueId, usage, detailId, unit) {
         const valueEl = document.getElementById(valueId);
-        if (!gauge || !valueEl) {
+        const detailEl = detailId ? document.getElementById(detailId) : null;
+        if (!valueEl) {
           return;
         }
 
         if (!usage || !Number.isFinite(usage.max) || usage.max <= 0) {
-          gauge.style.setProperty('--gauge-value', '0');
-          gauge.classList.remove('is-warning', 'is-danger');
+          renderSalesforceGaugeChart(gaugeId, 0, '#94a3b8');
           valueEl.textContent = '-';
+          if (detailEl) {
+            detailEl.textContent = '-';
+          }
           return;
         }
 
         const percentage = resolveUsagePercentage(usage);
-        gauge.style.setProperty('--gauge-value', String(percentage));
-        gauge.classList.toggle('is-warning', percentage >= 70 && percentage < 90);
-        gauge.classList.toggle('is-danger', percentage >= 90);
+        renderSalesforceGaugeChart(gaugeId, percentage, resolveGaugeColor(percentage, gaugeId === 'sf-data-gauge' ? '#1f7d57' : '#2f69a8'));
         valueEl.textContent = percentage + '%';
+        if (detailEl) {
+          detailEl.textContent = formatUsageBasis(usage, unit);
+          detailEl.title = 'Berechnung: genutzt / Limit * 100';
+        }
       }
 
       function renderApiHourlyAverageGauge(apiUsage) {
-        const gauge = document.getElementById('sf-file-gauge');
         const valueEl = document.getElementById('sf-file-gauge-value');
         const detailEl = document.getElementById('sf-api-hourly-average');
         const used = Number(apiUsage?.used || 0);
         const max = Number(apiUsage?.max || 0);
         if (!Number.isFinite(used) || used <= 0 || !Number.isFinite(max) || max <= 0) {
-          if (gauge) {
-            gauge.style.setProperty('--gauge-value', '0');
-            gauge.classList.remove('is-warning', 'is-danger');
-          }
+          renderSalesforceGaugeChart('sf-file-gauge', 0, '#94a3b8');
           if (valueEl) {
             valueEl.textContent = '-';
           }
@@ -3003,34 +3074,28 @@ export function renderAdminUiScript(): string {
 
         const hourlyAverage = Math.round(used / 24);
         const usagePercentage = resolveUsagePercentage(apiUsage);
-        if (gauge) {
-          gauge.style.setProperty('--gauge-value', String(usagePercentage));
-          gauge.classList.toggle('is-warning', usagePercentage >= 70 && usagePercentage < 90);
-          gauge.classList.toggle('is-danger', usagePercentage >= 90);
-        }
+        renderSalesforceGaugeChart('sf-file-gauge', usagePercentage, resolveGaugeColor(usagePercentage, '#7b5ea7'));
         if (valueEl) {
           valueEl.textContent = String(hourlyAverage) + '/h';
         }
         if (detailEl) {
-          detailEl.textContent = String(hourlyAverage) + ' Calls/h aus ' + String(used) + ' Calls/24h';
+          detailEl.textContent = formatNumber(hourlyAverage) + ' Calls/h aus ' + formatNumber(used) + ' Calls/24h';
+          detailEl.title = 'Berechnung: genutzte DailyApiRequests / 24';
         }
       }
 
       function renderDataGrowthGauge() {
-        const gauge = document.getElementById('sf-data-growth-gauge');
         const valueEl = document.getElementById('sf-data-growth-gauge-value');
         const detailEl = document.getElementById('sf-data-growth');
         const growth = resolveRecordsGrowthMetric();
         if (!growth.hasTrend) {
-          if (gauge) {
-            gauge.style.setProperty('--gauge-value', '0');
-            gauge.classList.remove('is-warning', 'is-danger');
-          }
+          renderSalesforceGaugeChart('sf-data-growth-gauge', 0, '#94a3b8');
           if (valueEl) {
             valueEl.textContent = '-';
           }
           if (detailEl) {
-            detailEl.textContent = growth.latest > 0 ? String(growth.latest) + ' Datensätze im letzten Intervall' : '-';
+            detailEl.textContent = '-';
+            detailEl.title = 'Berechnung: heute erzeugte Datensätze aus MSD_RecordsSucceeded__c';
           }
           return;
         }
@@ -3038,21 +3103,30 @@ export function renderAdminUiScript(): string {
         const cappedGaugeValue = growth.percent === null
           ? Math.min(100, Math.abs(growth.absolute))
           : Math.min(100, Math.round(Math.abs(growth.percent)));
-        if (gauge) {
-          gauge.style.setProperty('--gauge-value', String(cappedGaugeValue));
-          gauge.classList.toggle('is-warning', growth.absolute > 0);
-          gauge.classList.toggle('is-danger', false);
-        }
+        renderSalesforceGaugeChart('sf-data-growth-gauge', cappedGaugeValue, growth.absolute > 0 ? '#c28b2c' : '#1f7d57');
         const prefix = growth.absolute >= 0 ? '+' : '';
         const percentText = growth.percent === null
           ? ''
           : ' (' + (growth.percent >= 0 ? '+' : '') + growth.percent.toFixed(1) + '%)';
         if (valueEl) {
-          valueEl.textContent = prefix + String(growth.absolute);
+          valueEl.textContent = formatNumber(growth.latest);
         }
         if (detailEl) {
-          detailEl.textContent = prefix + String(growth.absolute) + ' Datensätze' + percentText;
+          detailEl.textContent = formatNumber(growth.latest) + ' heute erzeugt · ' + prefix + formatNumber(growth.absolute) + ' ggü. gestern' + percentText;
+          detailEl.title = 'Berechnung: heutige erfolgreiche Datensätze (MSD_RecordsSucceeded__c) minus gestrige erfolgreiche Datensätze';
         }
+      }
+
+      function resolveSalesforceOrgUrl(overview) {
+        const raw = String(overview?.instanceUrl || overview?.domain || '').trim();
+        if (!raw) {
+          return '';
+        }
+        const withoutLeadingSlashes = raw.startsWith('//') ? raw.slice(2) : raw.replaceAll(' ', '');
+        const normalizedHost = withoutLeadingSlashes.replaceAll('/', '');
+        return raw.toLowerCase().startsWith('http://') || raw.toLowerCase().startsWith('https://')
+          ? raw
+          : 'https://' + (normalizedHost.startsWith(':') ? normalizedHost.slice(1) : normalizedHost);
       }
 
       function renderSalesforceOverview(overview) {
@@ -3065,13 +3139,30 @@ export function renderAdminUiScript(): string {
           }
         };
 
+        const orgUrl = resolveSalesforceOrgUrl(overview);
+        const orgUrlEl = document.getElementById('sf-org-url');
+        if (orgUrlEl) {
+          if (orgUrl) {
+            const orgUrlLabel = orgUrl
+              .replace('https://', '')
+              .replace('http://', '');
+            orgUrlEl.textContent = orgUrlLabel.endsWith('/') ? orgUrlLabel.slice(0, -1) : orgUrlLabel;
+            orgUrlEl.href = orgUrl;
+            orgUrlEl.classList.remove('text-secondary');
+          } else {
+            orgUrlEl.textContent = '-';
+            orgUrlEl.removeAttribute('href');
+            orgUrlEl.classList.add('text-secondary');
+          }
+        }
+        setText('sf-org-environment', overview?.environment || '-');
         setText('sf-domain', overview?.domain || overview?.instanceUrl || '-');
         setText('sf-environment', overview?.environment || '-');
         setText('sf-api-usage', formatUsageBlock(overview?.apiUsage));
         setText('sf-data-storage', formatUsageBlock(overview?.dataStorageMb, 'MB'));
         renderApiThrottleBadge(overview?.apiUsage);
-        renderLimitGauge('sf-api-gauge', 'sf-api-gauge-value', overview?.apiUsage);
-        renderLimitGauge('sf-data-gauge', 'sf-data-gauge-value', overview?.dataStorageMb);
+        renderLimitGauge('sf-api-gauge', 'sf-api-gauge-value', overview?.apiUsage, 'sf-api-gauge-detail');
+        renderLimitGauge('sf-data-gauge', 'sf-data-gauge-value', overview?.dataStorageMb, 'sf-data-gauge-detail', 'MB');
         renderApiHourlyAverageGauge(overview?.apiUsage);
         renderDataGrowthGauge();
       }
@@ -8748,47 +8839,68 @@ export function renderAdminUiScript(): string {
         state.health = healthData || {};
         renderOverviewLogRetentionStatus();
         document.getElementById('kpi-service').textContent = healthData.service || '-';
-        document.getElementById('kpi-scheduler').textContent = healthData.scheduler || '-';
-        document.getElementById('kpi-schedules').textContent = String(state.schedules.length);
-        document.getElementById('kpi-connectors').textContent = String(state.connectors.length);
+        const serviceVersionText = document.getElementById('kpi-service-version');
+        if (serviceVersionText) {
+          const agentVersion = String(healthData.agentVersion || '').trim().replace(/^v/i, '');
+          if (agentVersion) {
+            serviceVersionText.textContent = 'v' + agentVersion;
+          }
+        }
 
         const cpuPercent = Number(healthData.cpuLoadPercent);
         const hasCpuPercent = Number.isFinite(cpuPercent);
-        const serviceCpuBar = document.getElementById('kpi-service-cpu-bar');
+        const serviceCpuValue = document.getElementById('kpi-service-cpu-value');
         const serviceCpuText = document.getElementById('kpi-service-cpu-text');
         const normalizedCpuPercent = hasCpuPercent ? Math.max(0, Math.min(100, Math.round(cpuPercent))) : null;
-        if (serviceCpuBar) {
-          const cpuValue = normalizedCpuPercent === null ? 0 : normalizedCpuPercent;
-          serviceCpuBar.style.width = cpuValue + '%';
-          serviceCpuBar.className = 'kpi-meter-fill';
-          if (normalizedCpuPercent !== null) {
-            if (normalizedCpuPercent >= 80) {
-              serviceCpuBar.classList.add('kpi-meter-fill-danger');
-            } else if (normalizedCpuPercent >= 55) {
-              serviceCpuBar.classList.add('kpi-meter-fill-warn');
-            } else {
-              serviceCpuBar.classList.add('kpi-meter-fill-ok');
-            }
-          }
+        renderSalesforceGaugeChart('kpi-service-cpu-gauge', normalizedCpuPercent || 0, resolveGaugeColor(normalizedCpuPercent || 0, '#2f69a8'));
+        if (serviceCpuValue) {
+          serviceCpuValue.textContent = normalizedCpuPercent === null ? '-' : normalizedCpuPercent + '%';
         }
         if (serviceCpuText) {
           serviceCpuText.textContent = normalizedCpuPercent === null
             ? 'CPU Last: nicht verfuegbar'
             : 'CPU Last: ' + normalizedCpuPercent + '%';
+          serviceCpuText.title = 'Berechnung: Host-CPU-Auslastung aus OS-CPU-Samples';
         }
         const serviceOsText = document.getElementById('kpi-service-os');
+        const serviceOsKind = document.getElementById('kpi-service-os-kind');
+        const operatingSystem = String(healthData.operatingSystem || 'nicht verfuegbar');
         if (serviceOsText) {
-          serviceOsText.textContent = 'OS: ' + String(healthData.operatingSystem || 'nicht verfuegbar');
+          serviceOsText.textContent = operatingSystem;
+        }
+        if (serviceOsKind) {
+          serviceOsKind.textContent = operatingSystem.split(' ')[0] || '-';
         }
         const serviceMemoryText = document.getElementById('kpi-service-memory');
+        const serviceMemoryValue = document.getElementById('kpi-service-memory-value');
+        const memoryUsedBytes = Number(healthData.memoryUsedBytes);
+        const memoryTotalBytes = Number(healthData.memoryTotalBytes);
+        const memoryPercent = Number.isFinite(memoryUsedBytes) && Number.isFinite(memoryTotalBytes) && memoryTotalBytes > 0
+          ? Math.max(0, Math.min(100, Math.round((memoryUsedBytes / memoryTotalBytes) * 100)))
+          : null;
+        renderSalesforceGaugeChart('kpi-service-memory-gauge', memoryPercent || 0, resolveGaugeColor(memoryPercent || 0, '#1f7d57'));
+        if (serviceMemoryValue) {
+          serviceMemoryValue.textContent = memoryPercent === null ? '-' : memoryPercent + '%';
+        }
         if (serviceMemoryText) {
           serviceMemoryText.textContent = 'RAM: ' + formatUsageMetric(healthData.memoryUsedBytes, healthData.memoryTotalBytes);
+          serviceMemoryText.title = 'Berechnung: genutzter RAM / gesamter RAM * 100';
         }
         const serviceDiskText = document.getElementById('kpi-service-disk');
+        const serviceDiskValue = document.getElementById('kpi-service-disk-value');
+        const diskUsedBytes = Number(healthData.diskUsedBytes);
+        const diskTotalBytes = Number(healthData.diskTotalBytes);
+        const diskPercent = Number.isFinite(diskUsedBytes) && Number.isFinite(diskTotalBytes) && diskTotalBytes > 0
+          ? Math.max(0, Math.min(100, Math.round((diskUsedBytes / diskTotalBytes) * 100)))
+          : null;
+        renderSalesforceGaugeChart('kpi-service-disk-gauge', diskPercent || 0, resolveGaugeColor(diskPercent || 0, '#7b5ea7'));
+        if (serviceDiskValue) {
+          serviceDiskValue.textContent = diskPercent === null ? '-' : diskPercent + '%';
+        }
         if (serviceDiskText) {
           serviceDiskText.textContent = 'Disk: ' + formatUsageMetric(healthData.diskUsedBytes, healthData.diskTotalBytes);
+          serviceDiskText.title = 'Berechnung: genutzter Speicher / gesamter Speicher * 100';
         }
-        updateServiceCpuSparkline(normalizedCpuPercent);
 
         const runs = Array.isArray(state.runs) ? state.runs : [];
         const now = new Date();
@@ -8859,6 +8971,7 @@ export function renderAdminUiScript(): string {
         const inboundCounter = document.getElementById('kpi-inbound-count');
         const outboundCounter = document.getElementById('kpi-outbound-count');
         const averageRunDuration = document.getElementById('kpi-average-run-duration');
+        const dailyRecordCount = document.getElementById('kpi-daily-record-count');
         const autoDisabledCounter = document.getElementById('kpi-auto-disabled-count');
         const lastRunAt = document.getElementById('kpi-last-run-at');
         const sqliteObjectsCounter = document.getElementById('kpi-sqlite-objects');
@@ -8928,6 +9041,14 @@ export function renderAdminUiScript(): string {
         if (outboundCounter) {
           outboundCounter.textContent = String(outboundCount);
         }
+        if (dailyRecordCount) {
+          const daily = state.recordsSummary?.daily || {};
+          const dailyTotal = Math.max(0, Number(daily.total || 0) || 0);
+          const dailySucceeded = Math.max(0, Number(daily.succeeded || 0) || 0);
+          const dailyFailed = Math.max(0, Number(daily.failed || 0) || 0);
+          dailyRecordCount.textContent = formatNumber(dailyTotal);
+          dailyRecordCount.title = formatNumber(dailySucceeded) + ' erfolgreich, ' + formatNumber(dailyFailed) + ' fehlerhaft';
+        }
         if (averageRunDuration) {
           averageRunDuration.classList.remove('text-success', 'text-warning', 'text-danger');
           averageRunDuration.textContent = averageRunDurationMs === null ? '-' : formatDurationMinSec(averageRunDurationMs);
@@ -8960,20 +9081,15 @@ export function renderAdminUiScript(): string {
           sqliteErrorsCounter.textContent = String(sqliteErrorCount);
         }
 
-        const bucketTotals = (Array.isArray(state.recordsSummary?.buckets) ? state.recordsSummary.buckets : []).map((bucket) => {
-          const directTotal = Number(bucket?.total);
-          if (Number.isFinite(directTotal)) {
-            return Math.max(0, directTotal);
-          }
-          const connectorTotals = bucket?.connectorTotals && typeof bucket.connectorTotals === 'object'
-            ? Object.values(bucket.connectorTotals).reduce((sum, value) => sum + (Number(value || 0) || 0), 0)
-            : 0;
-          return Math.max(0, Number(connectorTotals || 0));
-        });
-        const latestBucketTotal = bucketTotals.length ? Number(bucketTotals[bucketTotals.length - 1] || 0) : 0;
-        const previousBucketTotal = bucketTotals.length > 1 ? Number(bucketTotals[bucketTotals.length - 2] || 0) : 0;
-        const growthAbsolute = latestBucketTotal - previousBucketTotal;
-        const growthPercent = previousBucketTotal > 0 ? (growthAbsolute / previousBucketTotal) * 100 : null;
+        const dailyRecordSummary = state.recordsSummary?.daily || {};
+        const latestBucketTotal = Math.max(0, Number(dailyRecordSummary.succeeded || 0) || 0);
+        const previousBucketTotal = Math.max(0, Number(dailyRecordSummary.previousSucceeded || 0) || 0);
+        const growthAbsolute = Number.isFinite(Number(dailyRecordSummary.growth))
+          ? Number(dailyRecordSummary.growth)
+          : latestBucketTotal - previousBucketTotal;
+        const growthPercent = Number.isFinite(Number(dailyRecordSummary.growthPercent))
+          ? Number(dailyRecordSummary.growthPercent)
+          : (previousBucketTotal > 0 ? (growthAbsolute / previousBucketTotal) * 100 : null);
 
         let healthScore = 100;
         if (String(healthData.service || '').toLowerCase() !== 'ok') {
@@ -9021,11 +9137,9 @@ export function renderAdminUiScript(): string {
         const errorText = totalCount > 0
           ? (failedCount + ' von ' + totalCount + ' Runs fehlerhaft (' + errorRate + '%)')
           : 'Keine Runs im gewählten Zeitraum';
-        const growthText = bucketTotals.length < 2
-          ? (bucketTotals.length === 1
-              ? (latestBucketTotal + ' Datensätze im letzten Intervall')
-              : 'Noch keine Verlaufsdaten')
-          : ((growthAbsolute >= 0 ? '+' : '') + growthAbsolute + ' Datensätze' +
+        const growthText = latestBucketTotal <= 0 && previousBucketTotal <= 0
+          ? 'Heute noch keine erzeugten Datensätze'
+          : (formatNumber(latestBucketTotal) + ' heute erzeugt · ' + (growthAbsolute >= 0 ? '+' : '') + formatNumber(growthAbsolute) + ' ggü. gestern' +
               (growthPercent === null ? '' : ' (' + (growthPercent >= 0 ? '+' : '') + growthPercent.toFixed(1) + '%)'));
 
         if (agentAnalysisScore) {
@@ -9052,7 +9166,7 @@ export function renderAdminUiScript(): string {
         if (agentAnalysisGrowth) {
           agentAnalysisGrowth.textContent = growthText;
           agentAnalysisGrowth.classList.remove('text-success', 'text-warning', 'text-danger', 'text-secondary');
-          if (bucketTotals.length < 2) {
+          if (latestBucketTotal <= 0 && previousBucketTotal <= 0) {
             agentAnalysisGrowth.classList.add('text-secondary');
           } else if (growthAbsolute > 0) {
             agentAnalysisGrowth.classList.add('text-warning');
@@ -9089,16 +9203,16 @@ export function renderAdminUiScript(): string {
         if (serviceTrend) {
           const isOk = String(healthData.service || '').toLowerCase() === 'ok';
           if (isOk && normalizedCpuPercent !== null && normalizedCpuPercent < 55) {
-            serviceTrend.className = 'kpi-trend kpi-trend-positive';
+            serviceTrend.className = 'limit-compact-detail kpi-trend kpi-trend-positive';
             serviceTrend.textContent = '↑ laeuft rund';
           } else if (isOk && normalizedCpuPercent !== null && normalizedCpuPercent < 80) {
-            serviceTrend.className = 'kpi-trend kpi-trend-neutral';
+            serviceTrend.className = 'limit-compact-detail kpi-trend kpi-trend-neutral';
             serviceTrend.textContent = '→ laeuft, aber leicht unter Last';
           } else if (isOk) {
-            serviceTrend.className = 'kpi-trend kpi-trend-negative';
+            serviceTrend.className = 'limit-compact-detail kpi-trend kpi-trend-negative';
             serviceTrend.textContent = '↓ hoher CPU-Druck';
           } else {
-            serviceTrend.className = 'kpi-trend kpi-trend-negative';
+            serviceTrend.className = 'limit-compact-detail kpi-trend kpi-trend-negative';
             serviceTrend.textContent = '↓ Service ist degraded';
           }
         }
@@ -9877,59 +9991,36 @@ export function renderAdminUiScript(): string {
           return { nodes, edges };
         }
 
-        const baseX = 30;
-        const columnGap = 400;
-        const baseY = 26;
-        const rowGap = 24;
+        const nodeWidth = 330;
         const nodeHeight = 118;
-        const rootGap = 36;
+        const hGap = 24;
+        const vGap = 70;
+        const connectorPad = 48;
+        const baseY = 26;
+
         const connectors = nodes.filter((node) => node.kind === 'connector');
         const schedulers = nodes.filter((node) => node.kind === 'scheduler');
         const schedulerById = new Map(schedulers.map((node) => [String(node.id || ''), node]));
-        const childrenByParent = new Map();
-        const parentByChild = new Map();
-        const rootScheduleIds = [];
         const schedulerIds = new Set(schedulers.map((node) => String(node.id || '')));
-        const connectorTargetsByConnector = new Map();
 
-        schedulers.forEach((node) => {
-          childrenByParent.set(String(node.id || ''), []);
-        });
+        const childrenByParent = new Map();
+        schedulers.forEach((node) => childrenByParent.set(String(node.id || ''), []));
+
+        const rootSchedulersByConnector = new Map();
+        connectors.forEach((node) => rootSchedulersByConnector.set(String(node.id || ''), []));
 
         edges.forEach((edge) => {
           const from = String(edge.from || '');
           const to = String(edge.to || '');
           if (schedulerIds.has(from) && schedulerIds.has(to)) {
-            if (!childrenByParent.has(from)) {
-              childrenByParent.set(from, []);
-            }
-            childrenByParent.get(from).push(to);
-            parentByChild.set(to, from);
+            childrenByParent.get(from)?.push(to);
             return;
           }
           const fromNode = nodes.find((node) => String(node.id || '') === from);
           if (fromNode?.kind === 'connector' && schedulerIds.has(to)) {
-            if (!connectorTargetsByConnector.has(from)) {
-              connectorTargetsByConnector.set(from, []);
-            }
-            connectorTargetsByConnector.get(from).push(to);
+            rootSchedulersByConnector.get(from)?.push(to);
           }
         });
-
-        schedulers.forEach((node) => {
-          const id = String(node.id || '');
-          if (!parentByChild.has(id)) {
-            rootScheduleIds.push(id);
-          }
-        });
-
-        rootScheduleIds.sort((leftId, rightId) =>
-          String(schedulerById.get(leftId)?.label || '').localeCompare(
-            String(schedulerById.get(rightId)?.label || ''),
-            'de',
-            { sensitivity: 'base' }
-          )
-        );
 
         childrenByParent.forEach((childIds) => {
           childIds.sort((leftId, rightId) =>
@@ -9941,85 +10032,84 @@ export function renderAdminUiScript(): string {
           );
         });
 
-        const subtreeHeightCache = new Map();
-        const computeSubtreeHeight = (scheduleId) => {
-          if (subtreeHeightCache.has(scheduleId)) {
-            return subtreeHeightCache.get(scheduleId);
-          }
-
-          const childIds = childrenByParent.get(scheduleId) || [];
-          if (!childIds.length) {
-            subtreeHeightCache.set(scheduleId, nodeHeight);
-            return nodeHeight;
-          }
-
-          const childrenHeight = childIds.reduce((sum, childId, index) => {
-            const nextSum = sum + computeSubtreeHeight(childId);
-            return index < childIds.length - 1 ? nextSum + rowGap : nextSum;
-          }, 0);
-          const height = Math.max(nodeHeight, childrenHeight);
-          subtreeHeightCache.set(scheduleId, height);
-          return height;
-        };
-
-        const placeSchedule = (scheduleId, depth, topY) => {
-          const node = schedulerById.get(scheduleId);
-          if (!node) {
-            return nodeHeight;
-          }
-
-          const childIds = childrenByParent.get(scheduleId) || [];
-          const childrenHeight = childIds.length
-            ? childIds.reduce((sum, childId, index) => {
-                const nextSum = sum + computeSubtreeHeight(childId);
-                return index < childIds.length - 1 ? nextSum + rowGap : nextSum;
-              }, 0)
-            : 0;
-          const subtreeHeight = Math.max(nodeHeight, childrenHeight || 0);
-          node.x = baseX + columnGap + depth * columnGap;
-          node.y = topY + Math.max(0, (subtreeHeight - nodeHeight) / 2);
-
-          if (childIds.length) {
-            let cursorY = topY;
-            childIds.forEach((childId) => {
-              const childHeight = computeSubtreeHeight(childId);
-              placeSchedule(childId, depth + 1, cursorY);
-              cursorY += childHeight + rowGap;
-            });
-          }
-
-          return subtreeHeight;
-        };
-
-        let cursorY = baseY;
-        rootScheduleIds.forEach((scheduleId, index) => {
-          const height = computeSubtreeHeight(scheduleId);
-          placeSchedule(scheduleId, 0, cursorY);
-          cursorY += height + (index < rootScheduleIds.length - 1 ? rootGap : 0);
+        rootSchedulersByConnector.forEach((rootIds) => {
+          rootIds.sort((leftId, rightId) =>
+            String(schedulerById.get(leftId)?.label || '').localeCompare(
+              String(schedulerById.get(rightId)?.label || ''),
+              'de',
+              { sensitivity: 'base' }
+            )
+          );
         });
 
-        const fallbackConnectorY = new Map();
-        connectors
-          .slice()
-          .sort((left, right) => String(left.label || '').localeCompare(String(right.label || ''), 'de', { sensitivity: 'base' }))
-          .forEach((node, index) => {
-            fallbackConnectorY.set(String(node.id || ''), baseY + index * (nodeHeight + rootGap));
+        const subtreeWidthCache = new Map();
+        const computeSubtreeWidth = (id) => {
+          if (subtreeWidthCache.has(id)) return subtreeWidthCache.get(id);
+          const childIds = childrenByParent.get(id) || [];
+          let width;
+          if (!childIds.length) {
+            width = nodeWidth;
+          } else {
+            const totalChildWidth = childIds.reduce((sum, childId, index) => {
+              return sum + computeSubtreeWidth(childId) + (index < childIds.length - 1 ? hGap : 0);
+            }, 0);
+            width = Math.max(nodeWidth, totalChildWidth);
+          }
+          subtreeWidthCache.set(id, width);
+          return width;
+        };
+
+        const placeSchedule = (id, centerX, topY) => {
+          const node = schedulerById.get(id);
+          if (!node) return;
+          node.x = centerX - nodeWidth / 2;
+          node.y = topY;
+          const childIds = childrenByParent.get(id) || [];
+          if (childIds.length) {
+            const totalChildWidth = childIds.reduce((sum, childId, index) => {
+              return sum + computeSubtreeWidth(childId) + (index < childIds.length - 1 ? hGap : 0);
+            }, 0);
+            let cursorX = centerX - totalChildWidth / 2;
+            childIds.forEach((childId) => {
+              const childWidth = computeSubtreeWidth(childId);
+              placeSchedule(childId, cursorX + childWidth / 2, topY + nodeHeight + vGap);
+              cursorX += childWidth + hGap;
+            });
+          }
+        };
+
+        connectors.sort((left, right) =>
+          String(left.label || '').localeCompare(String(right.label || ''), 'de', { sensitivity: 'base' })
+        );
+
+        let cursorX = 30;
+        const connectorY = baseY;
+        const schedulerStartY = connectorY + nodeHeight + vGap;
+
+        connectors.forEach((connectorNode, index) => {
+          const connectorId = String(connectorNode.id || '');
+          const rootIds = rootSchedulersByConnector.get(connectorId) || [];
+
+          const totalRootsWidth = rootIds.length
+            ? rootIds.reduce((sum, rootId, i) => {
+                return sum + computeSubtreeWidth(rootId) + (i < rootIds.length - 1 ? hGap : 0);
+              }, 0)
+            : 0;
+
+          const groupWidth = Math.max(nodeWidth, totalRootsWidth);
+          const groupCenterX = cursorX + groupWidth / 2;
+
+          connectorNode.x = groupCenterX - nodeWidth / 2;
+          connectorNode.y = connectorY;
+
+          let schedulerCursorX = groupCenterX - totalRootsWidth / 2;
+          rootIds.forEach((rootId) => {
+            const rootWidth = computeSubtreeWidth(rootId);
+            placeSchedule(rootId, schedulerCursorX + rootWidth / 2, schedulerStartY);
+            schedulerCursorX += rootWidth + hGap;
           });
 
-        connectors.forEach((node) => {
-          const connectorId = String(node.id || '');
-          const targetIds = (connectorTargetsByConnector.get(connectorId) || []).filter((targetId) => schedulerById.has(targetId));
-          node.x = baseX;
-          if (!targetIds.length) {
-            node.y = fallbackConnectorY.get(connectorId) || baseY;
-            return;
-          }
-
-          const averageY = targetIds.reduce((sum, targetId) => {
-            const targetNode = schedulerById.get(targetId);
-            return sum + Number(targetNode?.y || baseY);
-          }, 0) / targetIds.length;
-          node.y = Math.max(baseY, averageY);
+          cursorX += groupWidth + (index < connectors.length - 1 ? connectorPad : 0);
         });
 
         return { nodes, edges };
@@ -10158,41 +10248,6 @@ export function renderAdminUiScript(): string {
           '</marker>' +
         '</defs>';
 
-        const outgoingEdgeOrder = new Map();
-        const incomingEdgeOrder = new Map();
-
-        nodes.forEach((node) => {
-          const outgoing = edges
-            .filter((edge) => edge.from === node.id)
-            .slice()
-            .sort((a, b) => {
-              const nodeA = nodeMap.get(a.to);
-              const nodeB = nodeMap.get(b.to);
-              return Number(nodeA?.y || 0) - Number(nodeB?.y || 0);
-            });
-          outgoing.forEach((edge, index) => {
-            outgoingEdgeOrder.set(String(edge.from) + '::' + String(edge.to), {
-              index,
-              total: outgoing.length
-            });
-          });
-
-          const incoming = edges
-            .filter((edge) => edge.to === node.id)
-            .slice()
-            .sort((a, b) => {
-              const nodeA = nodeMap.get(a.from);
-              const nodeB = nodeMap.get(b.from);
-              return Number(nodeA?.y || 0) - Number(nodeB?.y || 0);
-            });
-          incoming.forEach((edge, index) => {
-            incomingEdgeOrder.set(String(edge.from) + '::' + String(edge.to), {
-              index,
-              total: incoming.length
-            });
-          });
-        });
-
         const edgeMarkup = edges.map((edge) => {
           const from = nodeMap.get(edge.from);
           const to = nodeMap.get(edge.to);
@@ -10203,27 +10258,14 @@ export function renderAdminUiScript(): string {
           const isOutbound = normalizedDirection === 'outbound';
           const edgeColor = isInbound ? '#2276d2' : isOutbound ? '#2e9b4d' : '#7f8b95';
           const markerId = isInbound ? 'arrowInbound' : isOutbound ? 'arrowOutbound' : 'arrowGeneric';
-          const edgeKey = String(edge.from) + '::' + String(edge.to);
-          const outgoingOrder = outgoingEdgeOrder.get(edgeKey);
-          const incomingOrder = incomingEdgeOrder.get(edgeKey);
-          const outgoingOffset = outgoingOrder
-            ? ((outgoingOrder.index + 1) / (outgoingOrder.total + 1) - 0.5) * Math.min(44, nodeHeight - 26)
-            : 0;
-          const incomingOffset = incomingOrder
-            ? ((incomingOrder.index + 1) / (incomingOrder.total + 1) - 0.5) * Math.min(44, nodeHeight - 26)
-            : 0;
-          const startX = Number(from.x) + nodeWidth;
-          const startY = Number(from.y) + nodeHeight / 2 + outgoingOffset;
-          const endX = Number(to.x) - 14;
-          const endY = Number(to.y) + nodeHeight / 2 + incomingOffset;
-          const horizontalGap = Math.max(18, Math.min(34, (endX - startX) / 4));
-          const curveStartX = startX + horizontalGap;
-          const curveEndX = endX - horizontalGap;
-          const controlOffset = Math.max(30, (curveEndX - curveStartX) / 2);
+          // Top-down layout: from bottom-center of source to top-center of target
+          const startX = Number(from.x) + nodeWidth / 2;
+          const startY = Number(from.y) + nodeHeight;
+          const endX = Number(to.x) + nodeWidth / 2;
+          const endY = Number(to.y) - 14;
+          const controlOffset = Math.max(40, Math.abs(endY - startY) / 2);
           const pathData = 'M ' + startX + ' ' + startY +
-            ' L ' + curveStartX + ' ' + startY +
-            ' C ' + (curveStartX + controlOffset) + ' ' + startY + ', ' + (curveEndX - controlOffset) + ' ' + endY + ', ' + curveEndX + ' ' + endY +
-            ' L ' + endX + ' ' + endY;
+            ' C ' + startX + ' ' + (startY + controlOffset) + ', ' + endX + ' ' + (endY - controlOffset) + ', ' + endX + ' ' + endY;
           const fromStatus = from.kind === 'scheduler' ? getScheduleGraphStatus(from.refId).key : '';
           const toStatus = to.kind === 'scheduler' ? getScheduleGraphStatus(to.refId).key : '';
           const edgeClasses = ['graph-edge'];
@@ -12366,6 +12408,9 @@ export function renderAdminUiScript(): string {
           renderInstanceReadinessSnapshot(snapshot);
           renderInstancePanels();
           showInfo('Readiness-Check abgeschlossen.');
+        } catch (error) {
+          renderInstanceReadinessSnapshot({ instanceId, projectId, status: 'setup-failed', missingArtifacts: [], warnings: [], capabilities: { healthPulse: false, remoteCommands: false, logUpload: false } });
+          throw error;
         } finally {
           setInstanceSetupBusy(false);
         }
@@ -12414,6 +12459,9 @@ export function renderAdminUiScript(): string {
           } else {
             showInstanceModalWarning('MSD Setup Dry-Run abgeschlossen. Es wurden keine Änderungen in Salesforce vorgenommen.');
           }
+        } catch (error) {
+          renderInstanceReadinessSnapshot({ instanceId, projectId, status: 'setup-failed', missingArtifacts: [], warnings: [], capabilities: { healthPulse: false, remoteCommands: false, logUpload: false } });
+          throw error;
         } finally {
           setInstanceSetupBusy(false);
         }
@@ -12624,7 +12672,7 @@ export function renderAdminUiScript(): string {
         document.getElementById('ins-name').value = '';
         document.getElementById('ins-project-id').value = hasDefault ? 'default-project' : String((state.projects[0] && state.projects[0].id) || 'default-project');
         document.getElementById('ins-role').value = 'test';
-        document.getElementById('ins-login-url').value = 'https://login.salesforce.com';
+        document.getElementById('ins-login-url').value = 'https://test.salesforce.com';
         document.getElementById('ins-client-id').value = '';
         document.getElementById('ins-client-secret').value = '';
         document.getElementById('ins-query-limit').value = '';
@@ -12635,6 +12683,29 @@ export function renderAdminUiScript(): string {
         renderInstanceReadinessSnapshot(null);
       }
 
+      function getDefaultInstanceLoginUrlForRole(role) {
+        return String(role || '').trim() === 'production'
+          ? 'https://login.salesforce.com'
+          : 'https://test.salesforce.com';
+      }
+
+      function syncInstanceLoginUrlWithRole() {
+        var roleEl = document.getElementById('ins-role');
+        var loginUrlEl = document.getElementById('ins-login-url');
+        if (!roleEl || !loginUrlEl) {
+          return;
+        }
+
+        var currentValue = String(loginUrlEl.value || '').trim();
+        if (currentValue.endsWith('/')) {
+          currentValue = currentValue.slice(0, -1);
+        }
+        var defaultUrls = ['https://login.salesforce.com', 'https://test.salesforce.com'];
+        if (!currentValue || defaultUrls.includes(currentValue)) {
+          loginUrlEl.value = getDefaultInstanceLoginUrlForRole(roleEl.value);
+        }
+      }
+
       function fillInstanceForm(instance) {
         clearInstanceModalError();
         document.getElementById('ins-id').value = String(instance?.id || '');
@@ -12642,10 +12713,10 @@ export function renderAdminUiScript(): string {
         document.getElementById('ins-name').value = String(instance?.name || instance?.id || '');
         document.getElementById('ins-project-id').value = String(instance?.projectId || 'default-project');
         document.getElementById('ins-role').value = instance?.role === 'production' ? 'production' : 'test';
-        document.getElementById('ins-login-url').value = '';
+        document.getElementById('ins-login-url').value = String((instance && instance.loginUrl) || getDefaultInstanceLoginUrlForRole(instance && instance.role));
         document.getElementById('ins-client-id').value = '';
         document.getElementById('ins-client-secret').value = '';
-        document.getElementById('ins-query-limit').value = '';
+        document.getElementById('ins-query-limit').value = instance && instance.queryLimit ? String(instance.queryLimit) : '';
         const title = document.getElementById('instance-modal-title');
         const meta = document.getElementById('ins-modal-meta');
         if (title) title.textContent = 'Instanz bearbeiten: ' + String(instance?.name || instance?.id || '-');
@@ -14148,6 +14219,7 @@ export function renderAdminUiScript(): string {
         focusElementLater('ins-id');
       });
       bindEventListenerOnce('save-instance', 'click', saveInstance);
+      bindEventListenerOnce('ins-role', 'change', syncInstanceLoginUrlWithRole);
       bindEventListenerOnce('manage-projects', 'click', async () => {
         try {
           await openProjectManagement();

@@ -1,4 +1,6 @@
 import pino from "pino";
+import fs from "node:fs";
+import path from "node:path";
 import { runDueSchedulesOnce } from "../agent/agent-runner";
 import { writeAgentHealthSnapshot } from "../runtime/agent-health-store";
 import { HealthSnapshot } from "../server/health-snapshot";
@@ -27,6 +29,15 @@ export interface AgentServiceRuntime {
 const BACKOFF_STEP_MULTIPLIER = 2;
 const BACKOFF_MAX_CYCLES_WITHOUT_SCHEDULES = 4; // nach 4 Leerzyklen maximaler Backoff
 const BACKOFF_MAX_MULTIPLIER = 8; // maximal 8x Normalintervall
+
+const AGENT_VERSION = (() => {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "package.json"), "utf8")) as { version?: unknown };
+    return String(parsed.version || "").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+})();
 
 function formatRuntimeError(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -75,6 +86,7 @@ export function createAgentServiceRuntime(options: AgentServiceRuntimeOptions): 
       scheduler,
       startedAt: startedAt.toISOString(),
       uptimeSeconds: (Date.now() - startedAt.getTime()) / 1000,
+      agentVersion: AGENT_VERSION,
       lastRunStartedAt,
       lastRunFinishedAt,
       lastRunStatus,

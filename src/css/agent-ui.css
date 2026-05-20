@@ -3705,6 +3705,50 @@ body.context-none .agent-topbar {
   white-space: nowrap;
 }
 
+.sf-org-compact-meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(7rem, 0.7fr);
+  gap: 0.55rem;
+}
+
+.sf-org-compact-meta > div {
+  min-width: 0;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--layout-card-border);
+  border-radius: 8px;
+  background: var(--layout-surface-soft);
+}
+
+.sf-org-compact-meta span {
+  display: block;
+  margin-bottom: 0.08rem;
+  color: var(--layout-text-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.sf-org-compact-meta a,
+.sf-org-compact-meta strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--layout-text);
+  font-size: 0.8rem;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sf-org-compact-meta a {
+  color: #2563eb;
+  text-decoration: none;
+}
+
+.sf-org-compact-meta a:hover {
+  text-decoration: underline;
+}
+
 .limits-compact-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -3712,19 +3756,28 @@ body.context-none .agent-topbar {
 }
 
 .limit-compact-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.2rem;
+  grid-template-rows: auto auto;
+  column-gap: 0.45rem;
+  align-items: center;
   min-width: 0;
-  padding: 0.52rem 0.6rem;
+  min-height: 3rem;
+  padding: 0.36rem 0.46rem;
   border: 1px solid var(--layout-card-border);
   border-radius: 8px;
   background: var(--layout-surface-soft);
 }
 
 .limit-compact-head {
+  grid-column: 1;
+  grid-row: 1;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 0.32rem;
+  gap: 0.35rem;
+  min-width: 0;
+  margin-bottom: 0.04rem;
 }
 
 .limit-compact-head span {
@@ -3741,43 +3794,53 @@ body.context-none .agent-topbar {
 }
 
 .limit-compact-meter {
-  --gauge-value: 0;
-  --gauge-color: #2f69a8;
+  grid-column: 2;
+  grid-row: 1 / 3;
+  position: relative;
   width: 100%;
-  height: 0.46rem;
+  height: 2.35rem;
   overflow: hidden;
-  border-radius: 999px;
-  background: var(--layout-surface-muted);
+  background: transparent;
 }
 
-.limit-compact-meter span {
+.limit-compact-meter canvas {
   display: block;
-  width: calc(var(--gauge-value) * 1%);
-  height: 100%;
-  border-radius: inherit;
-  background: var(--gauge-color);
-  transition: width 0.35s ease;
+  width: 100% !important;
+  height: 2.35rem !important;
 }
 
-.limit-compact-meter.is-warning span,
+.limit-compact-detail {
+  grid-column: 1;
+  grid-row: 2;
+  margin-top: 0.12rem;
+  overflow: hidden;
+  color: var(--layout-text-muted);
+  font-size: 0.64rem;
+  font-weight: 650;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-os-detail {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--layout-text);
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1.15;
+  text-align: right;
+  text-overflow: ellipsis;
+}
+
 .limit-gauge.is-warning {
   --gauge-color: #c28b2c;
 }
 
-.limit-compact-meter.is-danger span,
 .limit-gauge.is-danger {
   --gauge-color: #c24a4a;
-}
-
-.limit-compact-detail {
-  margin-top: 0.28rem;
-  overflow: hidden;
-  color: var(--layout-text-muted);
-  font-size: 0.7rem;
-  font-weight: 650;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .limit-gauge-card {
@@ -3878,6 +3941,7 @@ body.context-none .agent-topbar {
     --bs-gutter-y: 0.75rem;
   }
 
+  .overview-service-card .card-body,
   .overview-salesforce-card .card-body,
   .overview-graph-card .card-body {
     padding: 0.7rem;

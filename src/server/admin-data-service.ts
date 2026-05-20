@@ -222,15 +222,25 @@ interface MigrationOAuthTokenResponse {
 interface AgentObjectFieldDefinition {
   apiName: string;
   label: string;
-  type: "Text" | "LongTextArea" | "DateTime";
+  type: "Text" | "LongTextArea" | "DateTime" | "Number" | "Checkbox" | "Lookup" | "Picklist";
   length?: number;
+  precision?: number;
+  scale?: number;
+  defaultValue?: boolean;
+  referenceTo?: string;
+  relationshipLabel?: string;
+  relationshipName?: string;
+  picklistValues?: Array<{ fullName: string; label: string; default?: boolean }>;
   visibleLines?: number;
   legacyApiNames?: string[];
 }
 
 interface AgentObjectDefinition {
   canonicalObjectApiName: string;
-  capability: "healthPulse" | "remoteCommands";
+  label?: string;
+  pluralLabel?: string;
+  nameField?: Record<string, unknown>;
+  capability?: "healthPulse" | "remoteCommands" | "logUpload";
   legacyObjectApiNames: string[];
   requiredFields: AgentObjectFieldDefinition[];
 }
@@ -1293,9 +1303,11 @@ export interface SalesforceInstanceOption {
   id: string;
   name: string;
   isDefault: boolean;
+  loginUrl: string;
   projectId: string;
   projectName: string;
   role: "test" | "production";
+  queryLimit?: number;
 }
 
 export interface SalesforceProjectOption {
@@ -1603,6 +1615,15 @@ export interface RecordsChartSummary {
   range: OverviewStatsRange;
   buckets: RecordsChartBucket[];
   connectors: string[];
+  daily: {
+    date: string;
+    total: number;
+    succeeded: number;
+    failed: number;
+    previousSucceeded: number;
+    growth: number;
+    growthPercent: number | null;
+  };
 }
 
 export interface SqlPreviewResult {
@@ -2339,6 +2360,187 @@ export class AdminDataService {
 
   private static readonly agentObjectDefinitions: AgentObjectDefinition[] = [
     {
+      canonicalObjectApiName: "MSD_Connector__c",
+      label: "MSD Connector",
+      pluralLabel: "MSD Connectors",
+      nameField: {
+        type: "Text",
+        label: "Connector Name"
+      },
+      capability: "logUpload",
+      legacyObjectApiNames: [],
+      requiredFields: [
+        { apiName: "MSD_Active__c", label: "Active", type: "Checkbox", defaultValue: true },
+        { apiName: "MSD_ConnectorType__c", label: "Connector Type", type: "Text", length: 100 },
+        { apiName: "MSD_TargetSystem__c", label: "Target System", type: "Text", length: 255 },
+        { apiName: "MSD_Direction__c", label: "Direction", type: "Text", length: 50 },
+        { apiName: "MSD_SecretKey__c", label: "Secret Key", type: "Text", length: 255 },
+        { apiName: "MSD_TimeoutMs__c", label: "Timeout (ms)", type: "Number", precision: 18, scale: 0 },
+        { apiName: "MSD_MaxRetries__c", label: "Max Retries", type: "Number", precision: 18, scale: 0 },
+        { apiName: "MSD_Parameters__c", label: "Parameters (JSON)", type: "LongTextArea", length: 32768, visibleLines: 5 },
+        { apiName: "MSD_Description__c", label: "Description", type: "LongTextArea", length: 32768, visibleLines: 5 }
+      ]
+    },
+    {
+      canonicalObjectApiName: "MSD_Schedule__c",
+      label: "MSD Schedule",
+      pluralLabel: "MSD Schedules",
+      nameField: {
+        type: "AutoNumber",
+        label: "Schedule Number",
+        displayFormat: "SCH-{0000}"
+      },
+      capability: "logUpload",
+      legacyObjectApiNames: [],
+      requiredFields: [
+        { apiName: "Active__c", label: "Active", type: "Checkbox", defaultValue: true },
+        { apiName: "SourceSystem__c", label: "Source System", type: "Text", length: 255 },
+        { apiName: "TargetSystem__c", label: "Target System", type: "Text", length: 255 },
+        { apiName: "ObjectName__c", label: "Object Name", type: "Text", length: 255 },
+        { apiName: "Operation__c", label: "Operation", type: "Text", length: 100 },
+        {
+          apiName: "MSD_Connector__c",
+          label: "Connector",
+          type: "Lookup",
+          referenceTo: "MSD_Connector__c",
+          relationshipLabel: "Schedules",
+          relationshipName: "Schedules"
+        },
+        { apiName: "MSD_MappingDefinition__c", label: "Mapping Definition (JSON)", type: "LongTextArea", length: 32768, visibleLines: 5 },
+        { apiName: "MSD_Direction__c", label: "Direction", type: "Text", length: 50 },
+        { apiName: "MSD_SourceType__c", label: "Source Type", type: "Text", length: 50 },
+        {
+          apiName: "MSD_TargetType__c",
+          label: "Target Type",
+          type: "Picklist",
+          picklistValues: [
+            { fullName: "SALESFORCE", label: "Salesforce", default: true },
+            { fullName: "MSSQL", label: "MSSQL" },
+            { fullName: "MOCK", label: "Mock" },
+            { fullName: "SAGE100", label: "Sage100" },
+            { fullName: "SALESFORCE_GLOBAL_PICKLIST", label: "Salesforce Global Picklist" },
+            { fullName: "ORACLE", label: "Oracle" }
+          ]
+        },
+        { apiName: "MSD_SourceDefinition__c", label: "Source Definition (JSON)", type: "LongTextArea", length: 32768, visibleLines: 5 },
+        { apiName: "MSD_TargetDefinition__c", label: "Target Definition (JSON)", type: "LongTextArea", length: 32768, visibleLines: 5 },
+        { apiName: "BatchSize__c", label: "Batch Size", type: "Number", precision: 18, scale: 0 },
+        { apiName: "NextRunAt__c", label: "Next Run At", type: "DateTime" },
+        { apiName: "LastRunAt__c", label: "Last Run At", type: "DateTime" }
+      ]
+    },
+    {
+      canonicalObjectApiName: "MSD_Run__c",
+      label: "MSD Run",
+      pluralLabel: "MSD Runs",
+      nameField: {
+        type: "AutoNumber",
+        label: "Run Number",
+        displayFormat: "RUN-{0000}"
+      },
+      capability: "logUpload",
+      legacyObjectApiNames: [],
+      requiredFields: [
+        {
+          apiName: "MSD_Schedule__c",
+          label: "Schedule",
+          type: "Lookup",
+          referenceTo: "MSD_Schedule__c",
+          relationshipLabel: "Runs",
+          relationshipName: "Runs"
+        },
+        {
+          apiName: "MSD_Status__c",
+          label: "Status",
+          type: "Picklist",
+          picklistValues: [
+            { fullName: "Running", label: "Running" },
+            { fullName: "Success", label: "Success" },
+            { fullName: "Partial Success", label: "Partial Success" },
+            { fullName: "Failed", label: "Failed" }
+          ]
+        },
+        { apiName: "MSD_StartedAt__c", label: "Started At", type: "DateTime" },
+        { apiName: "MSD_FinishedAt__c", label: "Finished At", type: "DateTime" },
+        { apiName: "MSD_CorrelationId__c", label: "Correlation ID", type: "Text", length: 255 },
+        { apiName: "MSD_AgentId__c", label: "Agent ID", type: "Text", length: 255 },
+        { apiName: "MSD_RecordsRead__c", label: "Records Read", type: "Number", precision: 18, scale: 0 },
+        { apiName: "MSD_RecordsProcessed__c", label: "Records Processed", type: "Number", precision: 18, scale: 0 },
+        { apiName: "MSD_RecordsSucceeded__c", label: "Records Succeeded", type: "Number", precision: 18, scale: 0 },
+        { apiName: "MSD_RecordsFailed__c", label: "Records Failed", type: "Number", precision: 18, scale: 0 },
+        { apiName: "MSD_ErrorMessage__c", label: "Error Message", type: "LongTextArea", length: 32768, visibleLines: 5 }
+      ]
+    },
+    {
+      canonicalObjectApiName: "MSD_Log__c",
+      label: "MSD Log",
+      pluralLabel: "MSD Logs",
+      nameField: {
+        type: "AutoNumber",
+        label: "Log Number",
+        displayFormat: "LOG-{00000}"
+      },
+      capability: "logUpload",
+      legacyObjectApiNames: [],
+      requiredFields: [
+        {
+          apiName: "MSD_Run__c",
+          label: "Run",
+          type: "Lookup",
+          referenceTo: "MSD_Run__c",
+          relationshipLabel: "Logs",
+          relationshipName: "Logs"
+        },
+        {
+          apiName: "MSD_Level__c",
+          label: "Level",
+          type: "Picklist",
+          picklistValues: [
+            { fullName: "INFO", label: "INFO", default: true },
+            { fullName: "WARN", label: "WARN" },
+            { fullName: "ERROR", label: "ERROR" }
+          ]
+        },
+        { apiName: "MSD_Step__c", label: "Step", type: "Text", length: 255 },
+        { apiName: "MSD_Message__c", label: "Message", type: "LongTextArea", length: 32768, visibleLines: 5 },
+        { apiName: "MSD_RecordKey__c", label: "Record Key", type: "Text", length: 255 },
+        { apiName: "MSD_CorrelationId__c", label: "Correlation ID", type: "Text", length: 255 }
+      ]
+    },
+    {
+      canonicalObjectApiName: "MSD_Checkpoint__c",
+      label: "MSD Checkpoint",
+      pluralLabel: "MSD Checkpoints",
+      nameField: {
+        type: "AutoNumber",
+        label: "Checkpoint Number",
+        displayFormat: "CHK-{0000}"
+      },
+      capability: "logUpload",
+      legacyObjectApiNames: [],
+      requiredFields: [
+        {
+          apiName: "MSD_Schedule__c",
+          label: "Schedule",
+          type: "Lookup",
+          referenceTo: "MSD_Schedule__c",
+          relationshipLabel: "Checkpoints",
+          relationshipName: "Checkpoints"
+        },
+        {
+          apiName: "MSD_Run__c",
+          label: "Run",
+          type: "Lookup",
+          referenceTo: "MSD_Run__c",
+          relationshipLabel: "Checkpoints",
+          relationshipName: "Checkpoints"
+        },
+        { apiName: "MSD_ObjectName__c", label: "Object Name", type: "Text", length: 255 },
+        { apiName: "MSD_LastCheckpoint__c", label: "Last Checkpoint Value", type: "Text", length: 255 },
+        { apiName: "MSD_LastRecordId__c", label: "Last Record ID", type: "Text", length: 255 }
+      ]
+    },
+    {
       canonicalObjectApiName: "MSD_AgentHealth__c",
       capability: "healthPulse",
       legacyObjectApiNames: ["MSD_AgentPulse__c", "MSD_Heartbeat__c"],
@@ -2980,9 +3182,11 @@ export class AdminDataService {
         id: instance.id,
         name: instance.name,
         isDefault: index === 0,
+        loginUrl: instance.config.loginUrl,
         projectId,
         projectName,
-        role
+        role,
+        queryLimit: instance.config.queryLimit
       };
     });
   }
@@ -3038,6 +3242,14 @@ export class AdminDataService {
   }
 
   private buildCustomFieldMetadata(field: AgentObjectFieldDefinition): Record<string, unknown> {
+    if (field.type === "Checkbox") {
+      return {
+        label: field.label,
+        type: "Checkbox",
+        defaultValue: field.defaultValue === true
+      };
+    }
+
     if (field.type === "DateTime") {
       return {
         label: field.label,
@@ -3056,11 +3268,53 @@ export class AdminDataService {
       };
     }
 
+    if (field.type === "Number") {
+      return {
+        label: field.label,
+        type: "Number",
+        precision: field.precision ?? 18,
+        scale: field.scale ?? 0,
+        required: false,
+        unique: false
+      };
+    }
+
+    if (field.type === "Lookup") {
+      return {
+        label: field.label,
+        type: "Lookup",
+        referenceTo: field.referenceTo,
+        relationshipLabel: field.relationshipLabel || field.label,
+        relationshipName: field.relationshipName || field.apiName.replace(/__c$/, ""),
+        deleteConstraint: "SetNull",
+        required: false
+      };
+    }
+
+    if (field.type === "Picklist") {
+      return {
+        label: field.label,
+        type: "Picklist",
+        required: false,
+        valueSet: {
+          valueSetDefinition: {
+            sorted: false,
+            value: (field.picklistValues || []).map((value) => ({
+              fullName: value.fullName,
+              default: value.default === true,
+              label: value.label
+            }))
+          }
+        }
+      };
+    }
+
     return {
       label: field.label,
       type: "Text",
       length: field.length ?? 255,
-      required: false
+      required: false,
+      unique: false
     };
   }
 
@@ -3110,12 +3364,73 @@ export class AdminDataService {
     const hasCommandCritical = missingArtifacts.some(
       (artifact) => artifact.severity === "critical" && artifact.name.startsWith("MSD_AgentCommand__c")
     );
+    const hasLogUploadCritical = missingArtifacts.some(
+      (artifact) => artifact.severity === "critical"
+        && (
+          artifact.name.startsWith("MSD_Connector__c")
+          || artifact.name.startsWith("MSD_Schedule__c")
+          || artifact.name.startsWith("MSD_Run__c")
+          || artifact.name.startsWith("MSD_Log__c")
+          || artifact.name.startsWith("MSD_Checkpoint__c")
+        )
+    );
 
     return {
       healthPulse: !(hasGlobalCritical || hasHealthCritical),
       remoteCommands: !(hasGlobalCritical || hasCommandCritical),
-      logUpload: true
+      logUpload: !(hasGlobalCritical || hasLogUploadCritical)
     };
+  }
+
+  private async ensureAgentPermissionSetSetup(client: SalesforceClient): Promise<{ applied: string[]; warnings: string[] }> {
+    const applied: string[] = [];
+    const warnings: string[] = [];
+    const permissionSetName = "MSD_Integration_Agent";
+
+    try {
+      const existingPermissionSet = await client.queryGeneric(
+        `SELECT Id, Name FROM PermissionSet WHERE Name = '${permissionSetName}' LIMIT 1`
+      );
+      if (!existingPermissionSet.length) {
+        await client.createOrUpdateMetadata("PermissionSet", permissionSetName, {
+          fullName: permissionSetName,
+          label: "MSD Integration Agent",
+          description: "Permissions for sf-onprem integration agent setup and runtime access.",
+          hasActivationRequired: false
+        });
+        applied.push(`${permissionSetName}.permissionset`);
+
+        let visible = false;
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          const permissionSet = await client.queryGeneric(
+            `SELECT Id, Name FROM PermissionSet WHERE Name = '${permissionSetName}' LIMIT 1`
+          );
+          if (permissionSet.length) {
+            visible = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+        if (!visible) {
+          warnings.push(`PermissionSet ${permissionSetName} wurde angelegt, ist aber noch nicht per SOQL sichtbar. Setup bitte erneut ausfuehren.`);
+          return { applied, warnings };
+        }
+      }
+    } catch (error) {
+      warnings.push(`PermissionSet ${permissionSetName} konnte nicht angelegt/geprueft werden: ${error instanceof Error ? error.message : String(error)}`);
+      return { applied, warnings };
+    }
+
+    try {
+      const assignment = await client.ensurePermissionSetAssigned(permissionSetName);
+      if (!assignment.alreadyExisted) {
+        applied.push(`${permissionSetName}.assignment`);
+      }
+    } catch (error) {
+      warnings.push(`PermissionSet ${permissionSetName} konnte dem aktuellen Salesforce-Benutzer nicht zugewiesen werden: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    return { applied, warnings };
   }
 
   private async ensureAgentObjectSetup(
@@ -3136,14 +3451,14 @@ export class AdminDataService {
         );
       } else {
         const canonical = definition.canonicalObjectApiName;
-        const label = canonical.replace(/__c$/, "").replace(/_/g, " ");
+        const label = definition.label || canonical.replace(/__c$/, "").replace(/_/g, " ");
         await client.createOrUpdateMetadata("CustomObject", canonical, {
           fullName: canonical,
           label,
-          pluralLabel: `${label}s`,
+          pluralLabel: definition.pluralLabel || `${label}s`,
           deploymentStatus: "Deployed",
           sharingModel: "ReadWrite",
-          nameField: {
+          nameField: definition.nameField || {
             type: "AutoNumber",
             label: "Name",
             displayFormat: `${canonical.replace(/__c$/, "")}-{0000}`
@@ -3442,7 +3757,16 @@ export class AdminDataService {
 
     const desiredComponents = components.length
       ? components
-      : ["MSD_AgentHealth__c", "MSD_AgentCommand__c", "MSD_Integration_Agent.permissionset"];
+      : [
+          "MSD_Integration_Agent.permissionset",
+          "MSD_Connector__c",
+          "MSD_Schedule__c",
+          "MSD_Run__c",
+          "MSD_Log__c",
+          "MSD_Checkpoint__c",
+          "MSD_AgentHealth__c",
+          "MSD_AgentCommand__c"
+        ];
     const applied: string[] = [];
     const warnings: string[] = [];
 
@@ -3464,38 +3788,9 @@ export class AdminDataService {
         }
 
         if (normalized === "MSD_Integration_Agent.permissionset") {
-          const permissionCandidates = [
-            "MSD_Integration_Agent",
-            ...AdminDataService.agentPermissionSetLegacyNames
-          ];
-          const quotedPermissionCandidates = permissionCandidates
-            .map((entry) => `'${this.escapeSoqlLiteral(entry)}'`)
-            .join(", ");
-          const availablePermissionSets = new Set(
-            (await client.queryGeneric(
-              `SELECT Id, Name FROM PermissionSet WHERE Name IN (${quotedPermissionCandidates})`
-            ))
-              .map((entry) => String(entry.Name || "").trim())
-              .filter(Boolean)
-          );
-
-          if (availablePermissionSets.has("MSD_Integration_Agent")) {
-            await client.ensurePermissionSetAssigned("MSD_Integration_Agent");
-            applied.push(normalized);
-          } else {
-            const legacyPermissionName = AdminDataService.agentPermissionSetLegacyNames.find(
-              (entry) => availablePermissionSets.has(entry)
-            );
-            if (legacyPermissionName) {
-              await client.ensurePermissionSetAssigned(legacyPermissionName);
-              warnings.push(
-                `Legacy-PermissionSet ${legacyPermissionName} zugewiesen. Migration auf MSD_Integration_Agent empfohlen.`
-              );
-              applied.push(`${legacyPermissionName}.permissionset`);
-            } else {
-              warnings.push("PermissionSet MSD_Integration_Agent fehlt und konnte nicht automatisch erstellt werden.");
-            }
-          }
+          const permissionSetResult = await this.ensureAgentPermissionSetSetup(client);
+          applied.push(...permissionSetResult.applied);
+          warnings.push(...permissionSetResult.warnings);
           continue;
         }
 
@@ -3900,9 +4195,11 @@ export class AdminDataService {
       id: nextItem.id,
       name: nextItem.name || nextItem.id,
       isDefault: false,
+      loginUrl: nextItem.loginUrl,
       projectId,
       projectName: project.name,
-      role
+      role,
+      queryLimit: nextItem.queryLimit
     };
   }
 
@@ -4493,6 +4790,43 @@ export class AdminDataService {
     const buckets = this.createRecordsChartBuckets(range, from, to);
     const client = await this.createClient(instanceId);
     const runs = await client.queryRunsByDateRange(from.toISOString(), to.toISOString(), 5000);
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const tomorrowStart = new Date(todayStart);
+    tomorrowStart.setDate(todayStart.getDate() + 1);
+    const yesterdayStart = new Date(todayStart);
+    yesterdayStart.setDate(todayStart.getDate() - 1);
+    const dailyRuns = await client.queryRunsByDateRange(yesterdayStart.toISOString(), tomorrowStart.toISOString(), 5000);
+    const daily = dailyRuns.reduce(
+      (summary, run) => {
+        const startedAt = run.MSD_StartedAt__c ? new Date(run.MSD_StartedAt__c) : null;
+        if (!startedAt || Number.isNaN(startedAt.getTime())) {
+          return summary;
+        }
+
+        const succeeded = Math.max(0, Number(run.MSD_RecordsSucceeded__c || 0));
+        const failed = Math.max(0, Number(run.MSD_RecordsFailed__c || 0));
+        if (startedAt >= todayStart && startedAt < tomorrowStart) {
+          summary.total += succeeded + failed;
+          summary.succeeded += succeeded;
+          summary.failed += failed;
+        } else if (startedAt >= yesterdayStart && startedAt < todayStart) {
+          summary.previousSucceeded += succeeded;
+        }
+        return summary;
+      },
+      {
+        date: todayStart.toISOString(),
+        total: 0,
+        succeeded: 0,
+        failed: 0,
+        previousSucceeded: 0,
+        growth: 0,
+        growthPercent: null as number | null
+      }
+    );
+    daily.growth = daily.succeeded - daily.previousSucceeded;
+    daily.growthPercent = daily.previousSucceeded > 0 ? (daily.growth / daily.previousSucceeded) * 100 : null;
     const connectorNames = new Set<string>();
 
     for (const run of runs) {
@@ -4568,7 +4902,8 @@ export class AdminDataService {
     return {
       range,
       buckets,
-      connectors: Array.from(connectorNames).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }))
+      connectors: Array.from(connectorNames).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" })),
+      daily
     };
   }
 
@@ -5852,7 +6187,8 @@ export class AdminDataService {
     input: ConnectorMutationInput,
     instanceId?: string
   ): Promise<{ id: string; action: "created" | "updated" }> {
-    const client = await this.createClient(instanceId);
+    const resolvedInstance = this.resolveInstance(instanceId);
+    const client = await this.createClient(resolvedInstance.id);
     const sanitizedParameters = { ...(input.parameters || {}) };
     if (String(input.secretKey || "").trim()) {
       delete sanitizedParameters.password;
@@ -5883,10 +6219,12 @@ export class AdminDataService {
 
     if (input.id) {
       await client.updateConnectorRecord(input.id, fields);
+      this.invalidateAdaptiveSalesforceCache(resolvedInstance.id, ["listConnectors", "scheduleFormOptions"]);
       return { id: input.id, action: "updated" };
     }
 
     const id = await client.createConnectorRecord(fields);
+    this.invalidateAdaptiveSalesforceCache(resolvedInstance.id, ["listConnectors", "scheduleFormOptions"]);
     return { id, action: "created" };
   }
 
@@ -5950,6 +6288,7 @@ export class AdminDataService {
     }
 
     await client.deleteConnectorRecord(connectorId);
+    this.invalidateAdaptiveSalesforceCache(resolvedInstance.id, ["listConnectors", "listSchedules", "scheduleFormOptions"]);
 
     return {
       connectorId,

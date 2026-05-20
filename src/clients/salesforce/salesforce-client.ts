@@ -861,7 +861,12 @@ export class SalesforceClient {
       LIMIT ${this.config.queryLimit}
     `;
 
-    const result = await this.connection.query<SalesforceAccountRecord>(soql);
+    let result: Awaited<ReturnType<typeof this.connection.query<SalesforceAccountRecord>>>;
+    try {
+      result = await this.connection.query<SalesforceAccountRecord>(soql);
+    } catch (error) {
+      this.handleSalesforceRestError(error);
+    }
     return result.records;
   }
 
@@ -875,11 +880,20 @@ export class SalesforceClient {
       throw new Error("SOQL query must not be empty");
     }
 
-    let result = await this.connection.query<Record<string, unknown>>(trimmedSoql);
+    let result: Awaited<ReturnType<typeof this.connection.query<Record<string, unknown>>>>;
+    try {
+      result = await this.connection.query<Record<string, unknown>>(trimmedSoql);
+    } catch (error) {
+      this.handleSalesforceRestError(error);
+    }
     const records = [...result.records];
 
     while (!result.done && result.nextRecordsUrl) {
-      result = await this.connection.queryMore<Record<string, unknown>>(result.nextRecordsUrl);
+      try {
+        result = await this.connection.queryMore<Record<string, unknown>>(result.nextRecordsUrl);
+      } catch (error) {
+        this.handleSalesforceRestError(error);
+      }
       records.push(...result.records);
     }
 
@@ -896,13 +910,22 @@ export class SalesforceClient {
       throw new Error("SOQL query must not be empty");
     }
 
-    let result = await this.connection.query<Record<string, unknown>>(trimmedSoql);
+    let result: Awaited<ReturnType<typeof this.connection.query<Record<string, unknown>>>>;
+    try {
+      result = await this.connection.query<Record<string, unknown>>(trimmedSoql);
+    } catch (error) {
+      this.handleSalesforceRestError(error);
+    }
     for (const record of result.records) {
       yield { ...record };
     }
 
     while (!result.done && result.nextRecordsUrl) {
-      result = await this.connection.queryMore<Record<string, unknown>>(result.nextRecordsUrl);
+      try {
+        result = await this.connection.queryMore<Record<string, unknown>>(result.nextRecordsUrl);
+      } catch (error) {
+        this.handleSalesforceRestError(error);
+      }
       for (const record of result.records) {
         yield { ...record };
       }
@@ -914,23 +937,38 @@ export class SalesforceClient {
       throw new Error("Salesforce connection not initialized. Call login() first.");
     }
 
-    const identity = await this.connection.identity();
+    let identity: Awaited<ReturnType<typeof this.connection.identity>>;
+    try {
+      identity = await this.connection.identity();
+    } catch (error) {
+      this.handleSalesforceRestError(error);
+    }
     const userId = (identity as unknown as { user_id?: string }).user_id;
     if (!userId) {
       throw new Error("Could not determine current Salesforce user ID from identity endpoint.");
     }
 
-    const psResult = await this.connection.query<{ Id: string }>(
-      `SELECT Id FROM PermissionSet WHERE Name = '${permissionSetName}' LIMIT 1`
-    );
+    let psResult: Awaited<ReturnType<typeof this.connection.query<{ Id: string }>>>;
+    try {
+      psResult = await this.connection.query<{ Id: string }>(
+        `SELECT Id FROM PermissionSet WHERE Name = '${permissionSetName}' LIMIT 1`
+      );
+    } catch (error) {
+      this.handleSalesforceRestError(error);
+    }
     if (!psResult.records.length) {
       throw new Error(`PermissionSet '${permissionSetName}' not found in Salesforce.`);
     }
     const permissionSetId = psResult.records[0].Id;
 
-    const assignResult = await this.connection.query<{ Id: string }>(
-      `SELECT Id FROM PermissionSetAssignment WHERE AssigneeId = '${userId}' AND PermissionSetId = '${permissionSetId}' LIMIT 1`
-    );
+    let assignResult: Awaited<ReturnType<typeof this.connection.query<{ Id: string }>>>;
+    try {
+      assignResult = await this.connection.query<{ Id: string }>(
+        `SELECT Id FROM PermissionSetAssignment WHERE AssigneeId = '${userId}' AND PermissionSetId = '${permissionSetId}' LIMIT 1`
+      );
+    } catch (error) {
+      this.handleSalesforceRestError(error);
+    }
     if (assignResult.records.length > 0) {
       return { assigned: true, alreadyExisted: true };
     }
@@ -2248,7 +2286,12 @@ export class SalesforceClient {
       }
     }
 
-    const describeResult = await this.connection.sobject(objectApiName).describe();
+    let describeResult: any;
+    try {
+      describeResult = await this.connection.sobject(objectApiName).describe();
+    } catch (error) {
+      this.handleSalesforceRestError(error);
+    }
     const fields = Array.isArray(describeResult?.fields)
       ? (describeResult.fields as SalesforceDescribeField[])
       : [];
@@ -3108,12 +3151,37 @@ export class SalesforceClient {
     return false;
   }
 
+  private handleSalesforceRestError(error: unknown): never {
+    const message = String((error as any)?.message || error || "");
+    const errorCode = String((error as any)?.errorCode || "");
+    if (
+      errorCode === "INVALID_SESSION_ID" ||
+      message.includes("not valid for use with the REST API") ||
+      message.includes("INVALID_SESSION_ID")
+    ) {
+      const cacheKey = this.getCacheKey();
+      SalesforceClient.sessionCache.delete(cacheKey);
+      SalesforceClient.loginInFlight.delete(cacheKey);
+      this.connection = undefined;
+      const hint = this.config.authType === "client_credentials"
+        ? " → Connected App prüfen: (1) Client Credentials Flow aktiviert, (2) Execution User mit API-Zugriff konfiguriert, (3) OAuth-Scope 'api' vorhanden."
+        : " → Salesforce-Session abgelaufen oder ungültig. Konfiguration prüfen und erneut versuchen.";
+      throw new Error(message + hint);
+    }
+    throw error instanceof Error ? error : new Error(message || "Unknown Salesforce error");
+  }
+
   public async listObjectMetadata(): Promise<SalesforceObjectMetadata[]> {
     if (!this.connection) {
       throw new Error("Salesforce connection not initialized. Call login() first.");
     }
 
-    const describeGlobalResult = await (this.connection as any).describeGlobal();
+    let describeGlobalResult: any;
+    try {
+      describeGlobalResult = await (this.connection as any).describeGlobal();
+    } catch (error) {
+      this.handleSalesforceRestError(error);
+    }
     const sobjects = Array.isArray(describeGlobalResult?.sobjects)
       ? describeGlobalResult.sobjects
       : [];
