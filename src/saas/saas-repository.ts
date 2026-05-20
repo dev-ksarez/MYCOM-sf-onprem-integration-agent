@@ -164,6 +164,82 @@ export interface RegistrationTokenInfo {
   createdAt: string;
 }
 
+export interface AgentRunItem {
+  runId: string;
+  schedulerKey: string;
+  schedulerName: string | null;
+  connectorKey: string | null;
+  connectorName: string | null;
+  direction: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  readRecords: number;
+  writtenRecords: number;
+  failedRecords: number;
+  errorMessage: string | null;
+}
+
+export interface AgentLogEvent {
+  id: string;
+  runId: string;
+  schedulerKey: string | null;
+  connectorKey: string | null;
+  level: string;
+  code: string | null;
+  message: string;
+  occurredAt: string;
+}
+
+export interface AgentFailedRecord {
+  id: string;
+  recordKey: string | null;
+  errorCode: string | null;
+  message: string | null;
+  createdAt: string;
+}
+
+export interface AgentRecordsBucketScheduler {
+  schedulerKey: string;
+  schedulerName: string | null;
+  connectorKey: string | null;
+  connectorName: string | null;
+  total: number;
+  succeeded: number;
+  failed: number;
+}
+
+export interface AgentRecordsBucket {
+  label: string;
+  periodStart: string;
+  periodEnd: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  schedulerBreakdown: AgentRecordsBucketScheduler[];
+}
+
+export interface AgentRecordsSummary {
+  range: string;
+  buckets: AgentRecordsBucket[];
+  schedulerKeys: string[];
+}
+
+export interface AgentLogBucket {
+  label: string;
+  periodStart: string;
+  periodEnd: string;
+  total: number;
+  errors: number;
+  schedulerErrors: Record<string, number>;
+}
+
+export interface AgentLogSummary {
+  range: string;
+  buckets: AgentLogBucket[];
+  schedulerKeys: string[];
+}
+
 export interface SaasRepository {
   close(): Promise<void>;
   checkHealth(): Promise<void>;
@@ -209,6 +285,13 @@ export interface SaasRepository {
   listTenantSchedulers(tenantId: string): Promise<SchedulerConfigRecord[]>;
   upsertScheduler(tenantId: string, projectId: string, input: SchedulerInput): Promise<void>;
   deleteScheduler(tenantId: string, schedulerId: string): Promise<void>;
+  // Agent dashboard reads
+  getAgentRuns(agentId: string, bearerToken: string, limit: number): Promise<AgentRunItem[]>;
+  getAgentRunLogEvents(agentId: string, runId: string, bearerToken: string, limit: number): Promise<AgentLogEvent[]>;
+  getAgentRunFailedRecords(agentId: string, runId: string, bearerToken: string): Promise<AgentFailedRecord[]>;
+  getAgentRecordsSummary(agentId: string, bearerToken: string, range: "day" | "month" | "year"): Promise<AgentRecordsSummary>;
+  getAgentLogSummary(agentId: string, bearerToken: string, range: "last_hour" | "last_24h" | "last_30d"): Promise<AgentLogSummary>;
+  getAgentLogsByRange(agentId: string, bearerToken: string, start: string, end: string, type: "all" | "error", limit: number, schedulerKey?: string): Promise<AgentLogEvent[]>;
 }
 
 export interface SaasRepositoryOptions {
@@ -321,6 +404,71 @@ function asJson(value: unknown): string {
   return JSON.stringify(value ?? {});
 }
 
+function generateTimeBuckets(range: "day" | "month" | "year"): Array<{ label: string; start: Date; end: Date }> {
+  const now = new Date();
+  const buckets: Array<{ label: string; start: Date; end: Date }> = [];
+  if (range === "day") {
+    for (let i = 23; i >= 0; i--) {
+      const start = new Date(now);
+      start.setUTCMinutes(0, 0, 0);
+      start.setUTCHours(start.getUTCHours() - i);
+      const end = new Date(start);
+      end.setUTCHours(end.getUTCHours() + 1);
+      buckets.push({ label: `${String(start.getUTCHours()).padStart(2, "0")}:00`, start, end });
+    }
+  } else if (range === "month") {
+    for (let i = 29; i >= 0; i--) {
+      const start = new Date(now);
+      start.setUTCHours(0, 0, 0, 0);
+      start.setUTCDate(start.getUTCDate() - i);
+      const end = new Date(start);
+      end.setUTCDate(end.getUTCDate() + 1);
+      buckets.push({ label: `${String(start.getUTCDate()).padStart(2, "0")}.${String(start.getUTCMonth() + 1).padStart(2, "0")}`, start, end });
+    }
+  } else {
+    for (let i = 11; i >= 0; i--) {
+      const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+      const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1));
+      buckets.push({ label: `${String(start.getUTCMonth() + 1).padStart(2, "0")}/${String(start.getUTCFullYear()).slice(-2)}`, start, end });
+    }
+  }
+  return buckets;
+}
+
+function generateLogBuckets(range: "last_hour" | "last_24h" | "last_30d"): Array<{ label: string; start: Date; end: Date }> {
+  const now = new Date();
+  const buckets: Array<{ label: string; start: Date; end: Date }> = [];
+  if (range === "last_hour") {
+    for (let i = 11; i >= 0; i--) {
+      const start = new Date(now);
+      start.setUTCSeconds(0, 0);
+      start.setUTCMinutes(Math.floor(start.getUTCMinutes() / 5) * 5 - i * 5);
+      const end = new Date(start);
+      end.setUTCMinutes(end.getUTCMinutes() + 5);
+      buckets.push({ label: `${String(start.getUTCHours()).padStart(2, "0")}:${String(start.getUTCMinutes()).padStart(2, "0")}`, start, end });
+    }
+  } else if (range === "last_24h") {
+    for (let i = 23; i >= 0; i--) {
+      const start = new Date(now);
+      start.setUTCMinutes(0, 0, 0);
+      start.setUTCHours(start.getUTCHours() - i);
+      const end = new Date(start);
+      end.setUTCHours(end.getUTCHours() + 1);
+      buckets.push({ label: `${String(start.getUTCHours()).padStart(2, "0")}:00`, start, end });
+    }
+  } else {
+    for (let i = 29; i >= 0; i--) {
+      const start = new Date(now);
+      start.setUTCHours(0, 0, 0, 0);
+      start.setUTCDate(start.getUTCDate() - i);
+      const end = new Date(start);
+      end.setUTCDate(end.getUTCDate() + 1);
+      buckets.push({ label: `${String(start.getUTCDate()).padStart(2, "0")}.${String(start.getUTCMonth() + 1).padStart(2, "0")}`, start, end });
+    }
+  }
+  return buckets;
+}
+
 export function createSaasRepository(options: SaasRepositoryOptions): SaasRepository {
   const pool = new Pool({
     connectionString: options.databaseUrl,
@@ -328,6 +476,22 @@ export function createSaasRepository(options: SaasRepositoryOptions): SaasReposi
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000
   });
+
+  const resolveAgentProject = async (agentId: string, bearerToken: string): Promise<{ tenantId: string; projectId: string }> => {
+    const credentialHash = hashAgentToken(bearerToken, options.agentTokenPepper);
+    const result = await pool.query<{ tenant_id: string; project_id: string }>(
+      `select a.tenant_id, a.project_id
+       from agent_credentials c
+       join agents a on a.id = c.agent_id
+       where c.agent_id = $1 and c.credential_hash = $2 and c.status = 'active'
+         and a.status <> 'revoked' and (c.expires_at is null or c.expires_at > now())
+       limit 1`,
+      [agentId, credentialHash]
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error("Invalid agent credential");
+    return { tenantId: row.tenant_id, projectId: row.project_id };
+  };
 
   return {
     async close(): Promise<void> {
@@ -1352,6 +1516,210 @@ export function createSaasRepository(options: SaasRepositoryOptions): SaasReposi
         "update scheduler_configs set status = 'deleted', updated_at = now() where id = $1 and tenant_id = $2",
         [schedulerId, tenantId]
       );
+    },
+
+    // ── Agent dashboard reads ─────────────────────────────────────────────
+
+    async getAgentRuns(agentId: string, bearerToken: string, limit: number): Promise<AgentRunItem[]> {
+      const { tenantId, projectId } = await resolveAgentProject(agentId, bearerToken);
+      const result = await pool.query<{
+        run_id: string; scheduler_key: string; scheduler_name: string | null;
+        connector_key: string | null; connector_name: string | null;
+        direction: string; status: string; started_at: Date; finished_at: Date | null;
+        read_records: string; written_records: string; failed_records: string; error_message: string | null;
+      }>(
+        `select r.id as run_id, r.scheduler_key,
+                sc.name as scheduler_name, sc.connector_key,
+                cc.display_name as connector_name,
+                r.direction, r.status, r.started_at, r.finished_at,
+                r.read_records, r.written_records, r.failed_records, r.error_message
+         from scheduler_runs r
+         left join scheduler_configs sc on sc.project_id = r.project_id
+           and sc.scheduler_key = r.scheduler_key and sc.status <> 'deleted'
+         left join connector_configs cc on cc.project_id = r.project_id
+           and cc.connector_key = sc.connector_key and cc.status <> 'deleted'
+         where r.tenant_id = $1 and r.project_id = $2
+         order by r.started_at desc limit $3`,
+        [tenantId, projectId, limit]
+      );
+      return result.rows.map((r) => ({
+        runId: r.run_id, schedulerKey: r.scheduler_key, schedulerName: r.scheduler_name,
+        connectorKey: r.connector_key, connectorName: r.connector_name,
+        direction: r.direction, status: r.status,
+        startedAt: r.started_at.toISOString(), finishedAt: r.finished_at?.toISOString() ?? null,
+        readRecords: Number(r.read_records || 0), writtenRecords: Number(r.written_records || 0),
+        failedRecords: Number(r.failed_records || 0), errorMessage: r.error_message
+      }));
+    },
+
+    async getAgentRunLogEvents(agentId: string, runId: string, bearerToken: string, limit: number): Promise<AgentLogEvent[]> {
+      const { tenantId } = await resolveAgentProject(agentId, bearerToken);
+      const result = await pool.query<{
+        id: string; run_id: string; scheduler_key: string | null; connector_key: string | null;
+        level: string; code: string | null; message: string; occurred_at: Date;
+      }>(
+        `select l.id, l.run_id, r.scheduler_key, sc.connector_key,
+                l.level, l.code, l.message, l.occurred_at
+         from log_events l
+         join scheduler_runs r on r.id = l.run_id and r.tenant_id = $2
+         left join scheduler_configs sc on sc.project_id = r.project_id
+           and sc.scheduler_key = r.scheduler_key and sc.status <> 'deleted'
+         where l.run_id = $1 and l.tenant_id = $2
+         order by l.occurred_at limit $3`,
+        [runId, tenantId, limit]
+      );
+      return result.rows.map((r) => ({
+        id: r.id, runId: r.run_id, schedulerKey: r.scheduler_key, connectorKey: r.connector_key,
+        level: r.level, code: r.code, message: r.message, occurredAt: r.occurred_at.toISOString()
+      }));
+    },
+
+    async getAgentRunFailedRecords(agentId: string, runId: string, bearerToken: string): Promise<AgentFailedRecord[]> {
+      const { tenantId } = await resolveAgentProject(agentId, bearerToken);
+      const result = await pool.query<{
+        id: string; record_key: string | null; error_code: string | null; message: string | null; created_at: Date;
+      }>(
+        `select id, record_key, error_code, message, created_at
+         from failed_records where run_id = $1 and tenant_id = $2 order by created_at`,
+        [runId, tenantId]
+      );
+      return result.rows.map((r) => ({
+        id: r.id, recordKey: r.record_key, errorCode: r.error_code,
+        message: r.message, createdAt: r.created_at.toISOString()
+      }));
+    },
+
+    async getAgentRecordsSummary(agentId: string, bearerToken: string, range: "day" | "month" | "year"): Promise<AgentRecordsSummary> {
+      const { tenantId, projectId } = await resolveAgentProject(agentId, bearerToken);
+      const buckets = generateTimeBuckets(range);
+      const since = buckets[0].start;
+      const result = await pool.query<{
+        scheduler_key: string; scheduler_name: string | null;
+        connector_key: string | null; connector_name: string | null;
+        status: string; started_at: Date; written_records: string; failed_records: string;
+      }>(
+        `select r.scheduler_key, sc.name as scheduler_name, sc.connector_key,
+                cc.display_name as connector_name,
+                r.status, r.started_at, r.written_records, r.failed_records
+         from scheduler_runs r
+         left join scheduler_configs sc on sc.project_id = r.project_id
+           and sc.scheduler_key = r.scheduler_key and sc.status <> 'deleted'
+         left join connector_configs cc on cc.project_id = r.project_id
+           and cc.connector_key = sc.connector_key and cc.status <> 'deleted'
+         where r.tenant_id = $1 and r.project_id = $2 and r.started_at >= $3
+         order by r.started_at`,
+        [tenantId, projectId, since]
+      );
+
+      const schedulerKeySet = new Set<string>();
+      type SchedulerAgg = { schedulerKey: string; schedulerName: string | null; connectorKey: string | null; connectorName: string | null; total: number; succeeded: number; failed: number };
+      const filledBuckets: AgentRecordsBucket[] = buckets.map((b) => ({
+        label: b.label, periodStart: b.start.toISOString(), periodEnd: b.end.toISOString(),
+        total: 0, succeeded: 0, failed: 0, schedulerBreakdown: []
+      }));
+      const schedulerByBucket = new Map<number, Map<string, SchedulerAgg>>();
+
+      for (const run of result.rows) {
+        const idx = buckets.findIndex((b) => run.started_at >= b.start && run.started_at < b.end);
+        if (idx < 0) continue;
+        const succeeded = Number(run.written_records || 0);
+        const failed = Number(run.failed_records || 0);
+        const bucket = filledBuckets[idx];
+        bucket.total += succeeded + failed;
+        bucket.succeeded += succeeded;
+        bucket.failed += failed;
+        if (run.scheduler_key) {
+          schedulerKeySet.add(run.scheduler_key);
+          if (!schedulerByBucket.has(idx)) schedulerByBucket.set(idx, new Map());
+          const sbMap = schedulerByBucket.get(idx)!;
+          if (!sbMap.has(run.scheduler_key)) {
+            sbMap.set(run.scheduler_key, {
+              schedulerKey: run.scheduler_key, schedulerName: run.scheduler_name,
+              connectorKey: run.connector_key, connectorName: run.connector_name,
+              total: 0, succeeded: 0, failed: 0
+            });
+          }
+          const agg = sbMap.get(run.scheduler_key)!;
+          agg.total += succeeded + failed;
+          agg.succeeded += succeeded;
+          agg.failed += failed;
+        }
+      }
+
+      for (const [idx, sbMap] of schedulerByBucket) {
+        filledBuckets[idx].schedulerBreakdown = Array.from(sbMap.values());
+      }
+
+      return { range, buckets: filledBuckets, schedulerKeys: Array.from(schedulerKeySet) };
+    },
+
+    async getAgentLogSummary(agentId: string, bearerToken: string, range: "last_hour" | "last_24h" | "last_30d"): Promise<AgentLogSummary> {
+      const { tenantId } = await resolveAgentProject(agentId, bearerToken);
+      const buckets = generateLogBuckets(range);
+      const since = buckets[0].start;
+      const result = await pool.query<{
+        level: string; occurred_at: Date; scheduler_key: string | null;
+      }>(
+        `select l.level, l.occurred_at, r.scheduler_key
+         from log_events l
+         join scheduler_runs r on r.id = l.run_id and r.tenant_id = $1
+         where l.tenant_id = $1 and l.occurred_at >= $2
+         order by l.occurred_at`,
+        [tenantId, since]
+      );
+
+      const schedulerKeySet = new Set<string>();
+      const filledBuckets: AgentLogBucket[] = buckets.map((b) => ({
+        label: b.label, periodStart: b.start.toISOString(), periodEnd: b.end.toISOString(),
+        total: 0, errors: 0, schedulerErrors: {}
+      }));
+
+      for (const row of result.rows) {
+        const idx = buckets.findIndex((b) => row.occurred_at >= b.start && row.occurred_at < b.end);
+        if (idx < 0) continue;
+        const bucket = filledBuckets[idx];
+        bucket.total++;
+        const isError = row.level === "ERROR" || row.level === "WARN";
+        if (isError) {
+          bucket.errors++;
+          if (row.scheduler_key) {
+            schedulerKeySet.add(row.scheduler_key);
+            bucket.schedulerErrors[row.scheduler_key] = (bucket.schedulerErrors[row.scheduler_key] || 0) + 1;
+          }
+        }
+      }
+
+      return { range, buckets: filledBuckets, schedulerKeys: Array.from(schedulerKeySet) };
+    },
+
+    async getAgentLogsByRange(agentId: string, bearerToken: string, start: string, end: string, type: "all" | "error", limit: number, schedulerKey?: string): Promise<AgentLogEvent[]> {
+      const { tenantId } = await resolveAgentProject(agentId, bearerToken);
+      const params: unknown[] = [tenantId, new Date(start), new Date(end), limit];
+      const levelFilter = type === "error" ? "and l.level in ('ERROR', 'WARN')" : "";
+      let schedulerFilter = "";
+      if (schedulerKey) {
+        params.push(schedulerKey);
+        schedulerFilter = `and r.scheduler_key = $${params.length}`;
+      }
+      const result = await pool.query<{
+        id: string; run_id: string; scheduler_key: string | null; connector_key: string | null;
+        level: string; code: string | null; message: string; occurred_at: Date;
+      }>(
+        `select l.id, l.run_id, r.scheduler_key, sc.connector_key,
+                l.level, l.code, l.message, l.occurred_at
+         from log_events l
+         join scheduler_runs r on r.id = l.run_id and r.tenant_id = $1
+         left join scheduler_configs sc on sc.project_id = r.project_id
+           and sc.scheduler_key = r.scheduler_key and sc.status <> 'deleted'
+         where l.tenant_id = $1 and l.occurred_at >= $2 and l.occurred_at <= $3
+           ${levelFilter} ${schedulerFilter}
+         order by l.occurred_at desc limit $4`,
+        params
+      );
+      return result.rows.map((r) => ({
+        id: r.id, runId: r.run_id, schedulerKey: r.scheduler_key, connectorKey: r.connector_key,
+        level: r.level, code: r.code, message: r.message, occurredAt: r.occurred_at.toISOString()
+      }));
     }
   };
 }

@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(scp -i ~/.ssh/sf_agent_saas_vserver /Users/karstensarez/Documents/Projekte/sf-onprem-integration-agent/src/types/saas-control-plane.ts sfagent@178.254.18.231:/opt/sf-agent-saas/build/source/src/types/saas-control-plane.ts)",
+      "Bash(scp -i ~/.ssh/sf_agent_saas_vserver /Users/karstensarez/Documents/Projekte/sf-onprem-integration-agent/src/agent/saas-control-plane.ts sfagent@178.254.18.231:/opt/sf-agent-saas/build/source/src/agent/saas-control-plane.ts)",
+      "Bash(scp -i ~/.ssh/sf_agent_saas_vserver /Users/karstensarez/Documents/Projekte/sf-onprem-integration-agent/src/saas/saas-api-server.ts sfagent@178.254.18.231:/opt/sf-agent-saas/build/source/src/saas/saas-api-server.ts)",
+      "Bash(scp -i ~/.ssh/sf_agent_saas_vserver /Users/karstensarez/Documents/Projekte/sf-onprem-integration-agent/src/saas/saas-repository.ts sfagent@178.254.18.231:/opt/sf-agent-saas/build/source/src/saas/saas-repository.ts)",
+      "Bash(ssh -i ~/.ssh/sf_agent_saas_vserver sfagent@178.254.18.231 \"cd /opt/sf-agent-saas/build/source && docker build -f Dockerfile.saas -t sf-agent-saas-api:local . 2>&1\")",
+      "Bash(ssh -i ~/.ssh/sf_agent_saas_vserver sfagent@178.254.18.231 \"cd /opt/sf-agent-saas && docker compose --env-file .env up -d --no-deps saas-api && sleep 3 && docker compose ps\")",
+      "Bash(curl -s https://v45106.1blu.de/health)",
+      "Bash(curl -s https://v45106.1blu.de/api/saas/v1/overview)",
+      "Bash(python3 -m json.tool --no-ensure-ascii)",
+      "Bash(ssh -i ~/.ssh/sf_agent_saas_vserver sfagent@178.254.18.231 \"docker exec sf-agent-saas-postgres-1 psql -U \\\\$\\(grep POSTGRES_USER /opt/sf-agent-saas/.env | cut -d= -f2\\) -d \\\\$\\(grep POSTGRES_DB /opt/sf-agent-saas/.env | cut -d= -f2\\) -t -c \\\\\"SELECT a.id as agent_id, t.tenant_key, p.project_key FROM agents a JOIN tenants t ON t.id=a.tenant_id JOIN projects p ON p.id=a.project_id WHERE a.status <> 'revoked' LIMIT 1;\\\\\"\")",
+      "Bash(ssh -i ~/.ssh/sf_agent_saas_vserver sfagent@178.254.18.231 \"find /opt/sf-agent-saas -name '*.json' 2>/dev/null && find ~ -name 'saas-bootstrap*' 2>/dev/null | head -5\")",
+      "Bash(ssh -i ~/.ssh/sf_agent_saas_vserver sfagent@178.254.18.231 \"grep SAAS_AGENT_TOKEN_PEPPER /opt/sf-agent-saas/.env | cut -d= -f2\")",
+      "Bash(curl -s -X POST https://v45106.1blu.de/api/agent/v1/heartbeats -H 'Authorization: Bearer aat_smoketest_heartbugfix_1779219007' -H 'Content-Type: application/json' -d '{ *)",
+      "Bash(ssh -i ~/.ssh/sf_agent_saas_vserver sfagent@178.254.18.231 'PGUSER=$\\(grep POSTGRES_USER /opt/sf-agent-saas/.env | cut -d= -f2\\) *)",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit -m ' *)",
+      "Bash(npx tsc *)",
+      "Bash(ssh -i ~/.ssh/sf_agent_saas_vserver sfagent@v45106.1blu.de \"cat /opt/sf-agent-saas/.env | grep -v PASSWORD | grep -v SECRET | grep -v PEPPER\")",
+      "Bash(ssh-keyscan v45106.1blu.de >> ~/.ssh/known_hosts 2>&1 && echo \"done\")",
+      "Bash(ssh -i ~/.ssh/sf_agent_saas_vserver sfagent@v45106.1blu.de \"grep -E 'DATABASE_URL|SAAS_PORT|SAAS_AGENT|PORTAL' /opt/sf-agent-saas/.env 2>/dev/null | sed 's/=.*/=***/' \")",
+      "Bash(ssh -i ~/.ssh/sf_agent_saas_vserver sfagent@v45106.1blu.de \"cat /opt/sf-agent-saas/docker-compose.yml\")",
+      "Bash(ssh -i ~/.ssh/sf_agent_saas_vserver sfagent@v45106.1blu.de \"cd /opt/sf-agent-saas/build/source && docker build -f Dockerfile.saas -t sf-agent-saas-api:local . 2>&1 | tail -10\")",
+      "Bash(ssh -i ~/.ssh/sf_agent_saas_vserver sfagent@v45106.1blu.de \"cd /opt/sf-agent-saas && grep -E 'SAAS_ADMIN_PASSWORD|SAAS_ADMIN_EMAIL' .env 2>/dev/null || echo 'not set'\")",
+      "Bash(openssl rand *)",
+      "Bash(ssh -i *)",
+      "Bash(scp -i ~/.ssh/sf_agent_saas_vserver infra/saas/docker-compose.yml sfagent@v45106.1blu.de:/opt/sf-agent-saas/docker-compose.yml)",
+      "Bash(scp -i ~/.ssh/sf_agent_saas_vserver src/saas/saas-repository.ts sfagent@v45106.1blu.de:/opt/sf-agent-saas/build/source/src/saas/saas-repository.ts)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" https://v45106.1blu.de/health)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code} %{redirect_url}\" https://v45106.1blu.de/portal)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" https://v45106.1blu.de/portal/login)",
+      "Bash(sqlite3 /Users/karstensarez/Documents/Projekte/sf-onprem-integration-agent/data/projects.sqlite \".tables\")",
+      "Bash(sqlite3 /Users/karstensarez/Documents/Projekte/sf-onprem-integration-agent/data/projects.sqlite \".schema\")",
+      "Bash(sqlite3 /Users/karstensarez/Documents/Projekte/sf-onprem-integration-agent/data/projects.sqlite \"SELECT id, name, archived, created_at FROM projects ORDER BY created_at;\")",
+      "Bash(sqlite3 /Users/karstensarez/Documents/Projekte/sf-onprem-integration-agent/data/projects.sqlite \"SELECT * FROM projects;\")",
+      "Bash(scp -i ~/.ssh/sf_agent_saas_vserver infra/saas/postgres/migrate-v3.sql sfagent@v45106.1blu.de:/opt/sf-agent-saas/build/source/infra/saas/postgres/migrate-v3.sql)",
+      "Bash(curl -s -i -X POST https://v45106.1blu.de/api/portal/v1/auth/login -H 'Content-Type: application/x-www-form-urlencoded' -d 'email=admin%40annaburger.com&password=1qayXCVBNM%3B%3A_' --max-redirs 0)",
+      "Bash(grep -E \"\\\\.\\(ts|js|tsx|jsx|html\\)$\")",
+      "Bash(git checkout *)",
+      "Bash(git stash *)"
+    ],
+    "additionalDirectories": [
+      "/Users/karstensarez/.ssh"
+    ]
+  }
+}
