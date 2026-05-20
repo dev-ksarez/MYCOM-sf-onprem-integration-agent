@@ -6,6 +6,7 @@ import { MappedRecord } from "./mapped-record";
 export interface TargetConnector {
   systemName(): string;
   testConnection(): Promise<boolean>;
+  close?: () => Promise<void>;
   upsertAccounts(
     records: CanonicalAccount[],
     context: JobContext

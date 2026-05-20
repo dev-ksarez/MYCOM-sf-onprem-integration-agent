@@ -244,6 +244,10 @@ export class MssqlConnector implements TargetConnector {
     }
   }
 
+  public async close(): Promise<void> {
+    await this.database.close();
+  }
+
   public async upsertAccounts(
     records: CanonicalAccount[],
     context: JobContext
