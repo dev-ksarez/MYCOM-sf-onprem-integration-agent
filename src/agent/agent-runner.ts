@@ -29,6 +29,8 @@ import { GenericRecord } from "../types/generic-record";
 import { ConnectorResult } from "../types/connector-result";
 import { FailedJobRecord } from "../types/job-execution-result";
 import { parseQuerySourceDefinition, resolveAfterExportValue } from "../utils/query-source-definition";
+import { LocalScheduleHealthRepository, LocalScheduleHealthItem } from "../core/scheduler/local-schedule-health-repository";
+
 
 export interface AgentRunSummary {
   schedulesFound: number;
@@ -49,6 +51,7 @@ const AUTO_DISABLE_FAILURE_THRESHOLD = Math.max(
 );
 const LOCAL_SCHEDULE_HEALTH_FILE =
   process.env.SF_SCHEDULE_HEALTH_FILE || path.resolve(process.cwd(), "artifacts/schedule-health.json");
+const scheduleHealthRepo = new LocalScheduleHealthRepository(LOCAL_SCHEDULE_HEALTH_FILE);
 const FAILED_RUN_RECORDS_DIR =
   process.env.FAILED_RUN_RECORDS_DIR || path.resolve(process.cwd(), "artifacts/runtime/failed-run-records");
 
@@ -80,80 +83,11 @@ interface AggregatedConnectorErrorGroup {
   retryable: boolean;
   items: ConnectorResult[];
 }
-
-interface LocalScheduleHealthItem {
-  consecutiveFailures: number;
-  lastError?: string;
-  lastFailedAt?: string;
-  autoDisabled?: boolean;
-  autoDisabledAt?: string;
-}
-
-interface LocalScheduleHealthDocument {
-  version: number;
-  updatedAt: string;
-  schedules: Record<string, LocalScheduleHealthItem>;
-}
-
 interface EffectiveTargetDefinition {
   objectApiName?: string;
   externalIdField?: string;
   profileName?: string;
 }
-
-function readLocalScheduleHealth(): Record<string, LocalScheduleHealthItem> {
-  try {
-    if (!fs.existsSync(LOCAL_SCHEDULE_HEALTH_FILE)) {
-      return {};
-    }
-
-    const raw = fs.readFileSync(LOCAL_SCHEDULE_HEALTH_FILE, "utf8").trim();
-    if (!raw) {
-      return {};
-    }
-
-    const parsed = JSON.parse(raw) as unknown;
-    const schedulesCandidate = (
-      parsed && typeof parsed === "object" && !Array.isArray(parsed) && "schedules" in parsed
-        ? (parsed as { schedules?: unknown }).schedules
-        : parsed
-    );
-
-    if (!schedulesCandidate || typeof schedulesCandidate !== "object" || Array.isArray(schedulesCandidate)) {
-      return {};
-    }
-
-    return Object.entries(schedulesCandidate).reduce<Record<string, LocalScheduleHealthItem>>((acc, [scheduleId, item]) => {
-      if (!item || typeof item !== "object" || Array.isArray(item)) {
-        return acc;
-      }
-
-      const candidate = item as Record<string, unknown>;
-      acc[scheduleId] = {
-        consecutiveFailures: Math.max(0, Number(candidate.consecutiveFailures || 0) || 0),
-        lastError: typeof candidate.lastError === "string" ? candidate.lastError : undefined,
-        lastFailedAt: typeof candidate.lastFailedAt === "string" ? candidate.lastFailedAt : undefined,
-        autoDisabled: candidate.autoDisabled === true,
-        autoDisabledAt: typeof candidate.autoDisabledAt === "string" ? candidate.autoDisabledAt : undefined
-      };
-      return acc;
-    }, {});
-  } catch {
-    return {};
-  }
-}
-
-function writeLocalScheduleHealth(store: Record<string, LocalScheduleHealthItem>): void {
-  const directory = path.dirname(LOCAL_SCHEDULE_HEALTH_FILE);
-  fs.mkdirSync(directory, { recursive: true });
-  const document: LocalScheduleHealthDocument = {
-    version: 1,
-    updatedAt: new Date().toISOString(),
-    schedules: store
-  };
-  fs.writeFileSync(LOCAL_SCHEDULE_HEALTH_FILE, JSON.stringify(document, null, 2), "utf8");
-}
-
 async function runLogRetentionIfDue(salesforceClient: SalesforceClient, logger: pino.Logger): Promise<void> {
   const retentionDays = salesforceClient.getLogRetentionDays();
   if (retentionDays <= 0 || !salesforceClient.shouldRunLogCleanup()) {
@@ -186,53 +120,6 @@ async function runLogRetentionIfDue(salesforceClient: SalesforceClient, logger: 
     );
   }
 }
-
-function markScheduleRunSuccess(scheduleId: string): void {
-  const store = readLocalScheduleHealth();
-  const existing = store[scheduleId];
-  if (!existing) {
-    return;
-  }
-
-  if ((existing.consecutiveFailures || 0) === 0 && existing.autoDisabled !== true) {
-    return;
-  }
-
-  store[scheduleId] = {
-    ...existing,
-    consecutiveFailures: 0,
-    autoDisabled: false,
-    autoDisabledAt: undefined,
-    lastError: undefined
-  };
-  writeLocalScheduleHealth(store);
-}
-
-function markScheduleRunFailure(scheduleId: string, errorMessage: string): LocalScheduleHealthItem {
-  const store = readLocalScheduleHealth();
-  const existing = store[scheduleId] || { consecutiveFailures: 0 };
-  const updated: LocalScheduleHealthItem = {
-    ...existing,
-    consecutiveFailures: Math.max(0, Number(existing.consecutiveFailures || 0) || 0) + 1,
-    lastError: errorMessage,
-    lastFailedAt: new Date().toISOString()
-  };
-  store[scheduleId] = updated;
-  writeLocalScheduleHealth(store);
-  return updated;
-}
-
-function markScheduleAutoDisabled(scheduleId: string): void {
-  const store = readLocalScheduleHealth();
-  const existing = store[scheduleId] || { consecutiveFailures: 0 };
-  store[scheduleId] = {
-    ...existing,
-    autoDisabled: true,
-    autoDisabledAt: new Date().toISOString()
-  };
-  writeLocalScheduleHealth(store);
-}
-
 function persistFailedRunRecords(
   runId: string,
   schedule: IntegrationSchedule,
@@ -1310,7 +1197,7 @@ async function executeSchedule(
     });
 
     await salesforceClient.updateScheduleRecord(schedule.id, buildScheduleRunTimestampFields(schedule, finishedAt));
-    markScheduleRunSuccess(schedule.id);
+    scheduleHealthRepo.markSuccess(schedule.id);
 
     if (result.lastProcessedRecord) {
       const parsedSourceDefinition = parseQuerySourceDefinition(schedule.sourceDefinition || "");
@@ -1370,7 +1257,7 @@ async function executeSchedule(
       await salesforceClient.updateScheduleRecord(schedule.id, buildScheduleRunTimestampFields(schedule, failedAt));
     }
 
-    const health = markScheduleRunFailure(schedule.id, errorMessage);
+    const health = scheduleHealthRepo.markFailure(schedule.id, errorMessage);
     const shouldAutoDisable =
       !forceRun &&
       schedule.active &&
@@ -1390,7 +1277,7 @@ async function executeSchedule(
         ...buildScheduleRunTimestampFields(schedule, failedAt, { updateNextRunAt: false })
       });
 
-      markScheduleAutoDisabled(schedule.id);
+      scheduleHealthRepo.markAutoDisabled(schedule.id);
 
       await salesforceClient.createLog({
         runId,

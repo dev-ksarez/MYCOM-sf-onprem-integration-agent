@@ -45,6 +45,7 @@ import { runScheduleNow } from "../agent/agent-runner";
 import { analyzeUploadedFile, decodeTextBuffer, parseDelimitedRows, parseExcelBuffer, parseFileFromConnector } from "../utils/file-transfer";
 import { parseQuerySourceDefinition } from "../utils/query-source-definition";
 import { fetchRestRows, testRestConnection } from "../source-adapters/rest/rest-api-source-adapter";
+import { LocalScheduleHealthRepository, LocalScheduleHealthItem } from "../core/scheduler/local-schedule-health-repository";
 
 export interface SalesforceInstanceEnvConfig {
   id: string;
@@ -320,6 +321,7 @@ const SAGE100_DB_DOC_INDEX_FILE = process.env.SAGE100_DB_DOC_INDEX_FILE || path.
 const LOCAL_MIGRATION_INSTANCES_FILE = process.env.SF_MIGRATION_INSTANCES_FILE || path.resolve(process.cwd(), "artifacts/migration-instances.json");
 const LOCAL_SCHEDULE_TIMING_FILE = process.env.SF_SCHEDULE_TIMING_FILE || path.resolve(process.cwd(), "artifacts/schedule-timing.json");
 const LOCAL_SCHEDULE_HEALTH_FILE = process.env.SF_SCHEDULE_HEALTH_FILE || path.resolve(process.cwd(), "artifacts/schedule-health.json");
+const scheduleHealthRepo = new LocalScheduleHealthRepository(LOCAL_SCHEDULE_HEALTH_FILE);
 const LOCAL_MIGRATIONS_FILE = path.resolve(process.cwd(), "artifacts/migrations.json");
 const LOCAL_INSTANCE_READINESS_FILE = process.env.SF_INSTANCE_READINESS_FILE || path.resolve(process.cwd(), "artifacts/instance-readiness.json");
 const LOCAL_FAILED_RUN_RECORDS_DIR =
@@ -334,19 +336,6 @@ interface LocalScheduleTimingDocument {
   updatedAt: string;
   instances: LocalScheduleTimingStore;
 }
-
-interface LocalScheduleHealthItem {
-  consecutiveFailures: number;
-  autoDisabled?: boolean;
-  autoDisabledAt?: string;
-}
-
-interface LocalScheduleHealthDocument {
-  version: number;
-  updatedAt: string;
-  schedules: Record<string, LocalScheduleHealthItem>;
-}
-
 interface LocalInstanceReadinessRecord {
   instanceId: string;
   projectId: string;
@@ -661,58 +650,6 @@ function writeLocalScheduleTimingStore(store: LocalScheduleTimingStore): void {
   };
   fs.writeFileSync(LOCAL_SCHEDULE_TIMING_FILE, JSON.stringify(document, null, 2), "utf8");
 }
-
-function readLocalScheduleHealthStore(): Record<string, LocalScheduleHealthItem> {
-  try {
-    if (!fs.existsSync(LOCAL_SCHEDULE_HEALTH_FILE)) {
-      return {};
-    }
-
-    const raw = fs.readFileSync(LOCAL_SCHEDULE_HEALTH_FILE, "utf8").trim();
-    if (!raw) {
-      return {};
-    }
-
-    const parsed = JSON.parse(raw) as unknown;
-    const schedulesCandidate = (
-      parsed && typeof parsed === "object" && !Array.isArray(parsed) && "schedules" in parsed
-        ? (parsed as { schedules?: unknown }).schedules
-        : parsed
-    );
-
-    if (!schedulesCandidate || typeof schedulesCandidate !== "object" || Array.isArray(schedulesCandidate)) {
-      return {};
-    }
-
-    return Object.entries(schedulesCandidate).reduce<Record<string, LocalScheduleHealthItem>>((acc, [scheduleId, item]) => {
-      if (!item || typeof item !== "object" || Array.isArray(item)) {
-        return acc;
-      }
-
-      const candidate = item as Record<string, unknown>;
-      acc[scheduleId] = {
-        consecutiveFailures: Math.max(0, Number(candidate.consecutiveFailures || 0) || 0),
-        autoDisabled: candidate.autoDisabled === true,
-        autoDisabledAt: typeof candidate.autoDisabledAt === "string" ? candidate.autoDisabledAt : undefined
-      };
-      return acc;
-    }, {});
-  } catch {
-    return {};
-  }
-}
-
-function writeLocalScheduleHealthStore(store: Record<string, LocalScheduleHealthItem>): void {
-  const directory = path.dirname(LOCAL_SCHEDULE_HEALTH_FILE);
-  fs.mkdirSync(directory, { recursive: true });
-  const document: LocalScheduleHealthDocument = {
-    version: 1,
-    updatedAt: new Date().toISOString(),
-    schedules: store
-  };
-  fs.writeFileSync(LOCAL_SCHEDULE_HEALTH_FILE, JSON.stringify(document, null, 2), "utf8");
-}
-
 function readLocalInstances(): SalesforceInstanceEnvConfig[] {
   try {
     if (!fs.existsSync(LOCAL_INSTANCES_FILE)) {
@@ -4229,7 +4166,7 @@ export class AdminDataService {
     const records = await client.querySchedules(false);
     const runningRuns = await client.queryRunningRuns(200);
     const localTiming = readLocalScheduleTimingStore()[resolvedInstance.id] || {};
-    const localHealth = readLocalScheduleHealthStore();
+    const localHealth = scheduleHealthRepo.read();
     const runningScheduleIds = new Set(
       runningRuns
         .map((run) => String(run.MSD_Schedule__c || "").trim())
@@ -7734,7 +7671,7 @@ export class AdminDataService {
   }
 
   private clearScheduleAutoDisabledFlag(scheduleId: string): void {
-    const store = readLocalScheduleHealthStore();
+    const store = scheduleHealthRepo.read();
     const entry = store[scheduleId];
     if (!entry || entry.autoDisabled !== true) {
       return;
@@ -7745,17 +7682,17 @@ export class AdminDataService {
       autoDisabled: false,
       autoDisabledAt: undefined
     };
-    writeLocalScheduleHealthStore(store);
+    scheduleHealthRepo.write(store);
   }
 
   private removeScheduleHealthState(scheduleId: string): void {
-    const store = readLocalScheduleHealthStore();
+    const store = scheduleHealthRepo.read();
     if (!(scheduleId in store)) {
       return;
     }
 
     delete store[scheduleId];
-    writeLocalScheduleHealthStore(store);
+    scheduleHealthRepo.write(store);
   }
 
   public getTransformFunctions(): Promise<{ functions: Array<{ id: string; label: string; description?: string }> }> {
