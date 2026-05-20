@@ -359,6 +359,7 @@ export interface SalesforceObjectFieldMetadata {
   name: string;
   label: string;
   type: string;
+  length?: number;
   nillable: boolean;
   isExternalId: boolean;
   createable: boolean;
@@ -375,6 +376,7 @@ interface SalesforceDescribeField {
   name?: string;
   label?: string;
   type?: string;
+  length?: number;
   nillable?: boolean;
   externalId?: boolean;
   createable?: boolean;
@@ -2988,6 +2990,7 @@ export class SalesforceClient {
         name: String(field.name ?? "").trim(),
         label: String(field.label ?? field.name ?? "").trim(),
         type: String(field.type ?? "unknown").trim(),
+        length: typeof (field as { length?: unknown }).length === "number" ? (field as { length?: number }).length : undefined,
         nillable: Boolean(field.nillable),
         isExternalId: Boolean((field as { externalId?: boolean }).externalId),
         createable: Boolean((field as { createable?: boolean }).createable),

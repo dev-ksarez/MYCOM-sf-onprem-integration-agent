@@ -818,7 +818,10 @@ export class SalesforceTargetAdapter implements TargetAdapter {
           : field.createable || field.updateable;
 
       if (isExternalId || isWritable) {
-        filtered[field.name] = value;
+        filtered[field.name] =
+          typeof value === "string" && typeof field.length === "number" && field.length > 0 && value.length > field.length
+            ? value.slice(0, field.length)
+            : value;
       }
     }
 
