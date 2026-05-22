@@ -15,6 +15,9 @@ interface AgentServiceRuntimeOptions {
   salesforceControlPlaneEnabled: boolean;
   salesforceHealthIntervalMs: number;
   salesforceCommandPollIntervalMs: number;
+  geraeteakteIndexEnabled?: boolean;
+  geraeteakteIndexIntervalMs?: number;
+  geraeteakteBasePath?: string;
 }
 
 export interface AgentServiceRuntime {
@@ -168,7 +171,10 @@ export function createAgentServiceRuntime(options: AgentServiceRuntimeOptions): 
         getHealthSnapshot,
         healthIntervalMs: options.salesforceHealthIntervalMs,
         commandPollIntervalMs: options.salesforceCommandPollIntervalMs,
-        enabled: options.salesforceControlPlaneEnabled
+        enabled: options.salesforceControlPlaneEnabled,
+        geraeteakteIndexEnabled: options.geraeteakteIndexEnabled,
+        geraeteakteIndexIntervalMs: options.geraeteakteIndexIntervalMs,
+        geraeteakteBasePath: options.geraeteakteBasePath
       });
       salesforceControlPlane.start();
 

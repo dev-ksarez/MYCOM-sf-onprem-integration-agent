@@ -1,0 +1,130 @@
+// ──────────────────────────────────────────────────────────────────────
+// Module: admin-ui-state
+// Source lines: 1–125
+// ──────────────────────────────────────────────────────────────────────
+
+const LOG_CHART_RANGE_STORAGE_KEY = 'sf-agent.logChartRange';
+const MAX_LOG_CONNECTOR_SERIES = 5;
+const MAX_RECORD_CONNECTOR_SERIES = 6;
+const UI_THEME_STORAGE_KEY = 'sf-agent.uiTheme';
+const OVERVIEW_STATS_RANGE_STORAGE_KEY = 'sf-agent.overviewStatsRange';
+const HEADER_CONTEXT_STORAGE_KEY = 'sf-agent.headerContext';
+const nativeFetch = window.fetch.bind(window);
+const state = {
+  instanceId: '',
+  instances: [],
+  headerProjectId: 'default-project',
+  headerTargetEnv: 'test',
+  projects: [],
+  instanceReadinessSnapshots: {},
+  instanceMetadataSnapshots: {},
+  projectOperationResults: {},
+  projectSetupVersions: {},
+  projectSummaries: {},
+  editingProjectId: '',
+  schedules: [],
+  connectors: [],
+  connectorTestResults: {},
+  migrations: [],
+  cpuLoadHistory: [],
+  projectWizardStep: 1,
+  connectorWizardStep: 1,
+  scheduleWizardStep: 1,
+  previousOverviewSnapshot: null,
+  overviewStatsRange: 'month',
+  graphData: { nodes: [], edges: [] },
+  runtimeContextUnavailableMessage: '',
+  overviewConnectorFilterId: '',
+  schedulerConnectorFilterId: '',
+  schedulerActiveFilter: 'all',
+  schedulerDirectionTab: 'all',
+  runs: [],
+  staleRuns: [],
+  recordsSummary: null,
+  aiDashboardAnalysis: null,
+  aiDashboardAnalysisAt: 0,
+  aiDashboardAnalysisPromise: null,
+  updateStatus: null,
+  updateStatusCheckedAt: 0,
+  updateStatusPollTimer: null,
+  mappingFields: [],
+  sourcePreviewRows: [],
+  targetFields: [],
+  mappingRules: [],
+  mappingFieldsLoadSeq: 0,
+  targetObjectsLoadSeq: 0,
+  targetFieldsLoadSeq: 0,
+  schedulerLookupObjects: [],
+  schedulerLookupObjectsLoaded: false,
+  schedulerLookupObjectsLoadPromise: null,
+  schedulerLookupExternalIdFieldsByObject: {},
+  schedulerLookupExternalIdFieldPromises: {},
+  scheduleTargetFileNameDirty: false,
+  scheduleTargetFileNameLastAuto: '',
+  hasIncompatibleScheduleMappings: false,
+  scheduleMappingAssistantProfile: 'standard',
+  rawMappingEditorDirty: false,
+  selectedMappingRuleId: '',
+  logSummary: null,
+  salesforceOverview: null,
+  failedRunRecordsExport: null,
+  installerSummary: null,
+  installerGeneratedFiles: [],
+  adminMe: null,
+  adminUsers: [],
+  projectMemberships: [],
+  selectedMembershipProjectId: '',
+  auditHistory: [],
+  rolloutKpiSnapshot: null,
+  customObjectFieldOverrides: {},
+  scheduleOptions: {
+    objectNames: [],
+    operations: [],
+    sourceSystems: [],
+    targetSystems: [],
+    directions: []
+  }
+};
+const templatePickerState = {
+  kind: 'connector',
+  items: [],
+  filteredItems: [],
+  selectedTemplateId: '',
+  selectedTag: '',
+  resolver: null
+};
+
+// Migration wizard state - global to avoid hoisting issues
+let migState = {
+  id: null,
+  step: 1,
+  totalSteps: 7,
+  status: 'draft',
+  activeRunVisible: false,
+  name: '',
+  description: '',
+  batchSize: 200,
+  instanceId: '',
+  salesforceLogin: null,
+  objects: [],
+  dependencies: [],
+  executionPlan: [],
+  sfObjects: [],
+  lastRunResult: null,
+  runHistory: [],
+  progressPollTimer: null,
+  preflightWarnings: null,
+  preflightWarningsLoading: false,
+  pendingImports: [],
+  pendingImportInProgress: false,
+  pendingImportSuggestions: [],
+  pendingImportAnalysis: null,
+  migrationSourceAnalysis: null,
+  migrationSourcePayload: null,
+  createdAt: '',
+  updatedAt: '',
+  createdByName: '',
+  updatedByName: '',
+  mappingAssistantProfilesByObjectId: {}
+};
+

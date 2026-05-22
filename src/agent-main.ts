@@ -1,6 +1,8 @@
 import "dotenv/config";
+import fs from "node:fs";
+import https from "node:https";
 import pino from "pino";
-import { createAgentApiServer, isAgentApiEnabled } from "./agent/agent-api-server";
+import { createAgentApiServer, createAgentRequestListener, isAgentApiEnabled } from "./agent/agent-api-server";
 import { createAgentServiceRuntime } from "./agent/agent-service-runtime";
 
 const logger = pino({
@@ -23,7 +25,10 @@ const agentRuntime = createAgentServiceRuntime({
   })(),
   salesforceControlPlaneEnabled: isEnabled(process.env.AGENT_SALESFORCE_CONTROL_PLANE_ENABLED, true),
   salesforceHealthIntervalMs: Number(process.env.AGENT_HEALTH_PULSE_INTERVAL_MS || 300_000),
-  salesforceCommandPollIntervalMs: Number(process.env.AGENT_COMMAND_POLL_INTERVAL_MS || 60_000)
+  salesforceCommandPollIntervalMs: Number(process.env.AGENT_COMMAND_POLL_INTERVAL_MS || 60_000),
+  geraeteakteIndexEnabled: isEnabled(process.env.FILE_INDEX_PUSH_ENABLED, false),
+  geraeteakteIndexIntervalMs: Number(process.env.FILE_INDEX_PUSH_INTERVAL_MS || 300_000),
+  geraeteakteBasePath: process.env.FILE_BROWSE_BASE_PATH
 });
 
 async function main(): Promise<void> {
@@ -39,6 +44,29 @@ async function main(): Promise<void> {
         resolve();
       });
     });
+
+    // Optionaler HTTPS-Listener (für Thumbnail-<img> aus Salesforce nötig:
+    // Mixed-Content erfordert https). Aktiv, wenn Cert + Key konfiguriert sind.
+    const tlsCertPath = String(process.env.AGENT_API_TLS_CERT || "").trim();
+    const tlsKeyPath = String(process.env.AGENT_API_TLS_KEY || "").trim();
+    if (tlsCertPath && tlsKeyPath) {
+      try {
+        const httpsPort = Number(process.env.AGENT_API_HTTPS_PORT || 8443);
+        const tlsServer = https.createServer(
+          { cert: fs.readFileSync(tlsCertPath), key: fs.readFileSync(tlsKeyPath) },
+          createAgentRequestListener(() => agentRuntime.getHealthSnapshot())
+        );
+        await new Promise<void>((resolve, reject) => {
+          tlsServer.once("error", reject);
+          tlsServer.listen(httpsPort, () => {
+            logger.info({ port: httpsPort }, "Agent API service started (HTTPS)");
+            resolve();
+          });
+        });
+      } catch (error) {
+        logger.error({ err: error }, "HTTPS-Listener konnte nicht gestartet werden");
+      }
+    }
   }
 }
 

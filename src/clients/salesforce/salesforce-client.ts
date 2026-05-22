@@ -2484,6 +2484,39 @@ export class SalesforceClient {
     return result.id;
   }
 
+  public async deleteGenericRecords(
+    objectApiName: string,
+    ids: string[]
+  ): Promise<number> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+
+    const apiName = objectApiName.trim();
+    if (!apiName) {
+      throw new Error("objectApiName must not be empty");
+    }
+
+    const uniqueIds = [...new Set(ids.map((id) => String(id || "").trim()).filter(Boolean))];
+    if (!uniqueIds.length) {
+      return 0;
+    }
+
+    let deleted = 0;
+    const chunkSize = 200;
+    for (let index = 0; index < uniqueIds.length; index += chunkSize) {
+      const chunk = uniqueIds.slice(index, index + chunkSize);
+      const rawResults = await this.connection.sobject(apiName).destroy(chunk, { allOrNone: false });
+      const results = Array.isArray(rawResults) ? rawResults : [rawResults];
+      for (const result of results) {
+        if (result && result.success) {
+          deleted += 1;
+        }
+      }
+    }
+    return deleted;
+  }
+
   public async createGenericRecords(
     objectApiName: string,
     valuesList: Record<string, unknown>[]

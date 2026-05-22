@@ -61,7 +61,7 @@ import { AIDashboardAnalyzer, type AIDashboardAnalysisInput } from "./ai-dashboa
 import { generateSalesforceMappingRules } from "../core/mapping-dsl/salesforce-mapping-generator";
 import { serveStaticAsset, UI_ASSET_VERSION } from "./asset-server";
 import { appendAuditHistory, listAuditHistory } from "./audit-history-service";
-import { renderAdminUiScript } from "./admin-ui-script";
+
 import { listAppModules, renderMenuModuleNavigation, renderSidebarModuleNavigation } from "./app-modules";
 import { renderHtmlDocument } from "./ui-template";
 import { renderAISchedulerAssistantModule } from "./ai-scheduler-ui-module";
@@ -5001,16 +5001,7 @@ export function createAppServer(
         return;
       }
 
-      if (req.method === "GET" && requestUrl.pathname === "/assets/admin-ui.js") {
-        res.writeHead(200, {
-          "Content-Type": "application/javascript; charset=utf-8",
-          "Cache-Control": "no-cache, no-store, must-revalidate",
-          Pragma: "no-cache",
-          Expires: "0"
-        });
-        res.end(renderAdminUiScript());
-        return;
-      }
+
 
       if (req.method === "GET" && requestUrl.pathname.endsWith(".map")) {
         res.writeHead(204);

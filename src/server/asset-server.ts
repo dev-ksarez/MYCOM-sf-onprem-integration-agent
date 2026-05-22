@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 
-export const UI_ASSET_VERSION = "20260520-sf-compact-gauges";
+export const UI_ASSET_VERSION = "20260522-geraeteakte-files";
 
 const INLINE_ASSET_FALLBACKS: Record<string, string> = {
   "/assets/login.js": `(function () {
@@ -128,6 +128,10 @@ const STATIC_ASSETS: Record<string, StaticAsset> = {
   "/assets/examples/setup-file-import-export.example.json": {
     filePath: path.resolve(process.cwd(), "artifacts/file-examples/setup-file-import-export.example.json"),
     contentType: "application/json; charset=utf-8"
+  },
+  "/assets/admin-ui.js": {
+    filePath: path.resolve(process.cwd(), "dist/public/admin-ui.js"),
+    contentType: "application/javascript; charset=utf-8"
   }
 };
 

@@ -6,6 +6,7 @@ import { SalesforceClient } from "../clients/salesforce/salesforce-client";
 import { SalesforceConfig } from "../infrastructure/config/salesforce-config";
 import { HealthSnapshot } from "../server/health-snapshot";
 import { triggerDashboardUpdate } from "../server/dashboard-update-service";
+import { publishFileIndex } from "./geraeteakte-index-publisher";
 
 interface SalesforceInstanceEnvConfig {
   id: string;
@@ -61,6 +62,9 @@ export interface SalesforceControlPlaneOptions {
   healthIntervalMs: number;
   commandPollIntervalMs: number;
   enabled: boolean;
+  geraeteakteIndexEnabled?: boolean;
+  geraeteakteIndexIntervalMs?: number;
+  geraeteakteBasePath?: string;
 }
 
 export interface SalesforceControlPlaneRuntime {
@@ -284,8 +288,10 @@ function buildAckPayload(input: {
 export function createSalesforceControlPlaneRuntime(options: SalesforceControlPlaneOptions): SalesforceControlPlaneRuntime {
   let healthTimer: NodeJS.Timeout | undefined;
   let commandTimer: NodeJS.Timeout | undefined;
+  let geraeteakteTimer: NodeJS.Timeout | undefined;
   let runningHealth = false;
   let runningCommands = false;
+  let runningGeraeteakte = false;
   const processedCommandIds = new Set<string>();
 
   const getClient = async (): Promise<{ client: SalesforceClient; instance: ResolvedControlInstance } | null> => {
@@ -496,6 +502,30 @@ export function createSalesforceControlPlaneRuntime(options: SalesforceControlPl
     }
   };
 
+  const publishGeraeteakteIndex = async (): Promise<void> => {
+    if (runningGeraeteakte) {
+      return;
+    }
+    const basePath = String(options.geraeteakteBasePath || "").trim();
+    if (!basePath) {
+      options.logger.debug("Geräteakte index push skipped: FILE_BROWSE_BASE_PATH not configured");
+      return;
+    }
+    runningGeraeteakte = true;
+    try {
+      const resolved = await getClient();
+      if (!resolved) {
+        options.logger.debug("Geräteakte index push skipped: no configured instance");
+        return;
+      }
+      await publishFileIndex(resolved.client, basePath, options.logger);
+    } catch (error) {
+      options.logger.warn({ err: error }, "Geräteakte Datei-Index-Push fehlgeschlagen");
+    } finally {
+      runningGeraeteakte = false;
+    }
+  };
+
   const pollCommands = async (): Promise<void> => {
     if (runningCommands) {
       return;
@@ -576,6 +606,16 @@ export function createSalesforceControlPlaneRuntime(options: SalesforceControlPl
       void pollCommands();
       healthTimer = setInterval(() => void publishHealth(), options.healthIntervalMs);
       commandTimer = setInterval(() => void pollCommands(), options.commandPollIntervalMs);
+
+      if (options.geraeteakteIndexEnabled && options.geraeteakteBasePath) {
+        const interval = options.geraeteakteIndexIntervalMs && options.geraeteakteIndexIntervalMs > 0
+          ? options.geraeteakteIndexIntervalMs
+          : 300_000;
+        void publishGeraeteakteIndex();
+        geraeteakteTimer = setInterval(() => void publishGeraeteakteIndex(), interval);
+        options.logger.info({ geraeteakteIndexIntervalMs: interval }, "Geräteakte index push enabled");
+      }
+
       options.logger.info(
         { healthIntervalMs: options.healthIntervalMs, commandPollIntervalMs: options.commandPollIntervalMs },
         "Salesforce control plane started"
@@ -588,8 +628,12 @@ export function createSalesforceControlPlaneRuntime(options: SalesforceControlPl
       if (commandTimer) {
         clearInterval(commandTimer);
       }
+      if (geraeteakteTimer) {
+        clearInterval(geraeteakteTimer);
+      }
       healthTimer = undefined;
       commandTimer = undefined;
+      geraeteakteTimer = undefined;
     }
   };
 }
