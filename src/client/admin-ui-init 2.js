@@ -216,7 +216,6 @@ async function openProjectManagement() {
     restoreHeaderContext();
     await loadProjects();
     await loadInstances();
-    await refreshHeaderLayerOptions();
     await refresh();
     updateWeekdayChips();
     initializeTableFilters();
@@ -264,14 +263,6 @@ bindEventListenerOnce('admin-membership-project', 'change', async (event) => {
   await loadProjectMemberships();
 });
 bindEventListenerOnce('admin-audit-refresh', 'click', loadAdminData);
-bindEventListenerOnce('admin-ai-config-refresh', 'click', loadAIConfig);
-bindEventListenerOnce('admin-ai-config-save', 'click', async () => {
-  try {
-    await saveAIConfigFromForm();
-  } catch (error) {
-    showError(error.message || 'KI-Konfiguration konnte nicht gespeichert werden');
-  }
-});
 bindEventListenerOnce('admin-rollout-refresh', 'click', async () => {
   await loadRolloutKpisFromAdminPanel();
 });
@@ -400,7 +391,6 @@ document.getElementById('instance-select').addEventListener('change', async (eve
 bindEventListenerOnce('context-project-select', 'change', async (event) => {
   const nextProjectId = String(event?.target?.value || '').trim() || 'default-project';
   state.headerProjectId = nextProjectId;
-  state.headerLayerId = '';
   const nextInstanceId = findInstanceForContext(nextProjectId, state.headerTargetEnv);
   state.instanceId = nextInstanceId || '';
   const instanceSelect = document.getElementById('instance-select');
@@ -408,13 +398,11 @@ bindEventListenerOnce('context-project-select', 'change', async (event) => {
     instanceSelect.value = nextInstanceId || '';
   }
   syncHeaderContextFromSelectedInstance({ updateFromSelectedInstance: false });
-  await refreshHeaderLayerOptions();
   await refresh();
 });
 bindEventListenerOnce('context-target-env-select', 'change', async (event) => {
   const nextEnv = String(event?.target?.value || '').trim() === 'production' ? 'production' : 'test';
   state.headerTargetEnv = nextEnv;
-  state.headerLayerId = '';
   const nextInstanceId = findInstanceForContext(state.headerProjectId, nextEnv);
   state.instanceId = nextInstanceId || '';
   const instanceSelect = document.getElementById('instance-select');
@@ -422,27 +410,7 @@ bindEventListenerOnce('context-target-env-select', 'change', async (event) => {
     instanceSelect.value = nextInstanceId || '';
   }
   syncHeaderContextFromSelectedInstance();
-  await refreshHeaderLayerOptions();
   await refresh();
-});
-bindEventListenerOnce('context-layer-select', 'change', (event) => {
-  state.headerLayerId = String(event?.target?.value || '').trim();
-  persistHeaderContext();
-  renderContextSelectionSummary();
-});
-bindEventListenerOnce('context-layer-create', 'click', async () => {
-  try {
-    await createHeaderLayerFromCurrentSetup();
-  } catch (error) {
-    showError(error.message || 'Layer konnte nicht erstellt werden');
-  }
-});
-bindEventListenerOnce('context-layer-apply', 'click', async () => {
-  try {
-    await applyHeaderLayerToCurrentEnvironment();
-  } catch (error) {
-    showError(error.message || 'Layer konnte nicht gesetzt werden');
-  }
 });
 const themeSelect = document.getElementById('theme-select');
 if (themeSelect) {

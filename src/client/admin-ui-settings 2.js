@@ -84,21 +84,15 @@ function renderContextSelectionSummary() {
   const pill = document.getElementById('active-context-pill');
   const projectEl = document.getElementById('active-context-project');
   const envEl = document.getElementById('active-context-env');
-  const layerEl = document.getElementById('active-context-layer');
   const instanceEl = document.getElementById('active-context-instance');
-  const activeLayer = getSelectedHeaderLayer();
-  const layerLabel = state.headerTargetEnv === 'production'
-    ? 'Produktion'
-    : (activeLayer ? formatProjectSetupVersionLabel(activeLayer) : '-');
   const selectedInstance = (state.instances || []).find((item) => String(item.id || '') === String(state.instanceId || ''));
   if (!selectedInstance) {
     const activeProject = (state.projects || []).find((item) => String(item.id || '') === String(state.headerProjectId || ''));
     const projectName = String(activeProject?.name || state.headerProjectId || 'Default-Projekt');
     const envLabel = state.headerTargetEnv === 'production' ? 'Produktion' : 'Test';
-    if (summary) summary.textContent = 'Projekt: ' + projectName + ' · Umgebung: ' + envLabel + ' · Layer: ' + layerLabel + ' · keine passende Instanz konfiguriert.';
+    if (summary) summary.textContent = 'Projekt: ' + projectName + ' · Umgebung: ' + envLabel + ' · keine passende Instanz konfiguriert.';
     if (projectEl) projectEl.textContent = 'Projekt: ' + projectName;
     if (envEl) envEl.textContent = envLabel;
-    if (layerEl) layerEl.textContent = 'Layer: ' + layerLabel;
     if (instanceEl) instanceEl.textContent = 'Keine Instanz';
     if (pill) {
       pill.classList.remove('active-context-production', 'active-context-test');
@@ -112,10 +106,9 @@ function renderContextSelectionSummary() {
   const projectName = String(selectedInstance.projectName || state.headerProjectId || 'Default-Projekt');
   const envLabel = selectedInstance.role === 'production' ? 'Produktion' : 'Test';
   const instanceName = String(selectedInstance.name || selectedInstance.id || '-');
-  if (summary) summary.textContent = 'Projekt: ' + projectName + ' · Umgebung: ' + envLabel + ' · Layer: ' + layerLabel + ' · Instanz: ' + instanceName;
+  if (summary) summary.textContent = 'Projekt: ' + projectName + ' · Umgebung: ' + envLabel + ' · Instanz: ' + instanceName;
   if (projectEl) projectEl.textContent = 'Projekt: ' + projectName;
   if (envEl) envEl.textContent = envLabel;
-  if (layerEl) layerEl.textContent = 'Layer: ' + layerLabel;
   if (instanceEl) instanceEl.textContent = 'Instanz: ' + instanceName;
   if (pill) {
     pill.classList.remove('active-context-production', 'active-context-test', 'active-context-none');
@@ -367,7 +360,6 @@ function syncHeaderContextFromSelectedInstance(options = {}) {
     envSelect.value = state.headerTargetEnv === 'production' ? 'production' : 'test';
   }
 
-  populateHeaderLayerOptions();
   persistHeaderContext();
   renderContextSelectionSummary();
 }
@@ -406,7 +398,6 @@ function persistHeaderContext() {
     window.localStorage.setItem(HEADER_CONTEXT_STORAGE_KEY, JSON.stringify({
       projectId: String(state.headerProjectId || 'default-project').trim() || 'default-project',
       targetEnv: state.headerTargetEnv === 'production' ? 'production' : 'test',
-      layerId: String(state.headerLayerId || '').trim(),
       instanceId: String(state.instanceId || '').trim()
     }));
   } catch {
@@ -423,7 +414,6 @@ function restoreHeaderContext() {
     const parsed = JSON.parse(raw);
     state.headerProjectId = String(parsed?.projectId || state.headerProjectId || 'default-project').trim() || 'default-project';
     state.headerTargetEnv = parsed?.targetEnv === 'production' ? 'production' : 'test';
-    state.headerLayerId = String(parsed?.layerId || state.headerLayerId || '').trim();
     state.instanceId = String(parsed?.instanceId || state.instanceId || '').trim();
   } catch {
     state.headerProjectId = state.headerProjectId || 'default-project';
@@ -908,89 +898,6 @@ function renderProjectVersionOptions(projectId) {
     .join('');
 }
 
-function getProjectLayerVersions(projectId) {
-  const normalizedProjectId = String(projectId || '').trim();
-  return (Array.isArray(state.projectSetupVersions?.[normalizedProjectId]) ? state.projectSetupVersions[normalizedProjectId] : [])
-    .slice()
-    .sort((a, b) => Number(b.version || 0) - Number(a.version || 0));
-}
-
-function getDefaultLayerIdForContext(projectId) {
-  const normalizedProjectId = String(projectId || '').trim();
-  const summary = state.projectSummaries?.[normalizedProjectId] || {};
-  const envVersion = state.headerTargetEnv === 'production' ? summary.productionVersion : summary.testVersion;
-  const envVersionId = String(envVersion?.id || '').trim();
-  if (envVersionId) {
-    return envVersionId;
-  }
-  return String(getProjectLayerVersions(normalizedProjectId)[0]?.id || '').trim();
-}
-
-function getSelectedHeaderLayer() {
-  const projectId = String(state.headerProjectId || '').trim();
-  const layerId = String(state.headerLayerId || '').trim();
-  if (!projectId || !layerId) {
-    return null;
-  }
-  return getProjectLayerVersions(projectId).find((item) => String(item.id || '') === layerId) || null;
-}
-
-function populateHeaderLayerOptions() {
-  const select = document.getElementById('context-layer-select');
-  const createButton = document.getElementById('context-layer-create');
-  const applyButton = document.getElementById('context-layer-apply');
-  if (!select) {
-    return;
-  }
-  if (state.headerTargetEnv === 'production') {
-    select.innerHTML = '<option value="">Keine Layer in Produktion</option>';
-    select.value = '';
-    select.disabled = true;
-    state.headerLayerId = '';
-    if (createButton) createButton.disabled = true;
-    if (applyButton) applyButton.disabled = true;
-    return;
-  }
-  select.disabled = false;
-  if (createButton) createButton.disabled = false;
-  const projectId = String(state.headerProjectId || '').trim() || 'default-project';
-  const versions = getProjectLayerVersions(projectId);
-  if (!versions.length) {
-    select.innerHTML = '<option value="">Noch kein Layer vorhanden</option>';
-    state.headerLayerId = '';
-    select.value = '';
-    if (applyButton) applyButton.disabled = true;
-    return;
-  }
-
-  const currentLayerId = String(state.headerLayerId || '').trim();
-  const resolvedLayerId = versions.some((item) => String(item.id || '') === currentLayerId)
-    ? currentLayerId
-    : getDefaultLayerIdForContext(projectId);
-  state.headerLayerId = resolvedLayerId;
-  select.innerHTML = versions
-    .map((version) => '<option value="' + esc(String(version.id || '')) + '">' + esc(formatProjectSetupVersionLabel(version)) + '</option>')
-    .join('');
-  select.value = resolvedLayerId;
-  if (applyButton) applyButton.disabled = !resolvedLayerId;
-}
-
-async function refreshHeaderLayerOptions(options = {}) {
-  if (state.headerTargetEnv === 'production') {
-    state.headerLayerId = '';
-    populateHeaderLayerOptions();
-    persistHeaderContext();
-    renderContextSelectionSummary();
-    return;
-  }
-  const projectId = String(state.headerProjectId || '').trim() || 'default-project';
-  await loadProjectSetupVersions(projectId, { force: options.force === true });
-  await loadProjectSummary(projectId, { force: options.force === true });
-  populateHeaderLayerOptions();
-  persistHeaderContext();
-  renderContextSelectionSummary();
-}
-
 function renderProjectVersionDiffBadge(summary) {
   const hasTest = !!summary?.testVersion;
   const hasProduction = !!summary?.productionVersion;
@@ -1048,10 +955,6 @@ async function loadProjectSummary(projectId, options = {}) {
   if (select) {
     select.innerHTML = renderProjectVersionOptions(normalizedProjectId);
   }
-  if (normalizedProjectId === String(state.headerProjectId || '').trim()) {
-    populateHeaderLayerOptions();
-    renderContextSelectionSummary();
-  }
   renderProjectTable();
   return summary;
 }
@@ -1074,10 +977,6 @@ async function loadProjectSetupVersions(projectId, options = {}) {
   const select = document.querySelector('[data-project-version-select="' + normalizedProjectId.replace(/"/g, '\"') + '"]');
   if (select) {
     select.innerHTML = renderProjectVersionOptions(normalizedProjectId);
-  }
-  if (normalizedProjectId === String(state.headerProjectId || '').trim()) {
-    populateHeaderLayerOptions();
-    renderContextSelectionSummary();
   }
   return items;
 }
@@ -1159,83 +1058,6 @@ async function establishProjectTestVersion(projectId) {
     ]
   });
   await refresh({ refreshChart: false, includeGraph: false, includeSalesforceOverview: false, includeRecordsSummary: false });
-}
-
-async function createHeaderLayerFromCurrentSetup() {
-  if (state.headerTargetEnv === 'production') {
-    showError('Layer können nur in der Testumgebung erstellt werden.');
-    return;
-  }
-  const projectId = String(state.headerProjectId || '').trim() || 'default-project';
-  const instanceId = getProjectPrimaryInstanceId(projectId, state.headerTargetEnv === 'production' ? 'production' : 'test')
-    || getProjectPrimaryInstanceId(projectId, 'test')
-    || getProjectPrimaryInstanceId(projectId, 'production');
-  if (!instanceId) {
-    showError('Für dieses Projekt ist keine Instanz zum Erstellen eines Layers konfiguriert.');
-    return;
-  }
-  const result = await requestJson('/api/admin/projects/' + encodeURIComponent(projectId) + '/setup/versions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ instanceId, generateNote: true })
-  });
-  state.headerLayerId = String(result?.record?.id || '').trim();
-  await loadProjectSetupVersions(projectId, { force: true });
-  await loadProjectSummary(projectId, { force: true });
-  populateHeaderLayerOptions();
-  persistHeaderContext();
-  renderContextSelectionSummary();
-  showInfo('Layer erstellt: ' + formatProjectSetupVersionLabel(result?.record || null));
-}
-
-async function applyHeaderLayerToCurrentEnvironment() {
-  if (state.headerTargetEnv === 'production') {
-    showError('Layer können nicht direkt in Produktion gesetzt werden. Bitte den Deployment-Flow nutzen.');
-    return;
-  }
-  const projectId = String(state.headerProjectId || '').trim() || 'default-project';
-  const layerId = String(state.headerLayerId || '').trim();
-  const layer = getSelectedHeaderLayer();
-  if (!layerId || !layer) {
-    showError('Bitte zuerst einen Layer auswählen.');
-    return;
-  }
-  const targetEnv = 'test';
-  const label = formatProjectSetupVersionLabel(layer);
-  const targetLabel = targetEnv === 'production' ? 'Produktion' : 'Test';
-  if (!window.confirm('Layer auf die aktive ' + targetLabel + '-Umgebung setzen?\n\n' + label)) {
-    return;
-  }
-  const result = await requestJson('/api/admin/projects/' + encodeURIComponent(projectId) + '/setup/current-version', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ targetEnv, versionId: layerId })
-  });
-  if (result?.summary) {
-    state.projectSummaries = {
-      ...(state.projectSummaries || {}),
-      [projectId]: result.summary
-    };
-  } else {
-    await loadProjectSummary(projectId, { force: true });
-  }
-  if (result?.targetInstance?.id) {
-    state.instanceId = String(result.targetInstance.id || '').trim();
-    const instanceSelect = document.getElementById('instance-select');
-    if (instanceSelect) {
-      instanceSelect.value = state.instanceId;
-    }
-  }
-  populateHeaderLayerOptions();
-  persistHeaderContext();
-  renderContextSelectionSummary();
-  await refresh({ refreshChart: false, includeGraph: false, includeSalesforceOverview: false, includeRecordsSummary: false });
-  const importResult = result?.importResult || {};
-  showInfo(
-    'Layer gesetzt: ' + label +
-    ' · Connectoren +' + String(importResult.connectorsCreated || 0) + '/~' + String(importResult.connectorsUpdated || 0) +
-    ' · Scheduler +' + String(importResult.schedulesCreated || 0) + '/~' + String(importResult.schedulesUpdated || 0)
-  );
 }
 
 async function runProjectOperation(projectId, operation) {
@@ -1826,3 +1648,4 @@ async function saveInstance() {
     showInstanceModalError(error.message || 'Instanz konnte nicht gespeichert werden');
   }
 }
+

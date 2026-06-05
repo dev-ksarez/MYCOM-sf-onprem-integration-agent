@@ -175,6 +175,43 @@ export function renderAISchedulerAssistantModule(): string {
 
         <!-- Sidebar: Tipps & Beispiele -->
         <div class="col-lg-4">
+          <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-bottom d-flex justify-content-between align-items-center">
+              <h5 class="card-title mb-0">KI-Provider</h5>
+              <button id="ai-provider-refresh" type="button" class="btn btn-sm btn-outline-secondary">Aktualisieren</button>
+            </div>
+            <div class="card-body">
+              <div class="form-check form-switch mb-3">
+                <input id="ai-provider-enabled" class="form-check-input" type="checkbox" role="switch" />
+                <label class="form-check-label fw-semibold" for="ai-provider-enabled">KI-Provider aktivieren</label>
+              </div>
+              <div class="row g-2">
+                <div class="col-12">
+                  <label class="form-label small">Provider</label>
+                  <select id="ai-provider-type" class="form-select form-select-sm">
+                    <option value="rule-based">Rule-based</option>
+                    <option value="ollama">Ollama lokal</option>
+                    <option value="openai-compatible">OpenAI-kompatibel</option>
+                  </select>
+                </div>
+                <div class="col-12">
+                  <label class="form-label small">Modell</label>
+                  <input id="ai-provider-model" class="form-control form-control-sm" placeholder="llama3.1" />
+                </div>
+                <div class="col-12">
+                  <label class="form-label small">Base URL</label>
+                  <input id="ai-provider-base-url" class="form-control form-control-sm" placeholder="http://localhost:11434" />
+                </div>
+                <div class="col-12">
+                  <label class="form-label small">API-Key ENV</label>
+                  <input id="ai-provider-api-key-env" class="form-control form-control-sm" placeholder="OPENAI_API_KEY" />
+                </div>
+              </div>
+              <div id="ai-provider-status" class="small text-secondary mt-2">KI-Konfiguration wird geladen...</div>
+              <button id="ai-provider-save" type="button" class="btn btn-sm btn-primary mt-3 w-100">KI-Konfiguration speichern</button>
+            </div>
+          </div>
+
           <div class="card border-0 shadow-sm mb-4 bg-light">
             <div class="card-header bg-white border-bottom">
               <h5 class="card-title mb-0">📚 Beispiele</h5>
@@ -398,6 +435,8 @@ export function renderAISchedulerAssistantModule(): string {
         document.getElementById('ai-refine-btn')?.addEventListener('click', refineScheduler);
         document.getElementById('ai-sql-autofix-btn')?.addEventListener('click', autoFixSqlQuery);
         document.getElementById('ai-apply-delta-btn')?.addEventListener('click', applyDeltaSuggestion);
+        document.getElementById('ai-provider-refresh')?.addEventListener('click', loadAIProviderConfig);
+        document.getElementById('ai-provider-save')?.addEventListener('click', saveAIProviderConfig);
 
         // Beispiel-Buttons
         document.querySelectorAll('.ai-example-btn').forEach(btn => {
@@ -434,6 +473,66 @@ export function renderAISchedulerAssistantModule(): string {
         }
 
         initializeAIAssistant(connectors);
+        await loadAIProviderConfig();
+      }
+
+      function renderAIProviderConfig(config) {
+        const enabled = document.getElementById('ai-provider-enabled');
+        const provider = document.getElementById('ai-provider-type');
+        const model = document.getElementById('ai-provider-model');
+        const baseUrl = document.getElementById('ai-provider-base-url');
+        const apiKeyEnv = document.getElementById('ai-provider-api-key-env');
+        const status = document.getElementById('ai-provider-status');
+        if (!enabled || !provider || !model || !baseUrl || !apiKeyEnv || !status) {
+          return;
+        }
+        enabled.checked = config?.enabled === true;
+        provider.value = String(config?.provider || 'ollama');
+        model.value = String(config?.model || 'llama3.1');
+        baseUrl.value = String(config?.baseUrl || 'http://localhost:11434');
+        apiKeyEnv.value = String(config?.apiKeyEnv || '');
+        status.textContent = config?.enabled
+          ? 'Aktiv: ' + provider.value + (model.value ? ' / ' + model.value : '')
+          : 'Inaktiv: Rule-based Fallback wird genutzt';
+      }
+
+      async function loadAIProviderConfig() {
+        try {
+          const config = await aiRequestJson('/api/admin/ai-config');
+          renderAIProviderConfig(config);
+        } catch (error) {
+          const status = document.getElementById('ai-provider-status');
+          if (status) {
+            status.textContent = 'KI-Konfiguration nur mit Admin-Berechtigung verfügbar.';
+          }
+        }
+      }
+
+      async function saveAIProviderConfig() {
+        const payload = {
+          enabled: document.getElementById('ai-provider-enabled')?.checked === true,
+          provider: String(document.getElementById('ai-provider-type')?.value || 'ollama'),
+          model: String(document.getElementById('ai-provider-model')?.value || 'llama3.1').trim(),
+          baseUrl: String(document.getElementById('ai-provider-base-url')?.value || 'http://localhost:11434').trim(),
+          apiKeyEnv: String(document.getElementById('ai-provider-api-key-env')?.value || '').trim(),
+          useForScheduler: true
+        };
+        const status = document.getElementById('ai-provider-status');
+        if (status) {
+          status.textContent = 'Speichere KI-Konfiguration...';
+        }
+        try {
+          const saved = await aiRequestJson('/api/admin/ai-config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          renderAIProviderConfig(saved);
+        } catch (error) {
+          if (status) {
+            status.textContent = 'Speichern fehlgeschlagen: ' + (error.message || 'Unbekannter Fehler');
+          }
+        }
       }
 
       async function generateScheduler() {
@@ -491,7 +590,7 @@ export function renderAISchedulerAssistantModule(): string {
 
         reasoningAlert.innerHTML = '✓ ' + esc(result.reasoning);
         if (metadataBasisEl) {
-          metadataBasisEl.innerHTML = formatMetadataBasis(result.metadataBasis);
+          metadataBasisEl.innerHTML = formatMetadataBasis(result.metadataBasis) + formatAIProviderStatus(result.aiProvider);
         }
 
         if (result.issues && result.issues.length > 0) {
@@ -732,6 +831,21 @@ export function renderAISchedulerAssistantModule(): string {
         }
 
         return parts.join('<br>');
+      }
+
+      function formatAIProviderStatus(aiProvider) {
+        if (!aiProvider || typeof aiProvider !== 'object') {
+          return '<br>KI: Rule-based';
+        }
+        const provider = String(aiProvider.provider || 'rule-based');
+        const model = String(aiProvider.model || '').trim();
+        const status = String(aiProvider.status || '').trim();
+        const error = String(aiProvider.error || '').trim();
+        const label = provider + (model ? '/' + model : '') + (status ? ' (' + status + ')' : '');
+        if (error) {
+          return '<br>KI: ' + esc(label) + '<br><span class="text-danger">Fehler: ' + esc(error) + '</span>';
+        }
+        return '<br>KI: ' + esc(label);
       }
 
       function formatDateTime(value) {

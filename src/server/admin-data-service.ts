@@ -46,6 +46,7 @@ import { analyzeUploadedFile, decodeTextBuffer, parseDelimitedRows, parseExcelBu
 import { parseQuerySourceDefinition } from "../utils/query-source-definition";
 import { fetchRestRows, testRestConnection } from "../source-adapters/rest/rest-api-source-adapter";
 import { LocalScheduleHealthRepository, LocalScheduleHealthItem } from "../core/scheduler/local-schedule-health-repository";
+import { AIProviderConfig, normalizeAIProviderConfig, toPublicAIProviderConfig, type AIProviderPublicConfig } from "./ai-provider";
 
 export interface SalesforceInstanceEnvConfig {
   id: string;
@@ -324,6 +325,7 @@ const LOCAL_SCHEDULE_HEALTH_FILE = process.env.SF_SCHEDULE_HEALTH_FILE || path.r
 const scheduleHealthRepo = new LocalScheduleHealthRepository(LOCAL_SCHEDULE_HEALTH_FILE);
 const LOCAL_MIGRATIONS_FILE = path.resolve(process.cwd(), "artifacts/migrations.json");
 const LOCAL_INSTANCE_READINESS_FILE = process.env.SF_INSTANCE_READINESS_FILE || path.resolve(process.cwd(), "artifacts/instance-readiness.json");
+const LOCAL_AI_CONFIG_FILE = process.env.AI_CONFIG_FILE || path.resolve(process.cwd(), "artifacts/ai-config.json");
 const LOCAL_FAILED_RUN_RECORDS_DIR =
   process.env.FAILED_RUN_RECORDS_DIR || path.resolve(process.cwd(), "artifacts/runtime/failed-run-records");
 const SALESFORCE_METADATA_DIR = path.resolve(process.cwd(), "salesforce/metadata");
@@ -649,6 +651,41 @@ function writeLocalScheduleTimingStore(store: LocalScheduleTimingStore): void {
     instances: store
   };
   fs.writeFileSync(LOCAL_SCHEDULE_TIMING_FILE, JSON.stringify(document, null, 2), "utf8");
+}
+
+function readLocalAIConfig(): AIProviderConfig {
+  const envConfig = normalizeAIProviderConfig({
+    enabled: String(process.env.AI_PROVIDER_ENABLED || "").trim().toLowerCase() === "true",
+    provider: (process.env.AI_PROVIDER || "ollama") as AIProviderConfig["provider"],
+    model: process.env.AI_MODEL || "llama3.1",
+    baseUrl: process.env.AI_BASE_URL || "http://localhost:11434",
+    apiKeyEnv: process.env.AI_API_KEY_ENV,
+    temperature: process.env.AI_TEMPERATURE ? Number(process.env.AI_TEMPERATURE) : undefined,
+    timeoutMs: process.env.AI_TIMEOUT_MS ? Number(process.env.AI_TIMEOUT_MS) : undefined,
+    useForScheduler: String(process.env.AI_USE_FOR_SCHEDULER || "true").trim().toLowerCase() !== "false"
+  });
+
+  try {
+    if (!fs.existsSync(LOCAL_AI_CONFIG_FILE)) {
+      return envConfig;
+    }
+
+    const raw = fs.readFileSync(LOCAL_AI_CONFIG_FILE, "utf8").trim();
+    if (!raw) {
+      return envConfig;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<AIProviderConfig>;
+    return normalizeAIProviderConfig({ ...envConfig, ...parsed });
+  } catch {
+    return envConfig;
+  }
+}
+
+function writeLocalAIConfig(config: AIProviderConfig): void {
+  const directory = path.dirname(LOCAL_AI_CONFIG_FILE);
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(LOCAL_AI_CONFIG_FILE, JSON.stringify(config, null, 2), "utf8");
 }
 function readLocalInstances(): SalesforceInstanceEnvConfig[] {
   try {
@@ -3103,6 +3140,21 @@ export class AdminDataService {
       });
       return resolvedId;
     };
+  }
+
+  public getAIProviderConfig(): AIProviderConfig {
+    return readLocalAIConfig();
+  }
+
+  public getPublicAIProviderConfig(): AIProviderPublicConfig {
+    return toPublicAIProviderConfig(readLocalAIConfig());
+  }
+
+  public saveAIProviderConfig(input: Partial<AIProviderConfig>): AIProviderPublicConfig {
+    const existing = readLocalAIConfig();
+    const next = normalizeAIProviderConfig({ ...existing, ...input });
+    writeLocalAIConfig(next);
+    return toPublicAIProviderConfig(next);
   }
 
   public listInstances(): SalesforceInstanceOption[] {
@@ -8320,7 +8372,7 @@ export class AdminDataService {
 
   private getSage100DomainHints(normalizedPrompt: string): Array<{ tableName?: string; tableContains?: string; score: number }> {
     const hints: Array<{ tableName?: string; tableContains?: string; score: number }> = [];
-    if (/\b(order|orders|auftrag|auftraege|bestellung|beleg|erp)\b/.test(normalizedPrompt)) {
+    if (/\b(order|orders|auftrag|auftraege|bestellung|beleg)\b/.test(normalizedPrompt)) {
       hints.push(
         { tableName: "khkvkbelege", score: 50 },
         { tableName: "khkvkbelegepositionen", score: 35 },
@@ -8340,10 +8392,21 @@ export class AdminDataService {
       );
     }
     if (/\b(contact|kontakt|kontakte|ansprechpartner)\b/.test(normalizedPrompt)) {
-      hints.push({ tableContains: "khkansprechpartner", score: 8 });
-    }
-    if (/\b(product|produkt|artikel|pricebook|preis)\b/.test(normalizedPrompt)) {
       hints.push(
+        { tableName: "khkansprechpartner", score: 60 },
+        { tableContains: "khkansprechpartner", score: 8 }
+      );
+    }
+    if (/\b(quotes?|angebote?|offerten?)\b/.test(normalizedPrompt)) {
+      hints.push(
+        { tableName: "khkvkbelege", score: 60 },
+        { tableName: "khkvkbelegepositionen", score: 20 },
+        { tableContains: "khkvkbelege", score: 8 }
+      );
+    }
+    if (/\b(products?|produkte?|artikel|waren?|pricebook|preis)\b/.test(normalizedPrompt)) {
+      hints.push(
+        { tableName: "khkartikel", score: 60 },
         { tableContains: "khkartikel", score: 8 },
         { tableContains: "khkartikelvarianten", score: 5 }
       );

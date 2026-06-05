@@ -15,7 +15,6 @@ const state = {
   instances: [],
   headerProjectId: 'default-project',
   headerTargetEnv: 'test',
-  headerLayerId: '',
   projects: [],
   instanceReadinessSnapshots: {},
   instanceMetadataSnapshots: {},
@@ -73,7 +72,6 @@ const state = {
   installerGeneratedFiles: [],
   adminMe: null,
   adminUsers: [],
-  aiConfig: null,
   projectMemberships: [],
   selectedMembershipProjectId: '',
   auditHistory: [],
@@ -129,3 +127,4 @@ let migState = {
   updatedByName: '',
   mappingAssistantProfilesByObjectId: {}
 };
+

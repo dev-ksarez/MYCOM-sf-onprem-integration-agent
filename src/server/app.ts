@@ -58,6 +58,8 @@ import { generateInstallerFiles, getInstallerSummary, INSTALLER_OUTPUT_DIR, Inst
 import { AISchedulerService } from "./ai-scheduler-service";
 import { AIErrorAnalyzer, type RunErrorData } from "./ai-error-analyzer";
 import { AIDashboardAnalyzer, type AIDashboardAnalysisInput } from "./ai-dashboard-analyzer";
+import { buildSchedulerAIKnowledge } from "./ai-context-builder";
+import { AIProviderConfig } from "./ai-provider";
 import { generateSalesforceMappingRules } from "../core/mapping-dsl/salesforce-mapping-generator";
 import { serveStaticAsset, UI_ASSET_VERSION } from "./asset-server";
 import { appendAuditHistory, listAuditHistory } from "./audit-history-service";
@@ -1702,6 +1704,7 @@ ${renderSidebarModuleNavigation()}
             <div id="active-context-pill" class="active-context-pill active-context-test" aria-live="polite" title="Aktiver Projektkontext">
               <span id="active-context-project" class="active-context-project">Projekt: Default-Projekt</span>
               <span id="active-context-env" class="active-context-env">Test</span>
+              <span id="active-context-layer" class="active-context-instance">Layer: -</span>
               <span id="active-context-instance" class="active-context-instance">Instanz: -</span>
             </div>
           </div>
@@ -1747,6 +1750,14 @@ ${renderMenuModuleNavigation()}
                       <option value="test">Test</option>
                       <option value="production">Produktion</option>
                     </select>
+                  </div>
+                  <div class="agent-menu-control-card">
+                    <label class="small text-secondary" for="context-layer-select">Layer</label>
+                    <div class="input-group input-group-sm">
+                      <select id="context-layer-select" class="form-select"></select>
+                      <button id="context-layer-create" class="btn btn-outline-secondary" type="button" title="Neuen Layer aus aktuellem Setup erstellen">Neu</button>
+                      <button id="context-layer-apply" class="btn btn-outline-primary" type="button" title="Ausgewählten Layer auf die aktive Umgebung setzen">Setzen</button>
+                    </div>
                   </div>
                   <div class="agent-menu-control-card">
                     <label class="small text-secondary" for="instance-select">Instanz</label>
@@ -2326,6 +2337,9 @@ ${renderAISchedulerAssistantModule()}
               <li class="nav-item" role="presentation">
                 <button class="nav-link" id="admin-tab-history-trigger" data-bs-toggle="tab" data-bs-target="#admin-tab-history" type="button" role="tab" aria-controls="admin-tab-history" aria-selected="false">Aenderungshistorie</button>
               </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link" id="admin-tab-ai-trigger" data-bs-toggle="tab" data-bs-target="#admin-tab-ai" type="button" role="tab" aria-controls="admin-tab-ai" aria-selected="false">KI</button>
+              </li>
             </ul>
 
             <div class="tab-content" id="admin-tab-content">
@@ -2478,6 +2492,71 @@ ${renderAISchedulerAssistantModule()}
                         <thead><tr><th>Zeit</th><th>Benutzer</th><th>Aktion</th><th>Objekt</th><th>Status</th></tr></thead>
                         <tbody id="admin-audit-body"></tbody>
                       </table>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="tab-pane fade" id="admin-tab-ai" role="tabpanel" aria-labelledby="admin-tab-ai-trigger" tabindex="0">
+                <div class="card soft-card">
+                  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                    <span class="fw-semibold">KI-Provider</span>
+                    <button id="admin-ai-config-refresh" class="btn btn-sm btn-outline-secondary" type="button">Aktualisieren</button>
+                  </div>
+                  <div class="card-body">
+                    <div class="row g-3">
+                      <div class="col-md-3">
+                        <label class="form-label">Aktivierung</label>
+                        <div class="form-check form-switch border rounded px-5 py-2 bg-light">
+                          <input id="admin-ai-enabled" class="form-check-input" type="checkbox" role="switch" />
+                          <label class="form-check-label small" for="admin-ai-enabled">KI-Provider aktivieren</label>
+                        </div>
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Provider</label>
+                        <select id="admin-ai-provider" class="form-select form-select-sm">
+                          <option value="rule-based">Rule-based</option>
+                          <option value="ollama">Ollama lokal</option>
+                          <option value="openai-compatible">OpenAI-kompatibel</option>
+                        </select>
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Modell</label>
+                        <input id="admin-ai-model" class="form-control form-control-sm" placeholder="llama3.1" />
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Scheduler nutzen</label>
+                        <select id="admin-ai-use-scheduler" class="form-select form-select-sm">
+                          <option value="true">Ja</option>
+                          <option value="false">Nein</option>
+                        </select>
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label">Base URL</label>
+                        <input id="admin-ai-base-url" class="form-control form-control-sm" placeholder="http://localhost:11434 oder https://api.openai.com/v1" />
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">API-Key ENV</label>
+                        <input id="admin-ai-api-key-env" class="form-control form-control-sm" placeholder="OPENAI_API_KEY" />
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Timeout ms</label>
+                        <input id="admin-ai-timeout-ms" type="number" min="5000" max="120000" step="1000" class="form-control form-control-sm" />
+                      </div>
+                      <div class="col-md-3">
+                        <label class="form-label">Temperatur</label>
+                        <input id="admin-ai-temperature" type="number" min="0" max="2" step="0.1" class="form-control form-control-sm" />
+                      </div>
+                      <div class="col-md-9">
+                        <label class="form-label">Status</label>
+                        <div id="admin-ai-config-status" class="form-control form-control-sm bg-light text-secondary">Nicht geladen</div>
+                      </div>
+                    </div>
+                    <div class="d-flex gap-2 mt-3">
+                      <button id="admin-ai-config-save" class="btn btn-primary btn-sm" type="button">KI-Konfiguration speichern</button>
+                    </div>
+                    <div class="small text-secondary mt-3">
+                      Der Assistent nutzt die KI als Kontext-Erweiterung fuer Scheduler-Vorschlaege. Connectoren, Scheduler, Salesforce-Metadaten und SAGE100-Dokumentation werden ohne Secrets als Wissensbasis uebergeben.
                     </div>
                   </div>
                 </div>
@@ -3933,6 +4012,34 @@ export function createAppServer(
         return;
       }
 
+      if (req.method === "GET" && requestUrl.pathname === "/api/admin/ai-config") {
+        sendJson(200, adminDataService.getPublicAIProviderConfig());
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/admin/ai-config") {
+        const body = (await readJsonBody(req)) as Partial<AIProviderConfig>;
+        const item = adminDataService.saveAIProviderConfig({
+          enabled: body.enabled === true,
+          provider: body.provider,
+          model: body.model,
+          baseUrl: body.baseUrl,
+          apiKeyEnv: body.apiKeyEnv,
+          temperature: body.temperature,
+          timeoutMs: body.timeoutMs,
+          useForScheduler: body.useForScheduler !== false
+        });
+        await appendAuditHistory({
+          actor: auditActor,
+          action: "update",
+          entityType: "ai-config",
+          entityId: "default",
+          entityName: `${item.provider}${item.model ? `/${item.model}` : ""}`
+        });
+        sendJson(200, item);
+        return;
+      }
+
       if (req.method === "GET" && requestUrl.pathname === "/api/admin/projects") {
         const items = adminDataService.listProjects().filter((item) => {
           if (!session || hasPermission(session, "admin")) {
@@ -5238,6 +5345,13 @@ export function createAppServer(
         const schedules = await adminDataService.listSchedules(instanceId);
         const metadataContext = await adminDataService.getInstanceMetadataContext(instanceId);
         const sage100DocumentationContext = adminDataService.getSage100DocumentationContext(userPrompt);
+        const aiConfig = adminDataService.getAIProviderConfig();
+        const aiKnowledgeContext = buildSchedulerAIKnowledge({
+          connectors,
+          schedules,
+          metadataContext,
+          sage100DocumentationContext
+        });
         const aiService = new AISchedulerService();
         const result = await aiService.generateScheduler({
           userPrompt,
@@ -5247,7 +5361,9 @@ export function createAppServer(
           existingConnectors: connectors,
           existingSchedules: schedules,
           metadataContext,
-          sage100DocumentationContext
+          sage100DocumentationContext,
+          aiConfig,
+          aiKnowledgeContext
         });
 
         sendJson(200, result);

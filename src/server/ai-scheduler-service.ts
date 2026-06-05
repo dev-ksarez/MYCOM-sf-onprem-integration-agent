@@ -6,6 +6,7 @@ import {
   Sage100DocumentationContext
 } from "./admin-data-service";
 import { ScheduleMutationInput } from "./admin-data-service";
+import { AIProviderClient, AIProviderConfig } from "./ai-provider";
 
 /**
  * AI-basierte Scheduler-Generation aus Benutzer-Prompts
@@ -30,6 +31,93 @@ interface AISchedulerTiming {
   startTime?: string;
 }
 
+interface Sage100DomainDefinition {
+  objectName: string;
+  sageTable: string;
+  aliases: string[];
+  columns: string[];
+  upsertField: string;
+  mappings: Array<[target: string, type: string, source: string, transform?: string]>;
+  activeWhere?: string;
+}
+
+const SAGE100_DOMAIN_DEFINITIONS: Sage100DomainDefinition[] = [
+  {
+    objectName: "Account",
+    sageTable: "KHKAdressen",
+    aliases: ["account", "accounts", "kunde", "kunden", "adresse", "adressen", "debitor", "debitoren"],
+    columns: ["Adresse", "Matchcode", "Name1", "Name2", "LieferStrasse", "LieferPLZ", "LieferOrt", "LieferLand", "Telefon", "EMail"],
+    upsertField: "AccountNumber",
+    activeWhere: "Aktiv = -1",
+    mappings: [
+      ["Name", "string", "Name1", "TRIM"],
+      ["AccountNumber", "string", "Adresse", "TRIM"],
+      ["ERP_Account_Number__c", "string", "Adresse", "TRIM"],
+      ["Phone", "string", "Telefon", "TRIM"],
+      ["General_Email__c", "string", "EMail", "TRIM"],
+      ["ShippingStreet", "string", "LieferStrasse", "TRIM"],
+      ["ShippingPostalCode", "string", "LieferPLZ", "TRIM"],
+      ["ShippingCity", "string", "LieferOrt", "TRIM"],
+      ["ShippingCountry", "string", "LieferLand", "TRIM"]
+    ]
+  },
+  {
+    objectName: "Contact",
+    sageTable: "KHKAnsprechpartner",
+    aliases: ["contact", "contacts", "kontakt", "kontakte", "ansprechpartner", "personen", "person"],
+    columns: ["Nummer", "Adresse", "Vorname", "Nachname", "Ansprechpartner", "Position", "Telefon", "EMail"],
+    upsertField: "Email",
+    mappings: [
+      ["Email", "string", "EMail", "LOWERCASE"],
+      ["FirstName", "string", "Vorname", "TRIM"],
+      ["LastName", "string", "Nachname", "TRIM"],
+      ["Title", "string", "Position", "TRIM"],
+      ["Phone", "string", "Telefon", "TRIM"]
+    ]
+  },
+  {
+    objectName: "Product2",
+    sageTable: "KHKArtikel",
+    aliases: ["product", "products", "produkt", "produkte", "artikel", "ware", "waren"],
+    columns: ["Artikelnummer", "Bezeichnung1", "Bezeichnung2", "Aktiv"],
+    upsertField: "ProductCode",
+    activeWhere: "Aktiv = -1",
+    mappings: [
+      ["ProductCode", "string", "Artikelnummer", "TRIM"],
+      ["Name", "string", "Bezeichnung1", "TRIM"],
+      ["Description", "string", "Bezeichnung2", "TRIM"],
+      ["IsActive", "boolean", "Aktiv", "STATIC[true]"]
+    ]
+  },
+  {
+    objectName: "Quote",
+    sageTable: "KHKVKBelege",
+    aliases: ["quote", "quotes", "angebot", "angebote", "offerte", "offerten"],
+    columns: ["BelID", "Belegnummer", "Adresse", "Belegdatum", "Nettobetrag", "Belegstatus"],
+    upsertField: "QuoteNumber",
+    mappings: [
+      ["Name", "string", "Belegnummer", "TRIM"],
+      ["QuoteNumber", "string", "Belegnummer", "TRIM"],
+      ["ExpirationDate", "datetime", "Belegdatum", "DATETIME_ISO"],
+      ["TotalPrice", "number", "Nettobetrag", "NONE"]
+    ]
+  },
+  {
+    objectName: "Order",
+    sageTable: "KHKVKBelege",
+    aliases: ["order", "orders", "auftrag", "auftraege", "aufträge", "bestellung", "bestellungen", "beleg", "belege"],
+    columns: ["BelID", "Belegnummer", "Adresse", "Belegdatum", "Nettobetrag", "Status"],
+    upsertField: "OrderNumber",
+    mappings: [
+      ["OrderNumber", "string", "Belegnummer", "TRIM"],
+      ["Name", "string", "Belegnummer", "TRIM"],
+      ["EffectiveDate", "datetime", "Belegdatum", "DATETIME_ISO"],
+      ["TotalAmount", "number", "Nettobetrag", "NONE"],
+      ["Status", "string", "Status", "TRIM"]
+    ]
+  }
+];
+
 export interface AISchedulerRequest {
   userPrompt: string;
   connectorId?: string;
@@ -39,6 +127,8 @@ export interface AISchedulerRequest {
   existingSchedules?: ScheduleListItem[];
   metadataContext?: InstanceMetadataContext;
   sage100DocumentationContext?: Sage100DocumentationContext;
+  aiConfig?: AIProviderConfig;
+  aiKnowledgeContext?: string;
 }
 
 export interface AIGenerationResult {
@@ -81,6 +171,13 @@ export interface AIGenerationResult {
       tableCount?: number;
       matchedTables?: string[];
     };
+  };
+  aiProvider?: {
+    provider: string;
+    model?: string;
+    used: boolean;
+    status: "disabled" | "success" | "error";
+    error?: string;
   };
 }
 
@@ -126,14 +223,34 @@ export class AISchedulerService {
       // Phase 4: Validation & Issues
       const issues = this.validateScheduleConfiguration(baseSchedule, analysis);
       const requiresValidation = confidence < 0.75 || issues.some((i) => i.severity === "warning");
+      const baseReasoning = this.buildReasoningText(analysis, selectedConnector, confidence);
+      const refined = await this.tryRefineWithAIProvider(request, baseSchedule, baseReasoning);
+      if (refined.schedule) {
+        const refinedIssues = this.validateScheduleConfiguration(refined.schedule, analysis);
+        const mergedIssues = [...issues, ...(refined.issues || []), ...refinedIssues];
+        const refinedConfidence = Number.isFinite(Number(refined.confidence))
+          ? Math.max(0, Math.min(1, Number(refined.confidence)))
+          : Math.min(0.95, confidence + 0.08);
+
+        return {
+          schedule: refined.schedule,
+          confidence: refinedConfidence,
+          reasoning: refined.reasoning || baseReasoning,
+          issues: mergedIssues,
+          requiresUserValidation: refinedConfidence < 0.85 || mergedIssues.some((i) => i.severity === "warning" || i.severity === "error"),
+          metadataBasis: this.buildMetadataBasis(request),
+          aiProvider: refined.aiProvider
+        };
+      }
 
       return {
         schedule: baseSchedule,
         confidence,
-        reasoning: this.buildReasoningText(analysis, selectedConnector, confidence),
+        reasoning: baseReasoning,
         issues,
         requiresUserValidation: requiresValidation,
-        metadataBasis: this.buildMetadataBasis(request)
+        metadataBasis: this.buildMetadataBasis(request),
+        aiProvider: refined.aiProvider
       };
     } catch (error) {
       return {
@@ -667,6 +784,141 @@ export class AISchedulerService {
     };
   }
 
+  private async tryRefineWithAIProvider(
+    request: AISchedulerRequest,
+    baseSchedule: ScheduleMutationInput,
+    baseReasoning: string
+  ): Promise<{
+    schedule?: ScheduleMutationInput;
+    reasoning?: string;
+    confidence?: number;
+    issues?: Array<{ severity: "warning" | "error"; message: string }>;
+    aiProvider?: AIGenerationResult["aiProvider"];
+  }> {
+    const config = request.aiConfig;
+    if (!config || !config.enabled || config.provider === "rule-based" || config.useForScheduler === false) {
+      return {
+        aiProvider: {
+          provider: config?.provider || "rule-based",
+          model: config?.model,
+          used: false,
+          status: "disabled"
+        }
+      };
+    }
+
+    const client = new AIProviderClient(config);
+    if (!client.isEnabledForScheduler()) {
+      return {
+        aiProvider: {
+          provider: config.provider,
+          model: config.model,
+          used: false,
+          status: "disabled"
+        }
+      };
+    }
+
+    try {
+      const result = await client.refineScheduler({
+        userPrompt: request.userPrompt,
+        context: request.aiKnowledgeContext || "",
+        baseSchedule,
+        baseReasoning
+      });
+      if (!result) {
+        return {
+          aiProvider: {
+            provider: config.provider,
+            model: config.model,
+            used: false,
+            status: "disabled"
+          }
+        };
+      }
+
+      const schedule = result.schedule
+        ? this.mergeAISchedulePatch(baseSchedule, result.schedule)
+        : undefined;
+
+      return {
+        schedule,
+        reasoning: result.reasoning,
+        confidence: result.confidence,
+        issues: this.normalizeAIIssues(result.issues),
+        aiProvider: {
+          provider: config.provider,
+          model: config.model,
+          used: true,
+          status: "success"
+        }
+      };
+    } catch (error) {
+      return {
+        issues: [{
+          severity: "warning",
+          message: `KI-Provider konnte nicht genutzt werden, Rule-based Ergebnis verwendet: ${error instanceof Error ? error.message : String(error)}`
+        }],
+        aiProvider: {
+          provider: config.provider,
+          model: config.model,
+          used: true,
+          status: "error",
+          error: error instanceof Error ? error.message : String(error)
+        }
+      };
+    }
+  }
+
+  private mergeAISchedulePatch(
+    baseSchedule: ScheduleMutationInput,
+    patch: Partial<ScheduleMutationInput>
+  ): ScheduleMutationInput {
+    const allowedKeys: Array<keyof ScheduleMutationInput> = [
+      "name",
+      "active",
+      "sourceSystem",
+      "targetSystem",
+      "objectName",
+      "operation",
+      "direction",
+      "sourceType",
+      "targetType",
+      "batchSize",
+      "connectorId",
+      "timingDefinition",
+      "sourceDefinition",
+      "targetDefinition",
+      "mappingDefinition",
+      "parentScheduleId",
+      "inheritTimingFromParent"
+    ];
+    const next: ScheduleMutationInput = { ...baseSchedule };
+    for (const key of allowedKeys) {
+      const value = patch[key];
+      if (value === undefined || value === null) {
+        continue;
+      }
+      (next as any)[key] = value;
+    }
+    return next;
+  }
+
+  private normalizeAIIssues(
+    issues?: Array<{ severity?: string; message?: string }>
+  ): Array<{ severity: "warning" | "error"; message: string }> {
+    if (!Array.isArray(issues)) {
+      return [];
+    }
+    return issues
+      .map((issue) => ({
+        severity: issue?.severity === "error" ? "error" as const : "warning" as const,
+        message: String(issue?.message || "").trim()
+      }))
+      .filter((issue) => Boolean(issue.message))
+      .slice(0, 8);
+  }
+
   /**
    * Analysiere den Benutzer-Prompt und extrahiere Schlüsselinformationen
    */
@@ -776,6 +1028,36 @@ export class AISchedulerService {
     return [...new Set(words.map((w) => w.toLowerCase()))];
   }
 
+  private findSage100DomainForText(text: string): Sage100DomainDefinition | undefined {
+    const normalized = this.normalizeMatchText(text);
+    if (!normalized) {
+      return undefined;
+    }
+    const tokens = new Set(normalized.split(/\s+/).filter(Boolean));
+    return SAGE100_DOMAIN_DEFINITIONS.find((definition) =>
+      definition.aliases.some((alias) => {
+        const normalizedAlias = this.normalizeMatchText(alias);
+        return tokens.has(normalizedAlias) || normalized.includes(normalizedAlias);
+      })
+    );
+  }
+
+  private findSage100DomainForObject(objectName?: string): Sage100DomainDefinition | undefined {
+    const normalizedObjectName = String(objectName || "").trim().toLowerCase();
+    if (!normalizedObjectName) {
+      return undefined;
+    }
+    return SAGE100_DOMAIN_DEFINITIONS.find((definition) => definition.objectName.toLowerCase() === normalizedObjectName);
+  }
+
+  private findSage100DomainForTable(tableName?: string): Sage100DomainDefinition | undefined {
+    const normalizedTableName = String(tableName || "").trim().toLowerCase();
+    if (!normalizedTableName) {
+      return undefined;
+    }
+    return SAGE100_DOMAIN_DEFINITIONS.find((definition) => definition.sageTable.toLowerCase() === normalizedTableName);
+  }
+
   /**
    * Erkenne das Source-System
    */
@@ -845,12 +1127,19 @@ export class AISchedulerService {
    * Erkenne das Object-Name aus dem Prompt
    */
   private detectObjectName(lower: string, keywords: string[]): string | undefined {
+    const sageDomain = this.findSage100DomainForText(lower);
+    if (sageDomain) {
+      return sageDomain.objectName;
+    }
+
     const commonObjects: Record<string, string[]> = {
       Account: ["account", "konto", "accounts"],
       Contact: ["contact", "kontakt", "kontakte", "person"],
       Lead: ["lead", "leads", "interessent"],
       Opportunity: ["opportunity", "opportunities", "deal", "deals", "chance", "chancen"],
       Order: ["order", "orders", "bestellung", "bestellungen", "auftrag", "aufträge", "auftraege"],
+      Quote: ["quote", "quotes", "angebot", "angebote", "offerte", "offerten"],
+      Product2: ["product", "products", "produkt", "produkte", "artikel", "articles", "ware", "waren"],
       "Custom Object": ["custom", "objekt"]
     };
 
@@ -864,7 +1153,7 @@ export class AISchedulerService {
   }
 
   private detectSourceObjectName(lower: string): string | undefined {
-    const beforeSourceMatch = lower.match(/\b(accounts?|kontakte?|contacts?|leads?|opportunit(?:y|ies)|orders?|bestellungen?|auftr[aä]ge|auftraege)\b[^.;\n]{0,80}\b(?:aus|von|from)\s+(?:salesforce|sfdc|sf|crm|erp|mssql|sql|datenbank)\b/i);
+    const beforeSourceMatch = lower.match(/\b(accounts?|kontakte?|contacts?|ansprechpartner|leads?|opportunit(?:y|ies)|orders?|bestellungen?|auftr[aä]ge|auftraege|quotes?|angebote?|offerten?|products?|produkte?|artikel|waren?)\b[^.;\n]{0,80}\b(?:aus|von|from)\s+(?:salesforce|sfdc|sf|crm|erp|mssql|sql|datenbank|sage100|sage)\b/i);
     if (beforeSourceMatch?.[1]) {
       return this.normalizeObjectToken(beforeSourceMatch[1]);
     }
@@ -873,7 +1162,7 @@ export class AISchedulerService {
   }
 
   private detectTargetObjectName(lower: string): string | undefined {
-    const asTargetMatch = lower.match(/\b(?:als|as)\s+(accounts?|kontakte?|contacts?|leads?|opportunit(?:y|ies)|orders?|bestellungen?|auftr[aä]ge|auftraege)\b/i);
+    const asTargetMatch = lower.match(/\b(?:als|as)\s+(accounts?|kontakte?|contacts?|ansprechpartner|leads?|opportunit(?:y|ies)|orders?|bestellungen?|auftr[aä]ge|auftraege|quotes?|angebote?|offerten?|products?|produkte?|artikel|waren?)\b/i);
     if (asTargetMatch?.[1]) {
       return this.normalizeObjectToken(asTargetMatch[1]);
     }
@@ -954,10 +1243,12 @@ export class AISchedulerService {
     }
 
     if (/^accounts?$|^konto$/.test(normalized)) return "Account";
-    if (/^contacts?$|^kontakte?$|^person$/.test(normalized)) return "Contact";
+    if (/^contacts?$|^kontakte?$|^kontakt$|^ansprechpartner$|^person$/.test(normalized)) return "Contact";
     if (/^leads?$|^interessent$/.test(normalized)) return "Lead";
     if (/^opportunit(y|ies)$|^deals?$|^chancen?$/.test(normalized)) return "Opportunity";
     if (/^orders?$|^bestellungen?$|^auftr[aä]ge$|^auftraege$/.test(normalized)) return "Order";
+    if (/^quotes?$|^angebote?$|^offerten?$/.test(normalized)) return "Quote";
+    if (/^products?$|^produkte?$|^artikel$|^waren?$/.test(normalized)) return "Product2";
     return undefined;
   }
 
@@ -1280,21 +1571,33 @@ export class AISchedulerService {
 
     const connectorType = String(connector.connectorType || "").toLowerCase();
     const targetSystem = String(connector.targetSystem || "").toLowerCase();
+    const connectorMetadataText = this.buildConnectorMetadataText(connector);
+    const connectorMatchText = `${connectorType} ${targetSystem} ${connectorMetadataText}`;
     const wantsSalesforceSource = String(analysis.sourceSystem || "").toLowerCase().includes("salesforce");
+    const wantsErpSource = this.isErpLikeSystem(analysis.sourceSystem) || String(analysis.sourceSystem || "").toLowerCase().includes("sage");
     const wantsErpTarget = this.isErpLikeSystem(analysis.targetSystem);
+    const sageDomain = this.findSage100DomainForObject(analysis.objectName);
 
-    if (wantsSalesforceSource && wantsErpTarget && (connectorType.includes("mssql") || targetSystem.includes("erp") || targetSystem.includes("sage"))) {
+    if (wantsErpSource && String(analysis.targetSystem || "").toLowerCase().includes("salesforce") && (connectorMatchText.includes("mssql") || connectorMatchText.includes("erp") || connectorMatchText.includes("sage"))) {
+      score += 0.7;
+    } else if (wantsSalesforceSource && wantsErpTarget && (connectorMatchText.includes("mssql") || connectorMatchText.includes("erp") || connectorMatchText.includes("sage"))) {
       score += 0.6;
     } else if (
       analysis.sourceSystem &&
-      connectorType.includes(analysis.sourceSystem.toLowerCase().split("/")[0])
+      connectorMatchText.includes(analysis.sourceSystem.toLowerCase().split("/")[0])
     ) {
       score += 0.4;
     }
 
     // Target-System Match
-    if (analysis.targetSystem && targetSystem.includes(analysis.targetSystem.toLowerCase())) {
+    if (analysis.targetSystem && connectorMatchText.includes(analysis.targetSystem.toLowerCase())) {
       score += 0.3;
+    }
+
+    if (sageDomain && connectorMatchText.includes(sageDomain.sageTable.toLowerCase())) {
+      score += 0.25;
+    } else if (sageDomain && wantsErpSource && connectorMatchText.includes("sage")) {
+      score += 0.15;
     }
 
     // Aktiv/Getestet
@@ -1304,6 +1607,25 @@ export class AISchedulerService {
     if (connector.hasSecret) score += 0.1;
 
     return score;
+  }
+
+  private buildConnectorMetadataText(connector: ConnectorListItem): string {
+    const params = connector.parameters && typeof connector.parameters === "object" && !Array.isArray(connector.parameters)
+      ? connector.parameters
+      : {};
+    const metadataParts = [
+      connector.name,
+      connector.connectorType,
+      connector.targetSystem,
+      ...(connector.parameterKeys || []),
+      ...Object.entries(params)
+        .filter(([, value]) => ["string", "number", "boolean"].includes(typeof value))
+        .map(([key, value]) => `${key} ${String(value)}`)
+    ];
+    return metadataParts
+      .map((part) => String(part || "").trim().toLowerCase())
+      .filter(Boolean)
+      .join(" ");
   }
 
   /**
@@ -1547,6 +1869,10 @@ export class AISchedulerService {
    */
   private inferDefaultUpsertField(objectName: string): string {
     const normalized = String(objectName || "").toLowerCase();
+    const sageDomain = this.findSage100DomainForObject(objectName);
+    if (sageDomain) {
+      return sageDomain.upsertField;
+    }
     if (normalized === "contact" || normalized === "lead") {
       return "Email";
     }
@@ -1555,6 +1881,9 @@ export class AISchedulerService {
     }
     if (normalized === "order") {
       return "OrderNumber";
+    }
+    if (normalized === "product2" || normalized === "product") {
+      return "ProductCode";
     }
     return "Name";
   }
@@ -1571,8 +1900,9 @@ export class AISchedulerService {
     }
 
     const tableName = String(table.name || "").trim();
-    const columns = tableName.toLowerCase() === "khkadressen"
-      ? this.getDefaultSage100Columns("Account")
+    const domain = this.findSage100DomainForTable(tableName);
+    const columns = domain
+      ? this.getDefaultSage100Columns(domain.objectName)
       : this.getPreferredSage100Columns(analysis, table.fields.map((field) => field.name));
     const safeColumns = columns.length ? columns : table.fields.slice(0, 12).map((field) => field.name).filter(Boolean);
     return this.buildSage100Select(tableName, safeColumns);
@@ -1582,36 +1912,30 @@ export class AISchedulerService {
     const safeTableName = String(tableName || "").trim() || "KHKAdressen";
     const safeColumns = columns.map((column) => String(column || "").trim()).filter(Boolean);
     const base = `SELECT ${safeColumns.length ? safeColumns.join(", ") : "*"} FROM dbo.${safeTableName}`;
-    if (safeTableName.toLowerCase() === "khkadressen") {
-      return `${base} WHERE Aktiv = -1`;
+    const domain = this.findSage100DomainForTable(safeTableName);
+    if (domain?.activeWhere) {
+      return `${base} WHERE ${domain.activeWhere}`;
     }
     return base;
   }
 
   private resolveDefaultSage100TableName(objectName?: string): string {
+    const domain = this.findSage100DomainForObject(objectName);
+    if (domain) {
+      return domain.sageTable;
+    }
     const normalized = String(objectName || "").trim().toLowerCase();
-    if (normalized === "account") return "KHKAdressen";
-    if (normalized === "contact") return "KHKAnsprechpartner";
-    if (normalized === "product2" || normalized === "product") return "KHKArtikel";
-    if (normalized === "order") return "KHKVKBelege";
     if (normalized === "orderitem") return "KHKVKBelegePositionen";
     return "KHKAdressen";
   }
 
   private getDefaultSage100Columns(objectName?: string): string[] {
+    const domain = this.findSage100DomainForObject(objectName);
+    if (domain) {
+      return [...domain.columns];
+    }
     const normalized = String(objectName || "").trim().toLowerCase();
-    if (normalized === "account") {
-      return ["Adresse", "Matchcode", "Name1", "Name2", "LieferStrasse", "LieferPLZ", "LieferOrt", "LieferLand", "Telefon", "EMail"];
-    }
-    if (normalized === "contact") {
-      return ["Nummer", "Adresse", "Vorname", "Nachname", "Ansprechpartner", "Position"];
-    }
-    if (normalized === "product2" || normalized === "product") {
-      return ["Artikelnummer", "Bezeichnung1", "Bezeichnung2", "Aktiv"];
-    }
-    if (normalized === "order") {
-      return ["BelID", "Belegnummer", "Adresse", "Belegdatum", "Nettobetrag", "Status"];
-    }
+    if (normalized === "orderitem") return ["BelPosID", "BelID", "Artikelnummer", "Menge", "Einzelpreis", "Gesamtpreis"];
     return ["Adresse", "Matchcode", "Name1"];
   }
 
@@ -1759,7 +2083,13 @@ export class AISchedulerService {
         "Company;string=Company;NONE"
       ],
       Order: ["Name;string=OrderNumber;NONE", "Amount;number=Total;NONE", "Status;string=Status;NONE"],
-      Opportunity: ["Name;string=OpportunityName;NONE", "Amount;number=Value;NONE", "StageName;string=Stage;NONE"]
+      Opportunity: ["Name;string=OpportunityName;NONE", "Amount;number=Value;NONE", "StageName;string=Stage;NONE"],
+      Product2: [
+        "ProductCode;string=Artikelnummer;TRIM",
+        "Name;string=Bezeichnung1;TRIM",
+        "Description;string=Bezeichnung2;TRIM",
+        "IsActive;boolean=Aktiv;STATIC[true]"
+      ]
     };
 
     const mappingLines = analysis.sourceObjectName === "Opportunity" && analysis.targetObjectName === "Order"
@@ -1837,32 +2167,22 @@ export class AISchedulerService {
       return [];
     }
 
-    const targetObject = String(this.resolveMappingTargetObjectName(analysis) || analysis.objectName || "").trim().toLowerCase();
-    const tableName = String(this.findBestSage100Table(analysis)?.name || "").trim().toLowerCase();
-    if (targetObject !== "account" || tableName !== "khkadressen") {
+    const targetObject = this.resolveMappingTargetObjectName(analysis) || analysis.objectName;
+    const tableName = this.findBestSage100Table(analysis)?.name;
+    const domain = this.findSage100DomainForObject(targetObject) || this.findSage100DomainForTable(tableName);
+    if (!domain) {
       return [];
     }
 
     const targetFields = new Map(this.resolveMappingTargetFields(analysis).map((field) => [field.name.toLowerCase(), field]));
     const sourceFields = new Set(this.resolveMappingSourceFields(analysis).map((field) => field.name.toLowerCase()));
-    for (const knownField of this.getDefaultSage100Columns("Account")) {
+    for (const knownField of domain.columns) {
       sourceFields.add(knownField.toLowerCase());
     }
-    const candidates = [
-      ["Name", "string", "Name1"],
-      ["AccountNumber", "string", "Adresse"],
-      ["ERP_Account_Number__c", "string", "Adresse"],
-      ["Phone", "string", "Telefon"],
-      ["General_Email__c", "string", "EMail"],
-      ["ShippingStreet", "string", "LieferStrasse"],
-      ["ShippingPostalCode", "string", "LieferPLZ"],
-      ["ShippingCity", "string", "LieferOrt"],
-      ["ShippingCountry", "string", "LieferLand"]
-    ];
 
-    return candidates
-      .filter(([target, , source]) => targetFields.has(target.toLowerCase()) && sourceFields.has(source.toLowerCase()))
-      .map(([target, type, source]) => `${target};${type}=${source};TRIM`);
+    return domain.mappings
+      .filter(([target, , source]) => targetFields.size === 0 || (targetFields.has(target.toLowerCase()) && sourceFields.has(source.toLowerCase())))
+      .map(([target, type, source, transform]) => `${target};${type}=${source};${transform}`);
   }
 
   private resolveMappingSourceFields(analysis: ReturnType<typeof this.analyzePrompt>): MappingFieldCandidate[] {
@@ -2119,7 +2439,7 @@ export class AISchedulerService {
       issues.push({ severity: "error", message: "Kein Connector ausgewählt" });
     }
 
-    if (!schedule.objectName || (schedule.objectName === "Contact" && !analysis.sourceObjectName && !analysis.targetObjectName)) {
+    if (!schedule.objectName || !analysis.objectName) {
       issues.push({ severity: "warning", message: "Object-Name konnte nicht sicher identifiziert werden" });
     }
 
@@ -2195,9 +2515,29 @@ export class AISchedulerService {
     if (sageTable) {
       parts.push(`SAGE100-Tabelle: ${sageTable.name}`);
     }
+    const connectorMetadata = this.getConnectorMetadataSummary(connector);
+    if (connectorMetadata) {
+      parts.push(`Connector-Metadaten: ${connectorMetadata}`);
+    }
 
     parts.push(`Konfidenz: ${(confidence * 100).toFixed(0)}%`);
 
     return parts.join(" • ");
+  }
+
+  private getConnectorMetadataSummary(connector: ConnectorListItem): string | undefined {
+    const params = connector.parameters && typeof connector.parameters === "object" && !Array.isArray(connector.parameters)
+      ? connector.parameters
+      : {};
+    const summary: string[] = [];
+    const database = String(params.database || "").trim();
+    const schema = String(params.schema || params.schemaName || "").trim();
+    const table = String(params.table || params.tableName || "").trim();
+    const endpoint = String(params.resourcePath || params.endpoint || "").trim();
+    if (database) summary.push(`DB ${database}`);
+    if (schema) summary.push(`Schema ${schema}`);
+    if (table) summary.push(`Tabelle ${table}`);
+    if (endpoint) summary.push(`Pfad ${endpoint}`);
+    return summary.length ? summary.join(", ") : undefined;
   }
 }

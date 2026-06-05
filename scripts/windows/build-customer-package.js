@@ -93,6 +93,12 @@ async function main() {
     throw new Error("Version missing in package.json");
   }
 
+  if (args.includeNodeModules && process.platform !== "win32") {
+    throw new Error(
+      "--include-node-modules can only be used on Windows. Build without bundled node_modules and run the customer installer with -InstallDependencies."
+    );
+  }
+
   const outputDir = args.outputDir
     ? path.resolve(args.outputDir)
     : path.join(appRoot, "artifacts");

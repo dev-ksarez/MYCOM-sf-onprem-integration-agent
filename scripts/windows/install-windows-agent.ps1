@@ -609,8 +609,14 @@ try {
     exit 1
   }
 
+  if ($InstallDependencies -and (Test-Path -Path $nodeModulesPath)) {
+    Write-Host "Entferne vorhandene node_modules fuer eine saubere Neuinstallation ..." -ForegroundColor Cyan
+    Write-InstallerLog -Message "Removing existing node_modules because InstallDependencies was set."
+    Remove-Item -Path $nodeModulesPath -Recurse -Force
+  }
+
   if (-not (Test-Path -Path $nodeModulesPath)) {
-    Write-InstallerLog -Level WARN -Message "node_modules folder is missing."
+    Write-InstallerLog -Level WARN -Message "node_modules folder is missing or was removed for reinstall."
     if (-not (Test-Path -Path $packageLockPath)) {
       Write-InstallerLog -Level ERROR -Message ("package-lock.json missing while node_modules missing: " + $packageLockPath)
       throw "node_modules is missing and package-lock.json was not found. Use a full customer package or add package-lock.json."

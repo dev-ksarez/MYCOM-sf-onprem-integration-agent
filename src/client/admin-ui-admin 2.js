@@ -335,58 +335,6 @@ async function loadRolloutKpisFromAdminPanel() {
   renderRolloutKpiSnapshot(snapshot);
 }
 
-function renderAIConfig(config) {
-  state.aiConfig = config || null;
-  const enabled = document.getElementById('admin-ai-enabled');
-  const provider = document.getElementById('admin-ai-provider');
-  const model = document.getElementById('admin-ai-model');
-  const baseUrl = document.getElementById('admin-ai-base-url');
-  const apiKeyEnv = document.getElementById('admin-ai-api-key-env');
-  const timeoutMs = document.getElementById('admin-ai-timeout-ms');
-  const temperature = document.getElementById('admin-ai-temperature');
-  const useScheduler = document.getElementById('admin-ai-use-scheduler');
-  const status = document.getElementById('admin-ai-config-status');
-  if (!enabled || !provider || !model || !baseUrl || !apiKeyEnv || !timeoutMs || !temperature || !useScheduler || !status) {
-    return;
-  }
-
-  enabled.checked = config?.enabled === true;
-  provider.value = String(config?.provider || 'rule-based');
-  model.value = String(config?.model || '');
-  baseUrl.value = String(config?.baseUrl || '');
-  apiKeyEnv.value = String(config?.apiKeyEnv || '');
-  timeoutMs.value = String(config?.timeoutMs || 30000);
-  temperature.value = String(config?.temperature ?? 0.2);
-  useScheduler.value = config?.useForScheduler === false ? 'false' : 'true';
-  status.textContent = config?.enabled
-    ? ('Aktiv: ' + String(config.provider || '-') + (config.model ? ' / ' + String(config.model) : ''))
-    : 'Rule-based aktiv, kein externer KI-Provider';
-}
-
-async function loadAIConfig() {
-  const config = await safeRequest('/api/admin/ai-config', null);
-  renderAIConfig(config);
-}
-
-async function saveAIConfigFromForm() {
-  const payload = {
-    enabled: document.getElementById('admin-ai-enabled')?.checked === true,
-    provider: String(document.getElementById('admin-ai-provider')?.value || 'rule-based'),
-    model: String(document.getElementById('admin-ai-model')?.value || '').trim(),
-    baseUrl: String(document.getElementById('admin-ai-base-url')?.value || '').trim(),
-    apiKeyEnv: String(document.getElementById('admin-ai-api-key-env')?.value || '').trim(),
-    timeoutMs: Math.max(5000, Math.min(120000, Number(document.getElementById('admin-ai-timeout-ms')?.value || 30000) || 30000)),
-    temperature: Math.max(0, Math.min(2, Number(document.getElementById('admin-ai-temperature')?.value || 0.2) || 0)),
-    useForScheduler: String(document.getElementById('admin-ai-use-scheduler')?.value || 'true') !== 'false'
-  };
-  const saved = await requestJson('/api/admin/ai-config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  renderAIConfig(saved);
-}
-
 async function loadAdminData() {
   state.adminMe = await safeRequest('/api/admin/me', { user: null });
   applyAdminAccessUi();
@@ -400,7 +348,6 @@ async function loadAdminData() {
     renderAuditHistory();
     renderRolloutProjectOptions();
     await loadRolloutKpisFromAdminPanel();
-    await loadAIConfig();
   } else if (currentUserHasModule('projects') || currentUserHasModule('deployment')) {
     await loadProjectMemberships();
     renderRolloutProjectOptions();
@@ -428,3 +375,4 @@ async function saveAdminUserFromForm() {
   resetAdminUserForm();
   await loadAdminData();
 }
+
