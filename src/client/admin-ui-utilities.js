@@ -316,6 +316,9 @@ function normalizeConnectorType(connectorType) {
   if (normalized === 'filemaker' || normalized === 'filemaker_data_api' || normalized.includes('filemaker')) {
     return 'FILEMAKER';
   }
+  if (normalized === 'endpoint' || normalized === 'agent_endpoint' || normalized === 'agent endpoint' || normalized === 'webhook') {
+    return 'AGENT_ENDPOINT';
+  }
   if (normalized.includes('binary') && normalized.includes('file')) {
     return 'FILE_BINARY_SF_IMPORT';
   }
@@ -335,6 +338,10 @@ function isSqlConnectorType(connectorType) {
 
 function isRestConnectorType(connectorType) {
   return normalizeConnectorType(connectorType) === 'REST_API';
+}
+
+function isEndpointConnectorType(connectorType) {
+  return normalizeConnectorType(connectorType) === 'AGENT_ENDPOINT';
 }
 
 function isBinaryImportConnectorType(connectorType) {
@@ -420,6 +427,9 @@ function inferScheduleSourceTypeFromConnector(connectorId) {
   if (normalizedConnectorType === 'REST_API') {
     return pickFirstAvailableSelectValue(sourceTypeSelect, ['REST_API']);
   }
+  if (normalizedConnectorType === 'AGENT_ENDPOINT') {
+    return pickFirstAvailableSelectValue(sourceTypeSelect, ['ENDPOINT']);
+  }
 
   if (normalizedConnectorType === 'FILE' || normalizedConnectorType === 'FILE_BINARY_SF_IMPORT') {
     return pickFirstAvailableSelectValue(sourceTypeSelect, ['FILE_CSV', 'FILE_JSON', 'FILE_EXCEL', 'FILE_XLSX']);
@@ -451,6 +461,9 @@ function inferScheduleSourceSystemFromConnector(connectorId) {
 
   if (normalizedConnectorType === 'REST_API') {
     return pickFirstAvailableSelectValue(sourceSystemSelect, ['REST API', 'REST_API', 'REST', 'API']);
+  }
+  if (normalizedConnectorType === 'AGENT_ENDPOINT') {
+    return pickFirstAvailableSelectValue(sourceSystemSelect, ['Agent Endpoint', 'ENDPOINT', 'Webhook', 'API']);
   }
 
   if (normalizedConnectorType === 'FILE' || normalizedConnectorType === 'FILE_BINARY_SF_IMPORT') {
@@ -565,7 +578,7 @@ function getConnectorWizardTypeFromConnectorType(connectorType) {
   if (!normalized) {
     return 'MSSQL';
   }
-  if (['MSSQL', 'POSTGRESQL', 'MYSQL', 'FILEMAKER', 'FILE', 'REST_API', 'FILE_BINARY_SF_IMPORT'].includes(normalized)) {
+  if (['MSSQL', 'POSTGRESQL', 'MYSQL', 'FILEMAKER', 'FILE', 'REST_API', 'AGENT_ENDPOINT', 'FILE_BINARY_SF_IMPORT'].includes(normalized)) {
     return normalized;
   }
   return 'CUSTOM';

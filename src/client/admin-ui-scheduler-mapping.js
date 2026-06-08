@@ -3682,6 +3682,25 @@ function parseScheduleSourceDefinition(sourceType, rawDefinition) {
     };
   }
   if ((sourceType !== 'MSSQL_SQL' && sourceType !== 'FILEMAKER_SQL' && sourceType !== 'SALESFORCE_SOQL') || !trimmed) {
+    if (String(sourceType || '').trim().toUpperCase() === 'ENDPOINT' && !trimmed) {
+      return {
+        queryText: JSON.stringify({
+          method: 'POST',
+          path: '/records',
+          contentType: 'application/json',
+          recordMode: 'single',
+          queryFields: [],
+          headerFields: ['x-request-id'],
+          response: { successStatus: 202, errorStatus: 422 },
+          validation: { requiredBodyFields: [] }
+        }, null, 2),
+        deltaStrategy: '',
+        deltaField: '',
+        afterExportText: '',
+        relativeDirectory: '',
+        archiveRelativeDirectory: ''
+      };
+    }
     return { queryText: trimmed, deltaStrategy: '', deltaField: '', afterExportText: '', relativeDirectory: '', archiveRelativeDirectory: '' };
   }
 

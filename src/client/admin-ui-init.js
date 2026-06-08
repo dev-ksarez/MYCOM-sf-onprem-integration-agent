@@ -795,6 +795,9 @@ document.getElementById('sch-source-type').addEventListener('change', () => {
   updateSourceQueryAssist();
   updateScheduleTypeUi();
   const srcType = document.getElementById('sch-source-type').value;
+  if (srcType === 'ENDPOINT' && !String(document.getElementById('sch-source-definition').value || '').trim()) {
+    document.getElementById('sch-source-definition').value = parseScheduleSourceDefinition('ENDPOINT', '').queryText;
+  }
   if (srcType === 'FILE_CSV' || srcType === 'FILE_EXCEL' || srcType === 'FILE_JSON') {
     loadMappingFields();
   }

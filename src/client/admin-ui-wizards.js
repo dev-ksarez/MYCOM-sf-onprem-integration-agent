@@ -63,6 +63,9 @@ function collectConnectorParametersPreview() {
   if (isRestConnectorType(normalizedConnectorType)) {
     parsedParameters = mergeRestConnectorSettingsIntoParameters(parsedParameters);
   }
+  if (isEndpointConnectorType(normalizedConnectorType)) {
+    parsedParameters = mergeRestConnectorSettingsIntoParameters(parsedParameters);
+  }
   if (isBinaryImportConnectorType(normalizedConnectorType)) {
     parsedParameters = mergeBinaryImportConnectorSettingsIntoParameters(parsedParameters);
   }
@@ -290,7 +293,7 @@ function validateScheduleWizardStep(step) {
     return;
   }
 
-  if (step === 4 && !document.getElementById('sch-inherit-parent-timing')?.checked) {
+  if (step === 4 && !document.getElementById('sch-inherit-parent-timing')?.checked && String(document.getElementById('sch-source-type')?.value || '').trim().toUpperCase() !== 'ENDPOINT') {
     const hasWeekday = Array.from(document.querySelectorAll('#sch-weekdays input')).some((input) => input.checked);
     if (!hasWeekday) {
       throw new Error('Bitte mindestens einen Wochentag für die Zeitsteuerung auswählen.');

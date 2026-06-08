@@ -4450,6 +4450,25 @@ export class AdminDataService {
       return this.testRestConnector(config);
     }
 
+    if (this.isEndpointConnectorType(config.connectorType)) {
+      const rootPath = String(config.parameters.rootPath || config.parameters.basePath || config.parameters.path || "").trim();
+      const authType = String(config.parameters.authType || "none").trim().toLowerCase();
+      return this.buildConnectorTestResult(config, [
+        {
+          label: "Root-Endpunkt",
+          ok: rootPath.startsWith("/"),
+          details: rootPath.startsWith("/") ? `Root-Pfad ${rootPath} ist gueltig.` : "rootPath muss mit / beginnen."
+        },
+        {
+          label: "Authentifizierung",
+          ok: authType === "none" || authType === "oauth2" || authType === "bearer",
+          details: authType === "none" || authType === "oauth2" || authType === "bearer"
+            ? `Auth Type ${authType || "none"} ist fuer Endpoint-Connectoren erlaubt.`
+            : `Auth Type ${authType} wird fuer Endpoint-Connectoren nicht unterstuetzt.`
+        }
+      ]);
+    }
+
     const registry = new ConnectorRegistry();
 
     try {
@@ -5406,6 +5425,25 @@ export class AdminDataService {
       };
     }
 
+    if (normalizedType === "ENDPOINT") {
+      const rows = [{
+        body: { id: "example-id", name: "Example" },
+        query: {},
+        headers: {},
+        request: {
+          method: "POST",
+          path: "/endpoint",
+          receivedAt: new Date().toISOString()
+        },
+        auth: { subject: "example-client" }
+      }];
+      return {
+        fields: ["body", "query", "headers", "request", "auth"],
+        rows,
+        rowCount: rows.length
+      };
+    }
+
     if (normalizedType === "SALESFORCE_SOQL") {
       const client = await this.createClient(instanceId);
       const soqlText = parseQuerySourceDefinition(trimmedDefinition).queryText;
@@ -5568,6 +5606,19 @@ export class AdminDataService {
       }));
     }
 
+    if (normalizedType === "ENDPOINT") {
+      return [
+        { name: "body", label: "body", type: "object" },
+        { name: "query", label: "query", type: "object" },
+        { name: "headers", label: "headers", type: "object" },
+        { name: "request", label: "request", type: "object" },
+        { name: "auth", label: "auth", type: "object" },
+        { name: "body.id", label: "body.id", type: "string" },
+        { name: "body.name", label: "body.name", type: "string" },
+        { name: "request.receivedAt", label: "request.receivedAt", type: "datetime" }
+      ];
+    }
+
     throw new Error(`Source Type ${sourceType} wird für Feldmetadaten noch nicht unterstützt`);
   }
 
@@ -5624,11 +5675,12 @@ export class AdminDataService {
     const isRestSource = sourceType === "REST_API" || sourceType === "API";
     const isRestTarget = targetType === "REST_API" || targetType === "API";
     const isFileMakerSource = sourceType === "FILEMAKER_SQL";
+    const isEndpointSource = sourceType === "ENDPOINT";
 
     if (!isFileTarget && !String(input.operation || "").trim()) add("error", "general", "Operation fehlt.");
     if (!isFileTarget && !String(input.objectName || "").trim()) add("error", "target", "Zielobjekt/Zielname fehlt.");
 
-    if ((isFileSource || isFileTarget || isMssqlSource || isMssqlTarget || isRestSource || isRestTarget || isFileMakerSource) && !connectorId) {
+    if ((isFileSource || isFileTarget || isMssqlSource || isMssqlTarget || isRestSource || isRestTarget || isFileMakerSource || isEndpointSource) && !connectorId) {
       add("error", "connector", "Diese Scheduler-Variante benoetigt einen Connector.");
     }
     if ((isFileSource || isFileTarget) && connector && !this.isFileConnectorType(connector.connectorType)) {
@@ -5642,6 +5694,9 @@ export class AdminDataService {
     }
     if (isFileMakerSource && connector && !this.isFileMakerConnectorType(connector.connectorType)) {
       add("error", "connector", `FileMaker-Scheduler benoetigt einen FileMaker-Connector, gewaehlt ist ${connector.connectorType}.`);
+    }
+    if (isEndpointSource && connector && !this.isEndpointConnectorType(connector.connectorType)) {
+      add("error", "connector", `Endpoint-Scheduler benoetigt einen AGENT_ENDPOINT-Connector, gewaehlt ist ${connector.connectorType}.`);
     }
     if (isRestTarget) {
       add("error", "target", "REST_API als TargetType ist im generischen Scheduler-Lauf noch nicht implementiert. Unterstuetzt sind REST_API-Quellen nach Salesforce/Global Picklist.");
@@ -5694,6 +5749,18 @@ export class AdminDataService {
         }
       } catch {
         add("error", "source", "REST SourceDefinition muss gueltiges JSON sein.");
+      }
+    } else if (isEndpointSource) {
+      try {
+        const parsed = JSON.parse(sourceDefinition) as Record<string, unknown>;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("kein Objekt");
+        if (!String(parsed.path || "").trim()) add("error", "source", "Endpoint SourceDefinition braucht path.");
+        const method = String(parsed.method || "POST").trim().toUpperCase();
+        if (!["POST", "PUT", "PATCH"].includes(method)) {
+          add("error", "source", `Endpoint Methode ${method} wird fuer Datenimports nicht unterstuetzt.`);
+        }
+      } catch {
+        add("error", "source", "Endpoint SourceDefinition muss gueltiges JSON sein.");
       }
     } else if (sourceType === "SALESFORCE_SOQL") {
       const parsed = parseQuerySourceDefinition(sourceDefinition);
@@ -7409,7 +7476,15 @@ export class AdminDataService {
 
   private isRestConnectorType(connectorType: string | undefined): boolean {
     const normalized = String(connectorType || "").trim().toLowerCase();
+    if (this.isEndpointConnectorType(connectorType)) {
+      return false;
+    }
     return normalized.includes("rest") || normalized.includes("http") || normalized.includes("api");
+  }
+
+  private isEndpointConnectorType(connectorType: string | undefined): boolean {
+    const normalized = String(connectorType || "").trim().toLowerCase();
+    return normalized === "endpoint" || normalized === "agent_endpoint";
   }
 
   private toDirectionIcon(direction?: string): string {

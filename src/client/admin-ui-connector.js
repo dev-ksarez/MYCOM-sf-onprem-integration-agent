@@ -54,6 +54,13 @@ function renderConnectors() {
         'Benutzer: ' + esc(parameters.user || '-')
       ];
     }
+    if (isEndpointConnectorType(item.connectorType)) {
+      return [
+        'Root: ' + esc(parameters.rootPath || parameters.basePath || parameters.resourcePath || '/'),
+        'Auth: ' + esc(parameters.authType || 'none'),
+        'Limit: ' + esc(parameters.maxBodyBytes || (parameters.limits && parameters.limits.maxBodyBytes) || 'default')
+      ];
+    }
     if (isRestConnectorType(item.connectorType)) {
       return [
         'Base URL: ' + esc(parameters.baseUrl || '-'),
@@ -219,4 +226,3 @@ function renderConnectors() {
 
   setTimeout(() => initializeTableFilters(), 100);
 }
-

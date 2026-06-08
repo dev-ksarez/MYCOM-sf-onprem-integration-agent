@@ -237,7 +237,7 @@ function updateConnectorConfigUi() {
     return;
   }
 
-  setClosestFieldVisible('con-secret', isSqlConnectorType(connectorType));
+  setClosestFieldVisible('con-secret', isSqlConnectorType(connectorType) || isEndpointConnectorType(connectorType));
 
   if (connectorType === 'FILE') {
     fileWrap.classList.remove('d-none');
@@ -251,7 +251,7 @@ function updateConnectorConfigUi() {
     mssqlWrap.classList.add('d-none');
   }
 
-  if (isRestConnectorType(connectorType)) {
+  if (isRestConnectorType(connectorType) || isEndpointConnectorType(connectorType)) {
     restWrap.classList.remove('d-none');
   } else {
     restWrap.classList.add('d-none');
@@ -290,6 +290,7 @@ function updateConnectorConfigUi() {
       FILEMAKER: 'FileMaker Data API Verbindung und Datenbank erfassen.',
       FILE: 'Datei-Einstellungen inkl. Format auswählen.',
       REST_API: 'REST Endpunkt + gewünschte Authentifizierung erfassen.',
+      AGENT_ENDPOINT: 'Agent Root-Endpunkt und OAuth2/Bearer Authentifizierung erfassen.',
       FILE_BINARY_SF_IMPORT: 'Binary Import-Pfade + Salesforce Zielfelder setzen.',
       CUSTOM: 'Benutzerdefiniert: Parameter im JSON Bereich pflegen.'
     };
@@ -344,6 +345,17 @@ function applyConnectorWizardSelection(preserveValues) {
     }
     if (wizardType === 'REST_API' && !document.getElementById('con-direction').value) {
       document.getElementById('con-direction').value = 'Outbound';
+    }
+    if (wizardType === 'AGENT_ENDPOINT') {
+      if (!document.getElementById('con-target-system').value) {
+        document.getElementById('con-target-system').value = 'Agent';
+      }
+      if (!document.getElementById('con-direction').value) {
+        document.getElementById('con-direction').value = 'Inbound';
+      }
+      if (!document.getElementById('con-rest-auth-type').value || document.getElementById('con-rest-auth-type').value === 'none') {
+        document.getElementById('con-rest-auth-type').value = 'oauth2';
+      }
     }
     if (wizardType === 'FILEMAKER') {
       if (!document.getElementById('con-target-system').value) {
@@ -447,7 +459,7 @@ function mergeFileConnectorSettingsIntoParameters(parameters) {
 function fillRestConnectorSettingsFromParameters(parameters) {
   const params = parameters || {};
   document.getElementById('con-rest-base-url').value = String(params.baseUrl || '');
-  document.getElementById('con-rest-resource-path').value = String(params.resourcePath || params.path || '');
+  document.getElementById('con-rest-resource-path').value = String(params.resourcePath || params.rootPath || params.path || '');
   document.getElementById('con-rest-auth-type').value = String(params.authType || 'none').toLowerCase();
   document.getElementById('con-rest-token-url').value = String(params.tokenUrl || '');
   document.getElementById('con-rest-grant-type').value = String(params.grantType || 'client_credentials');
@@ -472,6 +484,12 @@ function mergeRestConnectorSettingsIntoParameters(parameters) {
   merged.resourcePath = String(document.getElementById('con-rest-resource-path').value || '').trim();
   merged.authType = String(document.getElementById('con-rest-auth-type').value || 'none').trim().toLowerCase();
   merged.method = String(document.getElementById('con-rest-method').value || 'GET').trim().toUpperCase();
+  if (normalizeConnectorType(document.getElementById('con-type')?.value || '') === 'AGENT_ENDPOINT') {
+    merged.rootPath = merged.resourcePath || merged.baseUrl || '/api/inbound';
+    delete merged.baseUrl;
+    delete merged.resourcePath;
+    delete merged.method;
+  }
   if (merged.authType === 'oauth2') {
     merged.tokenUrl = String(document.getElementById('con-rest-token-url').value || '').trim();
     merged.grantType = String(document.getElementById('con-rest-grant-type').value || 'client_credentials').trim();
@@ -767,7 +785,8 @@ async function validateCurrentScheduleConfiguration() {
 function collectConnectorFormPayload() {
   const preview = collectConnectorParametersPreview();
   const connectorType = preview.connectorType || document.getElementById('con-type').value;
-  const secretKey = isSqlConnectorType(normalizeConnectorType(connectorType))
+  const normalizedConnectorType = normalizeConnectorType(connectorType);
+  const secretKey = (isSqlConnectorType(normalizedConnectorType) || isEndpointConnectorType(normalizedConnectorType))
     ? (document.getElementById('con-secret').value || undefined)
     : undefined;
   return {

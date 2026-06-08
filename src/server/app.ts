@@ -1,6 +1,7 @@
 
 import http from "node:http";
 import crypto from "node:crypto";
+import pino from "pino";
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -63,6 +64,7 @@ import { AIProviderConfig } from "./ai-provider";
 import { generateSalesforceMappingRules } from "../core/mapping-dsl/salesforce-mapping-generator";
 import { serveStaticAsset, UI_ASSET_VERSION } from "./asset-server";
 import { appendAuditHistory, listAuditHistory } from "./audit-history-service";
+import { handleEndpointRuntimeRequest } from "./endpoint-runtime";
 
 import { listAppModules, renderMenuModuleNavigation, renderSidebarModuleNavigation } from "./app-modules";
 import { renderHtmlDocument } from "./ui-template";
@@ -77,6 +79,7 @@ const LOCAL_PROJECT_CURRENT_VERSIONS_FILE = path.resolve(process.cwd(), "artifac
 const LOCAL_AGENT_HEARTBEATS_FILE = path.resolve(process.cwd(), "artifacts/agent-heartbeats.json");
 const LOCAL_AGENT_COMMANDS_FILE = path.resolve(process.cwd(), "artifacts/agent-commands.json");
 const LOCAL_AGENT_LOG_BUCKETS_FILE = path.resolve(process.cwd(), "artifacts/agent-log-buckets.json");
+const endpointRuntimeLogger = pino({ level: process.env.LOG_LEVEL || "info" }).child({ module: "endpoint-runtime" });
 
 type DeploymentCompareDirection = "test-to-production" | "production-to-test";
 
@@ -2948,7 +2951,7 @@ ${renderAISchedulerAssistantModule()}
               <div class="tab-pane fade" id="sch-tab-source" data-sch-step-panel="2" role="tabpanel">
                 <div class="row g-2">
                   <div class="col-md-6"><label class="form-label">Source System</label><select id="sch-source-system" class="form-select"><option value="">- Wählen -</option></select></div>
-                  <div class="col-md-6"><label class="form-label">Source Type</label><select id="sch-source-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE_SOQL">SALESFORCE_SOQL</option><option value="MSSQL_SQL">MSSQL_SQL</option><option value="FILEMAKER_SQL">FILEMAKER_SQL</option><option value="REST_API">REST_API</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
+                  <div class="col-md-6"><label class="form-label">Source Type</label><select id="sch-source-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE_SOQL">SALESFORCE_SOQL</option><option value="MSSQL_SQL">MSSQL_SQL</option><option value="FILEMAKER_SQL">FILEMAKER_SQL</option><option value="REST_API">REST_API</option><option value="ENDPOINT">ENDPOINT</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
                   <div class="col-md-12">
                     <details class="json-field-collapsible">
                       <summary class="json-field-summary">Source Definition / Abfrage</summary>
@@ -3245,7 +3248,7 @@ ${renderAISchedulerAssistantModule()}
 
             <div class="connector-wizard-panel" data-step-panel="1">
               <div class="row g-3">
-                <div class="col-md-7"><label class="form-label">Welcher Connectortyp soll angelegt werden?</label><select id="con-wizard-type" class="form-select"><option value="MSSQL">MSSQL</option><option value="FILEMAKER">FileMaker</option><option value="POSTGRESQL">PostgreSQL</option><option value="MYSQL">MySQL</option><option value="FILE">Datei (TXT, CSV, JSON, EXCEL)</option><option value="REST_API">REST API</option><option value="FILE_BINARY_SF_IMPORT">Datei Binärimport nach Salesforce</option><option value="CUSTOM">Benutzerdefiniert</option></select></div>
+                <div class="col-md-7"><label class="form-label">Welcher Connectortyp soll angelegt werden?</label><select id="con-wizard-type" class="form-select"><option value="MSSQL">MSSQL</option><option value="FILEMAKER">FileMaker</option><option value="POSTGRESQL">PostgreSQL</option><option value="MYSQL">MySQL</option><option value="FILE">Datei (TXT, CSV, JSON, EXCEL)</option><option value="REST_API">REST API</option><option value="AGENT_ENDPOINT">Agent Endpunkt</option><option value="FILE_BINARY_SF_IMPORT">Datei Binärimport nach Salesforce</option><option value="CUSTOM">Benutzerdefiniert</option></select></div>
                 <div class="col-md-5 d-none"><label class="form-label">Connector Type</label><input id="con-type" class="form-control" readonly /></div>
                 <div class="col-12"><div id="con-wizard-hint" class="connector-wizard-hint">Assistent aktiv: Bitte zuerst den Typ wählen, danach führt dich der Assistent durch die Parameter.</div></div>
               </div>
@@ -3546,6 +3549,10 @@ export function createAppServer(
         });
         res.end(file);
       };
+
+      if (await handleEndpointRuntimeRequest(req, res, requestUrl, endpointRuntimeLogger)) {
+        return;
+      }
       const session = getAdminSession(req);
       const auditActor = session ? { userId: session.userId, username: session.username } : null;
       const isAuthenticated = !adminAuthRequired || Boolean(session);
