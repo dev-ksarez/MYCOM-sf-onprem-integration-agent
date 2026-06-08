@@ -268,14 +268,18 @@ function updateConnectorConfigUi() {
       ? 'PostgreSQL Verbindung'
       : connectorType === 'MYSQL'
         ? 'MySQL Verbindung'
-        : 'MSSQL Verbindung';
+        : connectorType === 'FILEMAKER'
+          ? 'FileMaker Data API'
+          : 'MSSQL Verbindung';
   }
   if (sqlText) {
     sqlText.textContent = connectorType === 'POSTGRESQL'
       ? 'Pflicht: Host, Datenbank und Benutzer. Standard-Port ist 5432.'
       : connectorType === 'MYSQL'
         ? 'Pflicht: Host, Datenbank und Benutzer. Standard-Port ist 3306.'
-        : 'Pflicht: Server, Datenbank und Benutzer. Passwort kann direkt eingegeben werden. Alternativ kann das Passwort über Secret Key (ENV) aus einer Umgebungsvariable gelesen werden.';
+        : connectorType === 'FILEMAKER'
+          ? 'Pflicht: Data-API-Base-URL, Datenbank und Benutzer. Passwort kann direkt eingegeben oder per Secret Key (ENV) gelesen werden.'
+          : 'Pflicht: Server, Datenbank und Benutzer. Passwort kann direkt eingegeben werden. Alternativ kann das Passwort über Secret Key (ENV) aus einer Umgebungsvariable gelesen werden.';
   }
 
   if (hint) {
@@ -283,6 +287,7 @@ function updateConnectorConfigUi() {
       MSSQL: 'SQL-Parameter für MSSQL ausfüllen.',
       POSTGRESQL: 'SQL-Parameter für PostgreSQL ausfüllen.',
       MYSQL: 'SQL-Parameter für MySQL ausfüllen.',
+      FILEMAKER: 'FileMaker Data API Verbindung und Datenbank erfassen.',
       FILE: 'Datei-Einstellungen inkl. Format auswählen.',
       REST_API: 'REST Endpunkt + gewünschte Authentifizierung erfassen.',
       FILE_BINARY_SF_IMPORT: 'Binary Import-Pfade + Salesforce Zielfelder setzen.',
@@ -340,6 +345,14 @@ function applyConnectorWizardSelection(preserveValues) {
     if (wizardType === 'REST_API' && !document.getElementById('con-direction').value) {
       document.getElementById('con-direction').value = 'Outbound';
     }
+    if (wizardType === 'FILEMAKER') {
+      if (!document.getElementById('con-target-system').value) {
+        document.getElementById('con-target-system').value = 'FileMaker';
+      }
+      if (!document.getElementById('con-direction').value) {
+        document.getElementById('con-direction').value = 'Outbound';
+      }
+    }
   }
 
   updateConnectorConfigUi();
@@ -347,7 +360,7 @@ function applyConnectorWizardSelection(preserveValues) {
 
 function fillMssqlConnectorSettingsFromParameters(parameters) {
   const params = parameters || {};
-  document.getElementById('con-mssql-server').value = String(params.server || '');
+  document.getElementById('con-mssql-server').value = String(params.server || params.baseUrl || params.serverUrl || '');
   document.getElementById('con-mssql-port').value = params.port === undefined || params.port === null || params.port === '' ? '' : String(params.port);
   document.getElementById('con-mssql-database').value = String(params.database || '');
   document.getElementById('con-mssql-user').value = String(params.user || '');
@@ -391,6 +404,12 @@ function mergeMssqlConnectorSettingsIntoParameters(parameters) {
   if (connectorType === 'MSSQL') {
     merged.encrypt = !!document.getElementById('con-mssql-encrypt').checked;
     merged.trustServerCertificate = !!document.getElementById('con-mssql-trust-server-certificate').checked;
+  } else if (connectorType === 'FILEMAKER') {
+    merged.baseUrl = server;
+    delete merged.server;
+    delete merged.encrypt;
+    delete merged.trustServerCertificate;
+    delete merged.ssl;
   } else {
     merged.ssl = !!document.getElementById('con-mssql-encrypt').checked;
   }
@@ -1536,4 +1555,3 @@ async function previewMapping() {
   });
   document.getElementById('mapping-output').textContent = JSON.stringify(result, null, 2);
 }
-

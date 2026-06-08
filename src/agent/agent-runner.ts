@@ -775,6 +775,7 @@ async function executeSchedule(
   const isFileSource = isFileScheduleType(schedule.sourceType);
   const isFileTarget = isFileScheduleType(schedule.targetType);
   const isRestSource = schedule.sourceType === "REST_API";
+  const isFileMakerSource = schedule.sourceType === "FILEMAKER_SQL";
 
   const isGenericSalesforceToMssql =
     schedule.sourceType === "SALESFORCE_SOQL" && schedule.targetType === "MSSQL";
@@ -786,6 +787,8 @@ async function executeSchedule(
   const isGenericMssqlToFile = schedule.sourceType === "MSSQL_SQL" && isFileTarget;
   const isGenericRestToSalesforce = isRestSource && schedule.targetType === "SALESFORCE";
   const isGenericRestToGlobalPicklist = isRestSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
+  const isGenericFileMakerToSalesforce = isFileMakerSource && schedule.targetType === "SALESFORCE";
+  const isGenericFileMakerToGlobalPicklist = isFileMakerSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
   const isGenericFileToSalesforce = isFileSource && schedule.targetType === "SALESFORCE";
   const isGenericFileToGlobalPicklist = isFileSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
   const isGenericFileToMssql = isFileSource && schedule.targetType === "MSSQL";
@@ -798,6 +801,8 @@ async function executeSchedule(
     isGenericMssqlToFile ||
     isGenericRestToSalesforce ||
     isGenericRestToGlobalPicklist ||
+    isGenericFileMakerToSalesforce ||
+    isGenericFileMakerToGlobalPicklist ||
     isGenericFileToSalesforce ||
     isGenericFileToGlobalPicklist ||
     isGenericFileToMssql;
@@ -1033,7 +1038,7 @@ async function executeSchedule(
       });
     }
 
-    return true;
+    return result.status === "Success";
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     if (errorMessage.startsWith("MSSQL_CONNECTION_FAILED:")) {

@@ -164,7 +164,9 @@ function validateConnectorWizardStep(step) {
       if (!String(document.getElementById('con-mssql-server')?.value || '').trim() ||
           !String(document.getElementById('con-mssql-database')?.value || '').trim() ||
           !String(document.getElementById('con-mssql-user')?.value || '').trim()) {
-        throw new Error('Bitte Host, Datenbank und Benutzer für den SQL-Connector angeben.');
+        throw new Error(connectorType === 'FILEMAKER'
+          ? 'Bitte Base URL, Datenbank und Benutzer für den FileMaker-Connector angeben.'
+          : 'Bitte Host, Datenbank und Benutzer für den SQL-Connector angeben.');
       }
     }
     if (connectorType === 'FILE') {
@@ -1135,4 +1137,3 @@ function renderOverview(healthData) {
     '<tr><td class="text-truncate" title="' + esc(run.scheduleName || run.scheduleId || '-') + '">' + esc(run.scheduleName || run.scheduleId || '-') + '</td><td>' + getStatusBadge(run.status) + '</td><td>' + formatDurationMinSec(getRunDurationMs(run)) + '</td><td>' + formatDate(run.startedAt, 'short') + '</td></tr>'
   ).join('');
 }
-

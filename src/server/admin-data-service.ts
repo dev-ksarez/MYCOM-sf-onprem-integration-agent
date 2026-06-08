@@ -30,6 +30,7 @@ import { getDefaultStaleRunInactivityThresholdMinutes, getStaleRunInactivityThre
 import { MigrationStagingSqlite } from "../infrastructure/db/migration-staging-sqlite";
 import { MssqlDatabase } from "../infrastructure/db/mssql";
 import { SqliteDatabase } from "../infrastructure/db/sqlite";
+import { FileMakerDataApiClient, parseFileMakerSourceDefinition } from "../connectors/filemaker/filemaker-data-api";
 import {
   ConnectorTemplateDraft,
   listBuiltInTemplates,
@@ -47,6 +48,7 @@ import { parseQuerySourceDefinition } from "../utils/query-source-definition";
 import { fetchRestRows, testRestConnection } from "../source-adapters/rest/rest-api-source-adapter";
 import { LocalScheduleHealthRepository, LocalScheduleHealthItem } from "../core/scheduler/local-schedule-health-repository";
 import { AIProviderConfig, normalizeAIProviderConfig, toPublicAIProviderConfig, type AIProviderPublicConfig } from "./ai-provider";
+import { DatabaseMetadata } from "../types/database-metadata";
 
 export interface SalesforceInstanceEnvConfig {
   id: string;
@@ -1367,6 +1369,11 @@ export interface ConnectorListItem {
   filePaths?: FileConnectorPathSummary;
   hasSecret: boolean;
   parameterKeys: string[];
+}
+
+export interface ConnectorMetadataResult extends DatabaseMetadata {
+  tableCount: number;
+  fieldCount: number;
 }
 
 export interface FileConnectorPathSummary {
@@ -4372,6 +4379,7 @@ export class AdminDataService {
       ]),
       sourceSystems: collectUnique(records.map((record) => record.SourceSystem__c), sourceSystems.length ? sourceSystems : [
         "MS SQL",
+        "FileMaker",
         "Salesforce",
         "File"
       ]),
@@ -4430,6 +4438,10 @@ export class AdminDataService {
       return this.testMssqlConnector(config);
     }
 
+    if (this.isFileMakerConnectorType(config.connectorType)) {
+      return this.testFileMakerConnector(config);
+    }
+
     if (this.isFileConnectorType(config.connectorType)) {
       return this.testFileConnector(config);
     }
@@ -4460,6 +4472,23 @@ export class AdminDataService {
         }
       ]);
     }
+  }
+
+  public async getConnectorMetadata(connectorId: string, instanceId?: string): Promise<ConnectorMetadataResult> {
+    const client = await this.createClient(instanceId);
+    const config = await client.queryConnector(connectorId);
+    const connector = new ConnectorRegistry().getConnectorByConfig(config);
+    if (!connector.getDatabaseMetadata) {
+      throw new Error(`Connector ${config.name} stellt keine Datenbank-Metadaten bereit`);
+    }
+
+    const metadata = await connector.getDatabaseMetadata();
+    const fieldCount = metadata.tables.reduce((sum, table) => sum + table.columns.length, 0);
+    return {
+      ...metadata,
+      tableCount: metadata.tables.length,
+      fieldCount
+    };
   }
 
   private buildConnectorTestResult(
@@ -4544,6 +4573,33 @@ export class AdminDataService {
       }
     } finally {
       await database.close();
+    }
+
+    return this.buildConnectorTestResult(config, checks);
+  }
+
+  private async testFileMakerConnector(config: ConnectorConfig): Promise<ConnectorTestResult> {
+    const checks: Array<{ label: string; ok: boolean; details: string }> = [];
+    try {
+      const client = new FileMakerDataApiClient(config);
+      const metadata = await client.getDatabaseMetadata();
+      checks.push({
+        label: "FileMaker Data API erreichbar",
+        ok: true,
+        details: String(config.parameters?.baseUrl || config.parameters?.serverUrl || config.parameters?.server || "-")
+      });
+      checks.push({
+        label: "Layouts und Felder lesbar",
+        ok: true,
+        details: `${metadata.tables.length} Layout(s), ${metadata.tables.reduce((sum, table) => sum + table.columns.length, 0)} Feld(er)`
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unbekannter FileMaker-Fehler";
+      checks.push({
+        label: "FileMaker Data API erreichbar",
+        ok: false,
+        details: message
+      });
     }
 
     return this.buildConnectorTestResult(config, checks);
@@ -5295,6 +5351,26 @@ export class AdminDataService {
       return this.previewSql(connectorId, parseQuerySourceDefinition(trimmedDefinition).queryText, normalizedLimit, instanceId);
     }
 
+    if (normalizedType === "FILEMAKER_SQL") {
+      if (!connectorId) {
+        throw new Error("Fuer FileMaker-Vorschau muss ein FileMaker-Connector ausgewaehlt sein");
+      }
+
+      const client = await this.createClient(instanceId);
+      const connector = await client.queryConnector(connectorId);
+      if (!this.isFileMakerConnectorType(connector.connectorType)) {
+        throw new Error(`Connector ${connector.name} ist kein FileMaker-Connector`);
+      }
+
+      const rows = await new FileMakerDataApiClient(connector).readRecords(trimmedDefinition, normalizedLimit);
+      const fields = rows.length > 0 ? Object.keys(rows[0] || {}) : [];
+      return {
+        fields,
+        rows,
+        rowCount: rows.length
+      };
+    }
+
     if (isFileScheduleType(normalizedType)) {
       if (!connectorId) {
         throw new Error("Fuer Datei-Vorschau muss ein Datei-Connector ausgewaehlt sein");
@@ -5428,6 +5504,34 @@ export class AdminDataService {
       return this.getMssqlSourceFields(connectorId, parseQuerySourceDefinition(sourceDefinition).queryText, instanceId);
     }
 
+    if (normalizedType === "FILEMAKER_SQL") {
+      if (!connectorId) {
+        throw new Error("Fuer FileMaker-Feldmetadaten muss ein FileMaker-Connector ausgewaehlt sein");
+      }
+
+      const client = await this.createClient(instanceId);
+      const connector = await client.queryConnector(connectorId);
+      if (!this.isFileMakerConnectorType(connector.connectorType)) {
+        throw new Error(`Connector ${connector.name} ist kein FileMaker-Connector`);
+      }
+
+      const definition = parseFileMakerSourceDefinition(sourceDefinition);
+      const layoutName = String(definition.layout || "").trim();
+      const metadata = await new FileMakerDataApiClient(connector).getDatabaseMetadata();
+      const table = layoutName
+        ? metadata.tables.find((item) => item.name.toLowerCase() === layoutName.toLowerCase())
+        : metadata.tables[0];
+      if (!table) {
+        return [];
+      }
+
+      return table.columns.map((column) => ({
+        name: column.name,
+        label: column.label || column.name,
+        type: column.type
+      }));
+    }
+
     if (isFileScheduleType(normalizedType)) {
       if (!connectorId) {
         throw new Error("Fuer Datei-Feldmetadaten muss ein Datei-Connector ausgewaehlt sein");
@@ -5519,11 +5623,12 @@ export class AdminDataService {
     const isMssqlTarget = targetType === "MSSQL" || targetType === "MSSQL_SQL";
     const isRestSource = sourceType === "REST_API" || sourceType === "API";
     const isRestTarget = targetType === "REST_API" || targetType === "API";
+    const isFileMakerSource = sourceType === "FILEMAKER_SQL";
 
     if (!isFileTarget && !String(input.operation || "").trim()) add("error", "general", "Operation fehlt.");
     if (!isFileTarget && !String(input.objectName || "").trim()) add("error", "target", "Zielobjekt/Zielname fehlt.");
 
-    if ((isFileSource || isFileTarget || isMssqlSource || isMssqlTarget || isRestSource || isRestTarget) && !connectorId) {
+    if ((isFileSource || isFileTarget || isMssqlSource || isMssqlTarget || isRestSource || isRestTarget || isFileMakerSource) && !connectorId) {
       add("error", "connector", "Diese Scheduler-Variante benoetigt einen Connector.");
     }
     if ((isFileSource || isFileTarget) && connector && !this.isFileConnectorType(connector.connectorType)) {
@@ -5534,6 +5639,9 @@ export class AdminDataService {
     }
     if ((isRestSource || isRestTarget) && connector && connectorType !== "REST_API") {
       add("error", "connector", `API-Scheduler benoetigt einen REST_API-Connector, gewaehlt ist ${connector.connectorType}.`);
+    }
+    if (isFileMakerSource && connector && !this.isFileMakerConnectorType(connector.connectorType)) {
+      add("error", "connector", `FileMaker-Scheduler benoetigt einen FileMaker-Connector, gewaehlt ist ${connector.connectorType}.`);
     }
     if (isRestTarget) {
       add("error", "target", "REST_API als TargetType ist im generischen Scheduler-Lauf noch nicht implementiert. Unterstuetzt sind REST_API-Quellen nach Salesforce/Global Picklist.");
@@ -5546,6 +5654,19 @@ export class AdminDataService {
         add("warning", "source", "MSSQL-Quelle wirkt nicht wie eine SELECT/WITH-Abfrage.");
       }
       if (parsed.delta && !parsed.delta.field) add("error", "source", "Delta-Konfiguration braucht ein Feld.");
+    } else if (isFileMakerSource) {
+      if (!sourceDefinition) {
+        add("error", "source", "FileMaker SourceDefinition darf nicht leer sein.");
+      } else {
+        try {
+          const parsed = parseFileMakerSourceDefinition(sourceDefinition);
+          if (!String(parsed.layout || "").trim()) {
+            add("error", "source", "FileMaker SourceDefinition braucht layout.");
+          }
+        } catch (error) {
+          add("error", "source", error instanceof Error ? error.message : "FileMaker SourceDefinition ist ungueltig.");
+        }
+      }
     } else if (isFileSource) {
       if (!sourceDefinition) {
         add("error", "source", "File SourceDefinition darf nicht leer sein.");
@@ -7279,6 +7400,11 @@ export class AdminDataService {
       normalized.includes("xlsx") ||
       normalized.includes("json")
     );
+  }
+
+  private isFileMakerConnectorType(connectorType: string | undefined): boolean {
+    const normalized = String(connectorType || "").trim().toLowerCase();
+    return normalized === "filemaker" || normalized === "filemaker_data_api" || normalized.includes("filemaker");
   }
 
   private isRestConnectorType(connectorType: string | undefined): boolean {

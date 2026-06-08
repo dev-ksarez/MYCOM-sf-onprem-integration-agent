@@ -2,11 +2,13 @@ import { CanonicalAccount } from "./canonical-account";
 import { ConnectorResult } from "./connector-result";
 import { JobContext } from "./job-context";
 import { MappedRecord } from "./mapped-record";
+import { DatabaseMetadata } from "./database-metadata";
 
 export interface TargetConnector {
   systemName(): string;
   testConnection(): Promise<boolean>;
   close?: () => Promise<void>;
+  getDatabaseMetadata?: () => Promise<DatabaseMetadata>;
   upsertAccounts(
     records: CanonicalAccount[],
     context: JobContext

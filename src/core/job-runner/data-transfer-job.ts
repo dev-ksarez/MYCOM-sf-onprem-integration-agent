@@ -193,6 +193,7 @@ export class DataTransferJob {
     let recordsRead = 0;
     let processedRecords = 0;
     let lastProcessedRecord: GenericRecord["checkpoint"] | undefined;
+    let checkpointBlockedByFailure = false;
 
     const processChunk = async (sourceChunk: GenericRecord[], batchStart: number): Promise<void> => {
       const mappedChunk: GenericRecord[] = await Promise.all(
@@ -233,10 +234,11 @@ export class DataTransferJob {
 
         if (result.success) {
           successfulSourceRecords.push(sourceRecord);
-          if (sourceRecord?.checkpoint?.value) {
+          if (!checkpointBlockedByFailure && sourceRecord?.checkpoint?.value) {
             lastProcessedRecord = sourceRecord.checkpoint;
           }
         } else {
+          checkpointBlockedByFailure = true;
           failedRecords.push({
             rowIndex: batchStart + batchIndex,
             externalKey: result.externalKey,

@@ -11,6 +11,7 @@ import { AccountExportJob } from "../job-runner/account-export-job";
 import { SalesforceAccountSource } from "../../source/salesforce/salesforce-account-source";
 import { SalesforceSoqlSourceAdapter } from "../../source-adapters/salesforce/salesforce-soql-source-adapter";
 import { MssqlQuerySourceAdapter } from "../../source-adapters/mssql/mssql-query-source-adapter";
+import { FileMakerSourceAdapter } from "../../source-adapters/filemaker/filemaker-source-adapter";
 import { RestApiSourceAdapter } from "../../source-adapters/rest/rest-api-source-adapter";
 import { MssqlTargetAdapter } from "../../target-adapters/mssql/mssql-target-adapter";
 import { FileSourceAdapter } from "../../source-adapters/file/file-source-adapter";
@@ -114,6 +115,7 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
     const isFileSource = isFileScheduleType(schedule.sourceType);
     const isFileTarget = isFileScheduleType(schedule.targetType);
     const isRestSource = schedule.sourceType === "REST_API";
+    const isFileMakerSource = schedule.sourceType === "FILEMAKER_SQL";
 
     const isGenericMssqlToSalesforce =
       schedule.sourceType === "MSSQL_SQL" && schedule.targetType === "SALESFORCE";
@@ -122,6 +124,8 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
     const isGenericMssqlToFile = schedule.sourceType === "MSSQL_SQL" && isFileTarget;
     const isGenericRestToSalesforce = isRestSource && schedule.targetType === "SALESFORCE";
     const isGenericRestToGlobalPicklist = isRestSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
+    const isGenericFileMakerToSalesforce = isFileMakerSource && schedule.targetType === "SALESFORCE";
+    const isGenericFileMakerToGlobalPicklist = isFileMakerSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericFileToSalesforce = isFileSource && schedule.targetType === "SALESFORCE";
     const isGenericFileToGlobalPicklist = isFileSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericFileToMssql = isFileSource && schedule.targetType === "MSSQL";
@@ -132,6 +136,8 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
       isGenericMssqlToFile ||
       isGenericRestToSalesforce ||
       isGenericRestToGlobalPicklist ||
+      isGenericFileMakerToSalesforce ||
+      isGenericFileMakerToGlobalPicklist ||
       isGenericFileToSalesforce ||
       isGenericFileToGlobalPicklist ||
       isGenericFileToMssql
@@ -166,11 +172,13 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
     const isFileSource = isFileScheduleType(schedule.sourceType);
     const isFileTarget = isFileScheduleType(schedule.targetType);
     const isRestSource = schedule.sourceType === "REST_API";
+    const isFileMakerSource = schedule.sourceType === "FILEMAKER_SQL";
 
     const isGenericMssqlToFile = schedule.sourceType === "MSSQL_SQL" && isFileTarget;
     const isGenericFileToMssql = isFileSource && schedule.targetType === "MSSQL";
     const isGenericMssqlToGlobalPicklist = schedule.sourceType === "MSSQL_SQL" && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericRestToGlobalPicklist = isRestSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
+    const isGenericFileMakerToGlobalPicklist = isFileMakerSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericFileToGlobalPicklist = isFileSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
 
     const isFileConnector = /file|csv|excel|xlsx|json/i.test(connectorConfig.connectorType || "");
@@ -207,13 +215,15 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
       ? new FileSourceAdapter(connectorConfig, schedule.sourceDefinition)
       : isRestSource
         ? new RestApiSourceAdapter(connectorConfig, schedule.sourceDefinition)
+      : isFileMakerSource
+        ? new FileMakerSourceAdapter(connectorConfig, schedule.sourceDefinition)
       : new MssqlQuerySourceAdapter(connectorConfig, schedule.sourceDefinition);
 
     const targetAdapter = isGenericMssqlToFile
       ? new FileTargetAdapter(connectorConfig, schedule.targetDefinition)
       : isGenericFileToMssql
         ? new MssqlTargetAdapter(connector as MssqlConnector, schedule.targetDefinition)
-        : isGenericMssqlToGlobalPicklist || isGenericRestToGlobalPicklist || isGenericFileToGlobalPicklist
+        : isGenericMssqlToGlobalPicklist || isGenericRestToGlobalPicklist || isGenericFileMakerToGlobalPicklist || isGenericFileToGlobalPicklist
           ? new SalesforceGlobalPicklistTargetAdapter(salesforceClient, schedule.targetDefinition, schedule.lastRunAt)
           : new SalesforceTargetAdapter(salesforceClient, schedule.targetDefinition, connectorConfig, schedule.lastRunAt);
 

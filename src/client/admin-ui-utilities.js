@@ -313,6 +313,9 @@ function normalizeConnectorType(connectorType) {
   if (normalized === 'mysql') {
     return 'MYSQL';
   }
+  if (normalized === 'filemaker' || normalized === 'filemaker_data_api' || normalized.includes('filemaker')) {
+    return 'FILEMAKER';
+  }
   if (normalized.includes('binary') && normalized.includes('file')) {
     return 'FILE_BINARY_SF_IMPORT';
   }
@@ -327,7 +330,7 @@ function normalizeConnectorType(connectorType) {
 
 function isSqlConnectorType(connectorType) {
   const normalized = normalizeConnectorType(connectorType);
-  return normalized === 'MSSQL' || normalized === 'POSTGRESQL' || normalized === 'MYSQL';
+  return normalized === 'MSSQL' || normalized === 'POSTGRESQL' || normalized === 'MYSQL' || normalized === 'FILEMAKER';
 }
 
 function isRestConnectorType(connectorType) {
@@ -423,6 +426,9 @@ function inferScheduleSourceTypeFromConnector(connectorId) {
   }
 
   if (isSqlConnectorType(normalizedConnectorType)) {
+    if (normalizedConnectorType === 'FILEMAKER') {
+      return pickFirstAvailableSelectValue(sourceTypeSelect, ['FILEMAKER_SQL']);
+    }
     return pickFirstAvailableSelectValue(sourceTypeSelect, ['MSSQL_SQL', 'MSSQL']);
   }
 
@@ -452,6 +458,9 @@ function inferScheduleSourceSystemFromConnector(connectorId) {
   }
 
   if (isSqlConnectorType(normalizedConnectorType)) {
+    if (normalizedConnectorType === 'FILEMAKER') {
+      return pickFirstAvailableSelectValue(sourceSystemSelect, ['FileMaker', 'FILEMAKER', 'Datenbank']);
+    }
     return pickFirstAvailableSelectValue(sourceSystemSelect, ['MS SQL', 'MSSQL', 'SQL', 'MS-SQL', 'Datenbank']);
   }
 
@@ -556,7 +565,7 @@ function getConnectorWizardTypeFromConnectorType(connectorType) {
   if (!normalized) {
     return 'MSSQL';
   }
-  if (['MSSQL', 'POSTGRESQL', 'MYSQL', 'FILE', 'REST_API', 'FILE_BINARY_SF_IMPORT'].includes(normalized)) {
+  if (['MSSQL', 'POSTGRESQL', 'MYSQL', 'FILEMAKER', 'FILE', 'REST_API', 'FILE_BINARY_SF_IMPORT'].includes(normalized)) {
     return normalized;
   }
   return 'CUSTOM';
@@ -1029,6 +1038,7 @@ function getObjectIcon(objectName) {
 function getConnectorIcon(connectorType, connectorName) {
   const value = String(connectorType || connectorName || '').toLowerCase();
   if (value.includes('salesforce')) return '☁';
+  if (value.includes('filemaker')) return '▦';
   if (value.includes('rest')) return '🌐';
   if (value.includes('mssql') || value.includes('sql')) return '🗄';
   if (value.includes('file') || value.includes('csv') || value.includes('excel') || value.includes('json')) return '📄';
@@ -1040,6 +1050,7 @@ function getConnectorIcon(connectorType, connectorName) {
 function getConnectorGraphClass(connectorType, connectorName) {
   const value = String(connectorType || connectorName || '').toLowerCase();
   if (value.includes('salesforce')) return 'graph-connector-salesforce';
+  if (value.includes('filemaker')) return 'graph-connector-erp';
   if (value.includes('rest')) return 'graph-connector-rest';
   if (value.includes('mssql') || value.includes('sql')) return 'graph-connector-mssql';
   if (value.includes('file') || value.includes('csv') || value.includes('excel') || value.includes('json')) return 'graph-connector-file';
@@ -1454,4 +1465,3 @@ function renderSalesforceOverview(overview) {
   renderApiHourlyAverageGauge(overview?.apiUsage);
   renderDataGrowthGauge();
 }
-

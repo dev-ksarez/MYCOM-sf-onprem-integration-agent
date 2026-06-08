@@ -3,6 +3,7 @@ import { ConnectorConfig } from "../../clients/salesforce/salesforce-client";
 import { MssqlDatabase } from "../../infrastructure/db/mssql";
 import { CanonicalAccount } from "../../types/canonical-account";
 import { ConnectorResult } from "../../types/connector-result";
+import { DatabaseMetadata } from "../../types/database-metadata";
 import { JobContext } from "../../types/job-context";
 import { MappedRecord } from "../../types/mapped-record";
 import { TargetConnector } from "../../types/target-connector";
@@ -246,6 +247,70 @@ export class MssqlConnector implements TargetConnector {
 
   public async close(): Promise<void> {
     await this.database.close();
+  }
+
+  public async getDatabaseMetadata(): Promise<DatabaseMetadata> {
+    const result = await this.database.query<{
+      TABLE_SCHEMA: string;
+      TABLE_NAME: string;
+      COLUMN_NAME: string;
+      DATA_TYPE: string;
+      IS_NULLABLE: string;
+      ORDINAL_POSITION: number;
+      CHARACTER_MAXIMUM_LENGTH?: number;
+      NUMERIC_PRECISION?: number;
+      NUMERIC_SCALE?: number;
+    }>(`
+      SELECT
+        c.TABLE_SCHEMA,
+        c.TABLE_NAME,
+        c.COLUMN_NAME,
+        c.DATA_TYPE,
+        c.IS_NULLABLE,
+        c.ORDINAL_POSITION,
+        c.CHARACTER_MAXIMUM_LENGTH,
+        c.NUMERIC_PRECISION,
+        c.NUMERIC_SCALE
+      FROM INFORMATION_SCHEMA.COLUMNS c
+      INNER JOIN INFORMATION_SCHEMA.TABLES t
+        ON t.TABLE_SCHEMA = c.TABLE_SCHEMA
+       AND t.TABLE_NAME = c.TABLE_NAME
+      WHERE t.TABLE_TYPE = 'BASE TABLE'
+      ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION
+    `);
+
+    const tableMap = new Map<string, DatabaseMetadata["tables"][number]>();
+    for (const row of result.recordset) {
+      const schema = String(row.TABLE_SCHEMA || "").trim();
+      const tableName = String(row.TABLE_NAME || "").trim();
+      const key = `${schema}.${tableName}`;
+      const table = tableMap.get(key) || {
+        schema,
+        name: tableName,
+        label: key,
+        type: "table",
+        columns: []
+      };
+      table.columns.push({
+        name: String(row.COLUMN_NAME || "").trim(),
+        type: String(row.DATA_TYPE || "unknown").trim() || "unknown",
+        nullable: String(row.IS_NULLABLE || "").toUpperCase() === "YES",
+        ordinal: Number(row.ORDINAL_POSITION || 0) || undefined,
+        length: row.CHARACTER_MAXIMUM_LENGTH === undefined ? undefined : Number(row.CHARACTER_MAXIMUM_LENGTH),
+        precision: row.NUMERIC_PRECISION === undefined ? undefined : Number(row.NUMERIC_PRECISION),
+        scale: row.NUMERIC_SCALE === undefined ? undefined : Number(row.NUMERIC_SCALE)
+      });
+      tableMap.set(key, table);
+    }
+
+    return {
+      connectorId: this.config.id,
+      connectorName: this.config.name,
+      connectorType: this.config.connectorType,
+      databaseName: String(this.config.parameters.database || "").trim() || undefined,
+      refreshedAt: new Date().toISOString(),
+      tables: Array.from(tableMap.values())
+    };
   }
 
   public async upsertAccounts(

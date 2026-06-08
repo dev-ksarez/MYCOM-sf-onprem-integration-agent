@@ -47,6 +47,13 @@ function renderConnectors() {
         'Schema/Tabelle: ' + esc([schemaName, tableName].filter(Boolean).join('.') || '-')
       ];
     }
+    if (normalizeConnectorType(item.connectorType) === 'FILEMAKER') {
+      return [
+        'Base URL: ' + esc(parameters.baseUrl || parameters.serverUrl || parameters.server || '-'),
+        'DB: ' + esc(parameters.database || '-'),
+        'Benutzer: ' + esc(parameters.user || '-')
+      ];
+    }
     if (isRestConnectorType(item.connectorType)) {
       return [
         'Base URL: ' + esc(parameters.baseUrl || '-'),
@@ -212,5 +219,4 @@ function renderConnectors() {
 
   setTimeout(() => initializeTableFilters(), 100);
 }
-
 

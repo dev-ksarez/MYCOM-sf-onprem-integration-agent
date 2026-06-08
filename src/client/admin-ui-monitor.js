@@ -67,6 +67,10 @@ function getLatestRunForSchedule(scheduleId) {
 }
 
 function getLatestFailedRunForSchedule(scheduleId) {
+  const latestRun = getLatestRunForSchedule(scheduleId);
+  if (latestRun && normalizeRunStatus(latestRun.status) !== 'failed') {
+    return null;
+  }
   return (state.runs || [])
     .filter((run) => String(run.scheduleId || '').trim() === String(scheduleId || '').trim() && normalizeRunStatus(run.status) === 'failed')
     .sort((left, right) => getRunSortTime(right) - getRunSortTime(left))[0] || null;
@@ -1349,4 +1353,3 @@ async function openReverseDirectionScheduleDraft(scheduleId, scheduleDraftOverri
     showToast('Entwurf mit gedrehter Richtung erzeugt.');
   }
 }
-

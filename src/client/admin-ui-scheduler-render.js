@@ -107,14 +107,7 @@ function renderSchedules() {
       const activeHint = item.autoDisabledDueToErrors
         ? '<span class="badge bg-warning-subtle text-warning border mt-1" title="Automatisch wegen Fehlern deaktiviert">auto deaktiviert</span>'
         : '<span class="small text-secondary">' + (item.active ? 'aktiv' : 'inaktiv') + '</span>';
-      const lastFailedRun = (state.runs || [])
-        .filter((run) => run.scheduleId === item.id && run.status === 'Failed')
-        .sort((a, b) => {
-          const timeA = new Date(a.finishedAt || 0).getTime();
-          const timeB = new Date(b.finishedAt || 0).getTime();
-          return timeB - timeA;
-        })
-        [0];
+      const lastFailedRun = getLatestFailedRunForSchedule(item.id);
       const errorMarkup = lastFailedRun
         ? '<button class="btn btn-sm btn-outline-danger mt-2" title="Letzter Fehler: ' + esc(lastFailedRun.errorMessage || 'Unbekannter Fehler') + '" data-show-run-logs="' + esc(lastFailedRun.id) + '">Fehlerdetails</button>'
         : '<span class="small text-secondary d-block mt-2">keine offenen Fehler</span>';
@@ -233,5 +226,4 @@ function renderSchedules() {
 
   setTimeout(() => initializeTableFilters(), 100);
 }
-
 

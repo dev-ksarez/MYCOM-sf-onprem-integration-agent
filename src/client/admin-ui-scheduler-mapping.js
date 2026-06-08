@@ -3277,6 +3277,9 @@ function updateSourceQueryAssist() {
   } else if (sourceType === 'SALESFORCE_SOQL') {
     highlight.textContent = '';
     status.textContent = 'SOQL-Abfrage kann direkt gegen Salesforce getestet werden. Es werden bis zu 10 Datensätze angezeigt.';
+  } else if (sourceType === 'FILEMAKER_SQL') {
+    highlight.textContent = '';
+    status.textContent = 'FileMaker-Quelle: Source Definition z. B. {"layout":"Kontakte","limit":10}. Felder werden aus den Layout-Metadaten gelesen.';
   } else if (isRest) {
     highlight.textContent = '';
     status.textContent = 'REST-Quelle: Source Definition z. B. {"endpoint":"/api/customers","method":"GET","resultPath":"items"}. Es werden bis zu 10 Datensätze angezeigt.';
@@ -3678,7 +3681,7 @@ function parseScheduleSourceDefinition(sourceType, rawDefinition) {
       archiveRelativeDirectory: fileDefinition.archiveRelativeDirectory
     };
   }
-  if ((sourceType !== 'MSSQL_SQL' && sourceType !== 'SALESFORCE_SOQL') || !trimmed) {
+  if ((sourceType !== 'MSSQL_SQL' && sourceType !== 'FILEMAKER_SQL' && sourceType !== 'SALESFORCE_SOQL') || !trimmed) {
     return { queryText: trimmed, deltaStrategy: '', deltaField: '', afterExportText: '', relativeDirectory: '', archiveRelativeDirectory: '' };
   }
 
@@ -3733,7 +3736,7 @@ function buildScheduleSourceDefinitionValue() {
   }
 
   const queryText = String(document.getElementById('sch-source-definition').value || '').trim();
-  if (sourceType !== 'MSSQL_SQL' && sourceType !== 'SALESFORCE_SOQL') {
+  if (sourceType !== 'MSSQL_SQL' && sourceType !== 'FILEMAKER_SQL' && sourceType !== 'SALESFORCE_SOQL') {
     return queryText || undefined;
   }
 
@@ -3975,4 +3978,3 @@ function editAdminUser(user) {
     el.checked = modules.includes(el.getAttribute('data-admin-module'));
   });
 }
-

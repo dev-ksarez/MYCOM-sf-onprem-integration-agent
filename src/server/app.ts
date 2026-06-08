@@ -2948,7 +2948,7 @@ ${renderAISchedulerAssistantModule()}
               <div class="tab-pane fade" id="sch-tab-source" data-sch-step-panel="2" role="tabpanel">
                 <div class="row g-2">
                   <div class="col-md-6"><label class="form-label">Source System</label><select id="sch-source-system" class="form-select"><option value="">- Wählen -</option></select></div>
-                  <div class="col-md-6"><label class="form-label">Source Type</label><select id="sch-source-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE_SOQL">SALESFORCE_SOQL</option><option value="MSSQL_SQL">MSSQL_SQL</option><option value="REST_API">REST_API</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
+                  <div class="col-md-6"><label class="form-label">Source Type</label><select id="sch-source-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE_SOQL">SALESFORCE_SOQL</option><option value="MSSQL_SQL">MSSQL_SQL</option><option value="FILEMAKER_SQL">FILEMAKER_SQL</option><option value="REST_API">REST_API</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
                   <div class="col-md-12">
                     <details class="json-field-collapsible">
                       <summary class="json-field-summary">Source Definition / Abfrage</summary>
@@ -3245,7 +3245,7 @@ ${renderAISchedulerAssistantModule()}
 
             <div class="connector-wizard-panel" data-step-panel="1">
               <div class="row g-3">
-                <div class="col-md-7"><label class="form-label">Welcher Connectortyp soll angelegt werden?</label><select id="con-wizard-type" class="form-select"><option value="MSSQL">MSSQL</option><option value="POSTGRESQL">PostgreSQL</option><option value="MYSQL">MySQL</option><option value="FILE">Datei (TXT, CSV, JSON, EXCEL)</option><option value="REST_API">REST API</option><option value="FILE_BINARY_SF_IMPORT">Datei Binärimport nach Salesforce</option><option value="CUSTOM">Benutzerdefiniert</option></select></div>
+                <div class="col-md-7"><label class="form-label">Welcher Connectortyp soll angelegt werden?</label><select id="con-wizard-type" class="form-select"><option value="MSSQL">MSSQL</option><option value="FILEMAKER">FileMaker</option><option value="POSTGRESQL">PostgreSQL</option><option value="MYSQL">MySQL</option><option value="FILE">Datei (TXT, CSV, JSON, EXCEL)</option><option value="REST_API">REST API</option><option value="FILE_BINARY_SF_IMPORT">Datei Binärimport nach Salesforce</option><option value="CUSTOM">Benutzerdefiniert</option></select></div>
                 <div class="col-md-5 d-none"><label class="form-label">Connector Type</label><input id="con-type" class="form-control" readonly /></div>
                 <div class="col-12"><div id="con-wizard-hint" class="connector-wizard-hint">Assistent aktiv: Bitte zuerst den Typ wählen, danach führt dich der Assistent durch die Parameter.</div></div>
               </div>
@@ -3737,6 +3737,7 @@ export function createAppServer(
       const contextProjectId = String(requestUrl.searchParams.get("projectId") || "").trim();
       const contextTargetEnv = String(requestUrl.searchParams.get("targetEnv") || "").trim() === "production" ? "production" : "test";
       const connectorTestMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/test$/) : null;
+      const connectorMetadataMatch = req.method === "GET" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/metadata$/) : null;
       const connectorDeleteMatch = req.method === "DELETE" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)$/) : null;
       const scheduleRunMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/run$/) : null;
       const scheduleDryRunMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/dry-run$/) : null;
@@ -5344,12 +5345,17 @@ export function createAppServer(
         const connectors = await adminDataService.listConnectors(instanceId);
         const schedules = await adminDataService.listSchedules(instanceId);
         const metadataContext = await adminDataService.getInstanceMetadataContext(instanceId);
+        const selectedConnectorId = String(body.connectorId || "").trim();
+        const connectorMetadataContext = selectedConnectorId
+          ? await adminDataService.getConnectorMetadata(selectedConnectorId, instanceId).catch(() => undefined)
+          : undefined;
         const sage100DocumentationContext = adminDataService.getSage100DocumentationContext(userPrompt);
         const aiConfig = adminDataService.getAIProviderConfig();
         const aiKnowledgeContext = buildSchedulerAIKnowledge({
           connectors,
           schedules,
           metadataContext,
+          connectorMetadataContext,
           sage100DocumentationContext
         });
         const aiService = new AISchedulerService();
@@ -5551,6 +5557,13 @@ export function createAppServer(
         const connectorId = decodeURIComponent(connectorTestMatch[1]);
         const result = await adminDataService.testConnector(connectorId, instanceId);
         sendJson(result.ok ? 200 : 500, result);
+        return;
+      }
+
+      if (connectorMetadataMatch) {
+        const connectorId = decodeURIComponent(connectorMetadataMatch[1]);
+        const result = await adminDataService.getConnectorMetadata(connectorId, instanceId);
+        sendJson(200, result);
         return;
       }
 

@@ -2,6 +2,7 @@ import { ConnectorConfig } from "../../clients/salesforce/salesforce-client";
 import { MockConnector } from "../../connectors/mock/mock-connector";
 import { TargetConnector } from "../../types/target-connector";
 import { MssqlConnector } from "../../connectors/mssql/mssql-connector";
+import { FileMakerConnector } from "../../connectors/filemaker/filemaker-connector";
 
 interface CacheEntry {
   connector: TargetConnector;
@@ -26,6 +27,8 @@ export class ConnectorRegistry {
     }
 
     const configJson = JSON.stringify({
+      connectorType: config.connectorType,
+      targetSystem: config.targetSystem,
       parameters: config.parameters,
       secretKey: config.secretKey,
       timeoutMs: config.timeoutMs,
@@ -53,6 +56,10 @@ export class ConnectorRegistry {
         break;
       case "mssql":
         connector = new MssqlConnector(config);
+        break;
+      case "filemaker":
+      case "filemaker_data_api":
+        connector = new FileMakerConnector(config);
         break;
       default:
         throw new Error(`No connector registered for connector type: ${config.connectorType}`);

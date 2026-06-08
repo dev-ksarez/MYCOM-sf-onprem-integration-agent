@@ -1,4 +1,5 @@
 import {
+  ConnectorMetadataResult,
   ConnectorListItem,
   InstanceMetadataContext,
   Sage100DocumentationContext,
@@ -9,6 +10,7 @@ export interface AISchedulerKnowledgeInput {
   connectors: ConnectorListItem[];
   schedules: ScheduleListItem[];
   metadataContext?: InstanceMetadataContext;
+  connectorMetadataContext?: ConnectorMetadataResult;
   sage100DocumentationContext?: Sage100DocumentationContext;
 }
 
@@ -68,6 +70,7 @@ export function buildSchedulerAIKnowledge(input: AISchedulerKnowledgeInput): str
   });
 
   const sage = input.sage100DocumentationContext;
+  const connectorMetadata = input.connectorMetadataContext;
   const knowledge = {
     connectoren: input.connectors.slice(0, 30).map(sanitizeConnector),
     bestehendeScheduler: input.schedules.slice(0, 20).map(summarizeSchedule),
@@ -77,6 +80,28 @@ export function buildSchedulerAIKnowledge(input: AISchedulerKnowledgeInput): str
       objectCount: metadata.snapshot?.objectCount,
       fieldCount: metadata.snapshot?.fieldCount,
       objects: metadataObjects
+    } : null,
+    connectorDatenbankMetadaten: connectorMetadata ? {
+      connectorId: connectorMetadata.connectorId,
+      connectorName: connectorMetadata.connectorName,
+      connectorType: connectorMetadata.connectorType,
+      databaseName: connectorMetadata.databaseName,
+      refreshedAt: connectorMetadata.refreshedAt,
+      tableCount: connectorMetadata.tableCount,
+      fieldCount: connectorMetadata.fieldCount,
+      tables: connectorMetadata.tables.slice(0, 30).map((table) => ({
+        schema: table.schema,
+        name: table.name,
+        label: table.label,
+        type: table.type,
+        fields: table.columns.slice(0, 120).map((column) => ({
+          name: column.name,
+          label: column.label,
+          type: column.type,
+          nullable: column.nullable,
+          primaryKey: column.primaryKey
+        }))
+      }))
     } : null,
     sage100Dokumentation: sage ? {
       generatedAt: sage.generatedAt,
