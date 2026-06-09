@@ -14,7 +14,7 @@ import { isFileScheduleType } from "../types/file-schedule-type";
 import { SalesforceConfig } from "../infrastructure/config/salesforce-config";
 import { GenericRecord } from "../types/generic-record";
 import { ConnectorResult } from "../types/connector-result";
-import { FailedJobRecord } from "../types/job-execution-result";
+import { FailedJobRecord, JobExecutionStatus } from "../types/job-execution-result";
 import { parseQuerySourceDefinition, resolveAfterExportValue } from "../utils/query-source-definition";
 import { LocalScheduleHealthRepository, LocalScheduleHealthItem } from "../core/scheduler/local-schedule-health-repository";
 import { JobExecutorFactory } from "../core/scheduler/job-executor-factory";
@@ -31,6 +31,14 @@ export interface ManualRunResult {
   scheduleName: string;
   triggered: boolean;
   message: string;
+}
+
+export interface ScheduleExecutionOutcome {
+  processed: boolean;
+  runId?: string;
+  correlationId?: string;
+  status?: JobExecutionStatus;
+  errorMessage?: string;
 }
 
 const AUTO_DISABLE_FAILURE_THRESHOLD = Math.max(
@@ -750,9 +758,10 @@ async function executeSchedule(
   logger: pino.Logger,
   agentId: string,
   schedule: IntegrationSchedule,
-  options?: { forceRun?: boolean }
-): Promise<boolean> {
+  options?: { forceRun?: boolean; endpointRecords?: GenericRecord[]; correlationId?: string }
+): Promise<ScheduleExecutionOutcome> {
   const forceRun = options?.forceRun ?? false;
+  const isEndpointInvocation = Boolean(options?.endpointRecords);
   const latestScheduleRecord = await salesforceClient.queryScheduleById(schedule.id);
   const latestSchedule = mapSchedule(latestScheduleRecord);
   if (!latestSchedule.active) {
@@ -760,15 +769,15 @@ async function executeSchedule(
       { scheduleId: schedule.id, scheduleName: schedule.name },
       "Skipping schedule because it is no longer active after refresh"
     );
-    return false;
+    return { processed: false };
   }
 
-  if (!forceRun && !isScheduleDue(latestSchedule)) {
+  if (!forceRun && !isEndpointInvocation && !isScheduleDue(latestSchedule)) {
     logger.info(
       { scheduleId: schedule.id, scheduleName: schedule.name },
       "Skipping schedule because it is no longer due after refresh"
     );
-    return false;
+    return { processed: false };
   }
 
   schedule = latestSchedule;
@@ -776,6 +785,7 @@ async function executeSchedule(
   const isFileTarget = isFileScheduleType(schedule.targetType);
   const isRestSource = schedule.sourceType === "REST_API";
   const isFileMakerSource = schedule.sourceType === "FILEMAKER_SQL";
+  const isEndpointSource = schedule.sourceType === "ENDPOINT";
 
   const isGenericSalesforceToMssql =
     schedule.sourceType === "SALESFORCE_SOQL" && schedule.targetType === "MSSQL";
@@ -789,6 +799,8 @@ async function executeSchedule(
   const isGenericRestToGlobalPicklist = isRestSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
   const isGenericFileMakerToSalesforce = isFileMakerSource && schedule.targetType === "SALESFORCE";
   const isGenericFileMakerToGlobalPicklist = isFileMakerSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
+  const isGenericEndpointToSalesforce = isEndpointSource && schedule.targetType === "SALESFORCE";
+  const isGenericEndpointToGlobalPicklist = isEndpointSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
   const isGenericFileToSalesforce = isFileSource && schedule.targetType === "SALESFORCE";
   const isGenericFileToGlobalPicklist = isFileSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
   const isGenericFileToMssql = isFileSource && schedule.targetType === "MSSQL";
@@ -803,6 +815,8 @@ async function executeSchedule(
     isGenericRestToGlobalPicklist ||
     isGenericFileMakerToSalesforce ||
     isGenericFileMakerToGlobalPicklist ||
+    isGenericEndpointToSalesforce ||
+    isGenericEndpointToGlobalPicklist ||
     isGenericFileToSalesforce ||
     isGenericFileToGlobalPicklist ||
     isGenericFileToMssql;
@@ -812,7 +826,7 @@ async function executeSchedule(
       { scheduleId: schedule.id, objectName: schedule.objectName },
       "Skipping schedule because object is not supported yet"
     );
-    return false;
+    return { processed: false };
   }
 
   if (!schedule.connectorId) {
@@ -821,11 +835,11 @@ async function executeSchedule(
 
   const connectorConfig = await salesforceClient.queryConnector(schedule.connectorId);
   const isFileConnector = /file|csv|excel|xlsx|json/i.test(connectorConfig.connectorType || "");
-  const connector = (isFileConnector || isRestSource) ? undefined : new ConnectorRegistry().getConnectorByConfig(connectorConfig);
+  const connector = (isFileConnector || isRestSource || isEndpointSource) ? undefined : new ConnectorRegistry().getConnectorByConfig(connectorConfig);
 
   const context: JobContext = {
     runId: `RUN-${Date.now()}`,
-    correlationId: `CORR-${Date.now()}`,
+    correlationId: options?.correlationId || `CORR-${Date.now()}`,
     scheduleId: schedule.id,
     targetSystem: schedule.targetSystem,
     batchSize: schedule.batchSize || 100,
@@ -838,7 +852,7 @@ async function executeSchedule(
       { scheduleId: schedule.id, scheduleName: schedule.name },
       "Skipping schedule because a previous run is still running"
     );
-    return false;
+    return { processed: false };
   }
 
   const runId = await salesforceClient.createRun({
@@ -847,6 +861,7 @@ async function executeSchedule(
     agentId,
     startedAt: new Date().toISOString()
   });
+  context.runId = runId;
   let lastProgressLogAt = 0;
   let lastProgressRunUpdateAt = 0;
   const writeTransferProgressLog: TransferContext["onProgress"] = async (progress) => {
@@ -912,7 +927,7 @@ async function executeSchedule(
   const lastRecordId = checkpoint?.lastRecordId;
 
   try {
-    const connectionOk = (isFileConnector || isRestSource) ? true : await connector!.testConnection();
+    const connectionOk = (isFileConnector || isRestSource || isEndpointSource) ? true : await connector!.testConnection();
     if (!connectionOk) {
       throw new Error(`Connection test failed for target system: ${schedule.targetSystem}`);
     }
@@ -934,6 +949,7 @@ async function executeSchedule(
       connector,
       lastCheckpoint,
       lastRecordId,
+      endpointRecords: options?.endpointRecords,
       onProgress: writeTransferProgressLog
     });
 
@@ -1038,7 +1054,12 @@ async function executeSchedule(
       });
     }
 
-    return result.status === "Success";
+    return {
+      processed: result.status === "Success",
+      runId,
+      correlationId: context.correlationId,
+      status: result.status
+    };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     if (errorMessage.startsWith("MSSQL_CONNECTION_FAILED:")) {
@@ -1115,6 +1136,17 @@ async function executeSchedule(
   }
 }
 
+async function executeScheduleAsBoolean(
+  salesforceClient: SalesforceClient,
+  logger: pino.Logger,
+  agentId: string,
+  schedule: IntegrationSchedule,
+  options?: { forceRun?: boolean; endpointRecords?: GenericRecord[]; correlationId?: string }
+): Promise<boolean> {
+  const outcome = await executeSchedule(salesforceClient, logger, agentId, schedule, options);
+  return outcome.processed;
+}
+
 export async function runDueSchedulesOnce(logger: pino.Logger, agentId: string): Promise<AgentRunSummary> {
   const salesforceConfig = getSalesforceConfig();
   const salesforceClient = new SalesforceClient(salesforceConfig);
@@ -1183,6 +1215,11 @@ export async function runDueSchedulesOnce(logger: pino.Logger, agentId: string):
 
   for (const scheduleEntry of orderedSchedules) {
     const schedule = await ensureScheduleHasNextRunAt(salesforceClient, logger, scheduleEntry);
+    if (String(schedule.sourceType || "").trim().toUpperCase() === "ENDPOINT") {
+      dueState.set(schedule.id, false);
+      executedState.set(schedule.id, false);
+      continue;
+    }
     const parentId = schedule.parentScheduleId;
     const hasValidParent = Boolean(parentId && orderedSchedules.some((entry) => entry.id === parentId));
     const ownDue = isScheduleDue(schedule);
@@ -1225,7 +1262,7 @@ export async function runDueSchedulesOnce(logger: pino.Logger, agentId: string):
     }
 
     try {
-      const processed = await executeSchedule(salesforceClient, logger, agentId, schedule);
+      const processed = await executeScheduleAsBoolean(salesforceClient, logger, agentId, schedule);
       executedState.set(schedule.id, processed);
       if (processed) {
         processedSchedules += 1;
@@ -1266,7 +1303,7 @@ export async function runScheduleNow(
 
   const record = await salesforceClient.queryScheduleById(scheduleId);
   const schedule = mapSchedule(record);
-  const triggered = await executeSchedule(salesforceClient, logger, agentId, schedule, { forceRun: true });
+  const triggered = await executeScheduleAsBoolean(salesforceClient, logger, agentId, schedule, { forceRun: true });
 
   return {
     scheduleId: schedule.id,
@@ -1276,4 +1313,26 @@ export async function runScheduleNow(
       ? `Manual run started for ${schedule.name}`
       : `Schedule ${schedule.name} was skipped because another run is already active or prerequisites were not met`
   };
+}
+
+export async function runEndpointScheduleRequest(
+  logger: pino.Logger,
+  agentId: string,
+  scheduleId: string,
+  endpointRecords: GenericRecord[],
+  correlationId?: string,
+  salesforceConfigOverride?: SalesforceConfig
+): Promise<ScheduleExecutionOutcome> {
+  const salesforceClient = new SalesforceClient(salesforceConfigOverride || getSalesforceConfig());
+  await salesforceClient.login();
+
+  await runLogRetentionIfDue(salesforceClient, logger);
+
+  const record = await salesforceClient.queryScheduleById(scheduleId);
+  const schedule = mapSchedule(record);
+  return await executeSchedule(salesforceClient, logger, agentId, schedule, {
+    forceRun: true,
+    endpointRecords,
+    correlationId
+  });
 }

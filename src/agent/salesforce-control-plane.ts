@@ -2,11 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import pino from "pino";
-import { SalesforceClient } from "../clients/salesforce/salesforce-client";
+import { ConnectorConfig, SalesforceClient } from "../clients/salesforce/salesforce-client";
 import { SalesforceConfig } from "../infrastructure/config/salesforce-config";
 import { HealthSnapshot } from "../server/health-snapshot";
 import { triggerDashboardUpdate } from "../server/dashboard-update-service";
-import { publishFileIndex } from "./geraeteakte-index-publisher";
+import { publishFileIndex, publishFileIndexForConnector } from "./geraeteakte-index-publisher";
 
 interface SalesforceInstanceEnvConfig {
   id: string;
@@ -78,6 +78,22 @@ const COMMAND_STATUS_ACCEPTED = "Accepted";
 const COMMAND_STATUS_DONE = "Done";
 const COMMAND_STATUS_FAILED = "Failed";
 const COMMAND_STATUS_IGNORED = "Ignored";
+
+function isFileBrowseConnectorType(connectorType: string | undefined): boolean {
+  const normalized = String(connectorType || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  return normalized === "filebrowse" || normalized === "geraeteakte" || normalized === "geräteakte";
+}
+
+function selectFileBrowseConnector(connectors: ConnectorConfig[]): ConnectorConfig | undefined {
+  const candidates = connectors.filter((connector) =>
+    connector.active !== false && isFileBrowseConnectorType(connector.connectorType)
+  );
+  return candidates.find((connector) => {
+    const params = connector.parameters || {};
+    const purpose = String(params.purpose || params.profile || params.kind || "").trim().toLowerCase();
+    return purpose === "geraeteakte" || purpose === "geräteakte";
+  }) || candidates[0];
+}
 const SUPPORTED_COMMAND_TYPES = new Set(["restart-agent", "request-update", "upload-error-log"]);
 
 function readConfiguredInstances(): SalesforceInstanceEnvConfig[] {
@@ -507,15 +523,21 @@ export function createSalesforceControlPlaneRuntime(options: SalesforceControlPl
       return;
     }
     const basePath = String(options.geraeteakteBasePath || "").trim();
-    if (!basePath) {
-      options.logger.debug("Geräteakte index push skipped: FILE_BROWSE_BASE_PATH not configured");
-      return;
-    }
     runningGeraeteakte = true;
     try {
       const resolved = await getClient();
       if (!resolved) {
         options.logger.debug("Geräteakte index push skipped: no configured instance");
+        return;
+      }
+      const connectors = await resolved.client.queryConnectors();
+      const fileBrowseConnector = selectFileBrowseConnector(connectors);
+      if (fileBrowseConnector) {
+        await publishFileIndexForConnector(resolved.client, fileBrowseConnector, basePath || undefined, options.logger);
+        return;
+      }
+      if (!basePath) {
+        options.logger.debug("Geräteakte index push skipped: no active FileBrowse connector and FILE_BROWSE_BASE_PATH not configured");
         return;
       }
       await publishFileIndex(resolved.client, basePath, options.logger);
@@ -607,7 +629,7 @@ export function createSalesforceControlPlaneRuntime(options: SalesforceControlPl
       healthTimer = setInterval(() => void publishHealth(), options.healthIntervalMs);
       commandTimer = setInterval(() => void pollCommands(), options.commandPollIntervalMs);
 
-      if (options.geraeteakteIndexEnabled && options.geraeteakteBasePath) {
+      if (options.geraeteakteIndexEnabled !== false) {
         const interval = options.geraeteakteIndexIntervalMs && options.geraeteakteIndexIntervalMs > 0
           ? options.geraeteakteIndexIntervalMs
           : 300_000;

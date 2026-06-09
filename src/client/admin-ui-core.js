@@ -7,10 +7,210 @@ let logsChart;
 let recordsChart;
 const salesforceGaugeCharts = {};
 
+// Hex to HSL & HSL to Hex helpers
+function hexToRgb(hex) {
+  const clean = hex.replace(/^#/, '');
+  const bigint = parseInt(clean, 16);
+  const r = (bigint >> 16) & 255;
+  const g = (bigint >> 8) & 255;
+  const b = bigint & 255;
+  return { r, g, b };
+}
+
+function rgbToHsl(r, g, b) {
+  r /= 255;
+  g /= 255;
+  b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h, s, l = (max + min) / 2;
+
+  if (max === min) {
+    h = s = 0; // achromatic
+  } else {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+      case g: h = (b - r) / d + 2; break;
+      case b: h = (r - g) / d + 4; break;
+    }
+    h /= 6;
+  }
+  return {
+    h: Math.round(h * 360),
+    s: Math.round(s * 100),
+    l: Math.round(l * 100)
+  };
+}
+
+function hslToHex(h, s, l) {
+  s /= 100;
+  l /= 100;
+  const k = n => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  const toHex = x => {
+    const val = Math.round(x * 255).toString(16);
+    return val.length === 1 ? '0' + val : val;
+  };
+  return `#${toHex(f(0))}${toHex(f(8))}${toHex(f(4))}`;
+}
+
+// Generate the HSL-based palette from a base primary hex color
+function generateLogoThemePalette(primaryHex) {
+  const { h, s, l } = rgbToHsl(hexToRgb(primaryHex).r, hexToRgb(primaryHex).g, hexToRgb(primaryHex).b);
+  
+  // Ensure the primary color lightness is in a readable range (35% to 65% for light UI)
+  const adjustedL = Math.max(35, Math.min(l, 65));
+  const primary = hslToHex(h, s, adjustedL);
+  
+  // Generate harmonious palette
+  const primaryStrong = hslToHex(h, s, Math.max(20, adjustedL - 12));
+  
+  // Accent is complementary (rotate 180 degrees) or high-contrast alternative
+  const accent = hslToHex((h + 180) % 360, Math.max(50, s), Math.max(40, Math.min(adjustedL, 60)));
+  
+  const surfaceSoft = hslToHex(h, 8, 97);
+  const border = hslToHex(h, 12, 90);
+  const borderStrong = hslToHex(h, 15, 80);
+  
+  // Sidebar: Dark slate with a subtle tint of the primary brand color
+  const sidebarBg1 = hslToHex(h, Math.max(15, Math.min(s, 25)), 10);
+  const sidebarBg2 = hslToHex(h, Math.max(15, Math.min(s, 25)), 16);
+  const contentBg = hslToHex(h, 8, 95);
+
+  return {
+    primary,
+    primaryStrong,
+    accent,
+    surfaceSoft,
+    border,
+    borderStrong,
+    sidebarBg1,
+    sidebarBg2,
+    contentBg
+  };
+}
+
+// Inject style block dynamically
+function injectLogoThemeStyle(palette) {
+  let styleEl = document.getElementById('dynamic-logo-theme-style');
+  if (!styleEl) {
+    styleEl = document.createElement('style');
+    styleEl.id = 'dynamic-logo-theme-style';
+    document.head.appendChild(styleEl);
+  }
+  
+  styleEl.textContent = `
+    body.theme-logo {
+      --ui-primary: ${palette.primary} !important;
+      --ui-primary-strong: ${palette.primaryStrong} !important;
+      --ui-accent: ${palette.accent} !important;
+      --ui-surface: #ffffff !important;
+      --ui-surface-soft: ${palette.surfaceSoft} !important;
+      --ui-border: ${palette.border} !important;
+      --ui-border-strong: ${palette.borderStrong} !important;
+      --ui-text: #172534 !important;
+      --ui-text-muted: #4f6175 !important;
+      --ui-shadow-sm: 0 2px 10px rgba(17, 37, 63, 0.08) !important;
+      --ui-shadow-md: 0 12px 30px rgba(17, 37, 63, 0.12) !important;
+      
+      --layout-sidebar-bg: ${palette.sidebarBg1} !important;
+      --layout-sidebar-bg-2: ${palette.sidebarBg2} !important;
+      --layout-sidebar-text: rgba(255, 255, 255, 0.78) !important;
+      --layout-sidebar-text-strong: #ffffff !important;
+      --layout-content-bg: ${palette.contentBg} !important;
+      --layout-card-border: ${palette.border} !important;
+      --layout-topbar-bg: #ffffff !important;
+      --layout-topbar-border: ${palette.border} !important;
+      --layout-topbar-text: #203246 !important;
+      --layout-surface: #ffffff !important;
+      --layout-surface-soft: ${palette.surfaceSoft} !important;
+      --layout-surface-muted: ${palette.border} !important;
+      --layout-text: #203246 !important;
+      --layout-text-muted: #53677c !important;
+      --layout-tab-hover: rgba(255, 255, 255, 0.1) !important;
+      --layout-tab-active-bg: linear-gradient(90deg, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0.07) 100%) !important;
+      --layout-tab-active-accent: rgba(255, 255, 255, 0.72) !important;
+    }
+  `;
+}
+
+// Extractor logic using HTML5 Canvas
+function extractColorsFromLogo(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 50;
+        canvas.height = 50;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, 50, 50);
+        
+        const imgData = ctx.getImageData(0, 0, 50, 50).data;
+        const colorCounts = {};
+        
+        for (let i = 0; i < imgData.length; i += 4) {
+          const r = imgData[i];
+          const g = imgData[i+1];
+          const b = imgData[i+2];
+          const a = imgData[i+3];
+          
+          // Skip transparent or near-transparent pixels
+          if (a < 120) continue;
+          
+          // Skip grayscale / white / black pixels
+          const maxVal = Math.max(r, g, b);
+          const minVal = Math.min(r, g, b);
+          if (maxVal - minVal < 25) {
+            // Low saturation: check if it's too white or black
+            if (maxVal > 220 || maxVal < 35) continue;
+          }
+          
+          // Group colors roughly to avoid noise (quantization to multiples of 8)
+          const qr = Math.round(r / 8) * 8;
+          const qg = Math.round(g / 8) * 8;
+          const qb = Math.round(b / 8) * 8;
+          const key = `${qr},${qg},${qb}`;
+          
+          colorCounts[key] = (colorCounts[key] || 0) + 1;
+        }
+        
+        // Find most frequent color
+        let dominantColor = '0,106,168'; // default fallback blue
+        let maxCount = 0;
+        
+        Object.entries(colorCounts).forEach(([color, count]) => {
+          if (count > maxCount) {
+            maxCount = count;
+            dominantColor = color;
+          }
+        });
+        
+        const [r, g, b] = dominantColor.split(',').map(Number);
+        
+        // Convert to Hex
+        const componentToHex = c => {
+          const hex = c.toString(16);
+          return hex.length === 1 ? '0' + hex : hex;
+        };
+        const hexColor = `#${componentToHex(r)}${componentToHex(g)}${componentToHex(b)}`;
+        resolve(hexColor);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    img.onerror = () => reject(new Error('Bild konnte nicht geladen werden.'));
+    img.src = dataUrl;
+  });
+}
+
 function applyUiTheme(themeName) {
-  const normalized = themeName === 'industrial' || themeName === 'midnight' ? themeName : 'corporate';
+  const normalized = themeName === 'industrial' || themeName === 'midnight' || themeName === 'logo' ? themeName : 'corporate';
   if (document.body) {
-    document.body.classList.remove('theme-corporate', 'theme-industrial', 'theme-midnight');
+    document.body.classList.remove('theme-corporate', 'theme-industrial', 'theme-midnight', 'theme-logo');
     document.body.classList.add('theme-' + normalized);
   }
 
@@ -35,6 +235,22 @@ function applyUiTheme(themeName) {
       overviewRunsTable.style.removeProperty('--bs-table-hover-bg');
       overviewRunsTable.style.removeProperty('--bs-table-striped-color');
       overviewRunsTable.style.removeProperty('--bs-table-hover-color');
+    }
+  }
+
+  // Handle Logo Theme Injection
+  if (normalized === 'logo') {
+    const projectId = (typeof state !== 'undefined' && state.headerProjectId) || 'default-project';
+    const savedPalette = localStorage.getItem('custom-logo-palette-' + projectId);
+    if (savedPalette) {
+      try {
+        injectLogoThemeStyle(JSON.parse(savedPalette));
+      } catch (e) {
+        console.error('Failed to parse dynamic logo palette', e);
+      }
+    } else {
+      const styleEl = document.getElementById('dynamic-logo-theme-style');
+      if (styleEl) styleEl.remove();
     }
   }
 

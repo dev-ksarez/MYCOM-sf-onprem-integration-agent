@@ -57,10 +57,16 @@ function collectConnectorParametersPreview() {
   if (normalizedConnectorType === 'FILE') {
     parsedParameters = mergeFileConnectorSettingsIntoParameters(parsedParameters);
   }
+  if (normalizedConnectorType === 'FILE_BROWSE') {
+    parsedParameters = mergeFileBrowseConnectorSettingsIntoParameters(parsedParameters);
+  }
   if (isSqlConnectorType(normalizedConnectorType)) {
     parsedParameters = mergeMssqlConnectorSettingsIntoParameters(parsedParameters);
   }
   if (isRestConnectorType(normalizedConnectorType)) {
+    parsedParameters = mergeRestConnectorSettingsIntoParameters(parsedParameters);
+  }
+  if (isEndpointConnectorType(normalizedConnectorType)) {
     parsedParameters = mergeRestConnectorSettingsIntoParameters(parsedParameters);
   }
   if (isBinaryImportConnectorType(normalizedConnectorType)) {
@@ -174,9 +180,23 @@ function validateConnectorWizardStep(step) {
         throw new Error('Bitte mindestens den Base Path für den Datei-Connector angeben.');
       }
     }
+    if (connectorType === 'FILE_BROWSE') {
+      if (!String(document.getElementById('con-filebrowse-base-path')?.value || '').trim()) {
+        throw new Error('Bitte den Base Path für die Geräteakte angeben.');
+      }
+    }
     if (connectorType === 'REST_API') {
       if (!String(document.getElementById('con-rest-base-url')?.value || '').trim()) {
         throw new Error('Bitte eine Base URL für den REST-Connector angeben.');
+      }
+    }
+    if (isEndpointConnectorType(connectorType)) {
+      const rootPath = String(document.getElementById('con-rest-resource-path')?.value || document.getElementById('con-rest-base-url')?.value || '').trim();
+      if (!rootPath) {
+        throw new Error('Bitte einen Root Path für den Agent-Endpunkt angeben, z. B. /api/inbound/orders.');
+      }
+      if (!rootPath.startsWith('/')) {
+        throw new Error('Der Root Path für Agent-Endpunkte muss mit / beginnen.');
       }
     }
     if (connectorType === 'FILE_BINARY_SF_IMPORT') {
@@ -290,7 +310,7 @@ function validateScheduleWizardStep(step) {
     return;
   }
 
-  if (step === 4 && !document.getElementById('sch-inherit-parent-timing')?.checked) {
+  if (step === 4 && !document.getElementById('sch-inherit-parent-timing')?.checked && String(document.getElementById('sch-source-type')?.value || '').trim().toUpperCase() !== 'ENDPOINT') {
     const hasWeekday = Array.from(document.querySelectorAll('#sch-weekdays input')).some((input) => input.checked);
     if (!hasWeekday) {
       throw new Error('Bitte mindestens einen Wochentag für die Zeitsteuerung auswählen.');

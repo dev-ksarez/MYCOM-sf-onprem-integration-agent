@@ -6,6 +6,7 @@ import sharp from "sharp";
 import { triggerDashboardUpdate, getDashboardUpdateStatus } from "../server/dashboard-update-service";
 import { buildSystemHealthSnapshot, HealthSnapshot } from "../server/health-snapshot";
 import { readConfiguredSalesforceInstances, writeConfiguredSalesforceInstances, type SalesforceInstanceEnvConfig } from "../server/admin-data-service";
+import { getActiveGeraeteaktePathConfig, getGeraeteakteDirectoryLayout, isSafeGeraeteaktePathSegment, resolveExistingPathWithUnicodeFallback, resolveGeraeteakteSerialDirectory, type GeraeteaktePathConfig } from "./geraeteakte-paths";
 
 const failedAuthAttempts = new Map<string, { count: number; resetAt: number }>();
 
@@ -46,6 +47,15 @@ function getFileBrowseBasePath(): string {
   return String(process.env.FILE_BROWSE_BASE_PATH ?? "").trim();
 }
 
+function getFileBrowsePathConfig(): GeraeteaktePathConfig | null {
+  const activeConfig = getActiveGeraeteaktePathConfig();
+  if (activeConfig) {
+    return activeConfig;
+  }
+  const basePath = getFileBrowseBasePath();
+  return basePath ? { basePath, layout: getGeraeteakteDirectoryLayout() } : null;
+}
+
 // HMAC-signierte Download-URL (Weg 2: kein SF→Agent-Callout nötig).
 // Salesforce-Apex signiert lokal mit demselben Secret; der Agent verifiziert.
 function getDownloadSigningSecret(): string {
@@ -68,11 +78,7 @@ function isValidSignedDownload(seriennummer: string, filename: string, exp: stri
 }
 
 function isSafePathSegment(segment: string): boolean {
-  if (!segment || segment.length > 255) return false;
-  if (segment === ".") return false;
-  if (segment.includes("..") || segment.includes("\0")) return false;
-  // Windows-reservierte Zeichen ausschliessen
-  return !/[<>:"|?*\x00-\x1f]/.test(segment);
+  return isSafeGeraeteaktePathSegment(segment);
 }
 
 interface FileEntry {
@@ -111,16 +117,10 @@ function walkDir(dir: string, relPrefix: string, out: { rel: string; abs: string
 function listFilesForSerial(seriennummer: string): { seriennummer: string; files: FileEntry[] } {
   if (!isSafePathSegment(seriennummer)) throw new HttpError(400, "Ungueltige Seriennummer");
 
-  const basePath = getFileBrowseBasePath();
-  if (!basePath) throw new HttpError(500, "FILE_BROWSE_BASE_PATH ist nicht konfiguriert");
+  const pathConfig = getFileBrowsePathConfig();
+  if (!pathConfig) throw new HttpError(500, "FileBrowse-Connector oder FILE_BROWSE_BASE_PATH ist nicht konfiguriert");
 
-  const normalizedBase = path.resolve(basePath);
-  const targetDir = path.resolve(path.join(basePath, seriennummer));
-
-  // Path-Traversal-Schutz
-  if (!targetDir.startsWith(normalizedBase + path.sep) && targetDir !== normalizedBase) {
-    throw new HttpError(400, "Ungueltige Seriennummer (Pfad-Traversal)");
-  }
+  const targetDir = resolveSerialDirectoryOrHttpError(pathConfig, seriennummer).absolutePath;
 
   if (!fs.existsSync(targetDir)) return { seriennummer, files: [] };
 
@@ -175,17 +175,14 @@ function resolveSafeFilePath(seriennummer: string, relativePath: string): { file
     throw new HttpError(400, "Ungueltige Seriennummer oder Dateiname");
   }
 
-  const basePath = getFileBrowseBasePath();
-  if (!basePath) throw new HttpError(500, "FILE_BROWSE_BASE_PATH ist nicht konfiguriert");
+  const pathConfig = getFileBrowsePathConfig();
+  if (!pathConfig) throw new HttpError(500, "FileBrowse-Connector oder FILE_BROWSE_BASE_PATH ist nicht konfiguriert");
 
-  const normalizedBase = path.resolve(basePath);
-  const targetDir = path.resolve(path.join(basePath, seriennummer));
-  if (!targetDir.startsWith(normalizedBase + path.sep) && targetDir !== normalizedBase) {
-    throw new HttpError(400, "Ungueltige Seriennummer (Pfad-Traversal)");
-  }
+  const targetDir = resolveSerialDirectoryOrHttpError(pathConfig, seriennummer).absolutePath;
 
-  const filePath = path.resolve(path.join(targetDir, ...segments));
-  if (!filePath.startsWith(targetDir + path.sep)) {
+  const filePath = resolveExistingPathWithUnicodeFallback(path.join(targetDir, ...segments));
+  const relativeToTarget = path.relative(targetDir, filePath);
+  if (relativeToTarget === "" || relativeToTarget.startsWith("..") || path.isAbsolute(relativeToTarget)) {
     throw new HttpError(400, "Ungueltiger Pfad (Pfad-Traversal)");
   }
 
@@ -194,6 +191,14 @@ function resolveSafeFilePath(seriennummer: string, relativePath: string): { file
   }
 
   return { filePath, baseName: segments[segments.length - 1] };
+}
+
+function resolveSerialDirectoryOrHttpError(pathConfig: GeraeteaktePathConfig, seriennummer: string): { absolutePath: string } {
+  try {
+    return resolveGeraeteakteSerialDirectory(pathConfig.basePath, seriennummer, pathConfig.layout);
+  } catch (error) {
+    throw new HttpError(400, error instanceof Error ? error.message : "Ungueltige Seriennummer");
+  }
 }
 
 function streamFile(res: http.ServerResponse, seriennummer: string, relativePath: string, inline = false): Promise<void> {

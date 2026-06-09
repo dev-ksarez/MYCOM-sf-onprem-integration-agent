@@ -1,6 +1,7 @@
 
 import http from "node:http";
 import crypto from "node:crypto";
+import pino from "pino";
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -25,6 +26,7 @@ import {
   appendSetCookie,
   authenticateLocalAdminUser,
   buildAdminSalesforceOidcRedirectUri,
+  buildRequestOrigin,
   buildSalesforceLoginAuthorizationUrl,
   buildCsrfCookie,
   buildExpiredSessionCookie,
@@ -63,6 +65,7 @@ import { AIProviderConfig } from "./ai-provider";
 import { generateSalesforceMappingRules } from "../core/mapping-dsl/salesforce-mapping-generator";
 import { serveStaticAsset, UI_ASSET_VERSION } from "./asset-server";
 import { appendAuditHistory, listAuditHistory } from "./audit-history-service";
+import { handleEndpointRuntimeRequest } from "./endpoint-runtime";
 
 import { listAppModules, renderMenuModuleNavigation, renderSidebarModuleNavigation } from "./app-modules";
 import { renderHtmlDocument } from "./ui-template";
@@ -77,6 +80,7 @@ const LOCAL_PROJECT_CURRENT_VERSIONS_FILE = path.resolve(process.cwd(), "artifac
 const LOCAL_AGENT_HEARTBEATS_FILE = path.resolve(process.cwd(), "artifacts/agent-heartbeats.json");
 const LOCAL_AGENT_COMMANDS_FILE = path.resolve(process.cwd(), "artifacts/agent-commands.json");
 const LOCAL_AGENT_LOG_BUCKETS_FILE = path.resolve(process.cwd(), "artifacts/agent-log-buckets.json");
+const endpointRuntimeLogger = pino({ level: process.env.LOG_LEVEL || "info" }).child({ module: "endpoint-runtime" });
 
 type DeploymentCompareDirection = "test-to-production" | "production-to-test";
 
@@ -1681,7 +1685,8 @@ function htmlShell(): string {
           >
             <img
               class="agent-sidebar-logo-image"
-              src="https://www.mycom-net.com/wp-content/uploads/MyCom_Logo.svg"
+              id="agent-sidebar-logo-img"
+              src="/assets/custom-logo"
               alt="MYCOM"
               loading="lazy"
               decoding="async"
@@ -1763,12 +1768,13 @@ ${renderMenuModuleNavigation()}
                     <label class="small text-secondary" for="instance-select">Instanz</label>
                     <select id="instance-select" class="form-select form-select-sm"></select>
                   </div>
-                  <div class="agent-menu-control-card">
+                  <div class="agent-menu-control-card d-none">
                     <label class="small text-secondary" for="theme-select">Theme</label>
                     <select id="theme-select" class="form-select form-select-sm">
                       <option value="corporate">Corporate Light</option>
                       <option value="industrial">Industrial Blue</option>
                       <option value="midnight">Midnight Dark</option>
+                      <option value="logo">Logo-basiert</option>
                     </select>
                   </div>
                 </div>
@@ -2590,6 +2596,27 @@ ${renderAISchedulerAssistantModule()}
                 <div class="col-md-4"><label class="form-label">Projekt-ID (optional)</label><input id="prj-id" class="form-control" placeholder="leer = automatisch aus Name" /></div>
                 <div class="col-md-8"><label class="form-label">Name</label><input id="prj-name" class="form-control" placeholder="z. B. Annaburger Rollout" /></div>
                 <div class="col-12"><label class="form-label">Beschreibung (optional)</label><input id="prj-description" class="form-control" /></div>
+                <div class="col-md-6">
+                  <label class="form-label" for="prj-theme">Projekt-Theme</label>
+                  <select id="prj-theme" class="form-select">
+                    <option value="corporate">Corporate Light</option>
+                    <option value="industrial">Industrial Blue</option>
+                    <option value="midnight">Midnight Dark</option>
+                    <option value="logo">Logo-basiert</option>
+                  </select>
+                </div>
+                <div class="col-md-6 d-none" id="logo-theme-upload-card">
+                  <label class="form-label fw-semibold">Firmenlogo & Branding</label>
+                  <div class="d-flex align-items-center gap-2 mb-2">
+                    <input type="file" id="logo-upload-input" class="d-none" accept=".png,.jpg,.jpeg,.svg" />
+                    <button id="logo-upload-btn" class="btn btn-outline-primary w-100" type="button">Logo hochladen...</button>
+                  </div>
+                  <div id="logo-upload-preview-wrap" class="d-flex align-items-center justify-content-between d-none p-2 rounded border" style="background: var(--ui-surface-soft); border-color: var(--ui-border) !important;">
+                    <img id="logo-upload-preview" style="max-height: 24px; max-width: 120px; object-fit: contain;" alt="Logo Vorschau" />
+                    <button id="logo-upload-remove" class="btn btn-sm btn-link text-danger p-0" style="text-decoration: none; font-size: 0.8rem;" type="button">Entfernen</button>
+                  </div>
+                  <div id="logo-upload-status" class="small text-muted mt-1" style="font-size: 0.75rem;"></div>
+                </div>
                 <div class="col-12">
                   <div class="form-check mt-1">
                     <input id="prj-production-write-protection" class="form-check-input" type="checkbox" checked />
@@ -2947,8 +2974,9 @@ ${renderAISchedulerAssistantModule()}
               <!-- Tab 2: Datenquelle -->
               <div class="tab-pane fade" id="sch-tab-source" data-sch-step-panel="2" role="tabpanel">
                 <div class="row g-2">
+                  <div class="col-md-12"><div id="sch-source-type-profile" class="alert alert-light border small mb-0">Bitte Quelle und Source Type wählen.</div></div>
                   <div class="col-md-6"><label class="form-label">Source System</label><select id="sch-source-system" class="form-select"><option value="">- Wählen -</option></select></div>
-                  <div class="col-md-6"><label class="form-label">Source Type</label><select id="sch-source-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE_SOQL">SALESFORCE_SOQL</option><option value="MSSQL_SQL">MSSQL_SQL</option><option value="FILEMAKER_SQL">FILEMAKER_SQL</option><option value="REST_API">REST_API</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
+                  <div class="col-md-6"><label class="form-label">Source Type</label><select id="sch-source-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE_SOQL">SALESFORCE_SOQL</option><option value="MSSQL_SQL">MSSQL_SQL</option><option value="FILEMAKER_SQL">FILEMAKER_SQL</option><option value="REST_API">REST_API</option><option value="ENDPOINT">ENDPOINT</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
                   <div class="col-md-12">
                     <details class="json-field-collapsible">
                       <summary class="json-field-summary">Source Definition / Abfrage</summary>
@@ -3003,6 +3031,7 @@ ${renderAISchedulerAssistantModule()}
               <!-- Tab 3: Datenziel -->
               <div class="tab-pane fade" id="sch-tab-target" data-sch-step-panel="3" role="tabpanel">
                 <div class="row g-2">
+                  <div class="col-md-12"><div id="sch-target-type-profile" class="alert alert-light border small mb-0">Bitte Ziel und Target Type wählen.</div></div>
                   <div class="col-md-4"><label class="form-label">Target System</label><select id="sch-target-system" class="form-select"><option value="">- Wählen -</option></select></div>
                   <div class="col-md-4">
                     <div class="d-flex align-items-center justify-content-between gap-2">
@@ -3245,7 +3274,73 @@ ${renderAISchedulerAssistantModule()}
 
             <div class="connector-wizard-panel" data-step-panel="1">
               <div class="row g-3">
-                <div class="col-md-7"><label class="form-label">Welcher Connectortyp soll angelegt werden?</label><select id="con-wizard-type" class="form-select"><option value="MSSQL">MSSQL</option><option value="FILEMAKER">FileMaker</option><option value="POSTGRESQL">PostgreSQL</option><option value="MYSQL">MySQL</option><option value="FILE">Datei (TXT, CSV, JSON, EXCEL)</option><option value="REST_API">REST API</option><option value="FILE_BINARY_SF_IMPORT">Datei Binärimport nach Salesforce</option><option value="CUSTOM">Benutzerdefiniert</option></select></div>
+                <div class="col-12">
+                  <label class="form-label fw-bold mb-2">Welcher Connectortyp soll angelegt werden?</label>
+                  <select id="con-wizard-type" class="form-select d-none">
+                    <option value="MSSQL">MSSQL</option>
+                    <option value="FILEMAKER">FileMaker</option>
+                    <option value="POSTGRESQL">PostgreSQL</option>
+                    <option value="MYSQL">MySQL</option>
+                    <option value="FILE">Datei (TXT, CSV, JSON, EXCEL)</option>
+                    <option value="FILE_BROWSE">Geräteakte / FileBrowse</option>
+                    <option value="REST_API">REST API</option>
+                    <option value="AGENT_ENDPOINT">Agent Endpunkt</option>
+                    <option value="FILE_BINARY_SF_IMPORT">Datei Binärimport nach Salesforce</option>
+                    <option value="CUSTOM">Benutzerdefiniert</option>
+                  </select>
+                  <div class="connector-type-cards-grid">
+                    <div class="connector-type-card" data-type="MSSQL">
+                      <div class="connector-type-card-icon">🖧</div>
+                      <div class="connector-type-card-title">MSSQL</div>
+                      <div class="connector-type-card-desc">Microsoft SQL Server</div>
+                    </div>
+                    <div class="connector-type-card" data-type="POSTGRESQL">
+                      <div class="connector-type-card-icon">🐘</div>
+                      <div class="connector-type-card-title">PostgreSQL</div>
+                      <div class="connector-type-card-desc">PostgreSQL Datenbank</div>
+                    </div>
+                    <div class="connector-type-card" data-type="MYSQL">
+                      <div class="connector-type-card-icon">🐬</div>
+                      <div class="connector-type-card-title">MySQL</div>
+                      <div class="connector-type-card-desc">MySQL / MariaDB</div>
+                    </div>
+                    <div class="connector-type-card" data-type="FILEMAKER">
+                      <div class="connector-type-card-icon">⏹</div>
+                      <div class="connector-type-card-title">FileMaker</div>
+                      <div class="connector-type-card-desc">Claris FileMaker DB</div>
+                    </div>
+                    <div class="connector-type-card" data-type="FILE">
+                      <div class="connector-type-card-icon">📄</div>
+                      <div class="connector-type-card-title">Datei</div>
+                      <div class="connector-type-card-desc">CSV, Excel, JSON, TXT</div>
+                    </div>
+                    <div class="connector-type-card" data-type="FILE_BROWSE">
+                      <div class="connector-type-card-icon">🗂</div>
+                      <div class="connector-type-card-title">Geräteakte</div>
+                      <div class="connector-type-card-desc">FileBrowse für Anlagenakten</div>
+                    </div>
+                    <div class="connector-type-card" data-type="REST_API">
+                      <div class="connector-type-card-icon">🌐</div>
+                      <div class="connector-type-card-title">REST API</div>
+                      <div class="connector-type-card-desc">JSON über HTTP/HTTPS</div>
+                    </div>
+                    <div class="connector-type-card" data-type="AGENT_ENDPOINT">
+                      <div class="connector-type-card-icon">⚡</div>
+                      <div class="connector-type-card-title">Agent Endpunkt</div>
+                      <div class="connector-type-card-desc">Eigener Webhook Endpunkt</div>
+                    </div>
+                    <div class="connector-type-card" data-type="FILE_BINARY_SF_IMPORT">
+                      <div class="connector-type-card-icon">📁</div>
+                      <div class="connector-type-card-title">Binärimport</div>
+                      <div class="connector-type-card-desc">Dateien nach Salesforce</div>
+                    </div>
+                    <div class="connector-type-card" data-type="CUSTOM">
+                      <div class="connector-type-card-icon">⚙</div>
+                      <div class="connector-type-card-title">Benutzerdefiniert</div>
+                      <div class="connector-type-card-desc">Individueller Typ</div>
+                    </div>
+                  </div>
+                </div>
                 <div class="col-md-5 d-none"><label class="form-label">Connector Type</label><input id="con-type" class="form-control" readonly /></div>
                 <div class="col-12"><div id="con-wizard-hint" class="connector-wizard-hint">Assistent aktiv: Bitte zuerst den Typ wählen, danach führt dich der Assistent durch die Parameter.</div></div>
               </div>
@@ -3254,12 +3349,12 @@ ${renderAISchedulerAssistantModule()}
             <div class="connector-wizard-panel d-none" data-step-panel="2">
               <div class="row g-2">
                 <div class="col-md-4"><label class="form-label">Name</label><input id="con-name" class="form-control" /></div>
-                <div class="col-md-4"><label class="form-label">Target System</label><input id="con-target-system" class="form-control" /></div>
-                <div class="col-md-4"><label class="form-label">Direction</label><input id="con-direction" class="form-control" /></div>
-                <div class="col-md-4"><label class="form-label">Secret Key (ENV)</label><input id="con-secret" class="form-control" placeholder="z. B. MSSQL_DEV_PASSWORD" /></div>
-                <div class="col-md-2"><label class="form-label">Timeout</label><input id="con-timeout" type="number" class="form-control" /></div>
-                <div class="col-md-2"><label class="form-label">Retries</label><input id="con-retries" type="number" class="form-control" /></div>
-                <div class="col-md-12"><label class="form-label">Beschreibung</label><textarea id="con-description" class="form-control" rows="2"></textarea></div>
+                <div class="col-md-4"><label class="form-label">Target System</label><select id="con-target-system" class="form-select"><option value="">- Wählen -</option><option value="Agent">Agent</option><option value="Salesforce">Salesforce</option><option value="MSSQL">MSSQL</option><option value="Sage100">Sage100</option><option value="CSV">CSV</option><option value="FileMaker">FileMaker</option><option value="REST API">REST API</option><option value="Mock">Mock</option></select><div class="form-text">Technisches System, zu dem dieser Connector gehört. Der Assistent setzt einen passenden Vorschlag je Typ.</div></div>
+                <div class="col-md-4"><label class="form-label">Direction</label><select id="con-direction" class="form-select"><option value="">- Wählen -</option><option value="Inbound">Inbound</option><option value="Outbound">Outbound</option><option value="Bidirectional">Bidirectional</option></select><div class="form-text">Inbound liest in Richtung Salesforce, Outbound exportiert aus Salesforce, Endpoint nimmt Requests entgegen.</div></div>
+                <div class="col-md-4"><label class="form-label">Secret Key (ENV)</label><input id="con-secret" class="form-control" placeholder="z. B. MSSQL_DEV_PASSWORD" /><div id="con-secret-help" class="form-text">Name einer Umgebungsvariable; Secret-Werte selbst werden nicht in Salesforce gespeichert.</div></div>
+                <div class="col-md-2"><label class="form-label">Timeout</label><input id="con-timeout" type="number" class="form-control" /><div class="form-text">Timeout in Millisekunden für erreichbare Gegenstellen.</div></div>
+                <div class="col-md-2"><label class="form-label">Retries</label><input id="con-retries" type="number" class="form-control" /><div class="form-text">Wiederholungen bei transienten Fehlern.</div></div>
+                <div class="col-md-12"><label class="form-label">Beschreibung</label><textarea id="con-description" class="form-control" rows="2"></textarea><div class="form-text">Kurzer Betriebszweck, z. B. Quelle, Ziel und verantwortliches System.</div></div>
                 <div class="col-md-12">
                   <div class="border rounded p-2 bg-light">
                     <div class="fw-semibold mb-2">Salesforce Task-Benachrichtigung</div>
@@ -3276,6 +3371,7 @@ ${renderAISchedulerAssistantModule()}
 
             <div class="connector-wizard-panel d-none" data-step-panel="3">
               <div class="row g-2">
+                <div class="col-md-12"><div id="con-type-profile" class="alert alert-light border small mb-0">Bitte Connectortyp wählen.</div></div>
                 <div class="col-md-12">
                   <details class="json-field-collapsible">
                     <summary class="json-field-summary">Parameters (JSON)</summary>
@@ -3313,18 +3409,28 @@ ${renderAISchedulerAssistantModule()}
                   </div>
                 </div>
                 </div>
+                <div class="col-12 d-none" id="con-filebrowse-settings-wrap">
+                <div class="border rounded p-2 bg-light">
+                  <div class="fw-semibold mb-2">Geräteakte / FileBrowse</div>
+                  <div class="row g-2">
+                    <div class="col-md-6"><label class="form-label">Base Path</label><input id="con-filebrowse-base-path" class="form-control" placeholder="H:\\130_Produktion\\Fertigung\\Geräteakte" /></div>
+                    <div class="col-md-3"><label class="form-label">Ordnerlayout</label><select id="con-filebrowse-layout" class="form-select"><option value="direct">Direkt: Seriennummer</option><option value="annaburg-fg-bucket">Annaburg: Fg0000xx/Fg000073</option></select></div>
+                    <div class="col-md-3"><label class="form-label">Test-Seriennummer</label><input id="con-filebrowse-sample-serial" class="form-control" placeholder="Fg00073" /></div>
+                  </div>
+                </div>
+                </div>
                 <div class="col-12 d-none" id="con-rest-settings-wrap">
                 <div class="border rounded p-2 bg-light">
-                  <div class="fw-semibold mb-2">REST API</div>
-                  <div class="small text-secondary mb-2">Authentifizierung ist frei wählbar. OAuth2 ist nur eine zusätzliche Option neben None, Basic, Bearer Token und API Key.</div>
+                  <div id="con-rest-settings-title" class="fw-semibold mb-2">REST API</div>
+                  <div id="con-rest-settings-text" class="small text-secondary mb-2">Authentifizierung ist frei wählbar. OAuth2 ist nur eine zusätzliche Option neben None, Basic, Bearer Token und API Key.</div>
                   <div class="row g-2">
-                    <div class="col-md-6"><label class="form-label">Base URL</label><input id="con-rest-base-url" class="form-control" placeholder="https://api.example.com" /></div>
-                    <div class="col-md-6"><label class="form-label">Resource Path</label><input id="con-rest-resource-path" class="form-control" placeholder="/v1/items" /></div>
-                    <div class="col-md-3"><label class="form-label">Auth Typ</label><select id="con-rest-auth-type" class="form-select"><option value="none">Keine</option><option value="basic">Basic Auth</option><option value="bearer">Bearer Token</option><option value="api_key">API Key</option><option value="oauth2">OAuth2</option></select></div>
-                    <div class="col-md-3"><label class="form-label">HTTP Method</label><select id="con-rest-method" class="form-select"><option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option></select></div>
+                    <div class="col-md-6"><label id="con-rest-base-url-label" class="form-label">Base URL</label><input id="con-rest-base-url" class="form-control" placeholder="https://api.example.com" /><div id="con-rest-base-url-help" class="form-text">Root-URL des externen REST-Systems. Der Connector-Test prüft die Erreichbarkeit.</div></div>
+                    <div class="col-md-6"><label id="con-rest-resource-path-label" class="form-label">Resource Path</label><input id="con-rest-resource-path" class="form-control" placeholder="/v1/items" /><div id="con-rest-resource-path-help" class="form-text">Pfad relativ zur Base URL bzw. Root-Pfad beim Agent-Endpunkt.</div></div>
+                    <div class="col-md-3"><label class="form-label">Auth Typ</label><select id="con-rest-auth-type" class="form-select"><option value="none">Keine</option><option value="basic">Basic Auth</option><option value="bearer">Bearer Token</option><option value="api_key">API Key</option><option value="oauth2">OAuth2</option></select><div id="con-rest-auth-help" class="form-text">Wählen Sie nur den tatsächlich benötigten Authentifizierungsmodus.</div></div>
+                    <div class="col-md-3"><label class="form-label">HTTP Method</label><select id="con-rest-method" class="form-select"><option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option></select><div class="form-text">Standardmethode für REST-Vorschau; Endpoint-Methoden werden im Scheduler gesetzt.</div></div>
                     <div class="col-md-3 d-none" id="con-rest-basic-user-wrap"><label class="form-label">Basic User</label><input id="con-rest-basic-user" class="form-control" /></div>
                     <div class="col-md-3 d-none" id="con-rest-basic-password-wrap"><label class="form-label">Basic Passwort</label><input id="con-rest-basic-password" type="password" class="form-control" autocomplete="new-password" /></div>
-                    <div class="col-md-3 d-none" id="con-rest-bearer-token-wrap"><label class="form-label">Bearer Token</label><input id="con-rest-bearer-token" type="password" class="form-control" autocomplete="new-password" /></div>
+                    <div class="col-md-3 d-none" id="con-rest-bearer-token-wrap"><label class="form-label">Bearer Token</label><div class="input-group"><input id="con-rest-bearer-token" type="password" class="form-control" autocomplete="new-password" /><button id="con-rest-generate-bearer-token" class="btn btn-outline-secondary" type="button">Generieren</button></div></div>
                     <div class="col-md-3 d-none" id="con-rest-api-key-name-wrap"><label class="form-label">API Key Name</label><input id="con-rest-api-key-name" class="form-control" placeholder="x-api-key" /></div>
                     <div class="col-md-3 d-none" id="con-rest-api-key-value-wrap"><label class="form-label">API Key Wert</label><input id="con-rest-api-key-value" type="password" class="form-control" autocomplete="new-password" /></div>
                     <div class="col-md-3 d-none" id="con-rest-api-key-location-wrap"><label class="form-label">API Key Ort</label><select id="con-rest-api-key-location" class="form-select"><option value="header">Header</option><option value="query">Query</option></select></div>
@@ -3335,6 +3441,7 @@ ${renderAISchedulerAssistantModule()}
                     <div class="col-md-4 d-none" id="con-rest-scope-wrap"><label class="form-label">Scope</label><input id="con-rest-scope" class="form-control" placeholder="api.read api.write" /></div>
                     <div class="col-md-6"><label class="form-label">Audience (optional)</label><input id="con-rest-audience" class="form-control" /></div>
                     <div class="col-md-6"><label class="form-label">Zusätzliche Header (JSON)</label><input id="con-rest-extra-headers" class="form-control" placeholder='{"X-Tenant":"abc"}' /></div>
+                    <div class="col-md-4 d-none" id="con-rest-max-body-wrap"><label class="form-label">Max Body Bytes</label><input id="con-rest-max-body-bytes" type="number" class="form-control" placeholder="1048576" /><div class="form-text">Maximale Requestgröße für Agent-Endpunkte.</div></div>
                   </div>
                 </div>
                 </div>
@@ -3502,6 +3609,18 @@ ${renderAISchedulerAssistantModule()}
 </html>`;
 }
 
+function getBearerAuthorizationToken(req: http.IncomingMessage): string {
+  const authorization = Array.isArray(req.headers.authorization) ? req.headers.authorization[0] : req.headers.authorization;
+  const match = String(authorization || "").match(/^Bearer\s+(.+)$/i);
+  return match?.[1] ? match[1].trim() : "";
+}
+
+function hasValidAgentApiBearerToken(req: http.IncomingMessage): boolean {
+  const configuredToken = String(process.env.AGENT_API_TOKEN || "").trim();
+  const requestToken = getBearerAuthorizationToken(req);
+  return Boolean(configuredToken && requestToken && constantTimeEquals(requestToken, configuredToken));
+}
+
 export function createAppServer(
   getHealthSnapshot: () => Promise<HealthSnapshot> | HealthSnapshot,
   adminDataService = new AdminDataService()
@@ -3513,6 +3632,8 @@ export function createAppServer(
       const adminAuthMisconfigured = process.env.NODE_ENV === "production" && !adminAuthRequired;
       const csrfToken = getOrCreateCsrfToken(req);
       const requestUrl = new URL(req.url || "/", "http://localhost");
+      const connectorTestMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/test$/) : null;
+      const isConnectorTestApiRequest = Boolean(connectorTestMatch && hasValidAgentApiBearerToken(req));
       const sendJson = (statusCode: number, payload: unknown): void => {
         res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
         res.end(JSON.stringify(payload));
@@ -3546,6 +3667,10 @@ export function createAppServer(
         });
         res.end(file);
       };
+
+      if (await handleEndpointRuntimeRequest(req, res, requestUrl, endpointRuntimeLogger)) {
+        return;
+      }
       const session = getAdminSession(req);
       const auditActor = session ? { userId: session.userId, username: session.username } : null;
       const isAuthenticated = !adminAuthRequired || Boolean(session);
@@ -3574,6 +3699,9 @@ export function createAppServer(
         if (requestUrl.pathname.startsWith("/api/agent/")) {
           return null;
         }
+        if (isConnectorTestApiRequest) {
+          return null;
+        }
         if (req.method === "DELETE") {
           return "delete" as const;
         }
@@ -3583,12 +3711,12 @@ export function createAppServer(
         return "read" as const;
       })();
 
-      if (requiresMutationProtection && !hasAllowedRequestOrigin(req)) {
+      if (requiresMutationProtection && !isConnectorTestApiRequest && !hasAllowedRequestOrigin(req)) {
         sendJson(403, { error: "Origin nicht erlaubt" });
         return;
       }
 
-      if (requiresMutationProtection && !hasValidCsrfToken(req)) {
+      if (requiresMutationProtection && !isConnectorTestApiRequest && !hasValidCsrfToken(req)) {
         sendJson(403, { error: "CSRF-Token fehlt oder ist ungültig" });
         return;
       }
@@ -3700,7 +3828,7 @@ export function createAppServer(
         return;
       }
 
-      if (adminAuthRequired && !isAuthenticated && !isAssetRequest && !isPublicRequest) {
+      if (adminAuthRequired && !isAuthenticated && !isAssetRequest && !isPublicRequest && !isConnectorTestApiRequest) {
         if (requestUrl.pathname === "/") {
           sendHtml(401, renderLoginShell({ csrfToken, authMode: adminAuth.mode }));
           return;
@@ -3736,8 +3864,8 @@ export function createAppServer(
       let instanceId = requestUrl.searchParams.get("instanceId") || undefined;
       const contextProjectId = String(requestUrl.searchParams.get("projectId") || "").trim();
       const contextTargetEnv = String(requestUrl.searchParams.get("targetEnv") || "").trim() === "production" ? "production" : "test";
-      const connectorTestMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/test$/) : null;
       const connectorMetadataMatch = req.method === "GET" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/metadata$/) : null;
+      const connectorPostmanCollectionMatch = req.method === "GET" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/postman-collection$/) : null;
       const connectorDeleteMatch = req.method === "DELETE" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)$/) : null;
       const scheduleRunMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/run$/) : null;
       const scheduleDryRunMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/dry-run$/) : null;
@@ -5123,7 +5251,7 @@ export function createAppServer(
         return;
       }
 
-      if (req.method === "GET" && await serveStaticAsset(requestUrl.pathname, res)) {
+      if (req.method === "GET" && await serveStaticAsset(requestUrl.pathname, res, req)) {
         return;
       }
 
@@ -5567,6 +5695,13 @@ export function createAppServer(
         return;
       }
 
+      if (connectorPostmanCollectionMatch) {
+        const connectorId = decodeURIComponent(connectorPostmanCollectionMatch[1]);
+        const result = await adminDataService.buildEndpointConnectorPostmanCollection(connectorId, instanceId, buildRequestOrigin(req));
+        sendJson(200, result);
+        return;
+      }
+
       if (req.method === "GET" && requestUrl.pathname === "/api/runs") {
         const runs = await adminDataService.listRuns(50, instanceId);
         sendJson(200, { items: runs, total: runs.length });
@@ -5876,6 +6011,69 @@ export function createAppServer(
       const migrationAnalyzeMatch = requestUrl.pathname.match(/^\/api\/migrations\/([^/]+)\/analyze-file\/([^/]+)$/);
         const failedRecordsMatch = requestUrl.pathname.match(/^\/api\/migrations\/([^/]+)\/failed-records\/([^/]+)$/);
         const retryFailedRecordsMatch = requestUrl.pathname.match(/^\/api\/migrations\/([^/]+)\/failed-records\/([^/]+)\/([^/]+)\/retry$/);
+
+      if (req.method === "POST" && requestUrl.pathname === "/api/admin/settings/logo") {
+        if (!hasPermission(session, "admin")) {
+          sendJson(403, { error: "Keine Berechtigung" });
+          return;
+        }
+
+        const body = (await readJsonBody(req)) as {
+          fileName?: string;
+          contentBase64?: string;
+          projectId?: string;
+        };
+
+        const fileName = String(body.fileName || "").trim();
+        const contentBase64 = String(body.contentBase64 || "").trim();
+        const projectId = String(body.projectId || requestUrl.searchParams.get("projectId") || "").trim() || "default-project";
+
+        if (!fileName || !contentBase64) {
+          sendJson(400, { error: "fileName und contentBase64 sind erforderlich" });
+          return;
+        }
+
+        const ext = path.extname(fileName).toLowerCase();
+        if (ext !== ".png" && ext !== ".jpg" && ext !== ".jpeg" && ext !== ".svg") {
+          sendJson(400, { error: "Nur PNG, JPG und SVG Logos werden unterstützt" });
+          return;
+        }
+
+        const fileBuffer = Buffer.from(contentBase64, "base64");
+        
+        // Clean up any existing logo first to avoid mixed states
+        try { await fs.unlink(path.resolve(process.cwd(), `data/custom-logo-${projectId}.png`)); } catch {}
+        try { await fs.unlink(path.resolve(process.cwd(), `data/custom-logo-${projectId}.svg`)); } catch {}
+
+        const targetPath = ext === ".svg" 
+          ? path.resolve(process.cwd(), `data/custom-logo-${projectId}.svg`)
+          : path.resolve(process.cwd(), `data/custom-logo-${projectId}.png`);
+
+        await fs.mkdir(path.dirname(targetPath), { recursive: true });
+        await fs.writeFile(targetPath, fileBuffer);
+
+        await appendAuditHistory({ actor: auditActor, action: "upload-logo", entityType: "settings", entityId: "logo", entityName: fileName });
+
+        sendJson(200, { success: true, logoUrl: `/assets/custom-logo?projectId=${projectId}` });
+        return;
+      }
+
+      if (req.method === "DELETE" && requestUrl.pathname === "/api/admin/settings/logo") {
+        if (!hasPermission(session, "admin")) {
+          sendJson(403, { error: "Keine Berechtigung" });
+          return;
+        }
+
+        const projectId = String(requestUrl.searchParams.get("projectId") || "").trim() || "default-project";
+
+        try { await fs.unlink(path.resolve(process.cwd(), `data/custom-logo-${projectId}.png`)); } catch {}
+        try { await fs.unlink(path.resolve(process.cwd(), `data/custom-logo-${projectId}.svg`)); } catch {}
+
+        await appendAuditHistory({ actor: auditActor, action: "delete-logo", entityType: "settings", entityId: "logo", entityName: `custom-logo-${projectId}` });
+
+        sendJson(200, { success: true });
+        return;
+      }
 
       if (req.method === "POST" && requestUrl.pathname === "/api/migrations/upload-file") {
         const body = (await readJsonBody(req)) as {

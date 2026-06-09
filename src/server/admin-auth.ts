@@ -601,7 +601,7 @@ export function hasAllowedRequestOrigin(req: http.IncomingMessage): boolean {
   }
 }
 
-function buildRequestOrigin(req: http.IncomingMessage): string {
+export function buildRequestOrigin(req: http.IncomingMessage): string {
   const forwardedProto = Array.isArray(req.headers["x-forwarded-proto"]) ? req.headers["x-forwarded-proto"][0] : req.headers["x-forwarded-proto"];
   const forwardedHost = Array.isArray(req.headers["x-forwarded-host"]) ? req.headers["x-forwarded-host"][0] : req.headers["x-forwarded-host"];
   const protocol = String(forwardedProto || (isSecureRequest(req) ? "https" : "http")).split(",")[0].trim().toLowerCase() || "http";

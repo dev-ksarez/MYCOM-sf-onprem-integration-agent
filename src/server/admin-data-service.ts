@@ -46,9 +46,11 @@ import { runScheduleNow } from "../agent/agent-runner";
 import { analyzeUploadedFile, decodeTextBuffer, parseDelimitedRows, parseExcelBuffer, parseFileFromConnector } from "../utils/file-transfer";
 import { parseQuerySourceDefinition } from "../utils/query-source-definition";
 import { fetchRestRows, testRestConnection } from "../source-adapters/rest/rest-api-source-adapter";
+import { parseEndpointSourceDefinition, type EndpointSourceDefinition } from "../source-adapters/endpoint/endpoint-source-adapter";
 import { LocalScheduleHealthRepository, LocalScheduleHealthItem } from "../core/scheduler/local-schedule-health-repository";
 import { AIProviderConfig, normalizeAIProviderConfig, toPublicAIProviderConfig, type AIProviderPublicConfig } from "./ai-provider";
 import { DatabaseMetadata } from "../types/database-metadata";
+import { listGeraeteakteSerialDirectories, resolveExistingPathWithUnicodeFallback, resolveGeraeteaktePathConfig, resolveGeraeteakteSerialDirectory } from "../agent/geraeteakte-paths";
 
 export interface SalesforceInstanceEnvConfig {
   id: string;
@@ -81,6 +83,7 @@ export interface SalesforceProjectConfig {
   confluenceSpaceKey?: string;
   confluenceParentPageId?: string;
   confluencePageTitlePrefix?: string;
+  theme?: "corporate" | "industrial" | "midnight" | "logo";
   createdAt: string;
   updatedAt: string;
 }
@@ -140,6 +143,7 @@ export interface SalesforceProjectMutationInput {
   confluenceSpaceKey?: string;
   confluenceParentPageId?: string;
   confluencePageTitlePrefix?: string;
+  theme?: "corporate" | "industrial" | "midnight" | "logo";
 }
 
 export type SalesforceInstanceReadinessStatus = "ready" | "setup-required" | "setup-running" | "setup-failed";
@@ -764,6 +768,7 @@ function defaultProjectConfig(): SalesforceProjectConfig {
     confluenceSpaceKey: undefined,
     confluenceParentPageId: undefined,
     confluencePageTitlePrefix: undefined,
+    theme: "corporate",
     createdAt: now,
     updatedAt: now
   };
@@ -831,7 +836,8 @@ function ensureProjectsSqliteColumns(db: any): void {
       { name: "log_batching_enabled", sql: "ALTER TABLE projects ADD COLUMN log_batching_enabled INTEGER NOT NULL DEFAULT 1" },
       { name: "log_sync_interval_minutes", sql: "ALTER TABLE projects ADD COLUMN log_sync_interval_minutes INTEGER NOT NULL DEFAULT 5" },
       { name: "log_batch_size", sql: "ALTER TABLE projects ADD COLUMN log_batch_size INTEGER NOT NULL DEFAULT 200" },
-      { name: "log_buffer_max_entries", sql: "ALTER TABLE projects ADD COLUMN log_buffer_max_entries INTEGER NOT NULL DEFAULT 10000" }
+      { name: "log_buffer_max_entries", sql: "ALTER TABLE projects ADD COLUMN log_buffer_max_entries INTEGER NOT NULL DEFAULT 10000" },
+      { name: "theme", sql: "ALTER TABLE projects ADD COLUMN theme TEXT" }
     ];
 
     for (const statement of statements) {
@@ -876,6 +882,7 @@ function openProjectsSqliteSync(): any | null {
       confluence_base_url TEXT,
       confluence_username TEXT,
       confluence_api_token TEXT,
+      theme TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`);
@@ -894,26 +901,25 @@ function readProjectsFromSqliteSync(): SalesforceProjectConfig[] | null {
   }
 
   try {
-    const rows = db
-      .prepare(`SELECT id, name, description, archived, production_write_protection, lookup_cache_enabled, lookup_cache_ttl_minutes, log_batching_enabled, log_sync_interval_minutes, log_batch_size, log_buffer_max_entries, confluence_space_key, confluence_parent_page_id, confluence_page_title_prefix, confluence_base_url, confluence_username, confluence_api_token, created_at, updated_at FROM projects`)
-      .all() as Array<{
+    const rows = db.prepare("SELECT * FROM projects").all() as Array<{
       id: string;
       name: string;
       description?: string;
-      archived: number;
-      production_write_protection: number;
-      lookup_cache_enabled: number;
-      lookup_cache_ttl_minutes: number;
-      log_batching_enabled: number;
-      log_sync_interval_minutes: number;
-      log_batch_size: number;
-      log_buffer_max_entries: number;
+      archived?: number;
+      production_write_protection?: number;
+      lookup_cache_enabled?: number;
+      lookup_cache_ttl_minutes?: number;
+      log_batching_enabled?: number;
+      log_sync_interval_minutes?: number;
+      log_batch_size?: number;
+      log_buffer_max_entries?: number;
       confluence_space_key?: string;
       confluence_parent_page_id?: string;
       confluence_page_title_prefix?: string;
       confluence_base_url?: string;
       confluence_username?: string;
       confluence_api_token?: string;
+      theme?: string;
       created_at: string;
       updated_at: string;
     }>;
@@ -937,6 +943,7 @@ function readProjectsFromSqliteSync(): SalesforceProjectConfig[] | null {
         confluenceSpaceKey: String(row.confluence_space_key || "").trim() || undefined,
         confluenceParentPageId: String(row.confluence_parent_page_id || "").trim() || undefined,
         confluencePageTitlePrefix: String(row.confluence_page_title_prefix || "").trim() || undefined,
+        theme: (row.theme ? String(row.theme) : "corporate") as "corporate" | "industrial" | "midnight" | "logo",
         createdAt: String(row.created_at || "").trim() || new Date().toISOString(),
         updatedAt: String(row.updated_at || "").trim() || new Date().toISOString()
       }))
@@ -963,8 +970,8 @@ function writeProjectsToSqliteSync(projects: SalesforceProjectConfig[]): void {
     db.exec("DELETE FROM projects");
 
     const insert = db.prepare(
-      `INSERT INTO projects (id, name, description, archived, production_write_protection, lookup_cache_enabled, lookup_cache_ttl_minutes, log_batching_enabled, log_sync_interval_minutes, log_batch_size, log_buffer_max_entries, confluence_space_key, confluence_parent_page_id, confluence_page_title_prefix, confluence_base_url, confluence_username, confluence_api_token, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO projects (id, name, description, archived, production_write_protection, lookup_cache_enabled, lookup_cache_ttl_minutes, log_batching_enabled, log_sync_interval_minutes, log_batch_size, log_buffer_max_entries, confluence_space_key, confluence_parent_page_id, confluence_page_title_prefix, confluence_base_url, confluence_username, confluence_api_token, theme, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     for (const project of projects) {
@@ -986,6 +993,7 @@ function writeProjectsToSqliteSync(projects: SalesforceProjectConfig[]): void {
         project.confluenceBaseUrl || "",
         project.confluenceUsername || "",
         project.confluenceApiToken || "",
+        project.theme || "corporate",
         project.createdAt,
         project.updatedAt
       );
@@ -1455,6 +1463,14 @@ export interface ConnectorTestResult {
     ok: boolean;
     details: string;
   }>;
+}
+
+export interface ConnectorPostmanCollectionResult {
+  fileName: string;
+  connectorId: string;
+  connectorName: string;
+  scheduleCount: number;
+  collection: Record<string, unknown>;
 }
 
 export interface RunListItem {
@@ -4040,6 +4056,7 @@ export class AdminDataService {
       confluenceSpaceKey: String(input.confluenceSpaceKey || existingProject?.confluenceSpaceKey || "").trim() || undefined,
       confluenceParentPageId: normalizedConfluenceParentPageId,
       confluencePageTitlePrefix: String(input.confluencePageTitlePrefix || existingProject?.confluencePageTitlePrefix || "").trim() || undefined,
+      theme: input.theme || existingProject?.theme || "corporate",
       createdAt: existingProject?.createdAt || now,
       updatedAt: now
     };
@@ -4430,6 +4447,66 @@ export class AdminDataService {
     });
   }
 
+  public async buildEndpointConnectorPostmanCollection(
+    connectorId: string,
+    instanceId?: string,
+    requestBaseUrl?: string
+  ): Promise<ConnectorPostmanCollectionResult> {
+    const client = await this.createClient(instanceId);
+    const connector = await client.queryConnector(connectorId);
+    if (!this.isEndpointConnectorType(connector.connectorType)) {
+      throw new Error(`Connector ${connector.name} ist kein Endpoint-Connector.`);
+    }
+
+    const schedules = (await this.listSchedules(instanceId))
+      .filter((schedule) =>
+        String(schedule.connectorId || "").trim() === connector.id
+        && String(schedule.sourceType || "").trim().toUpperCase() === "ENDPOINT"
+      )
+      .sort((left, right) => String(left.name || "").localeCompare(String(right.name || ""), "de", { sensitivity: "base" }));
+
+    const rootPath = this.normalizeEndpointPath(
+      connector.parameters.rootPath
+      || connector.parameters.basePath
+      || connector.parameters.resourcePath
+      || connector.parameters.path
+    );
+    const defaultBaseUrl = this.normalizePostmanBaseUrl(
+      connector.parameters.publicBaseUrl
+      || connector.parameters.externalBaseUrl
+      || connector.parameters.baseUrl
+      || requestBaseUrl
+    );
+    const safeName = this.slugifyFileName(connector.name || connector.id || "endpoint-connector");
+
+    return {
+      fileName: `${safeName}-postman-collection.json`,
+      connectorId: connector.id,
+      connectorName: connector.name,
+      scheduleCount: schedules.length,
+      collection: {
+        info: {
+          name: `${connector.name} Endpoint Connector`,
+          description: [
+            `Generated from Endpoint connector ${connector.name}.`,
+            "Set collection variables baseUrl and bearerToken before sending requests.",
+            "No secret values are exported."
+          ].join("\n"),
+          schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+        },
+        variable: [
+          { key: "baseUrl", value: defaultBaseUrl, type: "string" },
+          { key: "bearerToken", value: "", type: "string" }
+        ],
+        auth: {
+          type: "bearer",
+          bearer: [{ key: "token", value: "{{bearerToken}}", type: "string" }]
+        },
+        item: schedules.map((schedule) => this.buildEndpointSchedulePostmanItem(schedule, rootPath, "{{baseUrl}}"))
+      }
+    };
+  }
+
   public async testConnector(connectorId: string, instanceId?: string): Promise<ConnectorTestResult> {
     const client = await this.createClient(instanceId);
     const config = await client.queryConnector(connectorId);
@@ -4442,12 +4519,35 @@ export class AdminDataService {
       return this.testFileMakerConnector(config);
     }
 
+    if (this.isFileBrowseConnectorType(config.connectorType)) {
+      return this.testFileBrowseConnector(config);
+    }
+
     if (this.isFileConnectorType(config.connectorType)) {
       return this.testFileConnector(config);
     }
 
     if (this.isRestConnectorType(config.connectorType)) {
       return this.testRestConnector(config);
+    }
+
+    if (this.isEndpointConnectorType(config.connectorType)) {
+      const rootPath = String(config.parameters.rootPath || config.parameters.basePath || config.parameters.path || "").trim();
+      const authType = String(config.parameters.authType || "none").trim().toLowerCase();
+      return this.buildConnectorTestResult(config, [
+        {
+          label: "Root-Endpunkt",
+          ok: rootPath.startsWith("/"),
+          details: rootPath.startsWith("/") ? `Root-Pfad ${rootPath} ist gueltig.` : "rootPath muss mit / beginnen."
+        },
+        {
+          label: "Authentifizierung",
+          ok: authType === "none" || authType === "oauth2" || authType === "bearer",
+          details: authType === "none" || authType === "oauth2" || authType === "bearer"
+            ? `Auth Type ${authType || "none"} ist fuer Endpoint-Connectoren erlaubt.`
+            : `Auth Type ${authType} wird fuer Endpoint-Connectoren nicht unterstuetzt.`
+        }
+      ]);
     }
 
     const registry = new ConnectorRegistry();
@@ -4489,6 +4589,210 @@ export class AdminDataService {
       tableCount: metadata.tables.length,
       fieldCount
     };
+  }
+
+  private buildEndpointSchedulePostmanItem(
+    schedule: ScheduleListItem,
+    rootPath: string,
+    baseUrl: string
+  ): Record<string, unknown> {
+    try {
+      const definition = parseEndpointSourceDefinition(schedule.sourceDefinition || "");
+      const fullPath = this.joinEndpointPath(rootPath, definition.path);
+      const query = definition.queryFields.map((field) => ({
+        key: field,
+        value: `{{${field}}}`,
+        disabled: false
+      }));
+      const headers = [
+        { key: "Content-Type", value: definition.contentType || "application/json" },
+        { key: "x-request-id", value: `${this.slugifyFileName(schedule.name || schedule.id)}-{{$timestamp}}` },
+        ...definition.headerFields
+          .filter((field) => field.toLowerCase() !== "authorization")
+          .map((field) => ({ key: field, value: `{{${field}}}` }))
+      ];
+
+      return {
+        name: schedule.name || schedule.id,
+        request: {
+          method: definition.method,
+          header: headers,
+          auth: {
+            type: "bearer",
+            bearer: [{ key: "token", value: "{{bearerToken}}", type: "string" }]
+          },
+          url: {
+            ...this.buildPostmanUrl(baseUrl || "{{baseUrl}}", fullPath, query)
+          },
+          body: this.buildEndpointPostmanBody(definition)
+        },
+        response: [],
+        event: [
+          {
+            listen: "test",
+            script: {
+              type: "text/javascript",
+              exec: [
+                `pm.test("Status is ${definition.response.successStatus}", function () {`,
+                `  pm.response.to.have.status(${definition.response.successStatus});`,
+                "});"
+              ]
+            }
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        name: `${schedule.name || schedule.id} (ungueltige SourceDefinition)`,
+        disabled: true,
+        request: {
+          method: "POST",
+          header: [{ key: "Content-Type", value: "application/json" }],
+          url: this.buildPostmanUrl(baseUrl || "{{baseUrl}}", rootPath || "/", []),
+          body: {
+            mode: "raw",
+            raw: JSON.stringify({ error: error instanceof Error ? error.message : String(error) }, null, 2),
+            options: { raw: { language: "json" } }
+          },
+          description: error instanceof Error ? error.message : String(error)
+        },
+        response: []
+      };
+    }
+  }
+
+  private buildPostmanUrl(
+    baseUrl: string,
+    pathValue: string,
+    query: Array<{ key: string; value: string; disabled: boolean }>
+  ): Record<string, unknown> {
+    const rawUrl = this.joinUrl(baseUrl || "{{baseUrl}}", pathValue);
+    const pathSegments = String(pathValue || "/")
+      .trim()
+      .replace(/^\/+/, "")
+      .split("/")
+      .filter(Boolean);
+    const queryString = query.map((item) => `${item.key}=${item.value}`).join("&");
+
+    return {
+      raw: queryString ? `${rawUrl}?${queryString}` : rawUrl,
+      host: [String(baseUrl || "{{baseUrl}}").trim().replace(/\/+$/, "") || "{{baseUrl}}"],
+      path: pathSegments,
+      query
+    };
+  }
+
+  private buildEndpointPostmanBody(definition: EndpointSourceDefinition): Record<string, unknown> | undefined {
+    if (definition.method === "GET" || definition.method === "DELETE") {
+      return undefined;
+    }
+
+    const sampleRecord = this.buildEndpointSampleRecord(definition.validation.requiredBodyFields);
+    const rawBody = definition.recordMode === "array"
+      ? definition.bodyPath ? this.assignNestedValue({}, definition.bodyPath, [sampleRecord]) : [sampleRecord]
+      : definition.recordMode === "envelope" && definition.bodyPath
+        ? this.assignNestedValue({ metadata: { source: "postman" } }, definition.bodyPath, [sampleRecord])
+        : sampleRecord;
+
+    return {
+      mode: "raw",
+      raw: JSON.stringify(rawBody, null, 2),
+      options: {
+        raw: {
+          language: definition.contentType.includes("json") ? "json" : "text"
+        }
+      }
+    };
+  }
+
+  private buildEndpointSampleRecord(requiredFields: string[]): Record<string, unknown> {
+    const sample: Record<string, unknown> = {};
+    const fields = requiredFields.length ? requiredFields : ["exampleId"];
+    for (const field of fields) {
+      this.assignNestedValue(sample, field, this.sampleValueForField(field));
+    }
+    return sample;
+  }
+
+  private assignNestedValue(target: Record<string, unknown>, pathValue: string, value: unknown): Record<string, unknown> {
+    const parts = String(pathValue || "").split(".").map((part) => part.trim()).filter(Boolean);
+    if (!parts.length) {
+      return target;
+    }
+
+    let current: Record<string, unknown> = target;
+    parts.forEach((part, index) => {
+      if (index === parts.length - 1) {
+        current[part] = value;
+        return;
+      }
+      if (!current[part] || typeof current[part] !== "object" || Array.isArray(current[part])) {
+        current[part] = {};
+      }
+      current = current[part] as Record<string, unknown>;
+    });
+    return target;
+  }
+
+  private sampleValueForField(field: string): unknown {
+    const normalized = String(field || "").toLowerCase();
+    if (normalized.includes("amount") || normalized.includes("price") || normalized.includes("total") || normalized.includes("quantity")) {
+      return 42.5;
+    }
+    if (normalized.includes("date") || normalized.endsWith("at")) {
+      return new Date().toISOString();
+    }
+    if (normalized.includes("email")) {
+      return "test@example.com";
+    }
+    if (normalized.includes("number") || normalized.endsWith("no")) {
+      return "100200";
+    }
+    return "example";
+  }
+
+  private normalizeEndpointPath(value: unknown): string {
+    const raw = String(value || "").trim().replace(/\/+$/, "");
+    if (!raw) {
+      return "";
+    }
+    return raw.startsWith("/") ? raw : `/${raw}`;
+  }
+
+  private normalizePostmanBaseUrl(value: unknown): string {
+    const raw = String(value || "").trim().replace(/\/+$/, "");
+    if (!raw || raw === "http:" || raw === "https:" || raw === "http://" || raw === "https://") {
+      return "http://localhost:8080";
+    }
+
+    try {
+      const parsed = new URL(raw);
+      return parsed.hostname ? raw : "http://localhost:8080";
+    } catch {
+      return "http://localhost:8080";
+    }
+  }
+
+  private joinEndpointPath(rootPath: string, relativePath: string): string {
+    const root = this.normalizeEndpointPath(rootPath);
+    const relative = String(relativePath || "").trim();
+    const normalizedRelative = relative.startsWith("/") ? relative : `/${relative}`;
+    return `${root}${normalizedRelative}`.replace(/\/{2,}/g, "/") || "/";
+  }
+
+  private joinUrl(baseUrl: string, pathValue: string): string {
+    const base = String(baseUrl || "{{baseUrl}}").trim().replace(/\/+$/, "");
+    const pathPart = String(pathValue || "/").trim();
+    return `${base}${pathPart.startsWith("/") ? pathPart : `/${pathPart}`}`;
+  }
+
+  private slugifyFileName(value: string): string {
+    return String(value || "endpoint-connector")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      || "endpoint-connector";
   }
 
   private buildConnectorTestResult(
@@ -4710,6 +5014,105 @@ export class AdminDataService {
         details: `${exportPath} (${message})`
       });
     }
+
+    return this.buildConnectorTestResult(config, checks);
+  }
+
+  private testFileBrowseConnector(config: ConnectorConfig): ConnectorTestResult {
+    const pathConfig = resolveGeraeteaktePathConfig(config.parameters || {});
+    const checks: Array<{ label: string; ok: boolean; details: string }> = [];
+
+    if (!pathConfig) {
+      return this.buildConnectorTestResult(config, [
+        {
+          label: "Basisverzeichnis",
+          ok: false,
+          details: "basePath ist im FileBrowse-Connector nicht konfiguriert."
+        }
+      ]);
+    }
+
+    const configuredRoot = path.resolve(pathConfig.basePath);
+    const root = resolveExistingPathWithUnicodeFallback(pathConfig.basePath);
+    const isWindowsMappedDrivePath = /^[A-Za-z]:[\\/]/.test(String(pathConfig.basePath || ""));
+    try {
+      fs.accessSync(root, fs.constants.R_OK);
+      checks.push({
+        label: "Basisverzeichnis lesbar",
+        ok: true,
+        details: root === configuredRoot
+          ? root
+          : `${root} (konfiguriert: ${configuredRoot})`
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Basisverzeichnis ist nicht lesbar";
+      checks.push({
+        label: "Basisverzeichnis lesbar",
+        ok: false,
+        details: `${configuredRoot} (${message})`
+      });
+      if (isWindowsMappedDrivePath) {
+        checks.push({
+          label: "Windows-Dienst / Laufwerk",
+          ok: false,
+          details: "Der Pfad nutzt ein gemapptes Laufwerk. Windows-Dienste sehen H: haeufig nicht; wenn moeglich UNC-Pfad verwenden, z. B. \\\\server\\share\\130_Produktion\\Fertigung\\Geräteakte."
+        });
+      }
+      if (root !== configuredRoot) {
+        checks.push({
+          label: "Unicode-Pfadnormalisierung",
+          ok: true,
+          details: `Alternativer Unicode-Pfad wurde versucht: ${root}`
+        });
+      }
+      return this.buildConnectorTestResult(config, checks);
+    }
+
+    const sampleSerial = String(config.parameters?.sampleSerial || config.parameters?.testSerial || "").trim();
+    if (sampleSerial) {
+      try {
+        const resolved = resolveGeraeteakteSerialDirectory(root, sampleSerial, pathConfig.layout);
+        const exists = fs.existsSync(resolved.absolutePath) && fs.statSync(resolved.absolutePath).isDirectory();
+        checks.push({
+          label: "Beispiel-Seriennummer",
+          ok: exists,
+          details: exists
+            ? `${sampleSerial} -> ${resolved.absolutePath}`
+            : `${sampleSerial} wurde zu ${resolved.absolutePath} aufgeloest, Ordner existiert aber nicht.`
+        });
+      } catch (error) {
+        checks.push({
+          label: "Beispiel-Seriennummer",
+          ok: false,
+          details: error instanceof Error ? error.message : "Seriennummer konnte nicht aufgeloest werden."
+        });
+      }
+    }
+
+    try {
+      const directories = listGeraeteakteSerialDirectories(root, pathConfig.layout);
+      checks.push({
+        label: "Seriennummer-Ordner",
+        ok: true,
+        details: directories.length
+          ? `${directories.length} Ordner gefunden, z. B. ${directories.slice(0, 3).map((entry) => entry.serial).join(", ")}`
+          : "Basisverzeichnis ist lesbar, aber es wurden keine Seriennummer-Ordner gefunden."
+      });
+    } catch (error) {
+      checks.push({
+        label: "Seriennummer-Ordner",
+        ok: false,
+        details: error instanceof Error ? error.message : "Seriennummer-Ordner konnten nicht gelesen werden."
+      });
+    }
+
+    checks.push({
+      label: "Layout",
+      ok: true,
+      details: pathConfig.layout === "annaburg-fg-bucket"
+        ? "Annaburg Fg-Bucket Layout aktiv (z. B. Fg0000xx/Fg000073)."
+        : "Direktes Seriennummer-Layout aktiv."
+    });
 
     return this.buildConnectorTestResult(config, checks);
   }
@@ -5406,6 +5809,25 @@ export class AdminDataService {
       };
     }
 
+    if (normalizedType === "ENDPOINT") {
+      const rows = [{
+        body: { id: "example-id", name: "Example" },
+        query: {},
+        headers: {},
+        request: {
+          method: "POST",
+          path: "/endpoint",
+          receivedAt: new Date().toISOString()
+        },
+        auth: { subject: "example-client" }
+      }];
+      return {
+        fields: ["body", "query", "headers", "request", "auth"],
+        rows,
+        rowCount: rows.length
+      };
+    }
+
     if (normalizedType === "SALESFORCE_SOQL") {
       const client = await this.createClient(instanceId);
       const soqlText = parseQuerySourceDefinition(trimmedDefinition).queryText;
@@ -5568,6 +5990,19 @@ export class AdminDataService {
       }));
     }
 
+    if (normalizedType === "ENDPOINT") {
+      return [
+        { name: "body", label: "body", type: "object" },
+        { name: "query", label: "query", type: "object" },
+        { name: "headers", label: "headers", type: "object" },
+        { name: "request", label: "request", type: "object" },
+        { name: "auth", label: "auth", type: "object" },
+        { name: "body.id", label: "body.id", type: "string" },
+        { name: "body.name", label: "body.name", type: "string" },
+        { name: "request.receivedAt", label: "request.receivedAt", type: "datetime" }
+      ];
+    }
+
     throw new Error(`Source Type ${sourceType} wird für Feldmetadaten noch nicht unterstützt`);
   }
 
@@ -5624,11 +6059,12 @@ export class AdminDataService {
     const isRestSource = sourceType === "REST_API" || sourceType === "API";
     const isRestTarget = targetType === "REST_API" || targetType === "API";
     const isFileMakerSource = sourceType === "FILEMAKER_SQL";
+    const isEndpointSource = sourceType === "ENDPOINT";
 
     if (!isFileTarget && !String(input.operation || "").trim()) add("error", "general", "Operation fehlt.");
     if (!isFileTarget && !String(input.objectName || "").trim()) add("error", "target", "Zielobjekt/Zielname fehlt.");
 
-    if ((isFileSource || isFileTarget || isMssqlSource || isMssqlTarget || isRestSource || isRestTarget || isFileMakerSource) && !connectorId) {
+    if ((isFileSource || isFileTarget || isMssqlSource || isMssqlTarget || isRestSource || isRestTarget || isFileMakerSource || isEndpointSource) && !connectorId) {
       add("error", "connector", "Diese Scheduler-Variante benoetigt einen Connector.");
     }
     if ((isFileSource || isFileTarget) && connector && !this.isFileConnectorType(connector.connectorType)) {
@@ -5642,6 +6078,9 @@ export class AdminDataService {
     }
     if (isFileMakerSource && connector && !this.isFileMakerConnectorType(connector.connectorType)) {
       add("error", "connector", `FileMaker-Scheduler benoetigt einen FileMaker-Connector, gewaehlt ist ${connector.connectorType}.`);
+    }
+    if (isEndpointSource && connector && !this.isEndpointConnectorType(connector.connectorType)) {
+      add("error", "connector", `Endpoint-Scheduler benoetigt einen AGENT_ENDPOINT-Connector, gewaehlt ist ${connector.connectorType}.`);
     }
     if (isRestTarget) {
       add("error", "target", "REST_API als TargetType ist im generischen Scheduler-Lauf noch nicht implementiert. Unterstuetzt sind REST_API-Quellen nach Salesforce/Global Picklist.");
@@ -5694,6 +6133,18 @@ export class AdminDataService {
         }
       } catch {
         add("error", "source", "REST SourceDefinition muss gueltiges JSON sein.");
+      }
+    } else if (isEndpointSource) {
+      try {
+        const parsed = JSON.parse(sourceDefinition) as Record<string, unknown>;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("kein Objekt");
+        if (!String(parsed.path || "").trim()) add("error", "source", "Endpoint SourceDefinition braucht path.");
+        const method = String(parsed.method || "POST").trim().toUpperCase();
+        if (!["POST", "PUT", "PATCH"].includes(method)) {
+          add("error", "source", `Endpoint Methode ${method} wird fuer Datenimports nicht unterstuetzt.`);
+        }
+      } catch {
+        add("error", "source", "Endpoint SourceDefinition muss gueltiges JSON sein.");
       }
     } else if (sourceType === "SALESFORCE_SOQL") {
       const parsed = parseQuerySourceDefinition(sourceDefinition);
@@ -6300,13 +6751,16 @@ export class AdminDataService {
     const resolvedInstance = this.resolveInstance(instanceId);
     const client = await this.createClient(resolvedInstance.id);
     const sanitizedParameters = { ...(input.parameters || {}) };
+    const normalizedConnectorType = String(input.connectorType || "").trim().toUpperCase();
     if (String(input.secretKey || "").trim()) {
       delete sanitizedParameters.password;
-      delete sanitizedParameters.bearerToken;
+      if (normalizedConnectorType !== "AGENT_ENDPOINT" || !String(sanitizedParameters.bearerToken || "").trim()) {
+        delete sanitizedParameters.bearerToken;
+      }
       delete sanitizedParameters.apiKeyValue;
       delete sanitizedParameters.clientSecret;
     }
-    if (String(input.connectorType || "").trim().toUpperCase() === "MSSQL") {
+    if (normalizedConnectorType === "MSSQL") {
       if (sanitizedParameters.encrypt === undefined) {
         sanitizedParameters.encrypt = true;
       }
@@ -7394,12 +7848,20 @@ export class AdminDataService {
   private isFileConnectorType(connectorType: string | undefined): boolean {
     const normalized = String(connectorType || "").toLowerCase();
     return (
-      normalized.includes("file") ||
-      normalized.includes("csv") ||
-      normalized.includes("excel") ||
-      normalized.includes("xlsx") ||
-      normalized.includes("json")
+      !this.isFileBrowseConnectorType(connectorType) &&
+      (
+        normalized.includes("file") ||
+        normalized.includes("csv") ||
+        normalized.includes("excel") ||
+        normalized.includes("xlsx") ||
+        normalized.includes("json")
+      )
     );
+  }
+
+  private isFileBrowseConnectorType(connectorType: string | undefined): boolean {
+    const normalized = String(connectorType || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+    return normalized === "filebrowse" || normalized === "geraeteakte" || normalized === "geräteakte";
   }
 
   private isFileMakerConnectorType(connectorType: string | undefined): boolean {
@@ -7409,7 +7871,15 @@ export class AdminDataService {
 
   private isRestConnectorType(connectorType: string | undefined): boolean {
     const normalized = String(connectorType || "").trim().toLowerCase();
+    if (this.isEndpointConnectorType(connectorType)) {
+      return false;
+    }
     return normalized.includes("rest") || normalized.includes("http") || normalized.includes("api");
+  }
+
+  private isEndpointConnectorType(connectorType: string | undefined): boolean {
+    const normalized = String(connectorType || "").trim().toLowerCase();
+    return normalized === "endpoint" || normalized === "agent_endpoint";
   }
 
   private toDirectionIcon(direction?: string): string {

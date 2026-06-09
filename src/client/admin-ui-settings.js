@@ -497,6 +497,54 @@ async function loadProjects() {
   renderProjectTable();
 }
 
+function updateProjectWizardLogoSection() {
+  const prjThemeSelect = document.getElementById('prj-theme');
+  const logoUploadCard = document.getElementById('logo-theme-upload-card');
+  if (!prjThemeSelect || !logoUploadCard) return;
+
+  const isLogoTheme = prjThemeSelect.value === 'logo';
+  if (isLogoTheme) {
+    logoUploadCard.classList.remove('d-none');
+    
+    // Check if we are creating a new project (no editingProjectId)
+    const logoUploadBtn = document.getElementById('logo-upload-btn');
+    const logoUploadStatus = document.getElementById('logo-upload-status');
+    const logoUploadPreviewWrap = document.getElementById('logo-upload-preview-wrap');
+
+    if (!state.editingProjectId) {
+      // New project: disable the upload button
+      if (logoUploadBtn) {
+        logoUploadBtn.disabled = true;
+        logoUploadBtn.classList.add('disabled');
+      }
+      if (logoUploadStatus) {
+        logoUploadStatus.textContent = 'Bitte speichern Sie das Projekt zuerst, um ein Logo hochzuladen.';
+        logoUploadStatus.className = 'small text-warning mt-1';
+      }
+      if (logoUploadPreviewWrap) {
+        logoUploadPreviewWrap.classList.add('d-none');
+      }
+    } else {
+      // Existing project: enable upload button
+      if (logoUploadBtn) {
+        logoUploadBtn.disabled = false;
+        logoUploadBtn.classList.remove('disabled');
+      }
+      if (logoUploadStatus) {
+        logoUploadStatus.textContent = '';
+        logoUploadStatus.className = 'small text-muted mt-1';
+      }
+      // Load current logo preview for this project
+      if (window.updateLogoPreviewState) {
+        window.updateLogoPreviewState();
+      }
+    }
+  } else {
+    logoUploadCard.classList.add('d-none');
+  }
+}
+window.updateProjectWizardLogoSection = updateProjectWizardLogoSection;
+
 function resetProjectForm() {
   state.editingProjectId = '';
   state.projectWizardStep = 1;
@@ -517,6 +565,9 @@ function resetProjectForm() {
   document.getElementById('prj-log-batch-size').value = '200';
   document.getElementById('prj-log-buffer-max-entries').value = '10000';
   document.getElementById('prj-production-write-protection').checked = true;
+  const prjTheme = document.getElementById('prj-theme');
+  if (prjTheme) prjTheme.value = 'corporate';
+  updateProjectWizardLogoSection();
   const testSelect = document.getElementById('prj-test-instance-id');
   const productionSelect = document.getElementById('prj-production-instance-id');
   if (testSelect) testSelect.value = '';
@@ -1017,10 +1068,8 @@ function renderProjectInsightCards(projectId, kpis, summary) {
     ? summary.lastDeployment.deployItems.join(', ')
     : '-';
 
-  return '<div class="project-kpi-grid project-insight-grid mt-3">' +
-    '<div class="project-kpi project-kpi-accent-blue"><span>Connectoren</span><strong>' + esc(connectorCount) + '</strong><small>verfügbar im aktuellen Setup</small></div>' +
-    '<div class="project-kpi project-kpi-accent-cyan"><span>Scheduler</span><strong>' + esc(scheduleCount) + '</strong><small>verfügbar im aktuellen Setup</small></div>' +
-    '<div class="project-kpi project-kpi-accent-violet"><span>Versionen</span><strong>' + esc(versionCount) + '</strong><small>Aktuell: ' + esc(latestVersion) + '</small></div>' +
+  return '<div class="project-kpi-grid project-insight-grid project-insight-grid-compact mt-2">' +
+    '<div class="project-kpi project-kpi-accent-blue"><span>Setup</span><strong>' + esc(connectorCount) + ' Connectoren · ' + esc(scheduleCount) + ' Scheduler</strong><small>' + esc(versionCount) + ' Versionen, aktuell ' + esc(latestVersion) + '</small></div>' +
     '<div class="project-kpi project-kpi-accent-green"><span>Testversion</span><strong>' + esc(testVersion) + '</strong><small>Auswahl kann etabliert werden</small></div>' +
     '<div class="project-kpi project-kpi-accent-amber"><span>Test/Prod</span><strong>' + renderProjectVersionDiffBadge(summary) + '</strong><small>Prod: ' + esc(productionVersion) + '</small></div>' +
     '<div class="project-kpi project-kpi-accent-slate"><span>Letztes Deployment</span><strong>' + esc(lastDeployment) + '</strong><small>' + esc(deploymentItems) + '</small></div>' +
@@ -1454,6 +1503,10 @@ function fillProjectForm(project) {
   document.getElementById('prj-log-buffer-max-entries').value = String(project?.logBufferMaxEntries || 10000);
   document.getElementById('prj-production-write-protection').checked = project?.productionWriteProtection !== false;
 
+  const prjTheme = document.getElementById('prj-theme');
+  if (prjTheme) prjTheme.value = project?.theme || 'corporate';
+  updateProjectWizardLogoSection();
+
   const projectId = String(project?.id || '').trim();
   populateProjectInstanceSelectors(projectId);
   const projectInstances = (state.instances || []).filter((entry) => String(entry.projectId || '').trim() === projectId);
@@ -1530,81 +1583,130 @@ function renderProjectTable() {
         ? 'v' + String(projectSummary.latestVersion.version || '-')
         : '-';
     const updatedAtLabel = formatProjectDateTime(item.updatedAt);
-    return '<section class="project-panel' + (isActiveProject ? ' project-panel-active' : '') + '">' +
+
+    // Resolve project theme color accent
+    let accentColor = '#00ace3'; // Fallback / Corporate
+    if (item.theme === 'industrial') {
+      accentColor = '#3b82f6';
+    } else if (item.theme === 'midnight') {
+      accentColor = '#1e293b';
+    } else if (item.theme === 'logo') {
+      const savedPalette = localStorage.getItem('custom-logo-palette-' + projectId);
+      if (savedPalette) {
+        try {
+          const palette = JSON.parse(savedPalette);
+          accentColor = palette.primary || '#00ace3';
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    }
+
+    return '<section class="project-panel' + (isActiveProject ? ' project-panel-active' : '') + '" style="--project-theme-accent: ' + accentColor + ';" data-panel-id="' + esc(projectId) + '">' +
       '<div class="project-panel-main">' +
-        '<div class="project-panel-compact">' +
-          '<div class="project-panel-identity">' +
-            '<div class="d-flex align-items-center gap-2 flex-wrap">' +
-              (isActiveProject ? '<span class="badge text-bg-success">Aktives Projekt</span>' : '') +
-              status +
-              '<div class="fw-semibold project-panel-title">' + esc(String(item.name || item.id)) + '</div>' +
+        '<div class="project-panel-header">' +
+          '<div class="project-panel-logo-tile">' +
+            '<img src="/assets/custom-logo?projectId=' + encodeURIComponent(projectId) + '&t=' + Date.now() + '" class="project-panel-logo" alt="" />' +
+          '</div>' +
+          '<div class="project-panel-heading">' +
+            '<div class="project-panel-title-row">' +
+              '<div class="project-panel-title">' + esc(String(item.name || item.id)) + '</div>' +
+              '<div class="project-panel-badges">' +
+                (isActiveProject ? '<span class="badge text-bg-success">Aktives Projekt</span>' : '') +
+                status +
+              '</div>' +
             '</div>' +
             '<div class="project-panel-description">' + esc(description || String(item.id || '')) + '</div>' +
           '</div>' +
-          '<div class="project-compact-kpis">' +
-            '<div class="project-compact-kpi"><span>Letzte Änderung</span><strong>' + esc(updatedAtLabel) + '</strong></div>' +
-            '<div class="project-compact-kpi"><span>Aktuelle Version</span><strong>' + esc(currentVersionLabel) + '</strong></div>' +
-            '<div class="project-compact-kpi"><span>Test/Prod</span><strong>' + renderProjectVersionDiffBadge(projectSummary) + '</strong></div>' +
-            '<div class="project-compact-kpi"><span>Health</span><strong><span class="badge ' + health.badgeClass + '">' + esc(health.label) + '</span></strong></div>' +
+          '<div class="project-panel-actions" aria-label="Projektaktionen">' +
+            '<button type="button" class="btn btn-sm btn-outline-primary" data-project-edit="' + esc(projectId) + '">Bearbeiten</button>' +
+            '<button type="button" class="btn btn-sm btn-outline-warning" data-project-archive="' + esc(projectId) + '" data-project-archived="' + (archived ? '1' : '0') + '"' + (isDefault ? ' disabled' : '') + '>' + (archived ? 'Aktivieren' : 'Archivieren') + '</button>' +
+            '<button type="button" class="btn btn-sm btn-outline-danger" data-project-delete="' + esc(projectId) + '"' + (isDefault ? ' disabled' : '') + '>Löschen</button>' +
           '</div>' +
         '</div>' +
+        '<div class="project-metrics-strip">' +
+          '<div class="project-metric"><span class="project-metric-dot project-metric-dot-blue"></span><span class="project-metric-label">Letzte Änderung</span><strong class="project-metric-value">' + esc(updatedAtLabel) + '</strong></div>' +
+          '<div class="project-metric"><span class="project-metric-dot project-metric-dot-cyan"></span><span class="project-metric-label">Version</span><strong class="project-metric-value">' + esc(currentVersionLabel) + '</strong></div>' +
+          '<div class="project-metric"><span class="project-metric-dot project-metric-dot-amber"></span><span class="project-metric-label">Test/Prod</span><strong class="project-metric-value">' + renderProjectVersionDiffBadge(projectSummary) + '</strong></div>' +
+          '<div class="project-metric"><span class="project-metric-dot project-metric-dot-slate"></span><span class="project-metric-label">Health</span><strong class="project-metric-value"><span class="badge ' + health.badgeClass + '">' + esc(health.label) + '</span></strong></div>' +
+        '</div>' +
         '<details class="project-operations-details project-panel-details mt-2">' +
-          '<summary>Weitere Informationen und Aktionen</summary>' +
-          '<div class="project-context-strip mt-3">' +
-            '<span><strong>Instanzen</strong> ' + esc(String(kpis.projectInstances.length)) + '</span>' +
-            '<span><strong>Test</strong> ' + esc(testLabel) + '</span>' +
-            '<span><strong>Produktion</strong> ' + esc(productionLabel) + '</span>' +
-            '<span><strong>Health</strong> ' + esc(health.details.join(' · ')) + '</span>' +
-            '<span><strong>Produktionsschutz</strong> ' + esc(item.productionWriteProtection === false ? 'inaktiv' : 'aktiv') + '</span>' +
-            '<span><strong>Cache</strong> ' + esc(kpis.cacheEnabled ? 'an' : 'aus') + '</span>' +
-            '<span><strong>Logs</strong> ' + esc(kpis.logBatchingEnabled ? 'Batch' : 'direkt') + '</span>' +
+          '<summary>Details &amp; Deployment</summary>' +
+          '<div class="project-detail-meta mt-2">' +
+            '<span><strong>Instanzen</strong>' + esc(String(kpis.projectInstances.length)) + '</span>' +
+            '<span><strong>Test</strong>' + esc(testLabel) + '</span>' +
+            '<span><strong>Produktion</strong>' + esc(productionLabel) + '</span>' +
+            '<span><strong>Schutz</strong>' + esc(item.productionWriteProtection === false ? 'inaktiv' : 'aktiv') + '</span>' +
           '</div>' +
           renderProjectInsightCards(projectId, kpis, projectSummary) +
-          '<div class="project-deployment-config mt-2">' +
-            '<div class="row g-2 align-items-end">' +
-              '<div class="col-lg-5">' +
-                '<label class="form-label form-label-sm mb-1">Setup-Version</label>' +
-                '<div class="input-group input-group-sm">' +
-                  '<select class="form-select" data-project-version-select="' + esc(projectId) + '">' + renderProjectVersionOptions(projectId) + '</select>' +
-                  '<button type="button" class="btn btn-outline-success" data-project-op="establish-test-version" data-project-id="' + esc(projectId) + '">Als Testversion setzen</button>' +
+          
+          '<div class="project-details-grid-columns mt-3">' +
+            /* Left column: Setup & Versioning */
+            '<div class="project-details-column">' +
+              '<div class="project-details-column-header">Setup &amp; Versionierung</div>' +
+              '<div class="project-deployment-config mt-2">' +
+                '<div class="row g-2 align-items-end">' +
+                  '<div class="col-12">' +
+                    '<label class="form-label form-label-sm mb-1">Setup-Version</label>' +
+                    '<div class="input-group input-group-sm">' +
+                      '<select class="form-select" data-project-version-select="' + esc(projectId) + '">' + renderProjectVersionOptions(projectId) + '</select>' +
+                      '<button type="button" class="btn btn-outline-success" data-project-op="establish-test-version" data-project-id="' + esc(projectId) + '">Als Testversion setzen</button>' +
+                    '</div>' +
+                  '</div>' +
+                  '<div class="col-12 mt-2">' +
+                    '<label class="form-label form-label-sm mb-1">Deployment-Bestandteile</label>' +
+                    '<div class="project-deploy-item-list">' +
+                      '<label><input class="form-check-input me-1" type="checkbox" value="project" data-project-deploy-item data-project-id="' + esc(projectId) + '" checked />Projekt</label>' +
+                      '<label><input class="form-check-input me-1" type="checkbox" value="connectors" data-project-deploy-item data-project-id="' + esc(projectId) + '" checked />Connectoren</label>' +
+                      '<label><input class="form-check-input me-1" type="checkbox" value="schedules" data-project-deploy-item data-project-id="' + esc(projectId) + '" checked />Scheduler</label>' +
+                      '<label><input class="form-check-input me-1" type="checkbox" value="migrations" data-project-deploy-item data-project-id="' + esc(projectId) + '" />Migrationen</label>' +
+                      '<label><input class="form-check-input me-1" type="checkbox" value="documentation" data-project-deploy-item data-project-id="' + esc(projectId) + '" />Doku</label>' +
+                    '</div>' +
+                  '</div>' +
+                  '<div class="col-12 mt-2">' +
+                    '<div class="d-flex justify-content-between align-items-center gap-2 mb-1 flex-wrap">' +
+                      '<label class="form-label form-label-sm mb-0">Beschreibung für neue Setup-Version</label>' +
+                      '<button type="button" class="btn btn-sm btn-outline-secondary" data-project-op="setup-note-suggest" data-project-id="' + esc(projectId) + '">KI-Vorschlag</button>' +
+                    '</div>' +
+                    '<textarea class="form-control form-control-sm project-setup-note" rows="2" data-project-setup-note="' + esc(projectId) + '" placeholder="Änderungen dieser Version dokumentieren, z. B. neue Scheduler, Mapping-Anpassungen oder Connector-Updates"></textarea>' +
+                  '</div>' +
                 '</div>' +
               '</div>' +
-              '<div class="col-lg-7">' +
-                '<label class="form-label form-label-sm mb-1">Deployment-Bestandteile</label>' +
-                '<div class="project-deploy-item-list">' +
-                  '<label><input class="form-check-input me-1" type="checkbox" value="project" data-project-deploy-item data-project-id="' + esc(projectId) + '" checked />Projekt</label>' +
-                  '<label><input class="form-check-input me-1" type="checkbox" value="connectors" data-project-deploy-item data-project-id="' + esc(projectId) + '" checked />Connectoren</label>' +
-                  '<label><input class="form-check-input me-1" type="checkbox" value="schedules" data-project-deploy-item data-project-id="' + esc(projectId) + '" checked />Scheduler</label>' +
-                  '<label><input class="form-check-input me-1" type="checkbox" value="migrations" data-project-deploy-item data-project-id="' + esc(projectId) + '" />Migrationen</label>' +
-                  '<label><input class="form-check-input me-1" type="checkbox" value="documentation" data-project-deploy-item data-project-id="' + esc(projectId) + '" />Doku</label>' +
+            '</div>' +
+            
+            /* Right column: Analysen & Deployment Actions */
+            '<div class="project-details-column">' +
+              '<div class="project-details-column-header">Analysen &amp; Deployment-Aktionen</div>' +
+              '<div class="project-action-groups mt-2">' +
+                '<div class="project-action-group">' +
+                  '<div class="project-action-group-label">Analyse</div>' +
+                  '<div class="d-flex gap-2 mt-1">' +
+                    '<button type="button" class="btn btn-sm btn-outline-secondary" data-project-op="api-forecast" data-project-id="' + esc(projectId) + '">API-Prognose</button>' +
+                    '<button type="button" class="btn btn-sm btn-outline-secondary" data-project-op="setup-version" data-project-id="' + esc(projectId) + '">Setup-Version erstellen</button>' +
+                  '</div>' +
                 '</div>' +
-              '</div>' +
-              '<div class="col-12">' +
-                '<div class="d-flex justify-content-between align-items-center gap-2 mb-1 flex-wrap">' +
-                  '<label class="form-label form-label-sm mb-0">Beschreibung fuer neue Setup-Version</label>' +
-                  '<button type="button" class="btn btn-sm btn-outline-secondary" data-project-op="setup-note-suggest" data-project-id="' + esc(projectId) + '">KI-Vorschlag</button>' +
+                '<div class="project-action-group mt-3">' +
+                  '<div class="project-action-group-label">Deployment-Flow</div>' +
+                  '<div class="d-flex flex-wrap gap-2 mt-1">' +
+                    '<button type="button" class="btn btn-sm btn-outline-primary" data-project-op="compare-test-production" data-project-id="' + esc(projectId) + '">Abgleich Test &rarr; Prod</button>' +
+                    '<button type="button" class="btn btn-sm btn-outline-primary" data-project-op="compare-production-test" data-project-id="' + esc(projectId) + '">Abgleich Prod &rarr; Test</button>' +
+                    '<button type="button" class="btn btn-sm btn-outline-warning" data-project-op="precheck-test" data-project-id="' + esc(projectId) + '">preDeployment Test</button>' +
+                    '<button type="button" class="btn btn-sm btn-outline-warning" data-project-op="precheck-production" data-project-id="' + esc(projectId) + '">preDeployment Prod</button>' +
+                    '<button type="button" class="btn btn-sm btn-success text-white" data-project-op="deploy-start" data-project-id="' + esc(projectId) + '">Deploy starten</button>' +
+                  '</div>' +
                 '</div>' +
-                '<textarea class="form-control form-control-sm project-setup-note" rows="2" data-project-setup-note="' + esc(projectId) + '" placeholder="Aenderungen dieser Version dokumentieren, z. B. neue Scheduler, Mapping-Anpassungen oder Connector-Updates"></textarea>' +
+                '<div class="project-action-group mt-3">' +
+                  '<div class="project-action-group-label">Dokumentation</div>' +
+                  '<div class="mt-1">' +
+                    '<button type="button" class="btn btn-sm btn-outline-info" data-project-op="publish-confluence" data-project-id="' + esc(projectId) + '">Confluence publizieren</button>' +
+                  '</div>' +
+                '</div>' +
               '</div>' +
             '</div>' +
           '</div>' +
-          '<div class="project-operation-toolbar mt-3">' +
-            '<button type="button" class="btn btn-sm btn-outline-secondary" data-project-op="api-forecast" data-project-id="' + esc(projectId) + '">API-Prognose</button>' +
-            '<button type="button" class="btn btn-sm btn-outline-secondary" data-project-op="setup-version" data-project-id="' + esc(projectId) + '">Setup-Version</button>' +
-            '<button type="button" class="btn btn-sm btn-outline-primary" data-project-op="compare-test-production" data-project-id="' + esc(projectId) + '">Abgleich Test → Prod</button>' +
-            '<button type="button" class="btn btn-sm btn-outline-primary" data-project-op="compare-production-test" data-project-id="' + esc(projectId) + '">Abgleich Prod → Test</button>' +
-            '<button type="button" class="btn btn-sm btn-outline-warning" data-project-op="precheck-test" data-project-id="' + esc(projectId) + '">preDeployment Test</button>' +
-            '<button type="button" class="btn btn-sm btn-outline-warning" data-project-op="precheck-production" data-project-id="' + esc(projectId) + '">preDeployment Prod</button>' +
-            '<button type="button" class="btn btn-sm btn-outline-success" data-project-op="deploy-start" data-project-id="' + esc(projectId) + '">Deploy starten</button>' +
-            '<button type="button" class="btn btn-sm btn-outline-info" data-project-op="publish-confluence" data-project-id="' + esc(projectId) + '">Doku Confluence</button>' +
-          '</div>' +
+
         '</details>' +
         renderProjectOperationResult(projectId) +
-      '</div>' +
-      '<div class="project-panel-actions">' +
-        '<button type="button" class="btn btn-sm btn-outline-primary" data-project-edit="' + esc(projectId) + '">Bearbeiten</button>' +
-        '<button type="button" class="btn btn-sm btn-outline-warning" data-project-archive="' + esc(projectId) + '" data-project-archived="' + (archived ? '1' : '0') + '"' + (isDefault ? ' disabled' : '') + '>' + (archived ? 'Aktivieren' : 'Archivieren') + '</button>' +
-        '<button type="button" class="btn btn-sm btn-outline-danger" data-project-delete="' + esc(projectId) + '"' + (isDefault ? ' disabled' : '') + '>Löschen</button>' +
       '</div>' +
     '</section>';
   }).join('');
@@ -1622,7 +1724,6 @@ function renderProjectTable() {
       if (!project) {
         return;
       }
-
       openProjectWizard(project);
     });
   });
@@ -1665,6 +1766,7 @@ function renderProjectTable() {
   panelList.querySelectorAll('[data-project-delete]').forEach((button) => {
     button.addEventListener('click', async () => {
       const projectId = String(button.getAttribute('data-project-delete') || '').trim();
+
       if (!window.confirm('Projekt wirklich löschen?')) {
         return;
       }
@@ -1744,7 +1846,8 @@ async function saveProject() {
     confluenceApiToken: confluenceApiToken || undefined,
     confluenceSpaceKey: confluenceSpaceKey || undefined,
     confluenceParentPageId: confluenceParentPageId || undefined,
-    confluencePageTitlePrefix: confluencePageTitlePrefix || undefined
+    confluencePageTitlePrefix: confluencePageTitlePrefix || undefined,
+    theme: document.getElementById('prj-theme')?.value || 'corporate'
   };
 
   const savedProject = await requestJson('/api/projects', {
@@ -1784,6 +1887,20 @@ async function saveProject() {
 
   await loadProjects();
   await loadInstances();
+
+  if (projectId === state.headerProjectId) {
+    const theme = payload.theme || 'corporate';
+    const themeSelect = document.getElementById('theme-select');
+    if (themeSelect) {
+      themeSelect.value = theme;
+    }
+    applyUiTheme(theme);
+    const sidebarLogoImg = document.getElementById('agent-sidebar-logo-img');
+    if (sidebarLogoImg) {
+      sidebarLogoImg.src = '/assets/custom-logo?projectId=' + projectId + '&t=' + Date.now();
+    }
+  }
+
   resetProjectForm();
   const modalEl = document.getElementById('project-modal');
   if (modalEl && window.bootstrap?.Modal) {

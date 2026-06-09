@@ -13,12 +13,14 @@ import { SalesforceSoqlSourceAdapter } from "../../source-adapters/salesforce/sa
 import { MssqlQuerySourceAdapter } from "../../source-adapters/mssql/mssql-query-source-adapter";
 import { FileMakerSourceAdapter } from "../../source-adapters/filemaker/filemaker-source-adapter";
 import { RestApiSourceAdapter } from "../../source-adapters/rest/rest-api-source-adapter";
+import { EndpointSourceAdapter } from "../../source-adapters/endpoint/endpoint-source-adapter";
 import { MssqlTargetAdapter } from "../../target-adapters/mssql/mssql-target-adapter";
 import { FileSourceAdapter } from "../../source-adapters/file/file-source-adapter";
 import { FileTargetAdapter } from "../../target-adapters/file/file-target-adapter";
 import { SalesforceTargetAdapter } from "../../target-adapters/salesforce/salesforce-target-adapter";
 import { SalesforceGlobalPicklistTargetAdapter } from "../../target-adapters/salesforce/salesforce-global-picklist-target-adapter";
 import { MssqlConnector } from "../../connectors/mssql/mssql-connector";
+import { GenericRecord } from "../../types/generic-record";
 
 function isValidSalesforceIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_.]*$/.test(value);
@@ -33,6 +35,7 @@ export interface JobExecutionOptions {
   connector: any;
   lastCheckpoint?: string;
   lastRecordId?: string;
+  endpointRecords?: GenericRecord[];
   onProgress: TransferContext["onProgress"];
 }
 
@@ -116,6 +119,7 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
     const isFileTarget = isFileScheduleType(schedule.targetType);
     const isRestSource = schedule.sourceType === "REST_API";
     const isFileMakerSource = schedule.sourceType === "FILEMAKER_SQL";
+    const isEndpointSource = schedule.sourceType === "ENDPOINT";
 
     const isGenericMssqlToSalesforce =
       schedule.sourceType === "MSSQL_SQL" && schedule.targetType === "SALESFORCE";
@@ -126,6 +130,8 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
     const isGenericRestToGlobalPicklist = isRestSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericFileMakerToSalesforce = isFileMakerSource && schedule.targetType === "SALESFORCE";
     const isGenericFileMakerToGlobalPicklist = isFileMakerSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
+    const isGenericEndpointToSalesforce = isEndpointSource && schedule.targetType === "SALESFORCE";
+    const isGenericEndpointToGlobalPicklist = isEndpointSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericFileToSalesforce = isFileSource && schedule.targetType === "SALESFORCE";
     const isGenericFileToGlobalPicklist = isFileSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericFileToMssql = isFileSource && schedule.targetType === "MSSQL";
@@ -138,6 +144,8 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
       isGenericRestToGlobalPicklist ||
       isGenericFileMakerToSalesforce ||
       isGenericFileMakerToGlobalPicklist ||
+      isGenericEndpointToSalesforce ||
+      isGenericEndpointToGlobalPicklist ||
       isGenericFileToSalesforce ||
       isGenericFileToGlobalPicklist ||
       isGenericFileToMssql
@@ -173,12 +181,14 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
     const isFileTarget = isFileScheduleType(schedule.targetType);
     const isRestSource = schedule.sourceType === "REST_API";
     const isFileMakerSource = schedule.sourceType === "FILEMAKER_SQL";
+    const isEndpointSource = schedule.sourceType === "ENDPOINT";
 
     const isGenericMssqlToFile = schedule.sourceType === "MSSQL_SQL" && isFileTarget;
     const isGenericFileToMssql = isFileSource && schedule.targetType === "MSSQL";
     const isGenericMssqlToGlobalPicklist = schedule.sourceType === "MSSQL_SQL" && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericRestToGlobalPicklist = isRestSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericFileMakerToGlobalPicklist = isFileMakerSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
+    const isGenericEndpointToGlobalPicklist = isEndpointSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericFileToGlobalPicklist = isFileSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
 
     const isFileConnector = /file|csv|excel|xlsx|json/i.test(connectorConfig.connectorType || "");
@@ -195,7 +205,7 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
       sourceType: schedule.sourceType || (isFileSource ? "FILE_CSV" : isRestSource ? "REST_API" : "MSSQL_SQL"),
       targetType:
         schedule.targetType ||
-        (isGenericMssqlToGlobalPicklist || isGenericFileToGlobalPicklist
+        (isGenericMssqlToGlobalPicklist || isGenericFileToGlobalPicklist || isGenericEndpointToGlobalPicklist
           ? "SALESFORCE_GLOBAL_PICKLIST"
           : isGenericMssqlToFile
             ? "FILE_CSV"
@@ -213,6 +223,8 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
 
     const sourceAdapter = isFileSource
       ? new FileSourceAdapter(connectorConfig, schedule.sourceDefinition)
+      : isEndpointSource
+        ? new EndpointSourceAdapter(options.endpointRecords || [])
       : isRestSource
         ? new RestApiSourceAdapter(connectorConfig, schedule.sourceDefinition)
       : isFileMakerSource
@@ -223,7 +235,7 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
       ? new FileTargetAdapter(connectorConfig, schedule.targetDefinition)
       : isGenericFileToMssql
         ? new MssqlTargetAdapter(connector as MssqlConnector, schedule.targetDefinition)
-        : isGenericMssqlToGlobalPicklist || isGenericRestToGlobalPicklist || isGenericFileMakerToGlobalPicklist || isGenericFileToGlobalPicklist
+        : isGenericMssqlToGlobalPicklist || isGenericRestToGlobalPicklist || isGenericFileMakerToGlobalPicklist || isGenericEndpointToGlobalPicklist || isGenericFileToGlobalPicklist
           ? new SalesforceGlobalPicklistTargetAdapter(salesforceClient, schedule.targetDefinition, schedule.lastRunAt)
           : new SalesforceTargetAdapter(salesforceClient, schedule.targetDefinition, connectorConfig, schedule.lastRunAt);
 

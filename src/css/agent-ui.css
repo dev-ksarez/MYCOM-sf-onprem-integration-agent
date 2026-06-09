@@ -111,7 +111,7 @@ body {
 .soft-card {
   background: #ffffff;
   border: 1px solid #e7eaec;
-  border-top: 3px solid #1ab394;
+  border-top: 1px solid #e7eaec;
   border-radius: 2px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
 }
@@ -2733,7 +2733,7 @@ body {
 }
 
 .agent-sidebar {
-  background: #032d60 !important;
+  background: var(--layout-sidebar-bg, #032d60) !important;
   color: var(--layout-sidebar-text);
   border-right: 1px solid rgba(255, 255, 255, 0.07);
   padding: 0.9rem 0.8rem;
@@ -2742,7 +2742,7 @@ body {
 body.context-test .agent-sidebar,
 body.context-production .agent-sidebar,
 body.context-none .agent-sidebar {
-  background: #032d60 !important;
+  background: var(--layout-sidebar-bg, #032d60) !important;
 }
 
 .agent-sidebar-head {
@@ -2837,7 +2837,7 @@ body.context-none .agent-sidebar {
 }
 
 .agent-topbar {
-  background: linear-gradient(90deg, #032d60 0%, #006aa8 52%, #0176d3 100%);
+  background: var(--layout-topbar-gradient, linear-gradient(90deg, #032d60 0%, #006aa8 52%, #0176d3 100%)) !important;
   border-bottom: 0;
   min-height: 64px;
   padding: 0.65rem 1.1rem;
@@ -2850,7 +2850,7 @@ body.context-none .agent-sidebar {
 body.context-test .agent-topbar,
 body.context-production .agent-topbar,
 body.context-none .agent-topbar {
-  background: linear-gradient(90deg, #032d60 0%, #006aa8 52%, #0176d3 100%);
+  background: var(--layout-topbar-gradient, linear-gradient(90deg, #032d60 0%, #006aa8 52%, #0176d3 100%)) !important;
 }
 
 .agent-topbar-primary {
@@ -4197,4 +4197,279 @@ body.theme-midnight #overview-runs-table > :not(caption) > * > * {
 body.theme-midnight #overview-runs-table tbody tr:hover,
 body.theme-midnight #overview-runs-table tbody tr:nth-child(even) {
   background: #1a2a3f !important;
+}
+
+/* ==========================================================================
+   UI/UX REDESIGN & MODERN BRANDING OVERRIDES
+   ========================================================================== */
+
+/* Modern Card Hover Effects, Borders, and Shadows */
+.soft-card {
+  border-radius: 12px !important;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.03) !important;
+  border: 1px solid var(--ui-border) !important;
+  transition: transform 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.soft-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.06) !important;
+}
+
+.soft-card .card-header {
+  border-bottom: 1px solid var(--ui-border) !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 250, 252, 0.95) 100%) !important;
+  padding: 0.9rem 1.2rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.01em;
+}
+
+body.theme-midnight .soft-card {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28) !important;
+  border-color: var(--ui-border) !important;
+}
+
+body.theme-midnight .soft-card:hover {
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38) !important;
+}
+
+body.theme-midnight .soft-card .card-header {
+  background: linear-gradient(180deg, #172436 0%, #142031 100%) !important;
+}
+
+/* Theme overrides for dynamic logo theme */
+body.theme-logo {
+  background: var(--layout-content-bg);
+}
+
+body.theme-logo .soft-card {
+  background: #ffffff;
+  border-color: var(--ui-border) !important;
+}
+
+body.theme-logo .soft-card .card-header {
+  background: linear-gradient(180deg, #ffffff 0%, var(--ui-surface-soft) 100%) !important;
+  border-bottom-color: var(--ui-border) !important;
+  color: var(--ui-primary-strong) !important;
+}
+
+/* Stepper Component (Scheduler Wizard & Connector Wizard & Migration Wizard) */
+.connector-wizard-steps.migration-wizard-steps-line,
+.migration-wizard-steps-line {
+  background: var(--ui-surface-soft) !important;
+  padding: 5px !important;
+  border: 1px solid var(--ui-border) !important;
+  border-radius: 8px !important;
+  gap: 5px !important;
+  margin-bottom: 1.5rem !important;
+}
+
+.connector-wizard-steps .connector-wizard-step,
+.migration-wizard-step {
+  border-radius: 6px !important;
+  clip-path: none !important; /* Removes legacy arrow shapes */
+  font-weight: 600 !important;
+  padding: 0.6rem 1rem !important;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  background: transparent !important;
+  color: var(--ui-text-muted) !important;
+  border: 1px solid transparent !important;
+  height: auto !important;
+  min-height: 0 !important;
+}
+
+.connector-wizard-steps .connector-wizard-step.is-active,
+.migration-wizard-step.is-active {
+  background: var(--ui-primary) !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  border-color: var(--ui-primary) !important;
+  box-shadow: 0 4px 10px rgba(0, 106, 168, 0.15) !important;
+}
+
+.connector-wizard-steps .connector-wizard-step.is-complete,
+.migration-wizard-step.is-complete {
+  background: rgba(46, 132, 74, 0.08) !important;
+  color: #2e844a !important;
+  border-color: rgba(46, 132, 74, 0.15) !important;
+}
+
+.connector-wizard-step-index,
+.migration-wizard-step-index {
+  border-radius: 50% !important;
+  width: 1.4rem !important;
+  height: 1.4rem !important;
+  font-size: 0.75rem !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+/* Connector visual selection cards grid */
+.connector-type-cards-grid {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)) !important;
+  gap: 12px !important;
+  margin-top: 8px !important;
+}
+
+.connector-type-card {
+  background: var(--ui-surface) !important;
+  border: 1px solid var(--ui-border) !important;
+  border-radius: 10px !important;
+  padding: 14px !important;
+  cursor: pointer !important;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  gap: 6px !important;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02) !important;
+}
+
+.connector-type-card:hover {
+  border-color: var(--ui-primary) !important;
+  transform: translateY(-2px) !important;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06) !important;
+}
+
+.connector-type-card.is-selected {
+  border-color: var(--ui-primary) !important;
+  background: var(--ui-surface-soft) !important;
+  box-shadow: 0 0 0 3px rgba(0, 106, 168, 0.15) !important;
+}
+
+body.theme-midnight .connector-type-card {
+  background: #142031 !important;
+  border-color: #2a374b !important;
+  color: #d7e4f5 !important;
+}
+
+body.theme-midnight .connector-type-card:hover {
+  border-color: var(--ui-primary) !important;
+}
+
+body.theme-midnight .connector-type-card.is-selected {
+  background: #1a2638 !important;
+}
+
+.connector-type-card-icon {
+  font-size: 1.8rem !important;
+  line-height: 1 !important;
+  margin-bottom: 2px !important;
+}
+
+.connector-type-card-title {
+  font-weight: 700 !important;
+  font-size: 0.95rem !important;
+  color: var(--ui-text) !important;
+}
+
+.connector-type-card-desc {
+  font-size: 0.75rem !important;
+  color: var(--ui-text-muted) !important;
+  line-height: 1.3 !important;
+}
+
+/* Migration Upload Dropzone UI */
+.migration-dropzone {
+  border: 2px dashed var(--ui-border-strong) !important;
+  background: var(--ui-surface-soft) !important;
+  border-radius: 12px !important;
+  padding: 2.2rem !important;
+  text-align: center !important;
+  transition: all 0.2s ease !important;
+  cursor: pointer !important;
+}
+
+.migration-dropzone:hover,
+.migration-dropzone.dragover {
+  border-color: var(--ui-primary) !important;
+  background: rgba(0, 106, 168, 0.04) !important;
+}
+
+body.theme-midnight .migration-dropzone {
+  background: #111a27 !important;
+  border-color: #31415a !important;
+}
+
+body.theme-midnight .migration-dropzone:hover {
+  background: #152033 !important;
+  border-color: var(--ui-primary) !important;
+}
+
+/* AI Scheduler Assistant Panel styling */
+#ai-scheduler-container .card.bg-gradient-primary {
+  background: linear-gradient(135deg, var(--ui-primary, #006aa8) 0%, var(--ui-primary-strong, #032d60) 100%) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 6px 20px rgba(0, 106, 168, 0.15) !important;
+}
+
+.ai-icon {
+  animation: pulse-ai 2s infinite cubic-bezier(0.4, 0, 0.6, 1) !important;
+}
+
+@keyframes pulse-ai {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.1);
+    opacity: 1;
+    text-shadow: 0 0 12px rgba(255, 255, 255, 0.6);
+  }
+}
+
+.ai-prompt-textarea {
+  border-radius: 8px !important;
+  border: 1px solid var(--ui-border) !important;
+  padding: 0.7rem !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.ai-prompt-textarea:focus {
+  border-color: var(--ui-primary) !important;
+  box-shadow: 0 0 0 3px rgba(0, 106, 168, 0.15) !important;
+  outline: none !important;
+}
+
+/* Visual chips for example prompt triggers */
+.ai-example-btn {
+  border-radius: 8px !important;
+  border: 1px solid var(--ui-border) !important;
+  background: #ffffff !important;
+  color: var(--ui-text) !important;
+  transition: all 0.2s ease !important;
+  font-weight: 500 !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02) !important;
+}
+
+.ai-example-btn:hover {
+  border-color: var(--ui-primary) !important;
+  background: var(--ui-surface-soft) !important;
+  color: var(--ui-primary-strong) !important;
+}
+
+body.theme-midnight .ai-example-btn {
+  background: #1a2638 !important;
+  border-color: #31415a !important;
+  color: #d7e4f5 !important;
+}
+
+body.theme-midnight .ai-example-btn:hover {
+  background: #20314a !important;
+  border-color: var(--ui-primary) !important;
+  color: #ffffff !important;
+}
+
+/* Default variables for HSL theme system */
+:root {
+  --ui-primary: #006aa8;
+  --ui-primary-strong: #032d60;
+  --ui-accent: #0176d3;
+  --ui-surface: #ffffff;
+  --ui-surface-soft: #f2f5fa;
+  --ui-border: #d6dde6;
+  --ui-border-strong: #aeb9c6;
 }

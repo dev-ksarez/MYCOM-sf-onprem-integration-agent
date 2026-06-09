@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 
-export const UI_ASSET_VERSION = "20260522-geraeteakte-files";
+export const UI_ASSET_VERSION = "20260609-redesign-branding";
 
 const INLINE_ASSET_FALLBACKS: Record<string, string> = {
   "/assets/login.js": `(function () {
@@ -142,7 +142,69 @@ export function registerStaticAsset(routePath: string, asset: StaticAsset): void
   STATIC_ASSETS[routePath] = asset;
 }
 
-export async function serveStaticAsset(pathname: string, res: http.ServerResponse): Promise<boolean> {
+export async function serveStaticAsset(pathname: string, res: http.ServerResponse, req?: http.IncomingMessage): Promise<boolean> {
+  if (pathname === "/assets/custom-logo") {
+    const requestUrl = new URL(req?.url || "/", "http://localhost");
+    const projectId = String(requestUrl.searchParams.get("projectId") || "").trim() || "default-project";
+    const pngPath = path.resolve(process.cwd(), `data/custom-logo-${projectId}.png`);
+    const svgPath = path.resolve(process.cwd(), `data/custom-logo-${projectId}.svg`);
+    const defaultPngPath = path.resolve(process.cwd(), "data/custom-logo-default-project.png");
+    const defaultSvgPath = path.resolve(process.cwd(), "data/custom-logo-default-project.svg");
+    try {
+      const file = await fs.readFile(pngPath);
+      res.writeHead(200, {
+        "Content-Type": "image/png",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        Pragma: "no-cache",
+        Expires: "0"
+      });
+      res.end(file);
+      return true;
+    } catch {
+      try {
+        const file = await fs.readFile(svgPath);
+        res.writeHead(200, {
+          "Content-Type": "image/svg+xml",
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          Pragma: "no-cache",
+          Expires: "0"
+        });
+        res.end(file);
+        return true;
+      } catch {
+        try {
+          const file = await fs.readFile(defaultPngPath);
+          res.writeHead(200, {
+            "Content-Type": "image/png",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            Pragma: "no-cache",
+            Expires: "0"
+          });
+          res.end(file);
+          return true;
+        } catch {
+          try {
+            const file = await fs.readFile(defaultSvgPath);
+            res.writeHead(200, {
+              "Content-Type": "image/svg+xml",
+              "Cache-Control": "no-cache, no-store, must-revalidate",
+              Pragma: "no-cache",
+              Expires: "0"
+            });
+            res.end(file);
+            return true;
+          } catch {
+            res.writeHead(302, {
+              Location: "https://www.mycom-net.com/wp-content/uploads/MyCom_Logo.svg"
+            });
+            res.end();
+            return true;
+          }
+        }
+      }
+    }
+  }
+
   const asset = STATIC_ASSETS[pathname];
   if (!asset) {
     return false;
