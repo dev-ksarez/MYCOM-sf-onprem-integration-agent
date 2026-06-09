@@ -26,6 +26,7 @@ import {
   appendSetCookie,
   authenticateLocalAdminUser,
   buildAdminSalesforceOidcRedirectUri,
+  buildRequestOrigin,
   buildSalesforceLoginAuthorizationUrl,
   buildCsrfCookie,
   buildExpiredSessionCookie,
@@ -3429,7 +3430,7 @@ ${renderAISchedulerAssistantModule()}
                     <div class="col-md-3"><label class="form-label">HTTP Method</label><select id="con-rest-method" class="form-select"><option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option></select><div class="form-text">Standardmethode für REST-Vorschau; Endpoint-Methoden werden im Scheduler gesetzt.</div></div>
                     <div class="col-md-3 d-none" id="con-rest-basic-user-wrap"><label class="form-label">Basic User</label><input id="con-rest-basic-user" class="form-control" /></div>
                     <div class="col-md-3 d-none" id="con-rest-basic-password-wrap"><label class="form-label">Basic Passwort</label><input id="con-rest-basic-password" type="password" class="form-control" autocomplete="new-password" /></div>
-                    <div class="col-md-3 d-none" id="con-rest-bearer-token-wrap"><label class="form-label">Bearer Token</label><input id="con-rest-bearer-token" type="password" class="form-control" autocomplete="new-password" /></div>
+                    <div class="col-md-3 d-none" id="con-rest-bearer-token-wrap"><label class="form-label">Bearer Token</label><div class="input-group"><input id="con-rest-bearer-token" type="password" class="form-control" autocomplete="new-password" /><button id="con-rest-generate-bearer-token" class="btn btn-outline-secondary" type="button">Generieren</button></div></div>
                     <div class="col-md-3 d-none" id="con-rest-api-key-name-wrap"><label class="form-label">API Key Name</label><input id="con-rest-api-key-name" class="form-control" placeholder="x-api-key" /></div>
                     <div class="col-md-3 d-none" id="con-rest-api-key-value-wrap"><label class="form-label">API Key Wert</label><input id="con-rest-api-key-value" type="password" class="form-control" autocomplete="new-password" /></div>
                     <div class="col-md-3 d-none" id="con-rest-api-key-location-wrap"><label class="form-label">API Key Ort</label><select id="con-rest-api-key-location" class="form-select"><option value="header">Header</option><option value="query">Query</option></select></div>
@@ -5696,7 +5697,7 @@ export function createAppServer(
 
       if (connectorPostmanCollectionMatch) {
         const connectorId = decodeURIComponent(connectorPostmanCollectionMatch[1]);
-        const result = await adminDataService.buildEndpointConnectorPostmanCollection(connectorId, instanceId);
+        const result = await adminDataService.buildEndpointConnectorPostmanCollection(connectorId, instanceId, buildRequestOrigin(req));
         sendJson(200, result);
         return;
       }

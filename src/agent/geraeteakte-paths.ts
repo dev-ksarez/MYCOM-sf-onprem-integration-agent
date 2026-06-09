@@ -43,9 +43,63 @@ export function normalizeGeraeteakteDirectoryLayout(value: unknown): Geraeteakte
   return "direct";
 }
 
+export function normalizeGeraeteaktePathText(value: unknown): string {
+  return String(value || "").trim().normalize("NFC");
+}
+
+function findUnicodeEquivalentEntry(parentPath: string, segment: string): string | null {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(parentPath, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  const normalizedSegment = segment.normalize("NFC");
+  const exact = entries.find((entry) => entry.name.normalize("NFC") === normalizedSegment);
+  if (exact) {
+    return exact.name;
+  }
+
+  const lowerSegment = normalizedSegment.toLocaleLowerCase();
+  return entries.find((entry) => entry.name.normalize("NFC").toLocaleLowerCase() === lowerSegment)?.name || null;
+}
+
+export function resolveExistingPathWithUnicodeFallback(candidatePath: string): string {
+  const normalizedCandidate = normalizeGeraeteaktePathText(candidatePath);
+  const absoluteCandidate = path.resolve(normalizedCandidate);
+  if (fs.existsSync(absoluteCandidate)) {
+    return absoluteCandidate;
+  }
+
+  const parsed = path.parse(absoluteCandidate);
+  const root = parsed.root || path.sep;
+  if (!fs.existsSync(root)) {
+    return absoluteCandidate;
+  }
+
+  const segments = path.relative(root, absoluteCandidate).split(path.sep).filter(Boolean);
+  let current = root;
+  for (const segment of segments) {
+    const direct = path.join(current, segment);
+    if (fs.existsSync(direct)) {
+      current = direct;
+      continue;
+    }
+
+    const equivalentEntry = findUnicodeEquivalentEntry(current, segment);
+    if (!equivalentEntry) {
+      return absoluteCandidate;
+    }
+    current = path.join(current, equivalentEntry);
+  }
+
+  return current;
+}
+
 export function resolveGeraeteaktePathConfig(parameters?: Record<string, unknown>, fallbackBasePath?: string): GeraeteaktePathConfig | null {
   const params = parameters || {};
-  const basePath = String(
+  const basePath = normalizeGeraeteaktePathText(
     params.basePath ||
     params.fileBasePath ||
     params.rootPath ||
@@ -109,8 +163,8 @@ function buildAnnaburgBucketName(directoryName: string): string {
 }
 
 function assertInsideBase(candidatePath: string, basePath: string): string {
-  const resolvedCandidate = path.resolve(candidatePath);
-  const resolvedBase = path.resolve(basePath);
+  const resolvedCandidate = resolveExistingPathWithUnicodeFallback(candidatePath);
+  const resolvedBase = resolveExistingPathWithUnicodeFallback(basePath);
   const relative = path.relative(resolvedBase, resolvedCandidate);
   if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
     return resolvedCandidate;
@@ -123,7 +177,7 @@ export function resolveGeraeteakteSerialDirectory(
   rawSerial: string,
   layout: GeraeteakteDirectoryLayout = getGeraeteakteDirectoryLayout()
 ): GeraeteakteSerialDirectory {
-  const serial = String(rawSerial || "").trim();
+  const serial = normalizeGeraeteaktePathText(rawSerial);
   if (!isSafeGeraeteaktePathSegment(serial)) {
     throw new Error("Ungueltige Seriennummer");
   }
@@ -154,7 +208,7 @@ export function listGeraeteakteSerialDirectories(
   basePath: string,
   layout: GeraeteakteDirectoryLayout = getGeraeteakteDirectoryLayout()
 ): GeraeteakteSerialDirectory[] {
-  const root = path.resolve(basePath);
+  const root = resolveExistingPathWithUnicodeFallback(basePath);
   if (!fs.existsSync(root)) {
     return [];
   }

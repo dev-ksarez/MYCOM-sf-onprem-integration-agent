@@ -346,7 +346,7 @@ function updateRestAuthUi() {
   const authSelect = document.getElementById('con-rest-auth-type');
   if (authSelect) {
     const allowed = isEndpoint
-      ? [['oauth2', 'OAuth2 / Bearer'], ['none', 'Keine (nur Test)']]
+      ? [['bearer', 'Bearer Token'], ['oauth2', 'OAuth2 / Introspection'], ['none', 'Keine (nur Test)']]
       : [['none', 'Keine'], ['basic', 'Basic Auth'], ['bearer', 'Bearer Token'], ['api_key', 'API Key'], ['oauth2', 'OAuth2']];
     const current = allowed.some((item) => item[0] === authSelect.value) ? authSelect.value : allowed[0][0];
     authSelect.innerHTML = allowed.map((item) => '<option value="' + esc(item[0]) + '">' + esc(item[1]) + '</option>').join('');
@@ -370,7 +370,7 @@ function updateRestAuthUi() {
     ? 'Root-Pfad im Agenten, z. B. /api/inbound/orders. Scheduler-Pfade liegen darunter.'
     : 'Pfad relativ zur Base URL, z. B. /v1/items.');
   setText('con-rest-auth-help', isEndpoint
-    ? 'OAuth2/Bearer erwartet ein Token; der Secret Key kann auf eine ENV-Variable fuer das Testtoken zeigen.'
+    ? 'Bearer Token wird direkt im Connector gespeichert. OAuth2 kann alternativ eine Introspection-URL nutzen.'
     : 'Wählen Sie nur den tatsächlich benötigten Authentifizierungsmodus.');
 
   toggle('con-rest-basic-user-wrap', authType === 'basic');
@@ -429,7 +429,7 @@ function applyConnectorWizardSelection(preserveValues) {
         document.getElementById('con-direction').value = 'Inbound';
       }
       if (!document.getElementById('con-rest-auth-type').value || document.getElementById('con-rest-auth-type').value === 'none') {
-        document.getElementById('con-rest-auth-type').value = 'oauth2';
+        document.getElementById('con-rest-auth-type').value = 'bearer';
       }
     }
     if (wizardType === 'FILEMAKER') {
@@ -660,6 +660,36 @@ function mergeRestConnectorSettingsIntoParameters(parameters) {
     delete merged.extraHeaders;
   }
   return merged;
+}
+
+function generateBearerTokenValue() {
+  const bytes = new Uint8Array(32);
+  if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+    window.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  let binary = '';
+  bytes.forEach((value) => {
+    binary += String.fromCharCode(value);
+  });
+  return window.btoa(binary)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function generateConnectorBearerToken() {
+  const input = document.getElementById('con-rest-bearer-token');
+  if (!input) {
+    return;
+  }
+  input.value = generateBearerTokenValue();
+  input.type = 'text';
+  input.focus();
+  input.select();
 }
 
 function fillBinaryImportConnectorSettingsFromParameters(parameters) {

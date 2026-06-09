@@ -986,6 +986,32 @@ function drawGraph(graph) {
     '</marker>' +
   '</defs>';
 
+  const edgePositionByKey = new Map();
+  const edgesBySource = new Map();
+  edges.forEach((edge) => {
+    const sourceKey = String(edge.from || '');
+    if (!sourceKey) return;
+    if (!edgesBySource.has(sourceKey)) {
+      edgesBySource.set(sourceKey, []);
+    }
+    edgesBySource.get(sourceKey).push(edge);
+  });
+  edgesBySource.forEach((sourceEdges) => {
+    sourceEdges
+      .slice()
+      .sort((left, right) => {
+        const leftTarget = nodeMap.get(left.to);
+        const rightTarget = nodeMap.get(right.to);
+        return (Number(leftTarget?.x) || 0) - (Number(rightTarget?.x) || 0);
+      })
+      .forEach((edge, index, sortedEdges) => {
+        edgePositionByKey.set(String(edge.from || '') + '>' + String(edge.to || ''), {
+          index,
+          count: sortedEdges.length
+        });
+      });
+  });
+
   const edgeMarkup = edges.map((edge) => {
     const from = nodeMap.get(edge.from);
     const to = nodeMap.get(edge.to);
@@ -996,14 +1022,18 @@ function drawGraph(graph) {
     const isOutbound = normalizedDirection === 'outbound';
     const edgeColor = isInbound ? '#2276d2' : isOutbound ? '#2e9b4d' : '#7f8b95';
     const markerId = isInbound ? 'arrowInbound' : isOutbound ? 'arrowOutbound' : 'arrowGeneric';
-    // Top-down layout: from bottom-center of source to top-center of target
-    const startX = Number(from.x) + nodeWidth / 2;
+    const edgePosition = edgePositionByKey.get(String(edge.from || '') + '>' + String(edge.to || '')) || { index: 0, count: 1 };
+    const fanStep = Math.min(48, Math.max(26, nodeWidth / Math.max(5, edgePosition.count + 2)));
+    const fanOffset = (edgePosition.index - (edgePosition.count - 1) / 2) * fanStep;
+    const startX = Number(from.x) + nodeWidth / 2 + fanOffset;
     const startY = Number(from.y) + nodeHeight;
     const endX = Number(to.x) + nodeWidth / 2;
-    const endY = Number(to.y) - 14;
-    const controlOffset = Math.max(40, Math.abs(endY - startY) / 2);
+    const endY = Number(to.y) + 2;
+    const stemY = startY + 20;
+    const controlOffset = Math.max(34, Math.abs(endY - stemY) * 0.48);
     const pathData = 'M ' + startX + ' ' + startY +
-      ' C ' + startX + ' ' + (startY + controlOffset) + ', ' + endX + ' ' + (endY - controlOffset) + ', ' + endX + ' ' + endY;
+      ' L ' + startX + ' ' + stemY +
+      ' C ' + startX + ' ' + (stemY + controlOffset) + ', ' + endX + ' ' + (endY - controlOffset) + ', ' + endX + ' ' + endY;
     const fromStatus = from.kind === 'scheduler' ? getScheduleGraphStatus(from.refId).key : '';
     const toStatus = to.kind === 'scheduler' ? getScheduleGraphStatus(to.refId).key : '';
     const edgeClasses = ['graph-edge'];
@@ -1014,7 +1044,7 @@ function drawGraph(graph) {
       edgeClasses.push('graph-edge-failed');
     }
 
-    return '<path class="' + edgeClasses.join(' ') + '" style="stroke:' + edgeColor + ';stroke-width:2.5;fill:none;opacity:0.9;stroke-linecap:round;stroke-linejoin:round" marker-end="url(#' + markerId + ')" d="' + pathData + '" />';
+    return '<path class="' + edgeClasses.join(' ') + '" style="stroke:' + edgeColor + ';stroke-width:2.8;fill:none;opacity:0.92;stroke-linecap:round;stroke-linejoin:round" marker-end="url(#' + markerId + ')" d="' + pathData + '" />';
   }).join('');
 
   const nodeMarkup = nodes.map((node) => {

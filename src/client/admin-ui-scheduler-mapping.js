@@ -3315,12 +3315,60 @@ function updateScheduleTypeUi() {
   const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
   const isFileSource = isFileScheduleSourceType(sourceType);
   const isFileTarget = isFileScheduleTargetType(targetType);
+  const isEndpointSource = sourceType === 'ENDPOINT';
   const isSalesforceTarget = targetType === 'SALESFORCE' || targetType === 'SALESFORCE_GLOBAL_PICKLIST';
   const isMssqlTarget = targetType === 'MSSQL' || targetType === 'MSSQL_SQL';
+  const setText = (id, text) => {
+    const element = document.getElementById(id);
+    if (element) {
+      element.textContent = text;
+    }
+  };
 
   setClosestFieldVisible('sch-object', !isFileTarget);
   setClosestFieldVisible('sch-operation', !isFileTarget);
   setClosestFieldVisible('sch-target-system', !isFileTarget || isSalesforceTarget || isMssqlTarget);
+  setClosestFieldVisible('sch-next-run', !isEndpointSource);
+  setClosestFieldVisible('sch-last-run', true);
+  setClosestFieldVisible('sch-source-delta-strategy', !isEndpointSource && (sourceType === 'MSSQL_SQL' || sourceType === 'FILEMAKER_SQL' || sourceType === 'SALESFORCE_SOQL'));
+  setClosestFieldVisible('sch-source-delta-field', !isEndpointSource && (sourceType === 'MSSQL_SQL' || sourceType === 'FILEMAKER_SQL' || sourceType === 'SALESFORCE_SOQL'));
+  setClosestFieldVisible('sch-source-delta-current', !isEndpointSource && (sourceType === 'MSSQL_SQL' || sourceType === 'FILEMAKER_SQL' || sourceType === 'SALESFORCE_SOQL'));
+  setClosestFieldVisible('sch-source-delta-record-id', !isEndpointSource && (sourceType === 'MSSQL_SQL' || sourceType === 'FILEMAKER_SQL' || sourceType === 'SALESFORCE_SOQL'));
+
+  const sourceProfiles = {
+    SALESFORCE_SOQL: 'Salesforce SOQL: SELECT-Abfrage auf Salesforce. Delta und After-Export-Updates koennen verwendet werden.',
+    MSSQL_SQL: 'MSSQL SQL: SELECT-Abfrage gegen den SQL-Connector. Der Button Quelle testen prueft Verbindung und liefert Beispielzeilen.',
+    FILEMAKER_SQL: 'FileMaker SQL: Abfrage gegen FileMaker Data API. Der Quelltest prueft API und Abfrage.',
+    REST_API: 'REST API: Request-Konfiguration fuer ausgehende REST-Quellen. Der Quelltest prueft den REST-Aufruf.',
+    ENDPOINT: 'Endpoint: Der Agent nimmt Requests entgegen. Methode, Pfad, Body-Modus und Pflichtfelder stehen in der JSON Source Definition; Vorschau ist erst mit echtem HTTP-Request moeglich.',
+    FILE_CSV: 'Datei CSV: Quelle liest Dateien aus dem Connector-Importpfad. Pfade werden relativ zum Connector gepflegt.',
+    FILE_EXCEL: 'Datei Excel: Quelle liest Arbeitsmappen aus dem Connector-Importpfad. Pfade werden relativ zum Connector gepflegt.',
+    FILE_JSON: 'Datei JSON: Quelle liest JSON-Dateien aus dem Connector-Importpfad. Pfade werden relativ zum Connector gepflegt.'
+  };
+  const targetProfiles = {
+    SALESFORCE: 'Salesforce: Objekt, Operation und Upsert-Feld werden als Picklists gefuehrt. Konfiguration pruefen validiert Mapping und Zieldefinition.',
+    SALESFORCE_GLOBAL_PICKLIST: 'Salesforce Global Picklist: Ziel ist ein Global Value Set; Mapping liefert API Name und Label.',
+    MSSQL: 'MSSQL: Ziel schreibt in eine SQL-Tabelle. Zieldefinition beschreibt Tabelle und Write-Modus.',
+    FILE_CSV: 'Datei CSV: Ziel schreibt eine CSV-Datei. Dateioptionen und Spaltenreihenfolge kommen aus Mapping und Zieloptionen.',
+    FILE_EXCEL: 'Datei Excel: Ziel schreibt eine Arbeitsmappe. Dateioptionen und Sheet-Name sind relevant.',
+    FILE_JSON: 'Datei JSON: Ziel schreibt JSON-Dateien. Mapping bestimmt Feldnamen und Struktur.'
+  };
+  setText('sch-source-type-profile', sourceProfiles[sourceType] || 'Bitte Source Type wählen. Der Connector grenzt die sinnvollen Typen bereits ein.');
+  setText('sch-target-type-profile', targetProfiles[targetType] || 'Bitte Target Type wählen. Salesforce-Ziele verwenden Objekt- und Upsert-Picklists.');
+
+  const sourceTestButton = document.getElementById('sch-test-source');
+  const validateButton = document.getElementById('sch-validate-config');
+  const sourceStatus = document.getElementById('sch-source-test-status');
+  if (sourceTestButton) {
+    sourceTestButton.classList.toggle('d-none', isEndpointSource);
+    sourceTestButton.textContent = isFileSource ? 'Dateipfad testen' : 'Quelle testen';
+  }
+  if (validateButton) {
+    validateButton.textContent = isEndpointSource ? 'Endpoint-Konfiguration prüfen' : 'Konfiguration prüfen';
+  }
+  if (sourceStatus && isEndpointSource) {
+    sourceStatus.textContent = 'Endpoint-Quellen werden ueber HTTP-Requests getestet; hier wird nur die Struktur validiert.';
+  }
 
   const mappingManager = document.getElementById('sch-mapping-manager');
   const mappingManagerWrap = mappingManager?.closest('.col-md-12');

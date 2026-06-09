@@ -50,7 +50,7 @@ import { parseEndpointSourceDefinition, type EndpointSourceDefinition } from "..
 import { LocalScheduleHealthRepository, LocalScheduleHealthItem } from "../core/scheduler/local-schedule-health-repository";
 import { AIProviderConfig, normalizeAIProviderConfig, toPublicAIProviderConfig, type AIProviderPublicConfig } from "./ai-provider";
 import { DatabaseMetadata } from "../types/database-metadata";
-import { listGeraeteakteSerialDirectories, resolveGeraeteaktePathConfig, resolveGeraeteakteSerialDirectory } from "../agent/geraeteakte-paths";
+import { listGeraeteakteSerialDirectories, resolveExistingPathWithUnicodeFallback, resolveGeraeteaktePathConfig, resolveGeraeteakteSerialDirectory } from "../agent/geraeteakte-paths";
 
 export interface SalesforceInstanceEnvConfig {
   id: string;
@@ -4449,7 +4449,8 @@ export class AdminDataService {
 
   public async buildEndpointConnectorPostmanCollection(
     connectorId: string,
-    instanceId?: string
+    instanceId?: string,
+    requestBaseUrl?: string
   ): Promise<ConnectorPostmanCollectionResult> {
     const client = await this.createClient(instanceId);
     const connector = await client.queryConnector(connectorId);
@@ -4470,7 +4471,12 @@ export class AdminDataService {
       || connector.parameters.resourcePath
       || connector.parameters.path
     );
-    const defaultBaseUrl = this.normalizePostmanBaseUrl(connector.parameters.publicBaseUrl || connector.parameters.externalBaseUrl);
+    const defaultBaseUrl = this.normalizePostmanBaseUrl(
+      connector.parameters.publicBaseUrl
+      || connector.parameters.externalBaseUrl
+      || connector.parameters.baseUrl
+      || requestBaseUrl
+    );
     const safeName = this.slugifyFileName(connector.name || connector.id || "endpoint-connector");
 
     return {
@@ -4593,7 +4599,6 @@ export class AdminDataService {
     try {
       const definition = parseEndpointSourceDefinition(schedule.sourceDefinition || "");
       const fullPath = this.joinEndpointPath(rootPath, definition.path);
-      const rawUrl = this.joinUrl(baseUrl || "{{baseUrl}}", fullPath);
       const query = definition.queryFields.map((field) => ({
         key: field,
         value: `{{${field}}}`,
@@ -4617,8 +4622,7 @@ export class AdminDataService {
             bearer: [{ key: "token", value: "{{bearerToken}}", type: "string" }]
           },
           url: {
-            raw: query.length ? `${rawUrl}?${query.map((item) => `${item.key}=${item.value}`).join("&")}` : rawUrl,
-            query
+            ...this.buildPostmanUrl(baseUrl || "{{baseUrl}}", fullPath, query)
           },
           body: this.buildEndpointPostmanBody(definition)
         },
@@ -4644,7 +4648,7 @@ export class AdminDataService {
         request: {
           method: "POST",
           header: [{ key: "Content-Type", value: "application/json" }],
-          url: { raw: this.joinUrl(baseUrl || "{{baseUrl}}", rootPath || "/") },
+          url: this.buildPostmanUrl(baseUrl || "{{baseUrl}}", rootPath || "/", []),
           body: {
             mode: "raw",
             raw: JSON.stringify({ error: error instanceof Error ? error.message : String(error) }, null, 2),
@@ -4655,6 +4659,27 @@ export class AdminDataService {
         response: []
       };
     }
+  }
+
+  private buildPostmanUrl(
+    baseUrl: string,
+    pathValue: string,
+    query: Array<{ key: string; value: string; disabled: boolean }>
+  ): Record<string, unknown> {
+    const rawUrl = this.joinUrl(baseUrl || "{{baseUrl}}", pathValue);
+    const pathSegments = String(pathValue || "/")
+      .trim()
+      .replace(/^\/+/, "")
+      .split("/")
+      .filter(Boolean);
+    const queryString = query.map((item) => `${item.key}=${item.value}`).join("&");
+
+    return {
+      raw: queryString ? `${rawUrl}?${queryString}` : rawUrl,
+      host: [String(baseUrl || "{{baseUrl}}").trim().replace(/\/+$/, "") || "{{baseUrl}}"],
+      path: pathSegments,
+      query
+    };
   }
 
   private buildEndpointPostmanBody(definition: EndpointSourceDefinition): Record<string, unknown> | undefined {
@@ -5007,21 +5032,39 @@ export class AdminDataService {
       ]);
     }
 
-    const root = path.resolve(pathConfig.basePath);
+    const configuredRoot = path.resolve(pathConfig.basePath);
+    const root = resolveExistingPathWithUnicodeFallback(pathConfig.basePath);
+    const isWindowsMappedDrivePath = /^[A-Za-z]:[\\/]/.test(String(pathConfig.basePath || ""));
     try {
       fs.accessSync(root, fs.constants.R_OK);
       checks.push({
         label: "Basisverzeichnis lesbar",
         ok: true,
-        details: root
+        details: root === configuredRoot
+          ? root
+          : `${root} (konfiguriert: ${configuredRoot})`
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Basisverzeichnis ist nicht lesbar";
       checks.push({
         label: "Basisverzeichnis lesbar",
         ok: false,
-        details: `${root} (${message})`
+        details: `${configuredRoot} (${message})`
       });
+      if (isWindowsMappedDrivePath) {
+        checks.push({
+          label: "Windows-Dienst / Laufwerk",
+          ok: false,
+          details: "Der Pfad nutzt ein gemapptes Laufwerk. Windows-Dienste sehen H: haeufig nicht; wenn moeglich UNC-Pfad verwenden, z. B. \\\\server\\share\\130_Produktion\\Fertigung\\Geräteakte."
+        });
+      }
+      if (root !== configuredRoot) {
+        checks.push({
+          label: "Unicode-Pfadnormalisierung",
+          ok: true,
+          details: `Alternativer Unicode-Pfad wurde versucht: ${root}`
+        });
+      }
       return this.buildConnectorTestResult(config, checks);
     }
 
@@ -6708,13 +6751,16 @@ export class AdminDataService {
     const resolvedInstance = this.resolveInstance(instanceId);
     const client = await this.createClient(resolvedInstance.id);
     const sanitizedParameters = { ...(input.parameters || {}) };
+    const normalizedConnectorType = String(input.connectorType || "").trim().toUpperCase();
     if (String(input.secretKey || "").trim()) {
       delete sanitizedParameters.password;
-      delete sanitizedParameters.bearerToken;
+      if (normalizedConnectorType !== "AGENT_ENDPOINT" || !String(sanitizedParameters.bearerToken || "").trim()) {
+        delete sanitizedParameters.bearerToken;
+      }
       delete sanitizedParameters.apiKeyValue;
       delete sanitizedParameters.clientSecret;
     }
-    if (String(input.connectorType || "").trim().toUpperCase() === "MSSQL") {
+    if (normalizedConnectorType === "MSSQL") {
       if (sanitizedParameters.encrypt === undefined) {
         sanitizedParameters.encrypt = true;
       }

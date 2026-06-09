@@ -214,8 +214,23 @@ async function openProjectManagement() {
     restoreLogChartRange();
     restoreOverviewStatsRange();
     restoreHeaderContext();
+
+    // Set project-specific logo on page load
+    const sidebarLogoImg = document.getElementById('agent-sidebar-logo-img');
+    if (sidebarLogoImg) {
+      sidebarLogoImg.src = '/assets/custom-logo?projectId=' + (state.headerProjectId || 'default-project') + '&t=' + Date.now();
+    }
     await loadProjects();
     await loadInstances();
+
+    // Re-apply theme of the currently active project
+    const activeProject = (state.projects || []).find((item) => String(item.id || '') === String(state.headerProjectId || ''));
+    const projectTheme = activeProject?.theme || 'corporate';
+    const themeSelect = document.getElementById('theme-select');
+    if (themeSelect) {
+      themeSelect.value = projectTheme;
+    }
+    applyUiTheme(projectTheme);
     await refreshHeaderLayerOptions();
     await refresh();
     updateWeekdayChips();
@@ -408,6 +423,23 @@ bindEventListenerOnce('context-project-select', 'change', async (event) => {
     instanceSelect.value = nextInstanceId || '';
   }
   syncHeaderContextFromSelectedInstance({ updateFromSelectedInstance: false });
+
+  // Update project-specific logo and dynamic palette
+  const sidebarLogoImg = document.getElementById('agent-sidebar-logo-img');
+  if (sidebarLogoImg) {
+    sidebarLogoImg.src = '/assets/custom-logo?projectId=' + nextProjectId + '&t=' + Date.now();
+  }
+  const selectedProj = (state.projects || []).find((item) => String(item.id || '') === nextProjectId);
+  const nextTheme = selectedProj?.theme || 'corporate';
+  const themeSelect = document.getElementById('theme-select');
+  if (themeSelect) {
+    themeSelect.value = nextTheme;
+  }
+  applyUiTheme(nextTheme);
+  if (window.updateLogoPreviewState) {
+    window.updateLogoPreviewState();
+  }
+
   await refreshHeaderLayerOptions();
   await refresh();
 });
@@ -867,6 +899,7 @@ document.getElementById('save-connector-template').addEventListener('click', asy
 document.getElementById('con-type').addEventListener('input', updateConnectorConfigUi);
 document.getElementById('con-wizard-type').addEventListener('change', () => applyConnectorWizardSelection(false));
 document.getElementById('con-rest-auth-type').addEventListener('change', updateRestAuthUi);
+document.getElementById('con-rest-generate-bearer-token')?.addEventListener('click', generateConnectorBearerToken);
 document.getElementById('load-logs').addEventListener('click', loadLogs);
 document.getElementById('analyze-run-error').addEventListener('click', analyzeCurrentRunError);
 document.getElementById('migration-ai-analyze')?.addEventListener('click', analyzeMigrationSource);
@@ -994,4 +1027,203 @@ document.getElementById('duplicate-reverse-schedule').addEventListener('click', 
 });
 document.getElementById('test-connector').addEventListener('click', saveAndValidateConnector);
 
-// ===== MAPPING FIELD LOADING & PREVIEW =====
+// ===== LOGO UPLOAD & THEME EVENTS =====
+(function initLogoThemeEvents() {
+  const logoUploadBtn = document.getElementById('logo-upload-btn');
+  const logoUploadInput = document.getElementById('logo-upload-input');
+  const logoUploadRemove = document.getElementById('logo-upload-remove');
+  const logoUploadPreviewWrap = document.getElementById('logo-upload-preview-wrap');
+  const logoUploadPreview = document.getElementById('logo-upload-preview');
+  const logoUploadStatus = document.getElementById('logo-upload-status');
+  const themeSelect = document.getElementById('theme-select');
+  const sidebarLogoImg = document.getElementById('agent-sidebar-logo-img');
+
+  if (!logoUploadBtn || !logoUploadInput) return;
+
+  // Render initial preview if theme is logo
+  const updateLogoPreviewState = () => {
+    const projectId = state.editingProjectId;
+    if (!projectId) {
+      if (logoUploadPreviewWrap) logoUploadPreviewWrap.classList.add('d-none');
+      return;
+    }
+    const savedPalette = localStorage.getItem('custom-logo-palette-' + projectId);
+    if (savedPalette) {
+      if (logoUploadPreviewWrap) logoUploadPreviewWrap.classList.remove('d-none');
+      if (logoUploadPreview) logoUploadPreview.src = `/assets/custom-logo?projectId=${projectId}&t=` + Date.now();
+    } else {
+      if (logoUploadPreviewWrap) logoUploadPreviewWrap.classList.add('d-none');
+    }
+  };
+
+  // Expose to window so we can trigger it from project changes
+  window.updateLogoPreviewState = updateLogoPreviewState;
+
+  // Run on load to set preview if needed
+  updateLogoPreviewState();
+
+  // Open file dialog
+  logoUploadBtn.addEventListener('click', () => {
+    logoUploadInput.click();
+  });
+
+  // Handle file select
+  logoUploadInput.addEventListener('change', async () => {
+    const file = logoUploadInput.files?.[0];
+    if (!file) return;
+
+    const projectId = state.editingProjectId;
+    if (!projectId) {
+      if (logoUploadStatus) logoUploadStatus.textContent = 'Fehler: Keine Projekt-ID vorhanden.';
+      return;
+    }
+    if (logoUploadStatus) logoUploadStatus.textContent = 'Lade Logo...';
+    logoUploadBtn.disabled = true;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const dataUrl = e.target.result;
+      const base64Content = dataUrl.split(',')[1];
+
+      try {
+        // 1. Extract colors client-side first
+        if (logoUploadStatus) logoUploadStatus.textContent = 'Analysiere Farben...';
+        const primaryHex = await extractColorsFromLogo(dataUrl);
+        const palette = generateLogoThemePalette(primaryHex);
+
+        // 2. Save palette locally and apply immediately if this is the active project
+        localStorage.setItem('custom-logo-palette-' + projectId, JSON.stringify(palette));
+        
+        if (projectId === state.headerProjectId) {
+          injectLogoThemeStyle(palette);
+          
+          // Force apply theme logo
+          if (themeSelect) {
+            themeSelect.value = 'logo';
+            applyUiTheme('logo');
+          }
+        }
+
+        // 3. Upload to server
+        if (logoUploadStatus) logoUploadStatus.textContent = 'Speichere Logo auf Server...';
+        
+        const response = await fetch('/api/admin/settings/logo', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': document.querySelector('meta[name="sf-agent-csrf-token"]')?.getAttribute('content') || ''
+          },
+          body: JSON.stringify({
+            fileName: file.name,
+            contentBase64: base64Content,
+            projectId: projectId
+          })
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.error || 'Server-Upload fehlgeschlagen');
+        }
+
+        if (logoUploadStatus) logoUploadStatus.textContent = 'Branding erfolgreich angepasst!';
+        
+        // Update sidebar logo if this is the active project
+        if (projectId === state.headerProjectId && sidebarLogoImg) {
+          sidebarLogoImg.src = `/assets/custom-logo?projectId=${projectId}&t=` + Date.now();
+        }
+
+        updateLogoPreviewState();
+      } catch (err) {
+        if (logoUploadStatus) logoUploadStatus.textContent = 'Fehler: ' + err.message;
+        console.error('Logo process failed', err);
+      } finally {
+        logoUploadBtn.disabled = false;
+        logoUploadInput.value = '';
+      }
+    };
+    reader.readAsDataURL(file);
+  });
+
+  // Handle remove logo
+  if (logoUploadRemove) {
+    logoUploadRemove.addEventListener('click', async () => {
+      const confirmed = window.confirm('Benutzerdefiniertes Logo entfernen und Branding zurücksetzen?');
+      if (!confirmed) return;
+
+      const projectId = state.editingProjectId;
+      if (!projectId) return;
+      if (logoUploadStatus) logoUploadStatus.textContent = 'Entferne Logo...';
+      logoUploadRemove.disabled = true;
+
+      try {
+        const response = await fetch('/api/admin/settings/logo?projectId=' + encodeURIComponent(projectId), {
+          method: 'DELETE',
+          headers: {
+            'X-CSRF-Token': document.querySelector('meta[name="sf-agent-csrf-token"]')?.getAttribute('content') || ''
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error('Fehler beim Löschen des Logos');
+        }
+
+        localStorage.removeItem('custom-logo-palette-' + projectId);
+        
+        if (projectId === state.headerProjectId) {
+          const styleEl = document.getElementById('dynamic-logo-theme-style');
+          if (styleEl) styleEl.remove();
+
+          // Fallback to corporate theme
+          if (themeSelect) {
+            themeSelect.value = 'corporate';
+            applyUiTheme('corporate');
+          }
+
+          if (sidebarLogoImg) {
+            sidebarLogoImg.src = `/assets/custom-logo?projectId=${projectId}&t=` + Date.now();
+          }
+        }
+
+        if (logoUploadStatus) logoUploadStatus.textContent = 'Logo erfolgreich entfernt.';
+        updateLogoPreviewState();
+      } catch (err) {
+        if (logoUploadStatus) logoUploadStatus.textContent = 'Fehler: ' + err.message;
+      } finally {
+        logoUploadRemove.disabled = false;
+      }
+    });
+  }
+
+  // Handle Project Wizard theme change
+  const prjThemeSelect = document.getElementById('prj-theme');
+  if (prjThemeSelect) {
+    prjThemeSelect.addEventListener('change', () => {
+      if (window.updateProjectWizardLogoSection) {
+        window.updateProjectWizardLogoSection();
+      }
+    });
+  }
+})();
+
+// ===== CONNECTOR WIZARD TYPE SELECT CARD EVENT =====
+(function initConnectorWizardCards() {
+  document.addEventListener('click', (event) => {
+    const card = event.target.closest('.connector-type-card');
+    if (!card) return;
+    
+    const type = card.getAttribute('data-type');
+    const select = document.getElementById('con-wizard-type');
+    if (select) {
+      select.value = type;
+      select.dispatchEvent(new Event('change'));
+    }
+    
+    // Update active class
+    const container = card.closest('.connector-type-cards-grid');
+    if (container) {
+      container.querySelectorAll('.connector-type-card').forEach((c) => {
+        c.classList.toggle('is-selected', c === card);
+      });
+    }
+  });
+})();

@@ -48,6 +48,56 @@ Erwartung:
 - Failed Records sind leer.
 - Salesforce enthaelt den upserteten Datensatz.
 
+## Connector-Test ueber Postman
+
+Vorbedingung:
+
+- `AGENT_API_TOKEN` ist im Web-Prozess gesetzt.
+
+Postman-Konfiguration:
+
+- Method: `POST`
+- URL: `http://localhost:8080/api/connectors/<connectorId>/test`
+- Authorization: `Bearer Token`
+- Token: Wert aus `AGENT_API_TOKEN`
+- Body: leer
+
+Alternativ per curl:
+
+```bash
+curl -i \
+  -X POST "http://localhost:8080/api/connectors/<connectorId>/test" \
+  -H "Authorization: Bearer ${AGENT_API_TOKEN}"
+```
+
+Erwartung:
+
+- HTTP Status ist `200`, wenn die Connector-Konfiguration valide ist.
+- Der Request benoetigt kein Admin-Cookie und keinen CSRF-Token.
+- Ohne gueltigen Bearer Token bleibt der normale Admin-Schutz aktiv.
+
+## Postman Collection aus Endpoint-Connector exportieren
+
+Vorbedingungen:
+
+- Connector `AGENT_ENDPOINT` ist angelegt.
+- Mindestens ein Scheduler mit `sourceType=ENDPOINT` ist diesem Connector zugeordnet.
+
+Schritte:
+
+1. Web UI oeffnen.
+2. Im Connector-Panel beim Endpoint-Connector `Postman` klicken.
+3. Die heruntergeladene Collection in Postman importieren.
+4. Collection-Variablen `baseUrl` und `bearerToken` setzen.
+
+Erwartung:
+
+- Die Collection enthaelt einen Request pro zugeordnetem Endpoint-Scheduler.
+- Methode, Root-Pfad, Scheduler-Pfad, Query-Felder, Header-Felder und Beispiel-Body stammen aus der Scheduler SourceDefinition.
+- Die Collection-Variable `baseUrl` ist mit `publicBaseUrl`, `externalBaseUrl`, fallbackweise `baseUrl` aus dem Connector oder der aktuellen Web-UI-Origin vorbelegt.
+- Jeder Request enthaelt ein vollstaendiges Postman-URL-Objekt mit `{{baseUrl}}`, Host und Pfad.
+- Bearer Token wird nur als Variable referenziert und nicht exportiert.
+
 ## Auth-Fehler
 
 Request ohne Bearer Token:

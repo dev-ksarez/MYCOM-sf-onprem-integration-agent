@@ -6,7 +6,7 @@ import sharp from "sharp";
 import { triggerDashboardUpdate, getDashboardUpdateStatus } from "../server/dashboard-update-service";
 import { buildSystemHealthSnapshot, HealthSnapshot } from "../server/health-snapshot";
 import { readConfiguredSalesforceInstances, writeConfiguredSalesforceInstances, type SalesforceInstanceEnvConfig } from "../server/admin-data-service";
-import { getActiveGeraeteaktePathConfig, getGeraeteakteDirectoryLayout, isSafeGeraeteaktePathSegment, resolveGeraeteakteSerialDirectory, type GeraeteaktePathConfig } from "./geraeteakte-paths";
+import { getActiveGeraeteaktePathConfig, getGeraeteakteDirectoryLayout, isSafeGeraeteaktePathSegment, resolveExistingPathWithUnicodeFallback, resolveGeraeteakteSerialDirectory, type GeraeteaktePathConfig } from "./geraeteakte-paths";
 
 const failedAuthAttempts = new Map<string, { count: number; resetAt: number }>();
 
@@ -180,8 +180,9 @@ function resolveSafeFilePath(seriennummer: string, relativePath: string): { file
 
   const targetDir = resolveSerialDirectoryOrHttpError(pathConfig, seriennummer).absolutePath;
 
-  const filePath = path.resolve(path.join(targetDir, ...segments));
-  if (!filePath.startsWith(targetDir + path.sep)) {
+  const filePath = resolveExistingPathWithUnicodeFallback(path.join(targetDir, ...segments));
+  const relativeToTarget = path.relative(targetDir, filePath);
+  if (relativeToTarget === "" || relativeToTarget.startsWith("..") || path.isAbsolute(relativeToTarget)) {
     throw new HttpError(400, "Ungueltiger Pfad (Pfad-Traversal)");
   }
 
