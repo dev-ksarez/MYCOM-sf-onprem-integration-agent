@@ -26,7 +26,9 @@ const agentRuntime = createAgentServiceRuntime({
   salesforceControlPlaneEnabled: isEnabled(process.env.AGENT_SALESFORCE_CONTROL_PLANE_ENABLED, true),
   salesforceHealthIntervalMs: Number(process.env.AGENT_HEALTH_PULSE_INTERVAL_MS || 300_000),
   salesforceCommandPollIntervalMs: Number(process.env.AGENT_COMMAND_POLL_INTERVAL_MS || 60_000),
-  geraeteakteIndexEnabled: isEnabled(process.env.FILE_INDEX_PUSH_ENABLED, false),
+  geraeteakteIndexEnabled: process.env.FILE_INDEX_PUSH_ENABLED === undefined
+    ? undefined
+    : isEnabled(process.env.FILE_INDEX_PUSH_ENABLED, false),
   geraeteakteIndexIntervalMs: Number(process.env.FILE_INDEX_PUSH_INTERVAL_MS || 300_000),
   geraeteakteBasePath: process.env.FILE_BROWSE_BASE_PATH
 });

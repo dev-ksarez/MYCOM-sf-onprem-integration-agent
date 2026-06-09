@@ -6,7 +6,7 @@ import sharp from "sharp";
 import { triggerDashboardUpdate, getDashboardUpdateStatus } from "../server/dashboard-update-service";
 import { buildSystemHealthSnapshot, HealthSnapshot } from "../server/health-snapshot";
 import { readConfiguredSalesforceInstances, writeConfiguredSalesforceInstances, type SalesforceInstanceEnvConfig } from "../server/admin-data-service";
-import { isSafeGeraeteaktePathSegment, resolveGeraeteakteSerialDirectory } from "./geraeteakte-paths";
+import { getActiveGeraeteaktePathConfig, getGeraeteakteDirectoryLayout, isSafeGeraeteaktePathSegment, resolveGeraeteakteSerialDirectory, type GeraeteaktePathConfig } from "./geraeteakte-paths";
 
 const failedAuthAttempts = new Map<string, { count: number; resetAt: number }>();
 
@@ -45,6 +45,15 @@ function isValidDownloadToken(token: string, seriennummer: string): boolean {
 
 function getFileBrowseBasePath(): string {
   return String(process.env.FILE_BROWSE_BASE_PATH ?? "").trim();
+}
+
+function getFileBrowsePathConfig(): GeraeteaktePathConfig | null {
+  const activeConfig = getActiveGeraeteaktePathConfig();
+  if (activeConfig) {
+    return activeConfig;
+  }
+  const basePath = getFileBrowseBasePath();
+  return basePath ? { basePath, layout: getGeraeteakteDirectoryLayout() } : null;
 }
 
 // HMAC-signierte Download-URL (Weg 2: kein SF→Agent-Callout nötig).
@@ -108,10 +117,10 @@ function walkDir(dir: string, relPrefix: string, out: { rel: string; abs: string
 function listFilesForSerial(seriennummer: string): { seriennummer: string; files: FileEntry[] } {
   if (!isSafePathSegment(seriennummer)) throw new HttpError(400, "Ungueltige Seriennummer");
 
-  const basePath = getFileBrowseBasePath();
-  if (!basePath) throw new HttpError(500, "FILE_BROWSE_BASE_PATH ist nicht konfiguriert");
+  const pathConfig = getFileBrowsePathConfig();
+  if (!pathConfig) throw new HttpError(500, "FileBrowse-Connector oder FILE_BROWSE_BASE_PATH ist nicht konfiguriert");
 
-  const targetDir = resolveSerialDirectoryOrHttpError(basePath, seriennummer).absolutePath;
+  const targetDir = resolveSerialDirectoryOrHttpError(pathConfig, seriennummer).absolutePath;
 
   if (!fs.existsSync(targetDir)) return { seriennummer, files: [] };
 
@@ -166,10 +175,10 @@ function resolveSafeFilePath(seriennummer: string, relativePath: string): { file
     throw new HttpError(400, "Ungueltige Seriennummer oder Dateiname");
   }
 
-  const basePath = getFileBrowseBasePath();
-  if (!basePath) throw new HttpError(500, "FILE_BROWSE_BASE_PATH ist nicht konfiguriert");
+  const pathConfig = getFileBrowsePathConfig();
+  if (!pathConfig) throw new HttpError(500, "FileBrowse-Connector oder FILE_BROWSE_BASE_PATH ist nicht konfiguriert");
 
-  const targetDir = resolveSerialDirectoryOrHttpError(basePath, seriennummer).absolutePath;
+  const targetDir = resolveSerialDirectoryOrHttpError(pathConfig, seriennummer).absolutePath;
 
   const filePath = path.resolve(path.join(targetDir, ...segments));
   if (!filePath.startsWith(targetDir + path.sep)) {
@@ -183,9 +192,9 @@ function resolveSafeFilePath(seriennummer: string, relativePath: string): { file
   return { filePath, baseName: segments[segments.length - 1] };
 }
 
-function resolveSerialDirectoryOrHttpError(basePath: string, seriennummer: string): { absolutePath: string } {
+function resolveSerialDirectoryOrHttpError(pathConfig: GeraeteaktePathConfig, seriennummer: string): { absolutePath: string } {
   try {
-    return resolveGeraeteakteSerialDirectory(basePath, seriennummer);
+    return resolveGeraeteakteSerialDirectory(pathConfig.basePath, seriennummer, pathConfig.layout);
   } catch (error) {
     throw new HttpError(400, error instanceof Error ? error.message : "Ungueltige Seriennummer");
   }

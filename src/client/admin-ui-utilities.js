@@ -296,7 +296,7 @@ function getMigrationReportUrl(migrationId, asDownload) {
 
 function isFileConnectorType(connectorType) {
   const normalized = String(connectorType || '').toLowerCase();
-  return normalized.includes('file') || normalized.includes('csv') || normalized.includes('excel') || normalized.includes('xlsx') || normalized.includes('json');
+  return normalizeConnectorType(connectorType) === 'FILE' || normalizeConnectorType(connectorType) === 'FILE_BINARY_SF_IMPORT';
 }
 
 function normalizeConnectorType(connectorType) {
@@ -318,6 +318,9 @@ function normalizeConnectorType(connectorType) {
   }
   if (normalized === 'endpoint' || normalized === 'agent_endpoint' || normalized === 'agent endpoint' || normalized === 'webhook') {
     return 'AGENT_ENDPOINT';
+  }
+  if (normalized === 'filebrowse' || normalized === 'file_browse' || normalized === 'file browse' || normalized === 'geraeteakte' || normalized === 'geräteakte') {
+    return 'FILE_BROWSE';
   }
   if (normalized.includes('binary') && normalized.includes('file')) {
     return 'FILE_BINARY_SF_IMPORT';
@@ -346,6 +349,10 @@ function isEndpointConnectorType(connectorType) {
 
 function isBinaryImportConnectorType(connectorType) {
   return normalizeConnectorType(connectorType) === 'FILE_BINARY_SF_IMPORT';
+}
+
+function isFileBrowseConnectorType(connectorType) {
+  return normalizeConnectorType(connectorType) === 'FILE_BROWSE';
 }
 
 function isMssqlConnectorType(connectorType) {
@@ -533,6 +540,16 @@ function applyScheduleSourceFieldPolicy(connectorId) {
   const sourceTypeSelect = document.getElementById('sch-source-type');
   const sourceSystemLabel = document.querySelector('label[for="sch-source-system"]');
   const sourceTypeLabel = document.querySelector('label[for="sch-source-type"]');
+  const restoreAllSourceTypes = () => {
+    const currentSourceType = String(sourceTypeSelect?.value || '').trim();
+    const allSourceTypes = ['SALESFORCE_SOQL', 'MSSQL_SQL', 'FILEMAKER_SQL', 'REST_API', 'ENDPOINT', 'FILE_CSV', 'FILE_EXCEL', 'FILE_JSON'];
+    if (sourceTypeSelect) {
+      sourceTypeSelect.innerHTML = '<option value="">- Wählen -</option>' + allSourceTypes.map((value) => '<option value="' + esc(value) + '">' + esc(value) + '</option>').join('');
+      if (currentSourceType && allSourceTypes.includes(currentSourceType)) {
+        sourceTypeSelect.value = currentSourceType;
+      }
+    }
+  };
 
   if (!sourceSystemSelect || !sourceTypeSelect) {
     return;
@@ -540,6 +557,7 @@ function applyScheduleSourceFieldPolicy(connectorId) {
 
   const connector = (state.connectors || []).find((item) => String(item?.id || '').trim() === String(connectorId || '').trim());
   if (!connector) {
+    restoreAllSourceTypes();
     sourceSystemSelect.disabled = false;
     sourceTypeSelect.disabled = false;
     if (sourceSystemLabel) sourceSystemLabel.innerHTML = sourceSystemLabel.innerHTML.replace(' <small class="text-muted">(vom Connector abgeleitet)</small>', '');
@@ -549,6 +567,23 @@ function applyScheduleSourceFieldPolicy(connectorId) {
 
   const normalizedConnectorType = normalizeConnectorType(connector.connectorType);
   const isFileConnector = normalizedConnectorType === 'FILE' || normalizedConnectorType === 'FILE_BINARY_SF_IMPORT';
+  const sourceTypeOptionsByConnector = {
+    REST_API: ['REST_API'],
+    AGENT_ENDPOINT: ['ENDPOINT'],
+    FILE: ['FILE_CSV', 'FILE_EXCEL', 'FILE_JSON'],
+    FILE_BINARY_SF_IMPORT: ['FILE_CSV', 'FILE_EXCEL', 'FILE_JSON'],
+    FILEMAKER: ['FILEMAKER_SQL'],
+    MSSQL: ['MSSQL_SQL'],
+    POSTGRESQL: ['MSSQL_SQL'],
+    MYSQL: ['MSSQL_SQL']
+  };
+  const allowedSourceTypes = sourceTypeOptionsByConnector[normalizedConnectorType] || [];
+  if (allowedSourceTypes.length) {
+    const currentSourceType = String(sourceTypeSelect.value || '').trim();
+    const selectedValue = allowedSourceTypes.includes(currentSourceType) ? currentSourceType : (inferScheduleSourceTypeFromConnector(connectorId) || allowedSourceTypes[0]);
+    sourceTypeSelect.innerHTML = allowedSourceTypes.map((value) => '<option value="' + esc(value) + '">' + esc(value) + '</option>').join('');
+    sourceTypeSelect.value = selectedValue;
+  }
 
   sourceSystemSelect.disabled = true;
   if (sourceSystemLabel && !sourceSystemLabel.innerHTML.includes('(vom Connector abgeleitet)')) {
@@ -578,7 +613,7 @@ function getConnectorWizardTypeFromConnectorType(connectorType) {
   if (!normalized) {
     return 'MSSQL';
   }
-  if (['MSSQL', 'POSTGRESQL', 'MYSQL', 'FILEMAKER', 'FILE', 'REST_API', 'AGENT_ENDPOINT', 'FILE_BINARY_SF_IMPORT'].includes(normalized)) {
+  if (['MSSQL', 'POSTGRESQL', 'MYSQL', 'FILEMAKER', 'FILE', 'FILE_BROWSE', 'REST_API', 'AGENT_ENDPOINT', 'FILE_BINARY_SF_IMPORT'].includes(normalized)) {
     return normalized;
   }
   return 'CUSTOM';
@@ -1052,6 +1087,7 @@ function getConnectorIcon(connectorType, connectorName) {
   const value = String(connectorType || connectorName || '').toLowerCase();
   if (value.includes('salesforce')) return '☁';
   if (value.includes('filemaker')) return '▦';
+  if (value.includes('filebrowse') || value.includes('file_browse') || value.includes('geraeteakte') || value.includes('geräteakte')) return '🗂';
   if (value.includes('rest')) return '🌐';
   if (value.includes('mssql') || value.includes('sql')) return '🗄';
   if (value.includes('file') || value.includes('csv') || value.includes('excel') || value.includes('json')) return '📄';
@@ -1064,6 +1100,7 @@ function getConnectorGraphClass(connectorType, connectorName) {
   const value = String(connectorType || connectorName || '').toLowerCase();
   if (value.includes('salesforce')) return 'graph-connector-salesforce';
   if (value.includes('filemaker')) return 'graph-connector-erp';
+  if (value.includes('filebrowse') || value.includes('file_browse') || value.includes('geraeteakte') || value.includes('geräteakte')) return 'graph-connector-file';
   if (value.includes('rest')) return 'graph-connector-rest';
   if (value.includes('mssql') || value.includes('sql')) return 'graph-connector-mssql';
   if (value.includes('file') || value.includes('csv') || value.includes('excel') || value.includes('json')) return 'graph-connector-file';

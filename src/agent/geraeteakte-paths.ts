@@ -10,6 +10,13 @@ export interface GeraeteakteSerialDirectory {
   absolutePath: string;
 }
 
+export interface GeraeteaktePathConfig {
+  basePath: string;
+  layout: GeraeteakteDirectoryLayout;
+}
+
+let activeGeraeteaktePathConfig: GeraeteaktePathConfig | null = null;
+
 function isEnabled(value: unknown): boolean {
   const normalized = String(value ?? "").trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
@@ -26,6 +33,46 @@ export function getGeraeteakteDirectoryLayout(): GeraeteakteDirectoryLayout {
     return "annaburg-fg-bucket";
   }
   return "direct";
+}
+
+export function normalizeGeraeteakteDirectoryLayout(value: unknown): GeraeteakteDirectoryLayout {
+  const configured = String(value || "").trim().toLowerCase();
+  if (configured === "annaburg" || configured === "annaburg-fg-bucket" || configured === "fg-bucket") {
+    return "annaburg-fg-bucket";
+  }
+  return "direct";
+}
+
+export function resolveGeraeteaktePathConfig(parameters?: Record<string, unknown>, fallbackBasePath?: string): GeraeteaktePathConfig | null {
+  const params = parameters || {};
+  const basePath = String(
+    params.basePath ||
+    params.fileBasePath ||
+    params.rootPath ||
+    fallbackBasePath ||
+    ""
+  ).trim();
+  if (!basePath) {
+    return null;
+  }
+
+  const rawLayout = params.directoryLayout || params.layout || params.folderLayout || params.serialDirectoryLayout;
+  const layout = rawLayout
+    ? normalizeGeraeteakteDirectoryLayout(rawLayout)
+    : getGeraeteakteDirectoryLayout();
+
+  return {
+    basePath,
+    layout,
+  };
+}
+
+export function setActiveGeraeteaktePathConfig(config: GeraeteaktePathConfig | null): void {
+  activeGeraeteaktePathConfig = config;
+}
+
+export function getActiveGeraeteaktePathConfig(): GeraeteaktePathConfig | null {
+  return activeGeraeteaktePathConfig;
 }
 
 export function isSafeGeraeteaktePathSegment(segment: string): boolean {

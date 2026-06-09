@@ -227,22 +227,32 @@ async function createSalesforceCustomObjectFromSource() {
 function updateConnectorConfigUi() {
   const connectorType = normalizeConnectorType(document.getElementById('con-type')?.value || '');
   const fileWrap = document.getElementById('con-file-settings-wrap');
+  const fileBrowseWrap = document.getElementById('con-filebrowse-settings-wrap');
   const mssqlWrap = document.getElementById('con-mssql-settings-wrap');
   const restWrap = document.getElementById('con-rest-settings-wrap');
   const binaryWrap = document.getElementById('con-binary-settings-wrap');
+  const typeProfile = document.getElementById('con-type-profile');
   const hint = document.getElementById('con-wizard-hint');
   const sqlTitle = document.getElementById('con-sql-settings-title');
   const sqlText = document.getElementById('con-sql-settings-text');
-  if (!fileWrap || !mssqlWrap || !restWrap || !binaryWrap) {
+  if (!fileWrap || !fileBrowseWrap || !mssqlWrap || !restWrap || !binaryWrap) {
     return;
   }
 
   setClosestFieldVisible('con-secret', isSqlConnectorType(connectorType) || isEndpointConnectorType(connectorType));
+  setClosestFieldVisible('con-timeout', isSqlConnectorType(connectorType) || isRestConnectorType(connectorType) || isEndpointConnectorType(connectorType));
+  setClosestFieldVisible('con-retries', isSqlConnectorType(connectorType) || isRestConnectorType(connectorType));
 
   if (connectorType === 'FILE') {
     fileWrap.classList.remove('d-none');
   } else {
     fileWrap.classList.add('d-none');
+  }
+
+  if (connectorType === 'FILE_BROWSE') {
+    fileBrowseWrap.classList.remove('d-none');
+  } else {
+    fileBrowseWrap.classList.add('d-none');
   }
 
   if (isSqlConnectorType(connectorType)) {
@@ -282,6 +292,22 @@ function updateConnectorConfigUi() {
           : 'Pflicht: Server, Datenbank und Benutzer. Passwort kann direkt eingegeben werden. Alternativ kann das Passwort über Secret Key (ENV) aus einer Umgebungsvariable gelesen werden.';
   }
 
+  if (typeProfile) {
+    const profiles = {
+      MSSQL: 'MSSQL: Server, Port, Datenbank und Benutzer werden als strukturierte Parameter gespeichert. Der Test prueft Login und Erreichbarkeit.',
+      POSTGRESQL: 'PostgreSQL: Host, Port, Datenbank und Benutzer. Der Test prueft die Datenbankverbindung.',
+      MYSQL: 'MySQL: Host, Port, Datenbank und Benutzer. Der Test prueft die Datenbankverbindung.',
+      FILEMAKER: 'FileMaker: Base URL der Data API, Datenbank und Benutzer. Der Test prueft die API-Erreichbarkeit.',
+      FILE: 'Datei: Base-, Import-, Export- und Archivpfade. Der Connector-Test prueft, ob die Pfade erreichbar bzw. nutzbar sind.',
+      FILE_BROWSE: 'Geräteakte / FileBrowse: Basisverzeichnis und Seriennummer-Ordnerlayout. Der Test prüft Lesbarkeit, Layout und optional eine Beispiel-Seriennummer.',
+      REST_API: 'REST API: Base URL, Resource Path, Methode und Authentifizierung. Der Connector-Test prueft den konfigurierten Endpunkt.',
+      AGENT_ENDPOINT: 'Agent Endpunkt: Root-Pfad im Agenten, Authentifizierung und Request-Limit. Scheduler definieren darunter konkrete Methoden und Pfade.',
+      FILE_BINARY_SF_IMPORT: 'Datei-Binaerimport: Verzeichnis und Salesforce-Dateifelder. Der Test prueft Pfadzugriff und Zielkonfiguration.',
+      CUSTOM: 'Benutzerdefiniert: Nur Basisfelder und freies Parameter-JSON werden gespeichert.'
+    };
+    typeProfile.textContent = profiles[connectorType] || profiles.CUSTOM;
+  }
+
   if (hint) {
     const labels = {
       MSSQL: 'SQL-Parameter für MSSQL ausfüllen.',
@@ -289,6 +315,7 @@ function updateConnectorConfigUi() {
       MYSQL: 'SQL-Parameter für MySQL ausfüllen.',
       FILEMAKER: 'FileMaker Data API Verbindung und Datenbank erfassen.',
       FILE: 'Datei-Einstellungen inkl. Format auswählen.',
+      FILE_BROWSE: 'Geräteakte-Pfad und Ordnerlayout erfassen.',
       REST_API: 'REST Endpunkt + gewünschte Authentifizierung erfassen.',
       AGENT_ENDPOINT: 'Agent Root-Endpunkt und OAuth2/Bearer Authentifizierung erfassen.',
       FILE_BINARY_SF_IMPORT: 'Binary Import-Pfade + Salesforce Zielfelder setzen.',
@@ -301,13 +328,50 @@ function updateConnectorConfigUi() {
 }
 
 function updateRestAuthUi() {
-  const authType = String(document.getElementById('con-rest-auth-type')?.value || 'none').trim().toLowerCase();
+  const connectorType = normalizeConnectorType(document.getElementById('con-type')?.value || '');
+  const isEndpoint = isEndpointConnectorType(connectorType);
   const toggle = (id, visible) => {
     const element = document.getElementById(id);
     if (element) {
       element.classList.toggle('d-none', !visible);
     }
   };
+  const setText = (id, text) => {
+    const element = document.getElementById(id);
+    if (element) {
+      element.textContent = text;
+    }
+  };
+
+  const authSelect = document.getElementById('con-rest-auth-type');
+  if (authSelect) {
+    const allowed = isEndpoint
+      ? [['oauth2', 'OAuth2 / Bearer'], ['none', 'Keine (nur Test)']]
+      : [['none', 'Keine'], ['basic', 'Basic Auth'], ['bearer', 'Bearer Token'], ['api_key', 'API Key'], ['oauth2', 'OAuth2']];
+    const current = allowed.some((item) => item[0] === authSelect.value) ? authSelect.value : allowed[0][0];
+    authSelect.innerHTML = allowed.map((item) => '<option value="' + esc(item[0]) + '">' + esc(item[1]) + '</option>').join('');
+    authSelect.value = current;
+  }
+  const authType = String(document.getElementById('con-rest-auth-type')?.value || 'none').trim().toLowerCase();
+
+  setClosestFieldVisible('con-rest-base-url', !isEndpoint);
+  setClosestFieldVisible('con-rest-method', !isEndpoint);
+  toggle('con-rest-max-body-wrap', isEndpoint);
+  setText('con-rest-settings-title', isEndpoint ? 'Agent Endpunkt' : 'REST API');
+  setText('con-rest-settings-text', isEndpoint
+    ? 'Der Connector definiert den Root-Pfad und die Authentifizierung. Konkrete Request-Pfade werden im Scheduler vom Typ ENDPOINT gepflegt.'
+    : 'Authentifizierung ist frei wählbar. OAuth2 ist nur eine zusätzliche Option neben None, Basic, Bearer Token und API Key.');
+  setText('con-rest-base-url-label', isEndpoint ? 'Base URL' : 'Base URL');
+  setText('con-rest-resource-path-label', isEndpoint ? 'Root Path' : 'Resource Path');
+  setText('con-rest-base-url-help', isEndpoint
+    ? 'Fuer Agent-Endpunkte nicht erforderlich; der Agent hostet den Endpunkt selbst.'
+    : 'Root-URL des externen REST-Systems. Der Connector-Test prueft die Erreichbarkeit.');
+  setText('con-rest-resource-path-help', isEndpoint
+    ? 'Root-Pfad im Agenten, z. B. /api/inbound/orders. Scheduler-Pfade liegen darunter.'
+    : 'Pfad relativ zur Base URL, z. B. /v1/items.');
+  setText('con-rest-auth-help', isEndpoint
+    ? 'OAuth2/Bearer erwartet ein Token; der Secret Key kann auf eine ENV-Variable fuer das Testtoken zeigen.'
+    : 'Wählen Sie nur den tatsächlich benötigten Authentifizierungsmodus.');
 
   toggle('con-rest-basic-user-wrap', authType === 'basic');
   toggle('con-rest-basic-password-wrap', authType === 'basic');
@@ -345,6 +409,17 @@ function applyConnectorWizardSelection(preserveValues) {
     }
     if (wizardType === 'REST_API' && !document.getElementById('con-direction').value) {
       document.getElementById('con-direction').value = 'Outbound';
+    }
+    if (wizardType === 'FILE_BROWSE') {
+      if (!document.getElementById('con-target-system').value) {
+        document.getElementById('con-target-system').value = 'Agent';
+      }
+      if (!document.getElementById('con-direction').value) {
+        document.getElementById('con-direction').value = 'Inbound';
+      }
+      if (!document.getElementById('con-name').value) {
+        document.getElementById('con-name').value = 'Geräteakte FileBrowse';
+      }
     }
     if (wizardType === 'AGENT_ENDPOINT') {
       if (!document.getElementById('con-target-system').value) {
@@ -456,6 +531,28 @@ function mergeFileConnectorSettingsIntoParameters(parameters) {
   return merged;
 }
 
+function fillFileBrowseConnectorSettingsFromParameters(parameters) {
+  const params = parameters || {};
+  document.getElementById('con-filebrowse-base-path').value = String(params.basePath || params.fileBasePath || params.rootPath || '');
+  document.getElementById('con-filebrowse-layout').value = String(params.directoryLayout || params.layout || 'direct');
+  document.getElementById('con-filebrowse-sample-serial').value = String(params.sampleSerial || params.testSerial || '');
+}
+
+function mergeFileBrowseConnectorSettingsIntoParameters(parameters) {
+  const merged = { ...(parameters || {}) };
+  merged.basePath = String(document.getElementById('con-filebrowse-base-path').value || '').trim();
+  merged.directoryLayout = String(document.getElementById('con-filebrowse-layout').value || 'direct').trim();
+  const sampleSerial = String(document.getElementById('con-filebrowse-sample-serial').value || '').trim();
+  if (sampleSerial) {
+    merged.sampleSerial = sampleSerial;
+  } else {
+    delete merged.sampleSerial;
+    delete merged.testSerial;
+  }
+  merged.purpose = 'geraeteakte';
+  return merged;
+}
+
 function fillRestConnectorSettingsFromParameters(parameters) {
   const params = parameters || {};
   document.getElementById('con-rest-base-url').value = String(params.baseUrl || '');
@@ -475,6 +572,9 @@ function fillRestConnectorSettingsFromParameters(parameters) {
   document.getElementById('con-rest-scope').value = String(params.scope || '');
   document.getElementById('con-rest-audience').value = String(params.audience || '');
   document.getElementById('con-rest-extra-headers').value = params.extraHeaders ? JSON.stringify(params.extraHeaders) : '';
+  document.getElementById('con-rest-max-body-bytes').value = params.maxBodyBytes === undefined || params.maxBodyBytes === null || params.maxBodyBytes === ''
+    ? ''
+    : String(params.maxBodyBytes);
   updateRestAuthUi();
 }
 
@@ -486,9 +586,21 @@ function mergeRestConnectorSettingsIntoParameters(parameters) {
   merged.method = String(document.getElementById('con-rest-method').value || 'GET').trim().toUpperCase();
   if (normalizeConnectorType(document.getElementById('con-type')?.value || '') === 'AGENT_ENDPOINT') {
     merged.rootPath = merged.resourcePath || merged.baseUrl || '/api/inbound';
+    const maxBodyBytesRaw = String(document.getElementById('con-rest-max-body-bytes').value || '').trim();
+    if (maxBodyBytesRaw) {
+      const parsedMaxBodyBytes = Number(maxBodyBytesRaw);
+      if (!Number.isNaN(parsedMaxBodyBytes) && parsedMaxBodyBytes > 0) {
+        merged.maxBodyBytes = parsedMaxBodyBytes;
+      }
+    } else {
+      delete merged.maxBodyBytes;
+    }
     delete merged.baseUrl;
     delete merged.resourcePath;
     delete merged.method;
+  } else {
+    delete merged.rootPath;
+    delete merged.maxBodyBytes;
   }
   if (merged.authType === 'oauth2') {
     merged.tokenUrl = String(document.getElementById('con-rest-token-url').value || '').trim();
@@ -575,6 +687,21 @@ function mergeBinaryImportConnectorSettingsIntoParameters(parameters) {
   return merged;
 }
 
+function setSelectValuePreservingOption(selectId, value) {
+  const select = document.getElementById(selectId);
+  const normalizedValue = String(value || '').trim();
+  if (!select) {
+    return;
+  }
+  if (normalizedValue && !Array.from(select.options || []).some((option) => String(option.value || '') === normalizedValue)) {
+    const option = document.createElement('option');
+    option.value = normalizedValue;
+    option.textContent = normalizedValue;
+    select.appendChild(option);
+  }
+  select.value = normalizedValue;
+}
+
 function openConnectorModal(connectorId, templateDraft) {
   const entry = connectorId
     ? state.connectors.find((item) => item.id === connectorId)
@@ -584,9 +711,15 @@ function openConnectorModal(connectorId, templateDraft) {
   renderWizardMetadata('con-wizard-meta', entry, 'Neuer Connector · noch nicht gespeichert');
   document.getElementById('con-name').value = entry?.name || '';
   document.getElementById('con-type').value = entry?.connectorType || 'MSSQL';
-  document.getElementById('con-wizard-type').value = getConnectorWizardTypeFromConnectorType(entry?.connectorType || 'MSSQL');
-  document.getElementById('con-target-system').value = entry?.targetSystem || '';
-  document.getElementById('con-direction').value = entry?.direction || '';
+  const wizardType = getConnectorWizardTypeFromConnectorType(entry?.connectorType || 'MSSQL');
+  document.getElementById('con-wizard-type').value = wizardType;
+  
+  // Synchronize dynamic visual selector cards
+  document.querySelectorAll('.connector-type-card').forEach((c) => {
+    c.classList.toggle('is-selected', c.getAttribute('data-type') === wizardType);
+  });
+  setSelectValuePreservingOption('con-target-system', entry?.targetSystem || '');
+  setSelectValuePreservingOption('con-direction', entry?.direction || '');
   document.getElementById('con-secret').value = entry?.secretKey || '';
   document.getElementById('con-timeout').value = entry?.timeoutMs || '';
   document.getElementById('con-retries').value = entry?.maxRetries || '';
@@ -597,6 +730,7 @@ function openConnectorModal(connectorId, templateDraft) {
   void loadConnectorTaskOwnerOptions(parameters.notificationTaskOwnerId);
   fillMssqlConnectorSettingsFromParameters(parameters);
   fillFileConnectorSettingsFromParameters(parameters);
+  fillFileBrowseConnectorSettingsFromParameters(parameters);
   fillRestConnectorSettingsFromParameters(parameters);
   fillBinaryImportConnectorSettingsFromParameters(parameters);
   applyConnectorWizardSelection(!!entry);
@@ -671,6 +805,12 @@ async function testScheduleSource() {
   const sourceDefinition = buildScheduleSourceDefinitionValue() || '';
   const connectorId = document.getElementById('sch-connector').value || undefined;
   const status = document.getElementById('sch-source-test-status');
+
+  if (String(sourceType || '').trim().toUpperCase() === 'ENDPOINT') {
+    status.textContent = 'Endpoint-Quellen werden mit einem HTTP-Request gegen die Agent-Route getestet. Nutze hier Konfiguration pruefen.';
+    await validateCurrentScheduleConfiguration();
+    return;
+  }
 
   testButton.disabled = true;
   status.textContent = 'Quelle wird getestet...';

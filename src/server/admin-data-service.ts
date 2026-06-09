@@ -46,9 +46,11 @@ import { runScheduleNow } from "../agent/agent-runner";
 import { analyzeUploadedFile, decodeTextBuffer, parseDelimitedRows, parseExcelBuffer, parseFileFromConnector } from "../utils/file-transfer";
 import { parseQuerySourceDefinition } from "../utils/query-source-definition";
 import { fetchRestRows, testRestConnection } from "../source-adapters/rest/rest-api-source-adapter";
+import { parseEndpointSourceDefinition, type EndpointSourceDefinition } from "../source-adapters/endpoint/endpoint-source-adapter";
 import { LocalScheduleHealthRepository, LocalScheduleHealthItem } from "../core/scheduler/local-schedule-health-repository";
 import { AIProviderConfig, normalizeAIProviderConfig, toPublicAIProviderConfig, type AIProviderPublicConfig } from "./ai-provider";
 import { DatabaseMetadata } from "../types/database-metadata";
+import { listGeraeteakteSerialDirectories, resolveGeraeteaktePathConfig, resolveGeraeteakteSerialDirectory } from "../agent/geraeteakte-paths";
 
 export interface SalesforceInstanceEnvConfig {
   id: string;
@@ -81,6 +83,7 @@ export interface SalesforceProjectConfig {
   confluenceSpaceKey?: string;
   confluenceParentPageId?: string;
   confluencePageTitlePrefix?: string;
+  theme?: "corporate" | "industrial" | "midnight" | "logo";
   createdAt: string;
   updatedAt: string;
 }
@@ -140,6 +143,7 @@ export interface SalesforceProjectMutationInput {
   confluenceSpaceKey?: string;
   confluenceParentPageId?: string;
   confluencePageTitlePrefix?: string;
+  theme?: "corporate" | "industrial" | "midnight" | "logo";
 }
 
 export type SalesforceInstanceReadinessStatus = "ready" | "setup-required" | "setup-running" | "setup-failed";
@@ -764,6 +768,7 @@ function defaultProjectConfig(): SalesforceProjectConfig {
     confluenceSpaceKey: undefined,
     confluenceParentPageId: undefined,
     confluencePageTitlePrefix: undefined,
+    theme: "corporate",
     createdAt: now,
     updatedAt: now
   };
@@ -831,7 +836,8 @@ function ensureProjectsSqliteColumns(db: any): void {
       { name: "log_batching_enabled", sql: "ALTER TABLE projects ADD COLUMN log_batching_enabled INTEGER NOT NULL DEFAULT 1" },
       { name: "log_sync_interval_minutes", sql: "ALTER TABLE projects ADD COLUMN log_sync_interval_minutes INTEGER NOT NULL DEFAULT 5" },
       { name: "log_batch_size", sql: "ALTER TABLE projects ADD COLUMN log_batch_size INTEGER NOT NULL DEFAULT 200" },
-      { name: "log_buffer_max_entries", sql: "ALTER TABLE projects ADD COLUMN log_buffer_max_entries INTEGER NOT NULL DEFAULT 10000" }
+      { name: "log_buffer_max_entries", sql: "ALTER TABLE projects ADD COLUMN log_buffer_max_entries INTEGER NOT NULL DEFAULT 10000" },
+      { name: "theme", sql: "ALTER TABLE projects ADD COLUMN theme TEXT" }
     ];
 
     for (const statement of statements) {
@@ -876,6 +882,7 @@ function openProjectsSqliteSync(): any | null {
       confluence_base_url TEXT,
       confluence_username TEXT,
       confluence_api_token TEXT,
+      theme TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`);
@@ -894,26 +901,25 @@ function readProjectsFromSqliteSync(): SalesforceProjectConfig[] | null {
   }
 
   try {
-    const rows = db
-      .prepare(`SELECT id, name, description, archived, production_write_protection, lookup_cache_enabled, lookup_cache_ttl_minutes, log_batching_enabled, log_sync_interval_minutes, log_batch_size, log_buffer_max_entries, confluence_space_key, confluence_parent_page_id, confluence_page_title_prefix, confluence_base_url, confluence_username, confluence_api_token, created_at, updated_at FROM projects`)
-      .all() as Array<{
+    const rows = db.prepare("SELECT * FROM projects").all() as Array<{
       id: string;
       name: string;
       description?: string;
-      archived: number;
-      production_write_protection: number;
-      lookup_cache_enabled: number;
-      lookup_cache_ttl_minutes: number;
-      log_batching_enabled: number;
-      log_sync_interval_minutes: number;
-      log_batch_size: number;
-      log_buffer_max_entries: number;
+      archived?: number;
+      production_write_protection?: number;
+      lookup_cache_enabled?: number;
+      lookup_cache_ttl_minutes?: number;
+      log_batching_enabled?: number;
+      log_sync_interval_minutes?: number;
+      log_batch_size?: number;
+      log_buffer_max_entries?: number;
       confluence_space_key?: string;
       confluence_parent_page_id?: string;
       confluence_page_title_prefix?: string;
       confluence_base_url?: string;
       confluence_username?: string;
       confluence_api_token?: string;
+      theme?: string;
       created_at: string;
       updated_at: string;
     }>;
@@ -937,6 +943,7 @@ function readProjectsFromSqliteSync(): SalesforceProjectConfig[] | null {
         confluenceSpaceKey: String(row.confluence_space_key || "").trim() || undefined,
         confluenceParentPageId: String(row.confluence_parent_page_id || "").trim() || undefined,
         confluencePageTitlePrefix: String(row.confluence_page_title_prefix || "").trim() || undefined,
+        theme: (row.theme ? String(row.theme) : "corporate") as "corporate" | "industrial" | "midnight" | "logo",
         createdAt: String(row.created_at || "").trim() || new Date().toISOString(),
         updatedAt: String(row.updated_at || "").trim() || new Date().toISOString()
       }))
@@ -963,8 +970,8 @@ function writeProjectsToSqliteSync(projects: SalesforceProjectConfig[]): void {
     db.exec("DELETE FROM projects");
 
     const insert = db.prepare(
-      `INSERT INTO projects (id, name, description, archived, production_write_protection, lookup_cache_enabled, lookup_cache_ttl_minutes, log_batching_enabled, log_sync_interval_minutes, log_batch_size, log_buffer_max_entries, confluence_space_key, confluence_parent_page_id, confluence_page_title_prefix, confluence_base_url, confluence_username, confluence_api_token, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO projects (id, name, description, archived, production_write_protection, lookup_cache_enabled, lookup_cache_ttl_minutes, log_batching_enabled, log_sync_interval_minutes, log_batch_size, log_buffer_max_entries, confluence_space_key, confluence_parent_page_id, confluence_page_title_prefix, confluence_base_url, confluence_username, confluence_api_token, theme, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     for (const project of projects) {
@@ -986,6 +993,7 @@ function writeProjectsToSqliteSync(projects: SalesforceProjectConfig[]): void {
         project.confluenceBaseUrl || "",
         project.confluenceUsername || "",
         project.confluenceApiToken || "",
+        project.theme || "corporate",
         project.createdAt,
         project.updatedAt
       );
@@ -1455,6 +1463,14 @@ export interface ConnectorTestResult {
     ok: boolean;
     details: string;
   }>;
+}
+
+export interface ConnectorPostmanCollectionResult {
+  fileName: string;
+  connectorId: string;
+  connectorName: string;
+  scheduleCount: number;
+  collection: Record<string, unknown>;
 }
 
 export interface RunListItem {
@@ -4040,6 +4056,7 @@ export class AdminDataService {
       confluenceSpaceKey: String(input.confluenceSpaceKey || existingProject?.confluenceSpaceKey || "").trim() || undefined,
       confluenceParentPageId: normalizedConfluenceParentPageId,
       confluencePageTitlePrefix: String(input.confluencePageTitlePrefix || existingProject?.confluencePageTitlePrefix || "").trim() || undefined,
+      theme: input.theme || existingProject?.theme || "corporate",
       createdAt: existingProject?.createdAt || now,
       updatedAt: now
     };
@@ -4430,6 +4447,60 @@ export class AdminDataService {
     });
   }
 
+  public async buildEndpointConnectorPostmanCollection(
+    connectorId: string,
+    instanceId?: string
+  ): Promise<ConnectorPostmanCollectionResult> {
+    const client = await this.createClient(instanceId);
+    const connector = await client.queryConnector(connectorId);
+    if (!this.isEndpointConnectorType(connector.connectorType)) {
+      throw new Error(`Connector ${connector.name} ist kein Endpoint-Connector.`);
+    }
+
+    const schedules = (await this.listSchedules(instanceId))
+      .filter((schedule) =>
+        String(schedule.connectorId || "").trim() === connector.id
+        && String(schedule.sourceType || "").trim().toUpperCase() === "ENDPOINT"
+      )
+      .sort((left, right) => String(left.name || "").localeCompare(String(right.name || ""), "de", { sensitivity: "base" }));
+
+    const rootPath = this.normalizeEndpointPath(
+      connector.parameters.rootPath
+      || connector.parameters.basePath
+      || connector.parameters.resourcePath
+      || connector.parameters.path
+    );
+    const defaultBaseUrl = this.normalizePostmanBaseUrl(connector.parameters.publicBaseUrl || connector.parameters.externalBaseUrl);
+    const safeName = this.slugifyFileName(connector.name || connector.id || "endpoint-connector");
+
+    return {
+      fileName: `${safeName}-postman-collection.json`,
+      connectorId: connector.id,
+      connectorName: connector.name,
+      scheduleCount: schedules.length,
+      collection: {
+        info: {
+          name: `${connector.name} Endpoint Connector`,
+          description: [
+            `Generated from Endpoint connector ${connector.name}.`,
+            "Set collection variables baseUrl and bearerToken before sending requests.",
+            "No secret values are exported."
+          ].join("\n"),
+          schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+        },
+        variable: [
+          { key: "baseUrl", value: defaultBaseUrl, type: "string" },
+          { key: "bearerToken", value: "", type: "string" }
+        ],
+        auth: {
+          type: "bearer",
+          bearer: [{ key: "token", value: "{{bearerToken}}", type: "string" }]
+        },
+        item: schedules.map((schedule) => this.buildEndpointSchedulePostmanItem(schedule, rootPath, "{{baseUrl}}"))
+      }
+    };
+  }
+
   public async testConnector(connectorId: string, instanceId?: string): Promise<ConnectorTestResult> {
     const client = await this.createClient(instanceId);
     const config = await client.queryConnector(connectorId);
@@ -4440,6 +4511,10 @@ export class AdminDataService {
 
     if (this.isFileMakerConnectorType(config.connectorType)) {
       return this.testFileMakerConnector(config);
+    }
+
+    if (this.isFileBrowseConnectorType(config.connectorType)) {
+      return this.testFileBrowseConnector(config);
     }
 
     if (this.isFileConnectorType(config.connectorType)) {
@@ -4508,6 +4583,191 @@ export class AdminDataService {
       tableCount: metadata.tables.length,
       fieldCount
     };
+  }
+
+  private buildEndpointSchedulePostmanItem(
+    schedule: ScheduleListItem,
+    rootPath: string,
+    baseUrl: string
+  ): Record<string, unknown> {
+    try {
+      const definition = parseEndpointSourceDefinition(schedule.sourceDefinition || "");
+      const fullPath = this.joinEndpointPath(rootPath, definition.path);
+      const rawUrl = this.joinUrl(baseUrl || "{{baseUrl}}", fullPath);
+      const query = definition.queryFields.map((field) => ({
+        key: field,
+        value: `{{${field}}}`,
+        disabled: false
+      }));
+      const headers = [
+        { key: "Content-Type", value: definition.contentType || "application/json" },
+        { key: "x-request-id", value: `${this.slugifyFileName(schedule.name || schedule.id)}-{{$timestamp}}` },
+        ...definition.headerFields
+          .filter((field) => field.toLowerCase() !== "authorization")
+          .map((field) => ({ key: field, value: `{{${field}}}` }))
+      ];
+
+      return {
+        name: schedule.name || schedule.id,
+        request: {
+          method: definition.method,
+          header: headers,
+          auth: {
+            type: "bearer",
+            bearer: [{ key: "token", value: "{{bearerToken}}", type: "string" }]
+          },
+          url: {
+            raw: query.length ? `${rawUrl}?${query.map((item) => `${item.key}=${item.value}`).join("&")}` : rawUrl,
+            query
+          },
+          body: this.buildEndpointPostmanBody(definition)
+        },
+        response: [],
+        event: [
+          {
+            listen: "test",
+            script: {
+              type: "text/javascript",
+              exec: [
+                `pm.test("Status is ${definition.response.successStatus}", function () {`,
+                `  pm.response.to.have.status(${definition.response.successStatus});`,
+                "});"
+              ]
+            }
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        name: `${schedule.name || schedule.id} (ungueltige SourceDefinition)`,
+        disabled: true,
+        request: {
+          method: "POST",
+          header: [{ key: "Content-Type", value: "application/json" }],
+          url: { raw: this.joinUrl(baseUrl || "{{baseUrl}}", rootPath || "/") },
+          body: {
+            mode: "raw",
+            raw: JSON.stringify({ error: error instanceof Error ? error.message : String(error) }, null, 2),
+            options: { raw: { language: "json" } }
+          },
+          description: error instanceof Error ? error.message : String(error)
+        },
+        response: []
+      };
+    }
+  }
+
+  private buildEndpointPostmanBody(definition: EndpointSourceDefinition): Record<string, unknown> | undefined {
+    if (definition.method === "GET" || definition.method === "DELETE") {
+      return undefined;
+    }
+
+    const sampleRecord = this.buildEndpointSampleRecord(definition.validation.requiredBodyFields);
+    const rawBody = definition.recordMode === "array"
+      ? definition.bodyPath ? this.assignNestedValue({}, definition.bodyPath, [sampleRecord]) : [sampleRecord]
+      : definition.recordMode === "envelope" && definition.bodyPath
+        ? this.assignNestedValue({ metadata: { source: "postman" } }, definition.bodyPath, [sampleRecord])
+        : sampleRecord;
+
+    return {
+      mode: "raw",
+      raw: JSON.stringify(rawBody, null, 2),
+      options: {
+        raw: {
+          language: definition.contentType.includes("json") ? "json" : "text"
+        }
+      }
+    };
+  }
+
+  private buildEndpointSampleRecord(requiredFields: string[]): Record<string, unknown> {
+    const sample: Record<string, unknown> = {};
+    const fields = requiredFields.length ? requiredFields : ["exampleId"];
+    for (const field of fields) {
+      this.assignNestedValue(sample, field, this.sampleValueForField(field));
+    }
+    return sample;
+  }
+
+  private assignNestedValue(target: Record<string, unknown>, pathValue: string, value: unknown): Record<string, unknown> {
+    const parts = String(pathValue || "").split(".").map((part) => part.trim()).filter(Boolean);
+    if (!parts.length) {
+      return target;
+    }
+
+    let current: Record<string, unknown> = target;
+    parts.forEach((part, index) => {
+      if (index === parts.length - 1) {
+        current[part] = value;
+        return;
+      }
+      if (!current[part] || typeof current[part] !== "object" || Array.isArray(current[part])) {
+        current[part] = {};
+      }
+      current = current[part] as Record<string, unknown>;
+    });
+    return target;
+  }
+
+  private sampleValueForField(field: string): unknown {
+    const normalized = String(field || "").toLowerCase();
+    if (normalized.includes("amount") || normalized.includes("price") || normalized.includes("total") || normalized.includes("quantity")) {
+      return 42.5;
+    }
+    if (normalized.includes("date") || normalized.endsWith("at")) {
+      return new Date().toISOString();
+    }
+    if (normalized.includes("email")) {
+      return "test@example.com";
+    }
+    if (normalized.includes("number") || normalized.endsWith("no")) {
+      return "100200";
+    }
+    return "example";
+  }
+
+  private normalizeEndpointPath(value: unknown): string {
+    const raw = String(value || "").trim().replace(/\/+$/, "");
+    if (!raw) {
+      return "";
+    }
+    return raw.startsWith("/") ? raw : `/${raw}`;
+  }
+
+  private normalizePostmanBaseUrl(value: unknown): string {
+    const raw = String(value || "").trim().replace(/\/+$/, "");
+    if (!raw || raw === "http:" || raw === "https:" || raw === "http://" || raw === "https://") {
+      return "http://localhost:8080";
+    }
+
+    try {
+      const parsed = new URL(raw);
+      return parsed.hostname ? raw : "http://localhost:8080";
+    } catch {
+      return "http://localhost:8080";
+    }
+  }
+
+  private joinEndpointPath(rootPath: string, relativePath: string): string {
+    const root = this.normalizeEndpointPath(rootPath);
+    const relative = String(relativePath || "").trim();
+    const normalizedRelative = relative.startsWith("/") ? relative : `/${relative}`;
+    return `${root}${normalizedRelative}`.replace(/\/{2,}/g, "/") || "/";
+  }
+
+  private joinUrl(baseUrl: string, pathValue: string): string {
+    const base = String(baseUrl || "{{baseUrl}}").trim().replace(/\/+$/, "");
+    const pathPart = String(pathValue || "/").trim();
+    return `${base}${pathPart.startsWith("/") ? pathPart : `/${pathPart}`}`;
+  }
+
+  private slugifyFileName(value: string): string {
+    return String(value || "endpoint-connector")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      || "endpoint-connector";
   }
 
   private buildConnectorTestResult(
@@ -4729,6 +4989,87 @@ export class AdminDataService {
         details: `${exportPath} (${message})`
       });
     }
+
+    return this.buildConnectorTestResult(config, checks);
+  }
+
+  private testFileBrowseConnector(config: ConnectorConfig): ConnectorTestResult {
+    const pathConfig = resolveGeraeteaktePathConfig(config.parameters || {});
+    const checks: Array<{ label: string; ok: boolean; details: string }> = [];
+
+    if (!pathConfig) {
+      return this.buildConnectorTestResult(config, [
+        {
+          label: "Basisverzeichnis",
+          ok: false,
+          details: "basePath ist im FileBrowse-Connector nicht konfiguriert."
+        }
+      ]);
+    }
+
+    const root = path.resolve(pathConfig.basePath);
+    try {
+      fs.accessSync(root, fs.constants.R_OK);
+      checks.push({
+        label: "Basisverzeichnis lesbar",
+        ok: true,
+        details: root
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Basisverzeichnis ist nicht lesbar";
+      checks.push({
+        label: "Basisverzeichnis lesbar",
+        ok: false,
+        details: `${root} (${message})`
+      });
+      return this.buildConnectorTestResult(config, checks);
+    }
+
+    const sampleSerial = String(config.parameters?.sampleSerial || config.parameters?.testSerial || "").trim();
+    if (sampleSerial) {
+      try {
+        const resolved = resolveGeraeteakteSerialDirectory(root, sampleSerial, pathConfig.layout);
+        const exists = fs.existsSync(resolved.absolutePath) && fs.statSync(resolved.absolutePath).isDirectory();
+        checks.push({
+          label: "Beispiel-Seriennummer",
+          ok: exists,
+          details: exists
+            ? `${sampleSerial} -> ${resolved.absolutePath}`
+            : `${sampleSerial} wurde zu ${resolved.absolutePath} aufgeloest, Ordner existiert aber nicht.`
+        });
+      } catch (error) {
+        checks.push({
+          label: "Beispiel-Seriennummer",
+          ok: false,
+          details: error instanceof Error ? error.message : "Seriennummer konnte nicht aufgeloest werden."
+        });
+      }
+    }
+
+    try {
+      const directories = listGeraeteakteSerialDirectories(root, pathConfig.layout);
+      checks.push({
+        label: "Seriennummer-Ordner",
+        ok: true,
+        details: directories.length
+          ? `${directories.length} Ordner gefunden, z. B. ${directories.slice(0, 3).map((entry) => entry.serial).join(", ")}`
+          : "Basisverzeichnis ist lesbar, aber es wurden keine Seriennummer-Ordner gefunden."
+      });
+    } catch (error) {
+      checks.push({
+        label: "Seriennummer-Ordner",
+        ok: false,
+        details: error instanceof Error ? error.message : "Seriennummer-Ordner konnten nicht gelesen werden."
+      });
+    }
+
+    checks.push({
+      label: "Layout",
+      ok: true,
+      details: pathConfig.layout === "annaburg-fg-bucket"
+        ? "Annaburg Fg-Bucket Layout aktiv (z. B. Fg0000xx/Fg000073)."
+        : "Direktes Seriennummer-Layout aktiv."
+    });
 
     return this.buildConnectorTestResult(config, checks);
   }
@@ -7461,12 +7802,20 @@ export class AdminDataService {
   private isFileConnectorType(connectorType: string | undefined): boolean {
     const normalized = String(connectorType || "").toLowerCase();
     return (
-      normalized.includes("file") ||
-      normalized.includes("csv") ||
-      normalized.includes("excel") ||
-      normalized.includes("xlsx") ||
-      normalized.includes("json")
+      !this.isFileBrowseConnectorType(connectorType) &&
+      (
+        normalized.includes("file") ||
+        normalized.includes("csv") ||
+        normalized.includes("excel") ||
+        normalized.includes("xlsx") ||
+        normalized.includes("json")
+      )
     );
+  }
+
+  private isFileBrowseConnectorType(connectorType: string | undefined): boolean {
+    const normalized = String(connectorType || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+    return normalized === "filebrowse" || normalized === "geraeteakte" || normalized === "geräteakte";
   }
 
   private isFileMakerConnectorType(connectorType: string | undefined): boolean {

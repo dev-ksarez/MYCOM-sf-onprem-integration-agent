@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type pino from "pino";
 import sharp from "sharp";
-import { SalesforceClient } from "../clients/salesforce/salesforce-client";
-import { listGeraeteakteSerialDirectories } from "./geraeteakte-paths";
+import { ConnectorConfig, SalesforceClient } from "../clients/salesforce/salesforce-client";
+import { listGeraeteakteSerialDirectories, resolveGeraeteaktePathConfig, setActiveGeraeteaktePathConfig, type GeraeteakteDirectoryLayout } from "./geraeteakte-paths";
 
 // ─── Thumbnails als data:-URI (für Anzeige direkt aus Salesforce) ────────────
 
@@ -101,14 +101,14 @@ function walkSerialDir(serialDir: string, relPrefix: string, out: { rel: string;
 }
 
 /** Liest alle Seriennummer-Ordner und deren Dateien (rekursiv) unterhalb von basePath. */
-export function scanFileIndex(basePath: string): ScannedFile[] {
+export function scanFileIndex(basePath: string, layout?: GeraeteakteDirectoryLayout): ScannedFile[] {
   const root = path.resolve(basePath);
   if (!fs.existsSync(root)) {
     return [];
   }
 
   const result: ScannedFile[] = [];
-  const serialDirs = listGeraeteakteSerialDirectories(root);
+  const serialDirs = listGeraeteakteSerialDirectories(root, layout);
 
   for (const serialEntry of serialDirs) {
     const seriennummer = serialEntry.serial;
@@ -164,8 +164,31 @@ export async function publishFileIndex(
   basePath: string,
   logger: pino.Logger
 ): Promise<PublishResult> {
+  return publishFileIndexForPath(client, basePath, undefined, logger);
+}
+
+export async function publishFileIndexForConnector(
+  client: SalesforceClient,
+  connectorConfig: ConnectorConfig,
+  fallbackBasePath: string | undefined,
+  logger: pino.Logger
+): Promise<PublishResult> {
+  const pathConfig = resolveGeraeteaktePathConfig(connectorConfig.parameters, fallbackBasePath);
+  if (!pathConfig) {
+    throw new Error(`FileBrowse connector ${connectorConfig.name} hat keinen basePath konfiguriert.`);
+  }
+  setActiveGeraeteaktePathConfig(pathConfig);
+  return publishFileIndexForPath(client, pathConfig.basePath, pathConfig.layout, logger);
+}
+
+async function publishFileIndexForPath(
+  client: SalesforceClient,
+  basePath: string,
+  layout: GeraeteakteDirectoryLayout | undefined,
+  logger: pino.Logger
+): Promise<PublishResult> {
   const runStart = new Date().toISOString();
-  const files = scanFileIndex(basePath);
+  const files = scanFileIndex(basePath, layout);
 
   // 1+2) Upsert (für Bilder Thumbnail als data:-URI erzeugen)
   let upserted = 0;

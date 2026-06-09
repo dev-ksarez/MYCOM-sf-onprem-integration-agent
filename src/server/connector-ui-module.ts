@@ -51,6 +51,13 @@ export function renderConnectorUiModule(): string {
               'Auth: ' + esc(parameters.authType || 'none')
             ];
           }
+          if (isFileBrowseConnectorType(item.connectorType)) {
+            return [
+              'Root: ' + esc(parameters.basePath || parameters.fileBasePath || parameters.rootPath || '-'),
+              'Layout: ' + esc(parameters.directoryLayout || parameters.layout || 'direct'),
+              'Test-Seriennummer: ' + esc(parameters.sampleSerial || parameters.testSerial || '-')
+            ];
+          }
           if (isFileConnectorType(item.connectorType)) {
             return [
               'Root: ' + esc(filePaths?.basePath || parameters.basePath || parameters.fileBasePath || 'artifacts/files'),
@@ -120,6 +127,18 @@ export function renderConnectorUiModule(): string {
           '</div>';
         }
 
+        function downloadJsonFile(payload, fileName) {
+          const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement('a');
+          anchor.href = url;
+          anchor.download = fileName || 'postman-collection.json';
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          URL.revokeObjectURL(url);
+        }
+
         panels.innerHTML = orderedConnectors.map((item) =>
           '<div class="col-12 col-xl-6" data-connector-panel>' +
             '<div class="card h-100 border-0 shadow-sm bg-body-tertiary">' +
@@ -135,6 +154,7 @@ export function renderConnectorUiModule(): string {
                   '<div class="d-flex flex-wrap gap-1 justify-content-end">' +
                     '<button class="btn btn-sm btn-outline-primary" data-edit-connector="' + esc(item.id) + '">Öffnen</button>' +
                     '<button class="btn btn-sm btn-outline-secondary" data-test-connector="' + esc(item.id) + '">Testen</button>' +
+                    (isEndpointConnectorType(item.connectorType) ? '<button class="btn btn-sm btn-outline-secondary" data-export-postman="' + esc(item.id) + '">Postman</button>' : '') +
                     '<button class="btn btn-sm btn-outline-danger" data-delete-connector="' + esc(item.id) + '">Löschen</button>' +
                   '</div>' +
                 '</div>' +
@@ -182,6 +202,27 @@ export function renderConnectorUiModule(): string {
               };
             }
             renderConnectors();
+          });
+        });
+
+        panels.querySelectorAll('button[data-export-postman]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            const connectorId = String(button.getAttribute('data-export-postman') || '').trim();
+            if (!connectorId) {
+              return;
+            }
+            button.disabled = true;
+            const originalText = button.textContent;
+            button.textContent = 'Export...';
+            try {
+              const result = await requestJson('/api/connectors/' + encodeURIComponent(connectorId) + '/postman-collection');
+              downloadJsonFile(result.collection || {}, result.fileName || 'postman-collection.json');
+            } catch (error) {
+              showError(error.message || 'Postman Collection konnte nicht erzeugt werden');
+            } finally {
+              button.disabled = false;
+              button.textContent = originalText || 'Postman';
+            }
           });
         });
 
