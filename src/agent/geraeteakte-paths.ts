@@ -1,0 +1,150 @@
+import fs from "node:fs";
+import path from "node:path";
+
+export type GeraeteakteDirectoryLayout = "direct" | "annaburg-fg-bucket";
+
+export interface GeraeteakteSerialDirectory {
+  serial: string;
+  directoryName: string;
+  bucketName: string;
+  absolutePath: string;
+}
+
+function isEnabled(value: unknown): boolean {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+export function getGeraeteakteDirectoryLayout(): GeraeteakteDirectoryLayout {
+  const configured = String(process.env.GERAETEAKTE_DIRECTORY_LAYOUT || process.env.FILE_BROWSE_DIRECTORY_LAYOUT || "")
+    .trim()
+    .toLowerCase();
+  if (configured === "annaburg" || configured === "annaburg-fg-bucket" || configured === "fg-bucket") {
+    return "annaburg-fg-bucket";
+  }
+  if (isEnabled(process.env.GERAETEAKTE_ANNABURG_LAYOUT) || isEnabled(process.env.FILE_BROWSE_ANNABURG_LAYOUT)) {
+    return "annaburg-fg-bucket";
+  }
+  return "direct";
+}
+
+export function isSafeGeraeteaktePathSegment(segment: string): boolean {
+  if (!segment || segment.length > 255) return false;
+  if (segment === ".") return false;
+  if (segment.includes("..") || segment.includes("\0")) return false;
+  return !/[<>:"|?*\x00-\x1f]/.test(segment);
+}
+
+function normalizeFgSerial(rawSerial: string): string {
+  const match = String(rawSerial || "").trim().match(/^([A-Za-z]+)(\d+)$/);
+  if (!match) {
+    return String(rawSerial || "").trim();
+  }
+
+  const prefix = match[1];
+  const digits = match[2];
+  if (!/^fg$/i.test(prefix) || digits.length >= 6) {
+    return `${prefix}${digits}`;
+  }
+
+  return `${prefix}${digits.padStart(6, "0")}`;
+}
+
+function buildAnnaburgBucketName(directoryName: string): string {
+  const match = directoryName.match(/^([A-Za-z]+)(\d{2,})$/);
+  if (!match) {
+    return directoryName;
+  }
+
+  const prefix = match[1];
+  const digits = match[2];
+  return `${prefix}${digits.slice(0, -2)}xx`;
+}
+
+function assertInsideBase(candidatePath: string, basePath: string): string {
+  const resolvedCandidate = path.resolve(candidatePath);
+  const resolvedBase = path.resolve(basePath);
+  const relative = path.relative(resolvedBase, resolvedCandidate);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    return resolvedCandidate;
+  }
+  throw new Error("Ungueltige Seriennummer (Pfad-Traversal)");
+}
+
+export function resolveGeraeteakteSerialDirectory(
+  basePath: string,
+  rawSerial: string,
+  layout: GeraeteakteDirectoryLayout = getGeraeteakteDirectoryLayout()
+): GeraeteakteSerialDirectory {
+  const serial = String(rawSerial || "").trim();
+  if (!isSafeGeraeteaktePathSegment(serial)) {
+    throw new Error("Ungueltige Seriennummer");
+  }
+
+  const directoryName = layout === "annaburg-fg-bucket" ? normalizeFgSerial(serial) : serial;
+  if (!isSafeGeraeteaktePathSegment(directoryName)) {
+    throw new Error("Ungueltige Seriennummer");
+  }
+
+  const bucketName = layout === "annaburg-fg-bucket" ? buildAnnaburgBucketName(directoryName) : "";
+  if (bucketName && !isSafeGeraeteaktePathSegment(bucketName)) {
+    throw new Error("Ungueltige Seriennummer");
+  }
+
+  const absolutePath = layout === "annaburg-fg-bucket"
+    ? path.join(basePath, bucketName, directoryName)
+    : path.join(basePath, directoryName);
+
+  return {
+    serial,
+    directoryName,
+    bucketName,
+    absolutePath: assertInsideBase(absolutePath, basePath),
+  };
+}
+
+export function listGeraeteakteSerialDirectories(
+  basePath: string,
+  layout: GeraeteakteDirectoryLayout = getGeraeteakteDirectoryLayout()
+): GeraeteakteSerialDirectory[] {
+  const root = path.resolve(basePath);
+  if (!fs.existsSync(root)) {
+    return [];
+  }
+
+  if (layout === "direct") {
+    return fs.readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && isSafeGeraeteaktePathSegment(entry.name))
+      .map((entry) => ({
+        serial: entry.name,
+        directoryName: entry.name,
+        bucketName: "",
+        absolutePath: assertInsideBase(path.join(root, entry.name), root),
+      }));
+  }
+
+  const result: GeraeteakteSerialDirectory[] = [];
+  const bucketEntries = fs.readdirSync(root, { withFileTypes: true });
+  for (const bucketEntry of bucketEntries) {
+    if (!bucketEntry.isDirectory() || !isSafeGeraeteaktePathSegment(bucketEntry.name)) continue;
+    const bucketPath = assertInsideBase(path.join(root, bucketEntry.name), root);
+    let serialEntries: fs.Dirent[];
+    try {
+      serialEntries = fs.readdirSync(bucketPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const serialEntry of serialEntries) {
+      if (!serialEntry.isDirectory() || !isSafeGeraeteaktePathSegment(serialEntry.name)) continue;
+      result.push({
+        serial: serialEntry.name,
+        directoryName: serialEntry.name,
+        bucketName: bucketEntry.name,
+        absolutePath: assertInsideBase(path.join(bucketPath, serialEntry.name), root),
+      });
+    }
+  }
+
+  return result;
+}

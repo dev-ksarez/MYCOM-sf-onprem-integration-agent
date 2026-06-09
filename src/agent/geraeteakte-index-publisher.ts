@@ -4,6 +4,7 @@ import path from "node:path";
 import type pino from "pino";
 import sharp from "sharp";
 import { SalesforceClient } from "../clients/salesforce/salesforce-client";
+import { listGeraeteakteSerialDirectories } from "./geraeteakte-paths";
 
 // ─── Thumbnails als data:-URI (für Anzeige direkt aus Salesforce) ────────────
 
@@ -55,6 +56,7 @@ export const GERAETEAKTE_EXTERNAL_ID_FIELD = "MSD_ExternalKey__c";
 export interface ScannedFile {
   externalKey: string;
   seriennummer: string;
+  serialDir: string;
   relativePath: string;   // POSIX, z. B. "Abnahme/foto.jpg"
   folderPath: string;     // z. B. "Abnahme" ("" = Wurzel)
   fileName: string;
@@ -106,14 +108,11 @@ export function scanFileIndex(basePath: string): ScannedFile[] {
   }
 
   const result: ScannedFile[] = [];
-  const serialDirs = fs.readdirSync(root, { withFileTypes: true });
+  const serialDirs = listGeraeteakteSerialDirectories(root);
 
   for (const serialEntry of serialDirs) {
-    if (!serialEntry.isDirectory()) continue;
-    const seriennummer = serialEntry.name;
-    if (!isSafeSegment(seriennummer)) continue;
-
-    const serialDir = path.join(root, seriennummer);
+    const seriennummer = serialEntry.serial;
+    const serialDir = serialEntry.absolutePath;
     const found: { rel: string; abs: string }[] = [];
     walkSerialDir(serialDir, "", found);
 
@@ -129,6 +128,7 @@ export function scanFileIndex(basePath: string): ScannedFile[] {
         result.push({
           externalKey,
           seriennummer,
+          serialDir,
           relativePath: rel,
           folderPath,
           fileName,
@@ -173,7 +173,7 @@ export async function publishFileIndex(
     const valuesList = await Promise.all(files.map(async (file) => {
       let thumbnail: string | null = null;
       if (THUMBNAIL_IMAGE_EXTENSIONS.has(file.extension)) {
-        const absPath = path.join(basePath, file.seriennummer, ...file.relativePath.split("/"));
+        const absPath = path.join(file.serialDir, ...file.relativePath.split("/"));
         thumbnail = await buildThumbnailDataUri(absPath, file.mtimeMs, file.size);
       }
       return {

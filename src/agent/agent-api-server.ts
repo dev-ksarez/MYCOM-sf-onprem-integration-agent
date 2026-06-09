@@ -6,6 +6,7 @@ import sharp from "sharp";
 import { triggerDashboardUpdate, getDashboardUpdateStatus } from "../server/dashboard-update-service";
 import { buildSystemHealthSnapshot, HealthSnapshot } from "../server/health-snapshot";
 import { readConfiguredSalesforceInstances, writeConfiguredSalesforceInstances, type SalesforceInstanceEnvConfig } from "../server/admin-data-service";
+import { isSafeGeraeteaktePathSegment, resolveGeraeteakteSerialDirectory } from "./geraeteakte-paths";
 
 const failedAuthAttempts = new Map<string, { count: number; resetAt: number }>();
 
@@ -68,11 +69,7 @@ function isValidSignedDownload(seriennummer: string, filename: string, exp: stri
 }
 
 function isSafePathSegment(segment: string): boolean {
-  if (!segment || segment.length > 255) return false;
-  if (segment === ".") return false;
-  if (segment.includes("..") || segment.includes("\0")) return false;
-  // Windows-reservierte Zeichen ausschliessen
-  return !/[<>:"|?*\x00-\x1f]/.test(segment);
+  return isSafeGeraeteaktePathSegment(segment);
 }
 
 interface FileEntry {
@@ -114,13 +111,7 @@ function listFilesForSerial(seriennummer: string): { seriennummer: string; files
   const basePath = getFileBrowseBasePath();
   if (!basePath) throw new HttpError(500, "FILE_BROWSE_BASE_PATH ist nicht konfiguriert");
 
-  const normalizedBase = path.resolve(basePath);
-  const targetDir = path.resolve(path.join(basePath, seriennummer));
-
-  // Path-Traversal-Schutz
-  if (!targetDir.startsWith(normalizedBase + path.sep) && targetDir !== normalizedBase) {
-    throw new HttpError(400, "Ungueltige Seriennummer (Pfad-Traversal)");
-  }
+  const targetDir = resolveSerialDirectoryOrHttpError(basePath, seriennummer).absolutePath;
 
   if (!fs.existsSync(targetDir)) return { seriennummer, files: [] };
 
@@ -178,11 +169,7 @@ function resolveSafeFilePath(seriennummer: string, relativePath: string): { file
   const basePath = getFileBrowseBasePath();
   if (!basePath) throw new HttpError(500, "FILE_BROWSE_BASE_PATH ist nicht konfiguriert");
 
-  const normalizedBase = path.resolve(basePath);
-  const targetDir = path.resolve(path.join(basePath, seriennummer));
-  if (!targetDir.startsWith(normalizedBase + path.sep) && targetDir !== normalizedBase) {
-    throw new HttpError(400, "Ungueltige Seriennummer (Pfad-Traversal)");
-  }
+  const targetDir = resolveSerialDirectoryOrHttpError(basePath, seriennummer).absolutePath;
 
   const filePath = path.resolve(path.join(targetDir, ...segments));
   if (!filePath.startsWith(targetDir + path.sep)) {
@@ -194,6 +181,14 @@ function resolveSafeFilePath(seriennummer: string, relativePath: string): { file
   }
 
   return { filePath, baseName: segments[segments.length - 1] };
+}
+
+function resolveSerialDirectoryOrHttpError(basePath: string, seriennummer: string): { absolutePath: string } {
+  try {
+    return resolveGeraeteakteSerialDirectory(basePath, seriennummer);
+  } catch (error) {
+    throw new HttpError(400, error instanceof Error ? error.message : "Ungueltige Seriennummer");
+  }
 }
 
 function streamFile(res: http.ServerResponse, seriennummer: string, relativePath: string, inline = false): Promise<void> {
