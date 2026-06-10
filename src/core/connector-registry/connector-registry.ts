@@ -2,6 +2,7 @@ import { ConnectorConfig } from "../../clients/salesforce/salesforce-client";
 import { MockConnector } from "../../connectors/mock/mock-connector";
 import { TargetConnector } from "../../types/target-connector";
 import { MssqlConnector } from "../../connectors/mssql/mssql-connector";
+import { OracleConnector } from "../../connectors/oracle/oracle-connector";
 import { FileMakerConnector } from "../../connectors/filemaker/filemaker-connector";
 
 interface CacheEntry {
@@ -56,6 +57,9 @@ export class ConnectorRegistry {
         break;
       case "mssql":
         connector = new MssqlConnector(config);
+        break;
+      case "oracle":
+        connector = new OracleConnector(config);
         break;
       case "filemaker":
       case "filemaker_data_api":

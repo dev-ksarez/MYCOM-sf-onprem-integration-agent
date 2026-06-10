@@ -11,15 +11,18 @@ import { AccountExportJob } from "../job-runner/account-export-job";
 import { SalesforceAccountSource } from "../../source/salesforce/salesforce-account-source";
 import { SalesforceSoqlSourceAdapter } from "../../source-adapters/salesforce/salesforce-soql-source-adapter";
 import { MssqlQuerySourceAdapter } from "../../source-adapters/mssql/mssql-query-source-adapter";
+import { OracleQuerySourceAdapter } from "../../source-adapters/oracle/oracle-query-source-adapter";
 import { FileMakerSourceAdapter } from "../../source-adapters/filemaker/filemaker-source-adapter";
 import { RestApiSourceAdapter } from "../../source-adapters/rest/rest-api-source-adapter";
 import { EndpointSourceAdapter } from "../../source-adapters/endpoint/endpoint-source-adapter";
 import { MssqlTargetAdapter } from "../../target-adapters/mssql/mssql-target-adapter";
+import { OracleTargetAdapter } from "../../target-adapters/oracle/oracle-target-adapter";
 import { FileSourceAdapter } from "../../source-adapters/file/file-source-adapter";
 import { FileTargetAdapter } from "../../target-adapters/file/file-target-adapter";
 import { SalesforceTargetAdapter } from "../../target-adapters/salesforce/salesforce-target-adapter";
 import { SalesforceGlobalPicklistTargetAdapter } from "../../target-adapters/salesforce/salesforce-global-picklist-target-adapter";
 import { MssqlConnector } from "../../connectors/mssql/mssql-connector";
+import { OracleConnector } from "../../connectors/oracle/oracle-connector";
 import { GenericRecord } from "../../types/generic-record";
 
 function isValidSalesforceIdentifier(value: string): boolean {
@@ -49,9 +52,11 @@ export class SalesforceToTargetJobExecutor implements JobExecutor {
     const isFileTarget = isFileScheduleType(schedule.targetType);
     const isGenericSalesforceToMssql =
       schedule.sourceType === "SALESFORCE_SOQL" && schedule.targetType === "MSSQL";
+    const isGenericSalesforceToOracle =
+      schedule.sourceType === "SALESFORCE_SOQL" && schedule.targetType === "ORACLE";
     const isGenericSalesforceToFile = schedule.sourceType === "SALESFORCE_SOQL" && isFileTarget;
 
-    return isGenericSalesforceToMssql || isGenericSalesforceToFile;
+    return isGenericSalesforceToMssql || isGenericSalesforceToOracle || isGenericSalesforceToFile;
   }
 
   public async execute(options: JobExecutionOptions): Promise<JobExecutionResult> {
@@ -78,10 +83,15 @@ export class SalesforceToTargetJobExecutor implements JobExecutor {
     const isFileTarget = isFileScheduleType(schedule.targetType);
     const isGenericSalesforceToMssql =
       schedule.sourceType === "SALESFORCE_SOQL" && schedule.targetType === "MSSQL";
+    const isGenericSalesforceToOracle =
+      schedule.sourceType === "SALESFORCE_SOQL" && schedule.targetType === "ORACLE";
     const isGenericSalesforceToFile = schedule.sourceType === "SALESFORCE_SOQL" && isFileTarget;
 
     if (isGenericSalesforceToMssql && !(connector instanceof MssqlConnector)) {
       throw new Error(`Connector type ${connectorConfig.connectorType} is not supported by MssqlTargetAdapter`);
+    }
+    if (isGenericSalesforceToOracle && !(connector instanceof OracleConnector)) {
+      throw new Error(`Connector type ${connectorConfig.connectorType} is not supported by OracleTargetAdapter`);
     }
 
     if (isGenericSalesforceToFile && !schedule.targetDefinition?.trim()) {
@@ -107,7 +117,9 @@ export class SalesforceToTargetJobExecutor implements JobExecutor {
     const sourceAdapter = new SalesforceSoqlSourceAdapter(salesforceClient, schedule.sourceDefinition);
     const targetAdapter = isGenericSalesforceToFile
       ? new FileTargetAdapter(connectorConfig, schedule.targetDefinition || "")
-      : new MssqlTargetAdapter(connector as MssqlConnector, schedule.targetDefinition);
+      : isGenericSalesforceToOracle
+        ? new OracleTargetAdapter(connector as OracleConnector, schedule.targetDefinition)
+        : new MssqlTargetAdapter(connector as MssqlConnector, schedule.targetDefinition);
     const job = new DataTransferJob(logger, sourceAdapter, targetAdapter);
     return await job.execute(transferContext, schedule.mappingDefinition);
   }
@@ -119,6 +131,7 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
     const isFileTarget = isFileScheduleType(schedule.targetType);
     const isRestSource = schedule.sourceType === "REST_API";
     const isFileMakerSource = schedule.sourceType === "FILEMAKER_SQL";
+    const isOracleSource = schedule.sourceType === "ORACLE_SQL";
     const isEndpointSource = schedule.sourceType === "ENDPOINT";
 
     const isGenericMssqlToSalesforce =
@@ -126,6 +139,11 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
     const isGenericMssqlToGlobalPicklist =
       schedule.sourceType === "MSSQL_SQL" && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericMssqlToFile = schedule.sourceType === "MSSQL_SQL" && isFileTarget;
+    const isGenericOracleToSalesforce =
+      isOracleSource && schedule.targetType === "SALESFORCE";
+    const isGenericOracleToGlobalPicklist =
+      isOracleSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
+    const isGenericOracleToFile = isOracleSource && isFileTarget;
     const isGenericRestToSalesforce = isRestSource && schedule.targetType === "SALESFORCE";
     const isGenericRestToGlobalPicklist = isRestSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericFileMakerToSalesforce = isFileMakerSource && schedule.targetType === "SALESFORCE";
@@ -135,11 +153,15 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
     const isGenericFileToSalesforce = isFileSource && schedule.targetType === "SALESFORCE";
     const isGenericFileToGlobalPicklist = isFileSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericFileToMssql = isFileSource && schedule.targetType === "MSSQL";
+    const isGenericFileToOracle = isFileSource && schedule.targetType === "ORACLE";
 
     return (
       isGenericMssqlToSalesforce ||
       isGenericMssqlToGlobalPicklist ||
       isGenericMssqlToFile ||
+      isGenericOracleToSalesforce ||
+      isGenericOracleToGlobalPicklist ||
+      isGenericOracleToFile ||
       isGenericRestToSalesforce ||
       isGenericRestToGlobalPicklist ||
       isGenericFileMakerToSalesforce ||
@@ -148,7 +170,8 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
       isGenericEndpointToGlobalPicklist ||
       isGenericFileToSalesforce ||
       isGenericFileToGlobalPicklist ||
-      isGenericFileToMssql
+      isGenericFileToMssql ||
+      isGenericFileToOracle
     );
   }
 
@@ -181,11 +204,15 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
     const isFileTarget = isFileScheduleType(schedule.targetType);
     const isRestSource = schedule.sourceType === "REST_API";
     const isFileMakerSource = schedule.sourceType === "FILEMAKER_SQL";
+    const isOracleSource = schedule.sourceType === "ORACLE_SQL";
     const isEndpointSource = schedule.sourceType === "ENDPOINT";
 
     const isGenericMssqlToFile = schedule.sourceType === "MSSQL_SQL" && isFileTarget;
+    const isGenericOracleToFile = isOracleSource && isFileTarget;
     const isGenericFileToMssql = isFileSource && schedule.targetType === "MSSQL";
+    const isGenericFileToOracle = isFileSource && schedule.targetType === "ORACLE";
     const isGenericMssqlToGlobalPicklist = schedule.sourceType === "MSSQL_SQL" && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
+    const isGenericOracleToGlobalPicklist = isOracleSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericRestToGlobalPicklist = isRestSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericFileMakerToGlobalPicklist = isFileMakerSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
     const isGenericEndpointToGlobalPicklist = isEndpointSource && schedule.targetType === "SALESFORCE_GLOBAL_PICKLIST";
@@ -196,19 +223,24 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
     if ((isGenericFileToMssql || isGenericMssqlToFile) && !(connector instanceof MssqlConnector) && !isFileConnector) {
       throw new Error(`Connector type ${connectorConfig.connectorType} is not supported by MssqlTargetAdapter`);
     }
+    if ((isGenericFileToOracle || isGenericOracleToFile) && !(connector instanceof OracleConnector) && !isFileConnector) {
+      throw new Error(`Connector type ${connectorConfig.connectorType} is not supported by OracleTargetAdapter`);
+    }
 
     const transferContext: TransferContext = {
       runId: context.runId,
       correlationId: context.correlationId,
       scheduleId: context.scheduleId,
       direction: schedule.direction || "Inbound",
-      sourceType: schedule.sourceType || (isFileSource ? "FILE_CSV" : isRestSource ? "REST_API" : "MSSQL_SQL"),
+      sourceType: schedule.sourceType || (isFileSource ? "FILE_CSV" : isRestSource ? "REST_API" : isOracleSource ? "ORACLE_SQL" : "MSSQL_SQL"),
       targetType:
         schedule.targetType ||
-        (isGenericMssqlToGlobalPicklist || isGenericFileToGlobalPicklist || isGenericEndpointToGlobalPicklist
+        (isGenericMssqlToGlobalPicklist || isGenericOracleToGlobalPicklist || isGenericFileToGlobalPicklist || isGenericEndpointToGlobalPicklist
           ? "SALESFORCE_GLOBAL_PICKLIST"
-          : isGenericMssqlToFile
+          : isGenericMssqlToFile || isGenericOracleToFile
             ? "FILE_CSV"
+            : isGenericFileToOracle
+              ? "ORACLE"
             : isGenericFileToMssql
               ? "MSSQL"
               : "SALESFORCE"),
@@ -229,13 +261,17 @@ export class SourceToSalesforceJobExecutor implements JobExecutor {
         ? new RestApiSourceAdapter(connectorConfig, schedule.sourceDefinition)
       : isFileMakerSource
         ? new FileMakerSourceAdapter(connectorConfig, schedule.sourceDefinition)
+      : isOracleSource
+        ? new OracleQuerySourceAdapter(connectorConfig, schedule.sourceDefinition)
       : new MssqlQuerySourceAdapter(connectorConfig, schedule.sourceDefinition);
 
-    const targetAdapter = isGenericMssqlToFile
+    const targetAdapter = isGenericMssqlToFile || isGenericOracleToFile
       ? new FileTargetAdapter(connectorConfig, schedule.targetDefinition)
+      : isGenericFileToOracle
+        ? new OracleTargetAdapter(connector as OracleConnector, schedule.targetDefinition)
       : isGenericFileToMssql
         ? new MssqlTargetAdapter(connector as MssqlConnector, schedule.targetDefinition)
-        : isGenericMssqlToGlobalPicklist || isGenericRestToGlobalPicklist || isGenericFileMakerToGlobalPicklist || isGenericEndpointToGlobalPicklist || isGenericFileToGlobalPicklist
+        : isGenericMssqlToGlobalPicklist || isGenericOracleToGlobalPicklist || isGenericRestToGlobalPicklist || isGenericFileMakerToGlobalPicklist || isGenericEndpointToGlobalPicklist || isGenericFileToGlobalPicklist
           ? new SalesforceGlobalPicklistTargetAdapter(salesforceClient, schedule.targetDefinition, schedule.lastRunAt)
           : new SalesforceTargetAdapter(salesforceClient, schedule.targetDefinition, connectorConfig, schedule.lastRunAt);
 

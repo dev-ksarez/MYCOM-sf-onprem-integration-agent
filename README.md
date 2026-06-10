@@ -273,8 +273,9 @@ Persistenz:
 - `npm run win:update-now` - Manuelles Update ausfuehren
 - `npm run win:update-existing` - Bestehende Windows-Installation auf Latest oder Ziel-Release aktualisieren
 - `npm run win:register-updater` - Rueckwaertskompatibler Alias, konfiguriert jetzt den AutoUpdater-Dienst
-- `npm run win:build-package` - Kunden-ZIP erzeugen
+- `npm run win:build-package` - Kunden-ZIP inkl. `node_modules` erzeugen
 - `npm run win:build-package:with-node-modules` - Kunden-ZIP inkl. `node_modules`
+- `npm run win:build-package:without-node-modules` - Kunden-ZIP ohne `node_modules` erzeugen; nur nutzen, wenn der Kunde `npm ci --omit=dev` ausführen kann
 - `npm run init:installation -- --mode SAGE100` - Interaktive Erstinstallation (Salesforce + SAGE100 SQL + Basis-Importprofile)
 - `npm run sf:deploy-metadata` - Salesforce Metadaten deployen
 

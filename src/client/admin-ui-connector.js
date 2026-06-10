@@ -8,19 +8,20 @@ function renderConnectors() {
   const summary = document.getElementById('connectors-summary');
   const sqlSelect = document.getElementById('sql-connector-select');
 
-  const mssqlItems = state.connectors.filter((item) => String(item.connectorType).toLowerCase() === 'mssql');
+  const mssqlItems = state.connectors.filter((item) => ['mssql', 'oracle'].includes(String(item.connectorType).toLowerCase()));
   if (sqlSelect) {
     sqlSelect.innerHTML = mssqlItems.map((item) => '<option value="' + esc(item.id) + '">' + esc(item.name) + '</option>').join('');
     if (!sqlSelect.innerHTML) {
-      sqlSelect.innerHTML = '<option value="">Keine MSSQL-Connectoren</option>';
+      sqlSelect.innerHTML = '<option value="">Keine SQL-Connectoren</option>';
     }
   }
 
   const totalConnectors = (state.connectors || []).length;
   const activeConnectors = (state.connectors || []).filter((item) => item.active).length;
   const testedConnectors = Object.keys(state.connectorTestResults || {}).length;
+  const metadataConnectors = Object.keys(state.connectorMetadataResults || {}).length;
   if (summary) {
-    summary.textContent = totalConnectors + ' Connectoren, ' + activeConnectors + ' aktiv, ' + testedConnectors + ' mit Teststatus';
+    summary.textContent = totalConnectors + ' Connectoren, ' + activeConnectors + ' aktiv, ' + testedConnectors + ' mit Teststatus, ' + metadataConnectors + ' mit Metadatenstatus';
   }
 
   if (!state.connectors.length) {
@@ -38,12 +39,12 @@ function renderConnectors() {
   function buildConnectorFacts(item) {
     const parameters = item && typeof item.parameters === 'object' && !Array.isArray(item.parameters) ? item.parameters : {};
     const filePaths = item && item.filePaths && typeof item.filePaths === 'object' ? item.filePaths : null;
-    if (String(item.connectorType || '').toLowerCase() === 'mssql') {
+    if (['mssql', 'oracle'].includes(String(item.connectorType || '').toLowerCase())) {
       const schemaName = parameters.schema || parameters.schemaName;
       const tableName = parameters.table || parameters.tableName;
       return [
         'Server: ' + esc(parameters.server || '-'),
-        'DB: ' + esc(parameters.database || '-'),
+        'DB: ' + esc(parameters.database || parameters.serviceName || parameters.sid || parameters.connectString || '-'),
         'Schema/Tabelle: ' + esc([schemaName, tableName].filter(Boolean).join('.') || '-')
       ];
     }
@@ -120,6 +121,34 @@ function renderConnectors() {
     '</div>';
   }
 
+  function supportsConnectorMetadataImport(item) {
+    const normalizedType = normalizeConnectorType(item?.connectorType || '');
+    return normalizedType === 'MSSQL' || normalizedType === 'ORACLE' || normalizedType === 'FILEMAKER';
+  }
+
+  function buildConnectorMetadataMarkup(item) {
+    if (!supportsConnectorMetadataImport(item)) {
+      return '';
+    }
+    const result = state.connectorMetadataResults ? state.connectorMetadataResults[item.id] : null;
+    if (!result) {
+      return '<div class="small text-secondary">Metadaten: noch nicht importiert.</div>';
+    }
+    if (result.pending) {
+      return '<div class="alert alert-info py-2 mb-0 small">Metadatenimport läuft...</div>';
+    }
+    const ok = String(result.status || '').toLowerCase() === 'success' || result.ok === true;
+    const tone = ok ? 'success' : 'danger';
+    const details = ok
+      ? String(result.tableCount || 0) + ' Tabellen, ' + String(result.fieldCount || 0) + ' Felder importiert.'
+      : (result.errorMessage || result.message || 'Metadatenimport fehlgeschlagen');
+    return '<div class="alert alert-' + tone + ' py-2 mb-0 small">' +
+      '<div class="fw-semibold mb-1">Metadaten ' + (ok ? 'importiert' : 'fehlgeschlagen') + '</div>' +
+      '<div>' + esc(details) + '</div>' +
+      (result.refreshedAt ? '<div class="text-secondary mt-1">Stand: ' + esc(formatDate(result.refreshedAt, 'short')) + '</div>' : '') +
+    '</div>';
+  }
+
   function buildConnectorNotificationMarkup(item) {
     const parameters = item && typeof item.parameters === 'object' && !Array.isArray(item.parameters) ? item.parameters : {};
     const ownerId = String(parameters.notificationTaskOwnerId || '').trim();
@@ -171,12 +200,14 @@ function renderConnectors() {
             '<div class="d-flex flex-wrap gap-1 justify-content-end">' +
               '<button class="btn btn-sm btn-outline-primary" data-edit-connector="' + esc(item.id) + '">Öffnen</button>' +
               '<button class="btn btn-sm btn-outline-secondary" data-test-connector="' + esc(item.id) + '">Testen</button>' +
+              (supportsConnectorMetadataImport(item) ? '<button class="btn btn-sm btn-outline-secondary" data-import-connector-metadata="' + esc(item.id) + '">Metadaten</button>' : '') +
               (isEndpointConnectorType(item.connectorType) ? '<button class="btn btn-sm btn-outline-secondary" data-export-postman="' + esc(item.id) + '">Postman</button>' : '') +
               '<button class="btn btn-sm btn-outline-danger" data-delete-connector="' + esc(item.id) + '">Löschen</button>' +
             '</div>' +
           '</div>' +
           '<div class="small d-grid gap-1">' + buildConnectorFacts(item).map((line) => '<div>' + line + '</div>').join('') + '</div>' +
           '<div>' + buildConnectorNotificationMarkup(item) + '</div>' +
+          '<div>' + buildConnectorMetadataMarkup(item) + '</div>' +
           '<div>' + buildConnectorTestMarkup(item) + '</div>' +
         '</div>' +
       '</div>' +
@@ -222,6 +253,40 @@ function renderConnectors() {
     });
   });
 
+  panels.querySelectorAll('button[data-import-connector-metadata]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const connectorId = String(button.getAttribute('data-import-connector-metadata') || '').trim();
+      const connector = (state.connectors || []).find((item) => String(item.id || '').trim() === connectorId);
+      if (!connectorId) {
+        return;
+      }
+      state.connectorMetadataResults[connectorId] = {
+        pending: true,
+        status: 'running',
+        connectorId,
+        connectorName: connector?.name || connectorId,
+        connectorType: connector?.connectorType || ''
+      };
+      renderConnectors();
+      try {
+        const result = await requestJson('/api/connectors/' + encodeURIComponent(connectorId) + '/metadata/import', { method: 'POST' });
+        state.connectorMetadataResults[connectorId] = result;
+        showInfo('Metadaten importiert: ' + String(result.tableCount || 0) + ' Tabellen, ' + String(result.fieldCount || 0) + ' Felder.');
+      } catch (error) {
+        state.connectorMetadataResults[connectorId] = {
+          status: 'error',
+          connectorId,
+          connectorName: connector?.name || connectorId,
+          connectorType: connector?.connectorType || '',
+          errorMessage: error.message || 'Metadatenimport fehlgeschlagen',
+          refreshedAt: new Date().toISOString()
+        };
+        showError(error.message || 'Metadatenimport fehlgeschlagen');
+      }
+      renderConnectors();
+    });
+  });
+
   panels.querySelectorAll('button[data-export-postman]').forEach((button) => {
     button.addEventListener('click', async () => {
       const connectorId = String(button.getAttribute('data-export-postman') || '').trim();
@@ -261,6 +326,7 @@ function renderConnectors() {
 
       await requestJson('/api/connectors/' + encodeURIComponent(connectorId), { method: 'DELETE' });
       delete state.connectorTestResults[connectorId];
+      delete state.connectorMetadataResults[connectorId];
       await refresh();
     });
   });

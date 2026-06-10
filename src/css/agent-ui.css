@@ -235,6 +235,20 @@ body {
   fill: #e0f1e6;
 }
 
+.graph-connector-oracle .graph-card-bg {
+  fill: #fff1f0;
+  stroke: #c74634;
+}
+
+.graph-connector-oracle .graph-accent,
+.graph-connector-oracle .graph-icon {
+  fill: #c74634;
+}
+
+.graph-connector-oracle .graph-icon-badge {
+  fill: #ffe0dc;
+}
+
 .graph-connector-file .graph-card-bg {
   fill: #fff8ec;
   stroke: #d78c1d;
@@ -389,6 +403,10 @@ body {
 
 .connector-type-visual.graph-connector-mssql .connector-type-visual-bg {
   background: linear-gradient(135deg, rgba(68, 68, 138, 0.22), rgba(116, 60, 132, 0.16));
+}
+
+.connector-type-visual.graph-connector-oracle .connector-type-visual-bg {
+  background: linear-gradient(135deg, rgba(199, 70, 52, 0.22), rgba(123, 34, 28, 0.14));
 }
 
 .connector-type-visual.graph-connector-file .connector-type-visual-bg {

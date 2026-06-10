@@ -2976,7 +2976,7 @@ ${renderAISchedulerAssistantModule()}
                 <div class="row g-2">
                   <div class="col-md-12"><div id="sch-source-type-profile" class="alert alert-light border small mb-0">Bitte Quelle und Source Type wählen.</div></div>
                   <div class="col-md-6"><label class="form-label">Source System</label><select id="sch-source-system" class="form-select"><option value="">- Wählen -</option></select></div>
-                  <div class="col-md-6"><label class="form-label">Source Type</label><select id="sch-source-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE_SOQL">SALESFORCE_SOQL</option><option value="MSSQL_SQL">MSSQL_SQL</option><option value="FILEMAKER_SQL">FILEMAKER_SQL</option><option value="REST_API">REST_API</option><option value="ENDPOINT">ENDPOINT</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
+                  <div class="col-md-6"><label class="form-label">Source Type</label><select id="sch-source-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE_SOQL">SALESFORCE_SOQL</option><option value="MSSQL_SQL">MSSQL_SQL</option><option value="ORACLE_SQL">ORACLE_SQL</option><option value="FILEMAKER_SQL">FILEMAKER_SQL</option><option value="REST_API">REST_API</option><option value="ENDPOINT">ENDPOINT</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
                   <div class="col-md-12">
                     <details class="json-field-collapsible">
                       <summary class="json-field-summary">Source Definition / Abfrage</summary>
@@ -3042,7 +3042,7 @@ ${renderAISchedulerAssistantModule()}
                     <select id="sch-object" class="form-select mt-1"><option value="">- Wählen -</option></select>
                   </div>
                   <div class="col-md-4"><label class="form-label">Operation</label><select id="sch-operation" class="form-select"><option value="">- Wählen -</option></select></div>
-                  <div class="col-md-4"><label class="form-label">Target Type</label><select id="sch-target-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE">SALESFORCE</option><option value="SALESFORCE_GLOBAL_PICKLIST">SALESFORCE_GLOBAL_PICKLIST</option><option value="MSSQL">MSSQL</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
+                  <div class="col-md-4"><label class="form-label">Target Type</label><select id="sch-target-type" class="form-select"><option value="">- Wählen -</option><option value="SALESFORCE">SALESFORCE</option><option value="SALESFORCE_GLOBAL_PICKLIST">SALESFORCE_GLOBAL_PICKLIST</option><option value="MSSQL">MSSQL</option><option value="ORACLE">ORACLE</option><option value="FILE_CSV">FILE_CSV</option><option value="FILE_EXCEL">FILE_EXCEL</option><option value="FILE_JSON">FILE_JSON</option></select></div>
                   <div class="col-md-4"><label class="form-label">Direction</label><select id="sch-direction" class="form-select"><option value="">- Wählen -</option></select></div>
                   <div id="sch-external-id-wrap" class="col-md-4 d-none"><label id="sch-external-id-label" class="form-label">Upsert Feld</label><select id="sch-external-id-field" class="form-select"><option value="">- Upsert Feld wählen -</option></select><div id="sch-external-id-help" class="form-text">Wählen Sie das Feld, das für Upsert verwendet werden soll.</div></div>
                   <div id="sch-pricebook2id-wrap" class="col-md-4 d-none"><label class="form-label">Pricebook</label><select id="sch-pricebook2id" class="form-select"><option value="">- Pricebook wählen -</option></select><div id="sch-pricebook2id-help" class="form-text">Optional als festes Ziel-Pricebook für PricebookEntry-Upserts.</div></div>
@@ -3278,6 +3278,7 @@ ${renderAISchedulerAssistantModule()}
                   <label class="form-label fw-bold mb-2">Welcher Connectortyp soll angelegt werden?</label>
                   <select id="con-wizard-type" class="form-select d-none">
                     <option value="MSSQL">MSSQL</option>
+                    <option value="ORACLE">Oracle</option>
                     <option value="FILEMAKER">FileMaker</option>
                     <option value="POSTGRESQL">PostgreSQL</option>
                     <option value="MYSQL">MySQL</option>
@@ -3290,7 +3291,7 @@ ${renderAISchedulerAssistantModule()}
                   </select>
                   <div class="connector-type-cards-grid">
                     <div class="connector-type-card" data-type="MSSQL">
-                      <div class="connector-type-card-icon">🖧</div>
+                      <div class="connector-type-card-icon">SQL</div>
                       <div class="connector-type-card-title">MSSQL</div>
                       <div class="connector-type-card-desc">Microsoft SQL Server</div>
                     </div>
@@ -3303,6 +3304,11 @@ ${renderAISchedulerAssistantModule()}
                       <div class="connector-type-card-icon">🐬</div>
                       <div class="connector-type-card-title">MySQL</div>
                       <div class="connector-type-card-desc">MySQL / MariaDB</div>
+                    </div>
+                    <div class="connector-type-card" data-type="ORACLE">
+                      <div class="connector-type-card-icon">ORA</div>
+                      <div class="connector-type-card-title">Oracle</div>
+                      <div class="connector-type-card-desc">Oracle Database</div>
                     </div>
                     <div class="connector-type-card" data-type="FILEMAKER">
                       <div class="connector-type-card-icon">⏹</div>
@@ -3349,7 +3355,7 @@ ${renderAISchedulerAssistantModule()}
             <div class="connector-wizard-panel d-none" data-step-panel="2">
               <div class="row g-2">
                 <div class="col-md-4"><label class="form-label">Name</label><input id="con-name" class="form-control" /></div>
-                <div class="col-md-4"><label class="form-label">Target System</label><select id="con-target-system" class="form-select"><option value="">- Wählen -</option><option value="Agent">Agent</option><option value="Salesforce">Salesforce</option><option value="MSSQL">MSSQL</option><option value="Sage100">Sage100</option><option value="CSV">CSV</option><option value="FileMaker">FileMaker</option><option value="REST API">REST API</option><option value="Mock">Mock</option></select><div class="form-text">Technisches System, zu dem dieser Connector gehört. Der Assistent setzt einen passenden Vorschlag je Typ.</div></div>
+                <div class="col-md-4"><label class="form-label">Target System</label><select id="con-target-system" class="form-select"><option value="">- Wählen -</option><option value="Agent">Agent</option><option value="Salesforce">Salesforce</option><option value="MSSQL">MSSQL</option><option value="ORACLE">Oracle</option><option value="Sage100">Sage100</option><option value="CSV">CSV</option><option value="FileMaker">FileMaker</option><option value="REST API">REST API</option><option value="Mock">Mock</option></select><div class="form-text">Technisches System, zu dem dieser Connector gehört. Der Assistent setzt einen passenden Vorschlag je Typ.</div></div>
                 <div class="col-md-4"><label class="form-label">Direction</label><select id="con-direction" class="form-select"><option value="">- Wählen -</option><option value="Inbound">Inbound</option><option value="Outbound">Outbound</option><option value="Bidirectional">Bidirectional</option></select><div class="form-text">Inbound liest in Richtung Salesforce, Outbound exportiert aus Salesforce, Endpoint nimmt Requests entgegen.</div></div>
                 <div class="col-md-4"><label class="form-label">Secret Key (ENV)</label><input id="con-secret" class="form-control" placeholder="z. B. MSSQL_DEV_PASSWORD" /><div id="con-secret-help" class="form-text">Name einer Umgebungsvariable; Secret-Werte selbst werden nicht in Salesforce gespeichert.</div></div>
                 <div class="col-md-2"><label class="form-label">Timeout</label><input id="con-timeout" type="number" class="form-control" /><div class="form-text">Timeout in Millisekunden für erreichbare Gegenstellen.</div></div>
@@ -3383,13 +3389,18 @@ ${renderAISchedulerAssistantModule()}
                   <div id="con-sql-settings-title" class="fw-semibold mb-2">SQL Verbindung</div>
                   <div id="con-sql-settings-text" class="small text-secondary mb-2">Pflicht: Server, Datenbank und Benutzer. Bevorzugt Secret Key (ENV) statt Klartext-Passwort. Sichere Defaults: Encrypt aktiv, Trust Server Certificate deaktiviert.</div>
                   <div class="row g-2">
-                    <div class="col-md-4"><label class="form-label">Server / Host</label><input id="con-mssql-server" class="form-control" placeholder="sql.example.local" /></div>
+                    <div class="col-md-4 d-none" id="con-oracle-auth-type-wrap"><label class="form-label">Authentifizierungstyp</label><select id="con-oracle-auth-type" class="form-select"><option value="default">Standardwert</option><option value="password">Benutzername/Kennwort</option></select></div>
+                    <div class="col-md-4 d-none" id="con-oracle-role-wrap"><label class="form-label">Rolle</label><select id="con-oracle-role" class="form-select"><option value="default">Standardwert</option><option value="sysdba">SYSDBA</option><option value="sysoper">SYSOPER</option></select></div>
+                    <div class="col-md-12 d-none" id="con-oracle-connection-type-wrap"><label class="form-label">Verbindungstyp</label><select id="con-oracle-connection-type" class="form-select"><option value="basic">Einfach</option></select></div>
+                    <div class="col-md-4"><label id="con-sql-server-label" class="form-label">Server / Host</label><input id="con-mssql-server" class="form-control" placeholder="sql.example.local" /></div>
                     <div class="col-md-2"><label class="form-label">Port</label><input id="con-mssql-port" type="number" class="form-control" placeholder="1433" /></div>
-                    <div class="col-md-3"><label class="form-label">Datenbank</label><input id="con-mssql-database" class="form-control" placeholder="ERP" /></div>
-                    <div class="col-md-3"><label class="form-label">Benutzer</label><input id="con-mssql-user" class="form-control" placeholder="etl_user" /></div>
-                    <div class="col-md-4"><label class="form-label">Passwort</label><input id="con-mssql-password" type="password" class="form-control" placeholder="Optional: direkt speichern" autocomplete="new-password" /></div>
-                    <div class="col-md-3 d-flex align-items-end"><div class="form-check"><input id="con-mssql-encrypt" class="form-check-input" type="checkbox" checked /><label class="form-check-label">Encrypt</label></div></div>
-                    <div class="col-md-5 d-flex align-items-end"><div class="form-check"><input id="con-mssql-trust-server-certificate" class="form-check-input" type="checkbox" /><label class="form-check-label">Trust Server Certificate</label></div></div>
+                    <div class="col-md-3 d-none" id="con-oracle-service-type-wrap"><label class="form-label">Typ</label><select id="con-oracle-service-type" class="form-select"><option value="serviceName">Servicename</option><option value="sid">SID</option><option value="connectString">Connect String</option></select></div>
+                    <div class="col-md-3"><label id="con-sql-database-label" class="form-label">Datenbank</label><input id="con-mssql-database" class="form-control" placeholder="ERP" /></div>
+                    <div class="col-md-3"><label class="form-label">Benutzername</label><input id="con-mssql-user" class="form-control" placeholder="etl_user" /></div>
+                    <div class="col-md-4"><label class="form-label">Kennwort</label><input id="con-mssql-password" type="password" class="form-control" placeholder="Optional: direkt speichern" autocomplete="new-password" /></div>
+                    <div class="col-md-3 d-none align-items-end" id="con-oracle-save-password-wrap"><div class="form-check"><input id="con-oracle-save-password" class="form-check-input" type="checkbox" checked /><label class="form-check-label">Kennwort speichern</label></div></div>
+                    <div class="col-md-3 d-flex align-items-end" id="con-mssql-encrypt-wrap"><div class="form-check"><input id="con-mssql-encrypt" class="form-check-input" type="checkbox" checked /><label class="form-check-label">Encrypt</label></div></div>
+                    <div class="col-md-5 d-flex align-items-end" id="con-mssql-trust-server-certificate-wrap"><div class="form-check"><input id="con-mssql-trust-server-certificate" class="form-check-input" type="checkbox" /><label class="form-check-label">Trust Server Certificate</label></div></div>
                   </div>
                 </div>
                 </div>
@@ -3865,6 +3876,7 @@ export function createAppServer(
       const contextProjectId = String(requestUrl.searchParams.get("projectId") || "").trim();
       const contextTargetEnv = String(requestUrl.searchParams.get("targetEnv") || "").trim() === "production" ? "production" : "test";
       const connectorMetadataMatch = req.method === "GET" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/metadata$/) : null;
+      const connectorMetadataImportMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/metadata\/import$/) : null;
       const connectorPostmanCollectionMatch = req.method === "GET" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/postman-collection$/) : null;
       const connectorDeleteMatch = req.method === "DELETE" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)$/) : null;
       const scheduleRunMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/schedules\/([^/]+)\/run$/) : null;
@@ -5692,6 +5704,13 @@ export function createAppServer(
         const connectorId = decodeURIComponent(connectorMetadataMatch[1]);
         const result = await adminDataService.getConnectorMetadata(connectorId, instanceId);
         sendJson(200, result);
+        return;
+      }
+
+      if (connectorMetadataImportMatch) {
+        const connectorId = decodeURIComponent(connectorMetadataImportMatch[1]);
+        const result = await adminDataService.refreshConnectorMetadata(connectorId, instanceId);
+        sendJson(result.status === "success" ? 200 : 500, result);
         return;
       }
 

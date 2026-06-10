@@ -31,8 +31,9 @@
     "win:update-now": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/update-agent.ps1",
     "win:update-existing": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/update-existing-installation.ps1",
     "win:register-updater": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/register-agent-updater-task.ps1",
-    "win:build-package": "node scripts/windows/build-customer-package.js",
+    "win:build-package": "node scripts/windows/build-customer-package.js --include-node-modules",
     "win:build-package:with-node-modules": "node scripts/windows/build-customer-package.js --include-node-modules",
+    "win:build-package:without-node-modules": "node scripts/windows/build-customer-package.js",
     "init:installation": "node scripts/salesforce/init-installation.js",
     "sf:seed-dev-sandbox-scenarios": "node scripts/salesforce/seed-dev-sandbox-scenarios.js",
     "endpoint:smoke": "ts-node scripts/smoke-test-endpoint-source.ts",
@@ -51,6 +52,7 @@
     "jquery": "^3.7.1",
     "jsforce": "^3.10.14",
     "mssql": "^12.2.0",
+    "oracledb": "^7.0.0",
     "pino": "^9.4.0",
     "sharp": "^0.34.5",
     "sqlite3": "^6.0.1",
@@ -59,6 +61,7 @@
   "devDependencies": {
     "@types/mssql": "^9.1.9",
     "@types/node": "^22.7.4",
+    "@types/oracledb": "^7.0.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.6.2"
   }

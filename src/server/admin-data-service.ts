@@ -29,6 +29,7 @@ import { calculateNextRunAtFromTiming } from "../core/scheduler/schedule-timing"
 import { getDefaultStaleRunInactivityThresholdMinutes, getStaleRunInactivityThresholdMinutesForSchedule } from "../core/scheduler/stale-run-policy";
 import { MigrationStagingSqlite } from "../infrastructure/db/migration-staging-sqlite";
 import { MssqlDatabase } from "../infrastructure/db/mssql";
+import { OracleDatabase } from "../infrastructure/db/oracle";
 import { SqliteDatabase } from "../infrastructure/db/sqlite";
 import { FileMakerDataApiClient, parseFileMakerSourceDefinition } from "../connectors/filemaker/filemaker-data-api";
 import {
@@ -49,7 +50,7 @@ import { fetchRestRows, testRestConnection } from "../source-adapters/rest/rest-
 import { parseEndpointSourceDefinition, type EndpointSourceDefinition } from "../source-adapters/endpoint/endpoint-source-adapter";
 import { LocalScheduleHealthRepository, LocalScheduleHealthItem } from "../core/scheduler/local-schedule-health-repository";
 import { AIProviderConfig, normalizeAIProviderConfig, toPublicAIProviderConfig, type AIProviderPublicConfig } from "./ai-provider";
-import { DatabaseMetadata } from "../types/database-metadata";
+import { DatabaseColumnMetadata, DatabaseMetadata } from "../types/database-metadata";
 import { listGeraeteakteSerialDirectories, resolveExistingPathWithUnicodeFallback, resolveGeraeteaktePathConfig, resolveGeraeteakteSerialDirectory } from "../agent/geraeteakte-paths";
 
 export interface SalesforceInstanceEnvConfig {
@@ -1382,6 +1383,20 @@ export interface ConnectorListItem {
 export interface ConnectorMetadataResult extends DatabaseMetadata {
   tableCount: number;
   fieldCount: number;
+}
+
+export interface ConnectorMetadataSnapshot {
+  id: number;
+  projectId: string;
+  instanceId: string;
+  connectorId: string;
+  connectorName: string;
+  connectorType: string;
+  status: "success" | "error";
+  refreshedAt: string;
+  tableCount: number;
+  fieldCount: number;
+  errorMessage?: string;
 }
 
 export interface FileConnectorPathSummary {
@@ -4591,6 +4606,124 @@ export class AdminDataService {
     };
   }
 
+  public async refreshConnectorMetadata(connectorId: string, instanceId?: string): Promise<ConnectorMetadataSnapshot> {
+    const resolvedInstance = this.resolveRuntimeInstance(instanceId);
+    const configured = readConfiguredInstancesWithMetadata().find((item) => item.id === resolvedInstance.id);
+    const projectId = String(configured?.projectId || "default-project").trim() || "default-project";
+    const refreshedAt = new Date().toISOString();
+    const systemType = this.getConnectorMetadataSystemType(connectorId);
+
+    try {
+      const metadata = await this.getConnectorMetadata(connectorId, resolvedInstance.id);
+      return await withMetadataDatabase(async (database) => {
+        const snapshotResult = await database.run(
+          `INSERT INTO metadata_snapshots (
+            project_id, instance_id, system_type, status, refreshed_at, object_count, field_count, error_message
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [projectId, resolvedInstance.id, systemType, "success", refreshedAt, metadata.tableCount, metadata.fieldCount, null]
+        );
+
+        await database.run(
+          `DELETE FROM metadata_objects WHERE project_id = ? AND instance_id = ? AND system_type = ?`,
+          [projectId, resolvedInstance.id, systemType]
+        );
+        await database.run(
+          `DELETE FROM metadata_fields WHERE project_id = ? AND instance_id = ? AND system_type = ?`,
+          [projectId, resolvedInstance.id, systemType]
+        );
+
+        for (const table of metadata.tables) {
+          const objectName = String(table.name || "").trim();
+          if (!objectName) {
+            continue;
+          }
+          const label = String(table.label || [table.schema, table.name].filter(Boolean).join(".") || table.name).trim();
+          await database.run(
+            `INSERT OR REPLACE INTO metadata_objects (
+              project_id, instance_id, system_type, object_name, label, kind, queryable, field_count, refreshed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              projectId,
+              resolvedInstance.id,
+              systemType,
+              objectName,
+              label,
+              table.type || "table",
+              1,
+              table.columns.length,
+              refreshedAt
+            ]
+          );
+
+          for (const column of table.columns) {
+            const fieldName = String(column.name || "").trim();
+            if (!fieldName) {
+              continue;
+            }
+            await database.run(
+              `INSERT OR REPLACE INTO metadata_fields (
+                project_id, instance_id, system_type, object_name, field_name, label, type,
+                required, external_id, createable, updateable, reference_to_json, picklist_values_json, refreshed_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                projectId,
+                resolvedInstance.id,
+                systemType,
+                objectName,
+                fieldName,
+                column.label || fieldName,
+                this.formatDatabaseColumnType(column),
+                column.nullable === false ? 1 : 0,
+                column.primaryKey ? 1 : 0,
+                1,
+                1,
+                null,
+                null,
+                refreshedAt
+              ]
+            );
+          }
+        }
+
+        return {
+          id: snapshotResult.lastID,
+          projectId,
+          instanceId: resolvedInstance.id,
+          connectorId,
+          connectorName: metadata.connectorName,
+          connectorType: metadata.connectorType,
+          status: "success",
+          refreshedAt,
+          tableCount: metadata.tableCount,
+          fieldCount: metadata.fieldCount
+        };
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return await withMetadataDatabase(async (database) => {
+        const snapshotResult = await database.run(
+          `INSERT INTO metadata_snapshots (
+            project_id, instance_id, system_type, status, refreshed_at, object_count, field_count, error_message
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [projectId, resolvedInstance.id, systemType, "error", refreshedAt, 0, 0, message]
+        );
+        return {
+          id: snapshotResult.lastID,
+          projectId,
+          instanceId: resolvedInstance.id,
+          connectorId,
+          connectorName: connectorId,
+          connectorType: "",
+          status: "error",
+          refreshedAt,
+          tableCount: 0,
+          fieldCount: 0,
+          errorMessage: message
+        };
+      });
+    }
+  }
+
   private buildEndpointSchedulePostmanItem(
     schedule: ScheduleListItem,
     rootPath: string,
@@ -5730,6 +5863,48 @@ export class AdminDataService {
     }
   }
 
+  public async previewOracleSql(
+    connectorId: string,
+    query: string,
+    limit = 10,
+    instanceId?: string
+  ): Promise<SqlPreviewResult> {
+    const client = await this.createClient(instanceId);
+    const connector = await client.queryConnector(connectorId);
+    if (connector.connectorType.toLowerCase() !== "oracle") {
+      throw new Error(`Oracle SQL preview is only supported for Oracle connectors, got ${connector.connectorType}`);
+    }
+
+    const database = new OracleDatabase({
+      connectString: this.buildOracleConnectString(connector.parameters),
+      user: getRequiredString(connector.parameters, "user"),
+      password: resolvePassword(connector),
+      poolMax: getOptionalNumber(connector.parameters, "poolMax"),
+      poolMin: getOptionalNumber(connector.parameters, "poolMin"),
+      poolIncrement: getOptionalNumber(connector.parameters, "poolIncrement"),
+      poolTimeout: getOptionalNumber(connector.parameters, "poolTimeout")
+    });
+
+    const normalizedQuery = query.trim().replace(/;\s*$/, "");
+    if (!normalizedQuery) {
+      throw new Error("Oracle SQL query must not be empty");
+    }
+
+    const limitedQuery = `SELECT * FROM (${normalizedQuery}) preview_query FETCH FIRST ${Math.max(1, Math.min(limit, 100))} ROWS ONLY`;
+    try {
+      const result = await database.query<Record<string, unknown>>(limitedQuery);
+      const rows = result.rows.map((row) => ({ ...row }));
+      const fields = rows.length > 0 ? Object.keys(rows[0]) : [];
+      return {
+        fields,
+        rows,
+        rowCount: rows.length
+      };
+    } finally {
+      await database.close();
+    }
+  }
+
   public async previewSource(
     sourceType: string,
     sourceDefinition: string,
@@ -5752,6 +5927,14 @@ export class AdminDataService {
       }
 
       return this.previewSql(connectorId, parseQuerySourceDefinition(trimmedDefinition).queryText, normalizedLimit, instanceId);
+    }
+
+    if (normalizedType === "ORACLE_SQL") {
+      if (!connectorId) {
+        throw new Error("Für Oracle-Vorschau muss ein Oracle-Connector ausgewählt sein");
+      }
+
+      return this.previewOracleSql(connectorId, parseQuerySourceDefinition(trimmedDefinition).queryText, normalizedLimit, instanceId);
     }
 
     if (normalizedType === "FILEMAKER_SQL") {
@@ -5924,6 +6107,19 @@ export class AdminDataService {
       }
 
       return this.getMssqlSourceFields(connectorId, parseQuerySourceDefinition(sourceDefinition).queryText, instanceId);
+    }
+
+    if (normalizedType === "ORACLE_SQL") {
+      if (!connectorId) {
+        throw new Error("Für Oracle-Feldmetadaten muss ein Oracle-Connector ausgewählt sein");
+      }
+
+      const preview = await this.previewOracleSql(connectorId, parseQuerySourceDefinition(sourceDefinition).queryText, 1, instanceId);
+      return preview.fields.map((fieldName) => ({
+        name: fieldName,
+        label: fieldName,
+        type: "string"
+      }));
     }
 
     if (normalizedType === "FILEMAKER_SQL") {
@@ -8491,6 +8687,125 @@ export class AdminDataService {
     }
   }
 
+  private async getOracleTables(
+    connectorId: string,
+    instanceId?: string
+  ): Promise<SourceFieldMetadata[]> {
+    const client = await this.createClient(instanceId);
+    const connector = await client.queryConnector(connectorId);
+    if (connector.connectorType.toLowerCase() !== 'oracle') {
+      throw new Error(`Oracle-Tabellen werden nur für Oracle-Connectoren unterstützt, erhalten: ${connector.connectorType}`);
+    }
+
+    const database = new OracleDatabase({
+      connectString: this.buildOracleConnectString(connector.parameters),
+      user: getRequiredString(connector.parameters, 'user'),
+      password: resolvePassword(connector),
+      poolMax: getOptionalNumber(connector.parameters, 'poolMax'),
+      poolMin: getOptionalNumber(connector.parameters, 'poolMin'),
+      poolIncrement: getOptionalNumber(connector.parameters, 'poolIncrement'),
+      poolTimeout: getOptionalNumber(connector.parameters, 'poolTimeout')
+    });
+
+    try {
+      const result = await database.query<{ TABLE_NAME: string; OWNER: string }>(
+        `
+          SELECT OWNER, TABLE_NAME
+          FROM ALL_TABLES
+          WHERE OWNER NOT IN ('SYS', 'SYSTEM')
+          ORDER BY OWNER, TABLE_NAME
+        `
+      );
+      return result.rows.map((row) => ({
+        name: row.TABLE_NAME || '',
+        label: row.OWNER ? `${row.OWNER}.${row.TABLE_NAME}` : row.TABLE_NAME,
+        type: 'table'
+      }));
+    } finally {
+      await database.close();
+    }
+  }
+
+  private resolveOracleTargetTable(
+    connector: Pick<ConnectorConfig, "connectorType" | "parameters">,
+    requestedTargetObject?: string
+  ): { schemaName: string; tableName: string } | null {
+    const configuredSchema = String(connector.parameters?.schema || connector.parameters?.schemaName || connector.parameters?.user || "").trim().toUpperCase();
+    const configuredTable = String(connector.parameters?.table || connector.parameters?.tableName || "").trim().toUpperCase();
+    const requested = String(requestedTargetObject || "").trim().toUpperCase();
+
+    if (requested) {
+      const [schemaPart, tablePart] = requested.includes(".")
+        ? requested.split(".", 2)
+        : [configuredSchema, requested];
+      const schemaName = String(schemaPart || configuredSchema).trim().toUpperCase();
+      const tableName = String(tablePart || "").trim().toUpperCase();
+      if (schemaName && tableName) {
+        return { schemaName, tableName };
+      }
+    }
+
+    if (configuredSchema && configuredTable) {
+      return { schemaName: configuredSchema, tableName: configuredTable };
+    }
+
+    return null;
+  }
+
+  private async getOracleTargetFields(
+    connectorId: string,
+    targetObject?: string,
+    instanceId?: string
+  ): Promise<Array<{ name: string; type: string; label?: string }>> {
+    const client = await this.createClient(instanceId);
+    const connector = await client.queryConnector(connectorId);
+    if (connector.connectorType.toLowerCase() !== 'oracle') {
+      throw new Error(`Oracle-Zielfelder werden nur für Oracle-Connectoren unterstützt, erhalten: ${connector.connectorType}`);
+    }
+
+    const requestedTarget = this.resolveOracleTargetTable(connector, targetObject);
+    if (!requestedTarget) {
+      return [];
+    }
+
+    const database = new OracleDatabase({
+      connectString: this.buildOracleConnectString(connector.parameters),
+      user: getRequiredString(connector.parameters, 'user'),
+      password: resolvePassword(connector),
+      poolMax: getOptionalNumber(connector.parameters, 'poolMax'),
+      poolMin: getOptionalNumber(connector.parameters, 'poolMin'),
+      poolIncrement: getOptionalNumber(connector.parameters, 'poolIncrement'),
+      poolTimeout: getOptionalNumber(connector.parameters, 'poolTimeout')
+    });
+
+    try {
+      const result = await database.query<{
+        COLUMN_NAME: string;
+        DATA_TYPE: string;
+        DATA_LENGTH: number | null;
+      }>(
+        `
+          SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH
+          FROM ALL_TAB_COLUMNS
+          WHERE OWNER = :schemaName
+            AND TABLE_NAME = :tableName
+          ORDER BY COLUMN_ID
+        `,
+        requestedTarget
+      );
+
+      return result.rows.map((row) => ({
+        name: String(row.COLUMN_NAME || '').trim(),
+        type: row.DATA_LENGTH && row.DATA_LENGTH > 0
+          ? `${String(row.DATA_TYPE || 'unknown').trim()}(${row.DATA_LENGTH})`
+          : String(row.DATA_TYPE || 'unknown').trim(),
+        label: `${requestedTarget.schemaName}.${requestedTarget.tableName}.${String(row.COLUMN_NAME || '').trim()}`
+      })).filter((field) => field.name);
+    } finally {
+      await database.close();
+    }
+  }
+
   private normalizeTargetSystem(targetSystem?: string): string {
     return String(targetSystem || "")
       .trim()
@@ -8505,6 +8820,149 @@ export class AdminDataService {
       || normalizedTargetSystem === "MSSQLDATABASE"
       || normalizedTargetSystem === "MSSQLSQL"
       || normalizedTargetSystem === "MSSQLTABLE";
+  }
+
+  private isOracleTargetSystem(normalizedTargetSystem: string): boolean {
+    return normalizedTargetSystem === "ORACLE"
+      || normalizedTargetSystem === "ORACLEDB"
+      || normalizedTargetSystem === "ORACLEDATABASE"
+      || normalizedTargetSystem === "ORACLESQL"
+      || normalizedTargetSystem === "ORACLETABLE";
+  }
+
+  private getConnectorMetadataSystemType(connectorId: string): string {
+    return `connector:${String(connectorId || "").trim()}`;
+  }
+
+  private formatDatabaseColumnType(column: DatabaseColumnMetadata): string {
+    const baseType = String(column.type || "unknown").trim() || "unknown";
+    if (column.precision !== undefined && column.precision !== null && Number.isFinite(Number(column.precision))) {
+      const precision = Number(column.precision);
+      const scale = column.scale !== undefined && column.scale !== null && Number.isFinite(Number(column.scale))
+        ? Number(column.scale)
+        : undefined;
+      return scale !== undefined ? `${baseType}(${precision},${scale})` : `${baseType}(${precision})`;
+    }
+    if (column.length !== undefined && column.length !== null && Number.isFinite(Number(column.length)) && Number(column.length) > 0) {
+      return `${baseType}(${Number(column.length)})`;
+    }
+    return baseType;
+  }
+
+  private async getPersistedConnectorTargetObjects(
+    connectorId: string,
+    instanceId?: string
+  ): Promise<Array<{ name: string; label?: string; type: string }>> {
+    const resolvedInstance = this.resolveRuntimeInstance(instanceId);
+    const configured = readConfiguredInstancesWithMetadata().find((item) => item.id === resolvedInstance.id);
+    const projectId = String(configured?.projectId || "default-project").trim() || "default-project";
+    const systemType = this.getConnectorMetadataSystemType(connectorId);
+
+    return await withMetadataDatabase(async (database) => {
+      const snapshot = await database.get<Record<string, unknown>>(
+        `SELECT *
+         FROM metadata_snapshots
+         WHERE project_id = ? AND instance_id = ? AND system_type = ? AND status = 'success'
+         ORDER BY id DESC
+         LIMIT 1`,
+        [projectId, resolvedInstance.id, systemType]
+      );
+      if (!snapshot) {
+        return [];
+      }
+
+      const rows = await database.all<Record<string, unknown>>(
+        `SELECT *
+         FROM metadata_objects
+         WHERE project_id = ? AND instance_id = ? AND system_type = ?
+         ORDER BY label ASC, object_name ASC`,
+        [projectId, resolvedInstance.id, systemType]
+      );
+
+      return rows.map((row) => ({
+        name: String(row.object_name || "").trim(),
+        label: String(row.label || row.object_name || "").trim(),
+        type: String(row.kind || "table").trim() || "table"
+      })).filter((object) => object.name);
+    });
+  }
+
+  private async getPersistedConnectorTargetFields(
+    connectorId: string,
+    targetObject?: string,
+    instanceId?: string
+  ): Promise<Array<{ name: string; type: string; label?: string }>> {
+    const objectName = String(targetObject || "").trim();
+    if (!objectName) {
+      return [];
+    }
+
+    const resolvedInstance = this.resolveRuntimeInstance(instanceId);
+    const configured = readConfiguredInstancesWithMetadata().find((item) => item.id === resolvedInstance.id);
+    const projectId = String(configured?.projectId || "default-project").trim() || "default-project";
+    const systemType = this.getConnectorMetadataSystemType(connectorId);
+
+    return await withMetadataDatabase(async (database) => {
+      const snapshot = await database.get<Record<string, unknown>>(
+        `SELECT *
+         FROM metadata_snapshots
+         WHERE project_id = ? AND instance_id = ? AND system_type = ? AND status = 'success'
+         ORDER BY id DESC
+         LIMIT 1`,
+        [projectId, resolvedInstance.id, systemType]
+      );
+      if (!snapshot) {
+        return [];
+      }
+
+      const directRows = await database.all<Record<string, unknown>>(
+        `SELECT *
+         FROM metadata_fields
+         WHERE project_id = ? AND instance_id = ? AND system_type = ? AND object_name = ?
+         ORDER BY field_name ASC`,
+        [projectId, resolvedInstance.id, systemType, objectName]
+      );
+
+      let rows = directRows;
+      if (!rows.length && objectName.includes(".")) {
+        const tableName = objectName.split(".").pop() || objectName;
+        rows = await database.all<Record<string, unknown>>(
+          `SELECT *
+           FROM metadata_fields
+           WHERE project_id = ? AND instance_id = ? AND system_type = ? AND object_name = ?
+           ORDER BY field_name ASC`,
+          [projectId, resolvedInstance.id, systemType, tableName]
+        );
+      }
+
+      return rows.map((row) => ({
+        name: String(row.field_name || "").trim(),
+        label: String(row.label || row.field_name || "").trim(),
+        type: String(row.type || "unknown").trim() || "unknown"
+      })).filter((field) => field.name);
+    });
+  }
+
+  private buildOracleConnectString(parameters: Record<string, unknown>): string {
+    const connectString = String(parameters.connectString || parameters.connectionString || parameters.tnsName || "").trim();
+    if (connectString) {
+      return connectString;
+    }
+
+    const server = getRequiredString(parameters, "server");
+    const port = getOptionalNumber(parameters, "port") || 1521;
+    const serviceName = String(parameters.serviceName || parameters.service || parameters.database || "").trim();
+    const sid = String(parameters.sid || "").trim();
+
+    if (serviceName) {
+      return `${server}:${port}/${serviceName}`;
+    }
+
+    if (sid) {
+      return `${server}:${port}:${sid}`;
+    }
+
+    throw new Error("Missing required Oracle connector parameter: connectString or serviceName/sid");
   }
 
   public async getTargetObjects(
@@ -8536,7 +8994,30 @@ export class AdminDataService {
 
     if (this.isMssqlTargetSystem(normalizedTargetSystem) && connectorId) {
       try {
+        const persistedObjects = await this.getPersistedConnectorTargetObjects(connectorId, instanceId);
+        if (persistedObjects.length) {
+          return { objects: persistedObjects };
+        }
         const tables = await this.getMssqlTables(connectorId, instanceId);
+        return {
+          objects: tables.map((entry) => ({
+            name: entry.name,
+            label: entry.label,
+            type: "table"
+          }))
+        };
+      } catch {
+        return { objects: [] };
+      }
+    }
+
+    if (this.isOracleTargetSystem(normalizedTargetSystem) && connectorId) {
+      try {
+        const persistedObjects = await this.getPersistedConnectorTargetObjects(connectorId, instanceId);
+        if (persistedObjects.length) {
+          return { objects: persistedObjects };
+        }
+        const tables = await this.getOracleTables(connectorId, instanceId);
         return {
           objects: tables.map((entry) => ({
             name: entry.name,
@@ -8588,7 +9069,24 @@ export class AdminDataService {
 
     if (this.isMssqlTargetSystem(normalizedTargetSystem) && connectorId) {
       try {
+        const persistedFields = await this.getPersistedConnectorTargetFields(connectorId, targetObject, instanceId);
+        if (persistedFields.length) {
+          return { fields: persistedFields };
+        }
         const fields = await this.getMssqlTargetFields(connectorId, targetObject, instanceId);
+        return { fields };
+      } catch {
+        return { fields: [] };
+      }
+    }
+
+    if (this.isOracleTargetSystem(normalizedTargetSystem) && connectorId) {
+      try {
+        const persistedFields = await this.getPersistedConnectorTargetFields(connectorId, targetObject, instanceId);
+        if (persistedFields.length) {
+          return { fields: persistedFields };
+        }
+        const fields = await this.getOracleTargetFields(connectorId, targetObject, instanceId);
         return { fields };
       } catch {
         return { fields: [] };

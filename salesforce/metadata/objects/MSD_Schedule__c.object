@@ -100,6 +100,11 @@
                     <label>MSSQL</label>
                 </value>
                 <value>
+                    <fullName>ORACLE</fullName>
+                    <default>false</default>
+                    <label>Oracle</label>
+                </value>
+                <value>
                     <fullName>MOCK</fullName>
                     <default>false</default>
                     <label>Mock</label>

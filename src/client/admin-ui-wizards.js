@@ -172,6 +172,8 @@ function validateConnectorWizardStep(step) {
           !String(document.getElementById('con-mssql-user')?.value || '').trim()) {
         throw new Error(connectorType === 'FILEMAKER'
           ? 'Bitte Base URL, Datenbank und Benutzer für den FileMaker-Connector angeben.'
+          : connectorType === 'ORACLE'
+            ? 'Bitte Hostname, Servicename/SID und Benutzername für den Oracle-Connector angeben.'
           : 'Bitte Host, Datenbank und Benutzer für den SQL-Connector angeben.');
       }
     }

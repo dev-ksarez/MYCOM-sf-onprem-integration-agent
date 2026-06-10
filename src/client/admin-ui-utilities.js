@@ -313,6 +313,9 @@ function normalizeConnectorType(connectorType) {
   if (normalized === 'mysql') {
     return 'MYSQL';
   }
+  if (normalized === 'oracle' || normalized.includes('oracle')) {
+    return 'ORACLE';
+  }
   if (normalized === 'filemaker' || normalized === 'filemaker_data_api' || normalized.includes('filemaker')) {
     return 'FILEMAKER';
   }
@@ -336,7 +339,7 @@ function normalizeConnectorType(connectorType) {
 
 function isSqlConnectorType(connectorType) {
   const normalized = normalizeConnectorType(connectorType);
-  return normalized === 'MSSQL' || normalized === 'POSTGRESQL' || normalized === 'MYSQL' || normalized === 'FILEMAKER';
+  return normalized === 'MSSQL' || normalized === 'POSTGRESQL' || normalized === 'MYSQL' || normalized === 'ORACLE' || normalized === 'FILEMAKER';
 }
 
 function isRestConnectorType(connectorType) {
@@ -446,6 +449,9 @@ function inferScheduleSourceTypeFromConnector(connectorId) {
     if (normalizedConnectorType === 'FILEMAKER') {
       return pickFirstAvailableSelectValue(sourceTypeSelect, ['FILEMAKER_SQL']);
     }
+    if (normalizedConnectorType === 'ORACLE') {
+      return pickFirstAvailableSelectValue(sourceTypeSelect, ['ORACLE_SQL']);
+    }
     return pickFirstAvailableSelectValue(sourceTypeSelect, ['MSSQL_SQL', 'MSSQL']);
   }
 
@@ -480,6 +486,9 @@ function inferScheduleSourceSystemFromConnector(connectorId) {
   if (isSqlConnectorType(normalizedConnectorType)) {
     if (normalizedConnectorType === 'FILEMAKER') {
       return pickFirstAvailableSelectValue(sourceSystemSelect, ['FileMaker', 'FILEMAKER', 'Datenbank']);
+    }
+    if (normalizedConnectorType === 'ORACLE') {
+      return pickFirstAvailableSelectValue(sourceSystemSelect, ['Oracle', 'ORACLE', 'Datenbank']);
     }
     return pickFirstAvailableSelectValue(sourceSystemSelect, ['MS SQL', 'MSSQL', 'SQL', 'MS-SQL', 'Datenbank']);
   }
@@ -542,7 +551,7 @@ function applyScheduleSourceFieldPolicy(connectorId) {
   const sourceTypeLabel = document.querySelector('label[for="sch-source-type"]');
   const restoreAllSourceTypes = () => {
     const currentSourceType = String(sourceTypeSelect?.value || '').trim();
-    const allSourceTypes = ['SALESFORCE_SOQL', 'MSSQL_SQL', 'FILEMAKER_SQL', 'REST_API', 'ENDPOINT', 'FILE_CSV', 'FILE_EXCEL', 'FILE_JSON'];
+    const allSourceTypes = ['SALESFORCE_SOQL', 'MSSQL_SQL', 'ORACLE_SQL', 'FILEMAKER_SQL', 'REST_API', 'ENDPOINT', 'FILE_CSV', 'FILE_EXCEL', 'FILE_JSON'];
     if (sourceTypeSelect) {
       sourceTypeSelect.innerHTML = '<option value="">- Wählen -</option>' + allSourceTypes.map((value) => '<option value="' + esc(value) + '">' + esc(value) + '</option>').join('');
       if (currentSourceType && allSourceTypes.includes(currentSourceType)) {
@@ -573,6 +582,7 @@ function applyScheduleSourceFieldPolicy(connectorId) {
     FILE: ['FILE_CSV', 'FILE_EXCEL', 'FILE_JSON'],
     FILE_BINARY_SF_IMPORT: ['FILE_CSV', 'FILE_EXCEL', 'FILE_JSON'],
     FILEMAKER: ['FILEMAKER_SQL'],
+    ORACLE: ['ORACLE_SQL'],
     MSSQL: ['MSSQL_SQL'],
     POSTGRESQL: ['MSSQL_SQL'],
     MYSQL: ['MSSQL_SQL']
@@ -613,7 +623,7 @@ function getConnectorWizardTypeFromConnectorType(connectorType) {
   if (!normalized) {
     return 'MSSQL';
   }
-  if (['MSSQL', 'POSTGRESQL', 'MYSQL', 'FILEMAKER', 'FILE', 'FILE_BROWSE', 'REST_API', 'AGENT_ENDPOINT', 'FILE_BINARY_SF_IMPORT'].includes(normalized)) {
+  if (['MSSQL', 'POSTGRESQL', 'MYSQL', 'ORACLE', 'FILEMAKER', 'FILE', 'FILE_BROWSE', 'REST_API', 'AGENT_ENDPOINT', 'FILE_BINARY_SF_IMPORT'].includes(normalized)) {
     return normalized;
   }
   return 'CUSTOM';
@@ -1089,7 +1099,8 @@ function getConnectorIcon(connectorType, connectorName) {
   if (value.includes('filemaker')) return '▦';
   if (value.includes('filebrowse') || value.includes('file_browse') || value.includes('geraeteakte') || value.includes('geräteakte')) return '🗂';
   if (value.includes('rest')) return '🌐';
-  if (value.includes('mssql') || value.includes('sql')) return '🗄';
+  if (value.includes('oracle')) return 'ORA';
+  if (value.includes('mssql') || value.includes('sql')) return 'SQL';
   if (value.includes('file') || value.includes('csv') || value.includes('excel') || value.includes('json')) return '📄';
   if (value.includes('mock') || value.includes('test')) return '🧪';
   if (value.includes('sage')) return '📚';
@@ -1102,6 +1113,7 @@ function getConnectorGraphClass(connectorType, connectorName) {
   if (value.includes('filemaker')) return 'graph-connector-erp';
   if (value.includes('filebrowse') || value.includes('file_browse') || value.includes('geraeteakte') || value.includes('geräteakte')) return 'graph-connector-file';
   if (value.includes('rest')) return 'graph-connector-rest';
+  if (value.includes('oracle')) return 'graph-connector-oracle';
   if (value.includes('mssql') || value.includes('sql')) return 'graph-connector-mssql';
   if (value.includes('file') || value.includes('csv') || value.includes('excel') || value.includes('json')) return 'graph-connector-file';
   if (value.includes('mock') || value.includes('test')) return 'graph-connector-mock';

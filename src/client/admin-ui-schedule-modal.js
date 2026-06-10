@@ -235,6 +235,18 @@ function updateConnectorConfigUi() {
   const hint = document.getElementById('con-wizard-hint');
   const sqlTitle = document.getElementById('con-sql-settings-title');
   const sqlText = document.getElementById('con-sql-settings-text');
+  const sqlServerLabel = document.getElementById('con-sql-server-label');
+  const sqlDatabaseLabel = document.getElementById('con-sql-database-label');
+  const sqlServerInput = document.getElementById('con-mssql-server');
+  const sqlPortInput = document.getElementById('con-mssql-port');
+  const sqlDatabaseInput = document.getElementById('con-mssql-database');
+  const oracleAuthTypeWrap = document.getElementById('con-oracle-auth-type-wrap');
+  const oracleRoleWrap = document.getElementById('con-oracle-role-wrap');
+  const oracleConnectionTypeWrap = document.getElementById('con-oracle-connection-type-wrap');
+  const oracleServiceTypeWrap = document.getElementById('con-oracle-service-type-wrap');
+  const oracleSavePasswordWrap = document.getElementById('con-oracle-save-password-wrap');
+  const mssqlEncryptWrap = document.getElementById('con-mssql-encrypt-wrap');
+  const mssqlTrustServerCertificateWrap = document.getElementById('con-mssql-trust-server-certificate-wrap');
   if (!fileWrap || !fileBrowseWrap || !mssqlWrap || !restWrap || !binaryWrap) {
     return;
   }
@@ -278,6 +290,8 @@ function updateConnectorConfigUi() {
       ? 'PostgreSQL Verbindung'
       : connectorType === 'MYSQL'
         ? 'MySQL Verbindung'
+        : connectorType === 'ORACLE'
+          ? 'Oracle Verbindung'
         : connectorType === 'FILEMAKER'
           ? 'FileMaker Data API'
           : 'MSSQL Verbindung';
@@ -287,9 +301,53 @@ function updateConnectorConfigUi() {
       ? 'Pflicht: Host, Datenbank und Benutzer. Standard-Port ist 5432.'
       : connectorType === 'MYSQL'
         ? 'Pflicht: Host, Datenbank und Benutzer. Standard-Port ist 3306.'
+        : connectorType === 'ORACLE'
+          ? 'Pflicht: Hostname, Servicename oder SID und Benutzername. Standard-Port ist 1522.'
         : connectorType === 'FILEMAKER'
           ? 'Pflicht: Data-API-Base-URL, Datenbank und Benutzer. Passwort kann direkt eingegeben oder per Secret Key (ENV) gelesen werden.'
           : 'Pflicht: Server, Datenbank und Benutzer. Passwort kann direkt eingegeben werden. Alternativ kann das Passwort über Secret Key (ENV) aus einer Umgebungsvariable gelesen werden.';
+  }
+
+  const isOracle = connectorType === 'ORACLE';
+  [oracleAuthTypeWrap, oracleRoleWrap, oracleConnectionTypeWrap, oracleServiceTypeWrap, oracleSavePasswordWrap].forEach((element) => {
+    if (element) {
+      element.classList.toggle('d-none', !isOracle);
+      element.classList.toggle('d-flex', isOracle && element.id === 'con-oracle-save-password-wrap');
+    }
+  });
+  [mssqlEncryptWrap, mssqlTrustServerCertificateWrap].forEach((element) => {
+    if (element) {
+      element.classList.toggle('d-none', isOracle);
+    }
+  });
+  if (sqlServerLabel) {
+    sqlServerLabel.textContent = isOracle ? 'Hostname' : 'Server / Host';
+  }
+  if (sqlDatabaseLabel) {
+    const serviceType = String(document.getElementById('con-oracle-service-type')?.value || 'serviceName');
+    sqlDatabaseLabel.textContent = isOracle
+      ? serviceType === 'sid'
+        ? 'SID'
+        : serviceType === 'connectString'
+          ? 'Connect String'
+          : 'Servicename'
+      : 'Datenbank';
+  }
+  if (sqlServerInput) {
+    sqlServerInput.placeholder = isOracle ? '192.168.9.74' : 'sql.example.local';
+  }
+  if (sqlPortInput) {
+    sqlPortInput.placeholder = isOracle ? '1522' : connectorType === 'POSTGRESQL' ? '5432' : connectorType === 'MYSQL' ? '3306' : '1433';
+  }
+  if (sqlDatabaseInput) {
+    const serviceType = String(document.getElementById('con-oracle-service-type')?.value || 'serviceName');
+    sqlDatabaseInput.placeholder = isOracle
+      ? serviceType === 'sid'
+        ? 'XE'
+        : serviceType === 'connectString'
+          ? '192.168.9.74:1522/XEPDB1'
+          : 'XEPDB1'
+      : 'ERP';
   }
 
   if (typeProfile) {
@@ -297,6 +355,7 @@ function updateConnectorConfigUi() {
       MSSQL: 'MSSQL: Server, Port, Datenbank und Benutzer werden als strukturierte Parameter gespeichert. Der Test prueft Login und Erreichbarkeit.',
       POSTGRESQL: 'PostgreSQL: Host, Port, Datenbank und Benutzer. Der Test prueft die Datenbankverbindung.',
       MYSQL: 'MySQL: Host, Port, Datenbank und Benutzer. Der Test prueft die Datenbankverbindung.',
+      ORACLE: 'Oracle: Host, Port, Service Name oder SID und Benutzer. Der Test prueft die Datenbankverbindung.',
       FILEMAKER: 'FileMaker: Base URL der Data API, Datenbank und Benutzer. Der Test prueft die API-Erreichbarkeit.',
       FILE: 'Datei: Base-, Import-, Export- und Archivpfade. Der Connector-Test prueft, ob die Pfade erreichbar bzw. nutzbar sind.',
       FILE_BROWSE: 'Geräteakte / FileBrowse: Basisverzeichnis und Seriennummer-Ordnerlayout. Der Test prüft Lesbarkeit, Layout und optional eine Beispiel-Seriennummer.',
@@ -313,6 +372,7 @@ function updateConnectorConfigUi() {
       MSSQL: 'SQL-Parameter für MSSQL ausfüllen.',
       POSTGRESQL: 'SQL-Parameter für PostgreSQL ausfüllen.',
       MYSQL: 'SQL-Parameter für MySQL ausfüllen.',
+      ORACLE: 'Oracle-Parameter erfassen.',
       FILEMAKER: 'FileMaker Data API Verbindung und Datenbank erfassen.',
       FILE: 'Datei-Einstellungen inkl. Format auswählen.',
       FILE_BROWSE: 'Geräteakte-Pfad und Ordnerlayout erfassen.',
@@ -440,6 +500,14 @@ function applyConnectorWizardSelection(preserveValues) {
         document.getElementById('con-direction').value = 'Outbound';
       }
     }
+    if (wizardType === 'ORACLE') {
+      if (!document.getElementById('con-target-system').value) {
+        document.getElementById('con-target-system').value = 'ORACLE';
+      }
+      if (!document.getElementById('con-direction').value) {
+        document.getElementById('con-direction').value = 'Bidirectional';
+      }
+    }
   }
 
   updateConnectorConfigUi();
@@ -449,11 +517,32 @@ function fillMssqlConnectorSettingsFromParameters(parameters) {
   const params = parameters || {};
   document.getElementById('con-mssql-server').value = String(params.server || params.baseUrl || params.serverUrl || '');
   document.getElementById('con-mssql-port').value = params.port === undefined || params.port === null || params.port === '' ? '' : String(params.port);
-  document.getElementById('con-mssql-database').value = String(params.database || '');
+  document.getElementById('con-mssql-database').value = String(params.database || params.serviceName || params.service || params.sid || params.connectString || '');
   document.getElementById('con-mssql-user').value = String(params.user || '');
   document.getElementById('con-mssql-password').value = '';
   document.getElementById('con-mssql-encrypt').checked = params.encrypt === undefined ? (params.ssl === undefined ? true : !!params.ssl) : !!params.encrypt;
   document.getElementById('con-mssql-trust-server-certificate').checked = params.trustServerCertificate === undefined ? false : !!params.trustServerCertificate;
+  const serviceType = params.connectString ? 'connectString' : params.sid ? 'sid' : 'serviceName';
+  const oracleServiceType = document.getElementById('con-oracle-service-type');
+  if (oracleServiceType) {
+    oracleServiceType.value = serviceType;
+  }
+  const oracleAuthType = document.getElementById('con-oracle-auth-type');
+  if (oracleAuthType) {
+    oracleAuthType.value = String(params.authType || 'default');
+  }
+  const oracleRole = document.getElementById('con-oracle-role');
+  if (oracleRole) {
+    oracleRole.value = String(params.role || 'default');
+  }
+  const oracleConnectionType = document.getElementById('con-oracle-connection-type');
+  if (oracleConnectionType) {
+    oracleConnectionType.value = String(params.connectionType || 'basic');
+  }
+  const oracleSavePassword = document.getElementById('con-oracle-save-password');
+  if (oracleSavePassword) {
+    oracleSavePassword.checked = params.password === undefined || params.password === null || String(params.password).trim() !== '';
+  }
 }
 
 function mergeMssqlConnectorSettingsIntoParameters(parameters) {
@@ -474,8 +563,11 @@ function mergeMssqlConnectorSettingsIntoParameters(parameters) {
   if (user) {
     merged.user = user;
   }
-  if (password) {
+  const saveOraclePassword = document.getElementById('con-oracle-save-password')?.checked !== false;
+  if (password && (connectorType !== 'ORACLE' || saveOraclePassword)) {
     merged.password = password;
+  } else if (connectorType === 'ORACLE' && !saveOraclePassword) {
+    delete merged.password;
   }
   if (portRaw) {
     const parsedPort = Number(portRaw);
@@ -486,6 +578,8 @@ function mergeMssqlConnectorSettingsIntoParameters(parameters) {
     merged.port = 5432;
   } else if (connectorType === 'MYSQL') {
     merged.port = 3306;
+  } else if (connectorType === 'ORACLE') {
+    merged.port = 1522;
   }
 
   if (connectorType === 'MSSQL') {
@@ -494,6 +588,31 @@ function mergeMssqlConnectorSettingsIntoParameters(parameters) {
   } else if (connectorType === 'FILEMAKER') {
     merged.baseUrl = server;
     delete merged.server;
+    delete merged.encrypt;
+    delete merged.trustServerCertificate;
+    delete merged.ssl;
+  } else if (connectorType === 'ORACLE') {
+    const oracleServiceType = String(document.getElementById('con-oracle-service-type')?.value || 'serviceName').trim();
+    const oracleAuthType = String(document.getElementById('con-oracle-auth-type')?.value || 'default').trim();
+    const oracleRole = String(document.getElementById('con-oracle-role')?.value || 'default').trim();
+    const oracleConnectionType = String(document.getElementById('con-oracle-connection-type')?.value || 'basic').trim();
+    delete merged.serviceName;
+    delete merged.service;
+    delete merged.sid;
+    delete merged.connectString;
+    delete merged.connectionString;
+    if (oracleServiceType === 'sid') {
+      merged.sid = database;
+    } else if (oracleServiceType === 'connectString') {
+      merged.connectString = database;
+    } else {
+      merged.serviceName = database;
+    }
+    merged.serviceType = oracleServiceType;
+    merged.authType = oracleAuthType;
+    merged.role = oracleRole;
+    merged.connectionType = oracleConnectionType;
+    delete merged.database;
     delete merged.encrypt;
     delete merged.trustServerCertificate;
     delete merged.ssl;
