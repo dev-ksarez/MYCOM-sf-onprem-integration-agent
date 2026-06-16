@@ -6,8 +6,10 @@ export interface MssqlConnectionConfig {
   server: string;
   port?: number;
   database: string;
-  user: string;
-  password: string;
+  user?: string;
+  password?: string;
+  authType?: string;
+  domain?: string;
   encrypt?: boolean;
   trustServerCertificate?: boolean;
   connectionTimeout?: number;
@@ -30,12 +32,12 @@ export class MssqlDatabase {
       return;
     }
 
+    const authType = String(this.config.authType || "sql").trim().toLowerCase();
+    const useWindowsAuth = authType === "windows" || authType === "ntlm" || authType === "windows_ntlm";
     const connectionConfig: sql.config = {
       server: this.config.server,
       port: this.config.port || 1433,
       database: this.config.database,
-      user: this.config.user,
-      password: this.config.password,
       options: {
         encrypt: this.config.encrypt ?? true,
         trustServerCertificate: this.config.trustServerCertificate ?? false
@@ -48,6 +50,23 @@ export class MssqlDatabase {
         idleTimeoutMillis: this.config.poolIdleTimeoutMillis ?? 30000
       }
     };
+
+    if (useWindowsAuth) {
+      if (!this.config.user || !this.config.password || !this.config.domain) {
+        throw new Error("MSSQL Windows authentication requires domain, user and password");
+      }
+      connectionConfig.authentication = {
+        type: "ntlm",
+        options: {
+          domain: this.config.domain,
+          userName: this.config.user,
+          password: this.config.password
+        }
+      };
+    } else {
+      connectionConfig.user = this.config.user;
+      connectionConfig.password = this.config.password;
+    }
 
     this.pool = await new sql.ConnectionPool(connectionConfig).connect();
   }

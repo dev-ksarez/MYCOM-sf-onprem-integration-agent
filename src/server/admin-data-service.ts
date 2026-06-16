@@ -2287,6 +2287,11 @@ function getOptionalBoolean(parameters: Record<string, unknown>, key: string): b
   throw new Error(`Invalid boolean MSSQL parameter: ${key}`);
 }
 
+function getOptionalString(parameters: Record<string, unknown>, key: string): string | undefined {
+  const value = parameters[key];
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
 function resolvePassword(config: ConnectorConfig): string {
   const inlinePassword = typeof config.parameters?.password === "string"
     ? config.parameters.password.trim()
@@ -2305,6 +2310,23 @@ function resolvePassword(config: ConnectorConfig): string {
   }
 
   return password;
+}
+
+function createMssqlDatabaseFromConnector(connector: ConnectorConfig): MssqlDatabase {
+  const authType = getOptionalString(connector.parameters, "authType") || getOptionalString(connector.parameters, "authenticationType");
+  return new MssqlDatabase({
+    server: getRequiredString(connector.parameters, "server"),
+    port: getOptionalNumber(connector.parameters, "port"),
+    database: getRequiredString(connector.parameters, "database"),
+    user: getRequiredString(connector.parameters, "user"),
+    password: resolvePassword(connector),
+    authType,
+    domain: getOptionalString(connector.parameters, "domain"),
+    encrypt: getOptionalBoolean(connector.parameters, "encrypt"),
+    trustServerCertificate: getOptionalBoolean(connector.parameters, "trustServerCertificate"),
+    connectionTimeout: connector.timeoutMs,
+    requestTimeout: connector.timeoutMs
+  });
 }
 
 function resolveInstances(): ResolvedInstance[] {
@@ -4959,17 +4981,7 @@ export class AdminDataService {
     const server = getRequiredString(config.parameters, "server");
     const port = getOptionalNumber(config.parameters, "port") || 1433;
     const databaseName = getRequiredString(config.parameters, "database");
-    const database = new MssqlDatabase({
-      server,
-      port,
-      database: databaseName,
-      user: getRequiredString(config.parameters, "user"),
-      password: resolvePassword(config),
-      encrypt: getOptionalBoolean(config.parameters, "encrypt"),
-      trustServerCertificate: getOptionalBoolean(config.parameters, "trustServerCertificate"),
-      connectionTimeout: config.timeoutMs,
-      requestTimeout: config.timeoutMs
-    });
+    const database = createMssqlDatabaseFromConnector(config);
 
     const checks: Array<{ label: string; ok: boolean; details: string }> = [];
 
@@ -5831,17 +5843,7 @@ export class AdminDataService {
       throw new Error(`SQL preview is currently only supported for MSSQL connectors, got ${connector.connectorType}`);
     }
 
-    const database = new MssqlDatabase({
-      server: getRequiredString(connector.parameters, "server"),
-      port: getOptionalNumber(connector.parameters, "port"),
-      database: getRequiredString(connector.parameters, "database"),
-      user: getRequiredString(connector.parameters, "user"),
-      password: resolvePassword(connector),
-      encrypt: getOptionalBoolean(connector.parameters, "encrypt"),
-      trustServerCertificate: getOptionalBoolean(connector.parameters, "trustServerCertificate"),
-      connectionTimeout: connector.timeoutMs,
-      requestTimeout: connector.timeoutMs
-    });
+    const database = createMssqlDatabaseFromConnector(connector);
 
     const normalizedQuery = query.trim().replace(/;\s*$/, "");
     if (!normalizedQuery) {
@@ -7974,17 +7976,7 @@ export class AdminDataService {
       throw new Error(`SQL-Feldmetadaten werden nur für MSSQL-Connectoren unterstützt, erhalten: ${connector.connectorType}`);
     }
 
-    const database = new MssqlDatabase({
-      server: getRequiredString(connector.parameters, "server"),
-      port: getOptionalNumber(connector.parameters, "port"),
-      database: getRequiredString(connector.parameters, "database"),
-      user: getRequiredString(connector.parameters, "user"),
-      password: resolvePassword(connector),
-      encrypt: getOptionalBoolean(connector.parameters, "encrypt"),
-      trustServerCertificate: getOptionalBoolean(connector.parameters, "trustServerCertificate"),
-      connectionTimeout: connector.timeoutMs,
-      requestTimeout: connector.timeoutMs
-    });
+    const database = createMssqlDatabaseFromConnector(connector);
 
     const normalizedQuery = query.trim().replace(/;\s*$/, "");
     if (!normalizedQuery) {
@@ -8562,17 +8554,7 @@ export class AdminDataService {
       throw new Error(`MSSQL-Tabellen werden nur für MSSQL-Connectoren unterstützt, erhalten: ${connector.connectorType}`);
     }
 
-    const database = new MssqlDatabase({
-      server: getRequiredString(connector.parameters, 'server'),
-      port: getOptionalNumber(connector.parameters, 'port'),
-      database: getRequiredString(connector.parameters, 'database'),
-      user: getRequiredString(connector.parameters, 'user'),
-      password: resolvePassword(connector),
-      encrypt: getOptionalBoolean(connector.parameters, 'encrypt'),
-      trustServerCertificate: getOptionalBoolean(connector.parameters, 'trustServerCertificate'),
-      connectionTimeout: connector.timeoutMs,
-      requestTimeout: connector.timeoutMs
-    });
+    const database = createMssqlDatabaseFromConnector(connector);
 
     try {
       const result = await database.query<{ TABLE_NAME: string; TABLE_SCHEMA: string }>(` SELECT TABLE_NAME, TABLE_SCHEMA FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME`);
@@ -8631,17 +8613,7 @@ export class AdminDataService {
       return [];
     }
 
-    const database = new MssqlDatabase({
-      server: getRequiredString(connector.parameters, 'server'),
-      port: getOptionalNumber(connector.parameters, 'port'),
-      database: getRequiredString(connector.parameters, 'database'),
-      user: getRequiredString(connector.parameters, 'user'),
-      password: resolvePassword(connector),
-      encrypt: getOptionalBoolean(connector.parameters, 'encrypt'),
-      trustServerCertificate: getOptionalBoolean(connector.parameters, 'trustServerCertificate'),
-      connectionTimeout: connector.timeoutMs,
-      requestTimeout: connector.timeoutMs
-    });
+    const database = createMssqlDatabaseFromConnector(connector);
 
     const loadColumns = async (schemaName: string, tableName: string) => {
       const result = await database.execute<{
@@ -8968,7 +8940,8 @@ export class AdminDataService {
   public async getTargetObjects(
     targetSystem?: string,
     connectorId?: string,
-    instanceId?: string
+    instanceId?: string,
+    targetType?: string
   ): Promise<{ objects: Array<{ name: string; label?: string; type: string }> }> {
     const normalizedTargetSystem = this.normalizeTargetSystem(targetSystem);
 
@@ -8979,7 +8952,9 @@ export class AdminDataService {
     if (normalizedTargetSystem === "SALESFORCE") {
       try {
         const client = await this.createClient(instanceId);
-        const objects = await client.listObjectMetadata();
+        const objects = targetType === "SALESFORCE_GLOBAL_PICKLIST"
+          ? await client.listGlobalValueSets()
+          : await client.listObjectMetadata();
         return {
           objects: objects.map((entry) => ({
             name: entry.name,

@@ -167,6 +167,8 @@ function validateConnectorWizardStep(step) {
   if (step === 3) {
     const connectorType = normalizeConnectorType(document.getElementById('con-type')?.value || '');
     if (isSqlConnectorType(connectorType)) {
+      const mssqlAuthType = String(document.getElementById('con-mssql-auth-type')?.value || 'sql').trim();
+      const mssqlDomain = String(document.getElementById('con-mssql-domain')?.value || '').trim();
       if (!String(document.getElementById('con-mssql-server')?.value || '').trim() ||
           !String(document.getElementById('con-mssql-database')?.value || '').trim() ||
           !String(document.getElementById('con-mssql-user')?.value || '').trim()) {
@@ -175,6 +177,9 @@ function validateConnectorWizardStep(step) {
           : connectorType === 'ORACLE'
             ? 'Bitte Hostname, Servicename/SID und Benutzername für den Oracle-Connector angeben.'
           : 'Bitte Host, Datenbank und Benutzer für den SQL-Connector angeben.');
+      }
+      if (connectorType === 'MSSQL' && mssqlAuthType === 'windows' && !mssqlDomain) {
+        throw new Error('Bitte die Windows Domain für den MSSQL-Connector angeben.');
       }
     }
     if (connectorType === 'FILE') {
@@ -477,7 +482,7 @@ function downloadTextAsFile(content, fileName, mimeType) {
 function escapeCsvCell(value) {
   const raw = String(value ?? '');
   if (/[";\n\r]/.test(raw)) {
-    return '"' + raw.replaceAll('"', '""') + '"';
+    return '"' + raw.replace(/"/g, '""') + '"';
   }
   return raw;
 }

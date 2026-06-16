@@ -106,6 +106,26 @@ if (Test-Path $bootstrapCmdPath) {
   Copy-Item -Path $bootstrapCmdPath -Destination (Join-Path $packageRoot "install-customer-package.cmd") -Force
 }
 
+$newCustomerPs1Path = Join-Path $appRootResolved "scripts\windows\install-new-customer.ps1"
+if (Test-Path $newCustomerPs1Path) {
+  Copy-Item -Path $newCustomerPs1Path -Destination (Join-Path $packageRoot "install-new-customer.ps1") -Force
+}
+
+$newCustomerCmdPath = Join-Path $appRootResolved "scripts\windows\install-new-customer.cmd"
+if (Test-Path $newCustomerCmdPath) {
+  Copy-Item -Path $newCustomerCmdPath -Destination (Join-Path $packageRoot "install-new-customer.cmd") -Force
+}
+
+$installOrUpdatePs1Path = Join-Path $appRootResolved "scripts\windows\install-or-update.ps1"
+if (Test-Path $installOrUpdatePs1Path) {
+  Copy-Item -Path $installOrUpdatePs1Path -Destination (Join-Path $packageRoot "installieren.ps1") -Force
+}
+
+$installOrUpdateCmdPath = Join-Path $appRootResolved "scripts\windows\install-or-update.cmd"
+if (Test-Path $installOrUpdateCmdPath) {
+  Copy-Item -Path $installOrUpdateCmdPath -Destination (Join-Path $packageRoot "installieren.cmd") -Force
+}
+
 if ($IncludeNodeModules) {
   $nodeModulesPath = Join-Path $appRootResolved "node_modules"
   if (-not (Test-Path $nodeModulesPath)) {
@@ -130,5 +150,7 @@ if (-not $IncludeNodeModules) {
 }
 Write-Host "Bundled runtime helper included: nssm.exe" -ForegroundColor Cyan
 Write-Host "Bootstrap launcher included: install-customer-package.cmd / .ps1" -ForegroundColor Cyan
+Write-Host "New customer launcher included: install-new-customer.cmd / .ps1" -ForegroundColor Cyan
+Write-Host "One-click offline launcher included: installieren.cmd / .ps1" -ForegroundColor Cyan
 
 Remove-Item -Path $stagingRoot -Recurse -Force

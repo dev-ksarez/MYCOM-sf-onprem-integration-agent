@@ -1520,12 +1520,14 @@ async function loadTargetObjects(selectedObjectName) {
   }
 
   try {
+    const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
     const result = await requestJson('/api/targets/objects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         targetSystem,
-        connectorId
+        connectorId,
+        targetType
       })
     });
 

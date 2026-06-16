@@ -1483,8 +1483,8 @@ function resolveSalesforceOrgUrl(overview) {
   if (!raw) {
     return '';
   }
-  const withoutLeadingSlashes = raw.startsWith('//') ? raw.slice(2) : raw.replaceAll(' ', '');
-  const normalizedHost = withoutLeadingSlashes.replaceAll('/', '');
+  const withoutLeadingSlashes = raw.startsWith('//') ? raw.slice(2) : raw.replace(/ /g, '');
+  const normalizedHost = withoutLeadingSlashes.replace(/\//g, '');
   return raw.toLowerCase().startsWith('http://') || raw.toLowerCase().startsWith('https://')
     ? raw
     : 'https://' + (normalizedHost.startsWith(':') ? normalizedHost.slice(1) : normalizedHost);

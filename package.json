@@ -1,6 +1,6 @@
 {
   "name": "sf-onprem-integration-agent",
-  "version": "0.2.74",
+  "version": "0.2.75",
   "private": true,
   "description": "Salesforce controlled on-prem integration agent",
   "engines": {
@@ -25,6 +25,7 @@
     "linux:setup-sftp": "bash scripts/linux/setup-sftp-user.sh",
     "win:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-windows-agent.ps1",
     "win:install-package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-customer-package.ps1",
+    "win:install-new-customer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-new-customer.ps1",
     "win:install-service": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-agent-service.ps1",
     "win:repair-service-env": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/repair-agent-service-env.ps1",
     "win:uninstall-service": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/uninstall-agent-service.ps1",

@@ -3229,6 +3229,29 @@ export class SalesforceClient {
       .sort((a: SalesforceObjectMetadata, b: SalesforceObjectMetadata) => a.name.localeCompare(b.name));
   }
 
+  public async listGlobalValueSets(): Promise<SalesforceObjectMetadata[]> {
+    if (!this.connection) {
+      throw new Error("Salesforce connection not initialized. Call login() first.");
+    }
+    const metadataApi = this.connection.metadata as unknown as {
+      list: (types: { type: string; folder?: string }[], apiVersion?: string) => Promise<any>;
+    };
+    try {
+      const rawVersion = String((this.connection as any)?.version || "60.0").trim();
+      const results = await metadataApi.list([{ type: "GlobalValueSet" }], rawVersion);
+      const items = Array.isArray(results) ? results : (results ? [results] : []);
+      return items
+        .filter((entry: any) => Boolean(entry?.fullName))
+        .map((entry: any) => ({
+          name: String(entry.fullName || "").trim(),
+          label: String(entry.fullName || "").trim()
+        }))
+        .sort((a: SalesforceObjectMetadata, b: SalesforceObjectMetadata) => a.name.localeCompare(b.name));
+    } catch (error) {
+      this.handleSalesforceRestError(error);
+    }
+  }
+
   public async getOrgOverview(): Promise<SalesforceOrgOverview> {
     if (!this.connection) {
       throw new Error("Salesforce connection not initialized. Call login() first.");

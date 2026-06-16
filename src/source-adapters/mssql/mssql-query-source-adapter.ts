@@ -68,6 +68,11 @@ function getOptionalBoolean(parameters: Record<string, unknown>, key: string): b
   throw new Error(`Invalid boolean MSSQL source parameter: ${key}`);
 }
 
+function getOptionalString(parameters: Record<string, unknown>, key: string): string | undefined {
+  const value = parameters[key];
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
 function resolvePassword(config: ConnectorConfig): string {
   const inlinePassword = config.parameters.password;
   if (typeof inlinePassword === "string" && inlinePassword.trim() !== "") {
@@ -113,6 +118,7 @@ export class MssqlQuerySourceAdapter implements SourceAdapter {
     const databaseName = getRequiredString(config.parameters, "database");
     const user = getRequiredString(config.parameters, "user");
     const password = resolvePassword(config);
+    const authType = getOptionalString(config.parameters, "authType") || getOptionalString(config.parameters, "authenticationType");
 
     this.database = new MssqlDatabase({
       server,
@@ -120,6 +126,8 @@ export class MssqlQuerySourceAdapter implements SourceAdapter {
       database: databaseName,
       user,
       password,
+      authType,
+      domain: getOptionalString(config.parameters, "domain"),
       encrypt: getOptionalBoolean(config.parameters, "encrypt"),
       trustServerCertificate: getOptionalBoolean(config.parameters, "trustServerCertificate"),
       connectionTimeout: config.timeoutMs,

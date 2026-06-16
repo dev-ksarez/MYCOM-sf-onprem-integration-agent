@@ -240,6 +240,13 @@ function updateConnectorConfigUi() {
   const sqlServerInput = document.getElementById('con-mssql-server');
   const sqlPortInput = document.getElementById('con-mssql-port');
   const sqlDatabaseInput = document.getElementById('con-mssql-database');
+  const mssqlAuthTypeWrap = document.getElementById('con-mssql-auth-type-wrap');
+  const mssqlAuthType = document.getElementById('con-mssql-auth-type');
+  const mssqlDomainWrap = document.getElementById('con-mssql-domain-wrap');
+  const mssqlUserLabel = document.getElementById('con-mssql-user-label');
+  const mssqlUserInput = document.getElementById('con-mssql-user');
+  const mssqlPasswordLabel = document.getElementById('con-mssql-password-label');
+  const mssqlPasswordInput = document.getElementById('con-mssql-password');
   const oracleAuthTypeWrap = document.getElementById('con-oracle-auth-type-wrap');
   const oracleRoleWrap = document.getElementById('con-oracle-role-wrap');
   const oracleConnectionTypeWrap = document.getElementById('con-oracle-connection-type-wrap');
@@ -285,6 +292,10 @@ function updateConnectorConfigUi() {
     binaryWrap.classList.add('d-none');
   }
 
+  const isOracle = connectorType === 'ORACLE';
+  const isMssql = connectorType === 'MSSQL';
+  const isWindowsMssqlAuth = isMssql && String(mssqlAuthType?.value || 'sql') === 'windows';
+
   if (sqlTitle) {
     sqlTitle.textContent = connectorType === 'POSTGRESQL'
       ? 'PostgreSQL Verbindung'
@@ -305,10 +316,29 @@ function updateConnectorConfigUi() {
           ? 'Pflicht: Hostname, Servicename oder SID und Benutzername. Standard-Port ist 1522.'
         : connectorType === 'FILEMAKER'
           ? 'Pflicht: Data-API-Base-URL, Datenbank und Benutzer. Passwort kann direkt eingegeben oder per Secret Key (ENV) gelesen werden.'
+          : isWindowsMssqlAuth
+            ? 'Pflicht: Server, Datenbank, Domain und Windows-Benutzer. Das Windows-Kennwort kann direkt eingegeben oder per Secret Key (ENV) gelesen werden.'
           : 'Pflicht: Server, Datenbank und Benutzer. Passwort kann direkt eingegeben werden. Alternativ kann das Passwort über Secret Key (ENV) aus einer Umgebungsvariable gelesen werden.';
   }
 
-  const isOracle = connectorType === 'ORACLE';
+  if (mssqlAuthTypeWrap) {
+    mssqlAuthTypeWrap.classList.toggle('d-none', !isMssql);
+  }
+  if (mssqlDomainWrap) {
+    mssqlDomainWrap.classList.toggle('d-none', !isWindowsMssqlAuth);
+  }
+  if (mssqlUserLabel) {
+    mssqlUserLabel.textContent = isWindowsMssqlAuth ? 'Windows Benutzer' : 'Benutzername';
+  }
+  if (mssqlUserInput) {
+    mssqlUserInput.placeholder = isWindowsMssqlAuth ? 'username' : 'etl_user';
+  }
+  if (mssqlPasswordLabel) {
+    mssqlPasswordLabel.textContent = isWindowsMssqlAuth ? 'Windows Kennwort' : 'Kennwort';
+  }
+  if (mssqlPasswordInput) {
+    mssqlPasswordInput.placeholder = isWindowsMssqlAuth ? 'Optional: per Secret Key (ENV)' : 'Optional: direkt speichern';
+  }
   [oracleAuthTypeWrap, oracleRoleWrap, oracleConnectionTypeWrap, oracleServiceTypeWrap, oracleSavePasswordWrap].forEach((element) => {
     if (element) {
       element.classList.toggle('d-none', !isOracle);
@@ -518,6 +548,9 @@ function fillMssqlConnectorSettingsFromParameters(parameters) {
   document.getElementById('con-mssql-server').value = String(params.server || params.baseUrl || params.serverUrl || '');
   document.getElementById('con-mssql-port').value = params.port === undefined || params.port === null || params.port === '' ? '' : String(params.port);
   document.getElementById('con-mssql-database').value = String(params.database || params.serviceName || params.service || params.sid || params.connectString || '');
+  const mssqlAuthType = String(params.authType || params.authenticationType || 'sql').toLowerCase();
+  document.getElementById('con-mssql-auth-type').value = mssqlAuthType === 'windows' || mssqlAuthType === 'ntlm' || mssqlAuthType === 'windows_ntlm' ? 'windows' : 'sql';
+  document.getElementById('con-mssql-domain').value = String(params.domain || '');
   document.getElementById('con-mssql-user').value = String(params.user || '');
   document.getElementById('con-mssql-password').value = '';
   document.getElementById('con-mssql-encrypt').checked = params.encrypt === undefined ? (params.ssl === undefined ? true : !!params.ssl) : !!params.encrypt;
@@ -550,6 +583,8 @@ function mergeMssqlConnectorSettingsIntoParameters(parameters) {
   const connectorType = normalizeConnectorType(document.getElementById('con-type')?.value || '');
   const server = String(document.getElementById('con-mssql-server').value || '').trim();
   const database = String(document.getElementById('con-mssql-database').value || '').trim();
+  const authType = String(document.getElementById('con-mssql-auth-type')?.value || 'sql').trim();
+  const domain = String(document.getElementById('con-mssql-domain')?.value || '').trim();
   const user = String(document.getElementById('con-mssql-user').value || '').trim();
   const password = String(document.getElementById('con-mssql-password').value || '').trim();
   const portRaw = String(document.getElementById('con-mssql-port').value || '').trim();
@@ -562,6 +597,15 @@ function mergeMssqlConnectorSettingsIntoParameters(parameters) {
   }
   if (user) {
     merged.user = user;
+  }
+  if (connectorType === 'MSSQL') {
+    merged.authType = authType === 'windows' ? 'windows' : 'sql';
+    if (authType === 'windows' && domain) {
+      merged.domain = domain;
+    } else {
+      delete merged.domain;
+    }
+    delete merged.authenticationType;
   }
   const saveOraclePassword = document.getElementById('con-oracle-save-password')?.checked !== false;
   if (password && (connectorType !== 'ORACLE' || saveOraclePassword)) {

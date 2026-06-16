@@ -86,6 +86,11 @@ function getOptionalBoolean(parameters: Record<string, unknown>, key: string): b
   throw new Error(`Invalid boolean MSSQL connector parameter: ${key}`);
 }
 
+function getOptionalString(parameters: Record<string, unknown>, key: string): string | undefined {
+  const value = parameters[key];
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
 function getRequiredUpsertKey(config: ConnectorConfig): string {
   const upsertKey = config.parameters.upsertKey;
 
@@ -181,6 +186,7 @@ export class MssqlConnector implements TargetConnector {
     const upsertKey = getOptionalUpsertKey(config);
     const user = getRequiredString(config.parameters, "user");
     const password = resolvePassword(config);
+    const authType = getOptionalString(config.parameters, "authType") || getOptionalString(config.parameters, "authenticationType");
 
     this.database = new MssqlDatabase({
       server,
@@ -188,6 +194,8 @@ export class MssqlConnector implements TargetConnector {
       database: databaseName,
       user,
       password,
+      authType,
+      domain: getOptionalString(config.parameters, "domain"),
       encrypt: getOptionalBoolean(config.parameters, "encrypt"),
       trustServerCertificate: getOptionalBoolean(config.parameters, "trustServerCertificate"),
       connectionTimeout: config.timeoutMs,

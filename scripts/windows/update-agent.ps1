@@ -5,6 +5,8 @@ param(
   [string]$NodeExePath,
   [string]$AppRoot,
   [string]$UpdateManifestUrl,
+  [string]$PackageZip,
+  [string]$SourceRoot,
   [string]$StatusFilePath,
   [string]$TempRoot = "$env:TEMP\\sf-agent-updater",
   [int]$StartTimeoutSeconds = 60,
@@ -373,6 +375,44 @@ function Resolve-ExtractedPayloadRoot {
   return $ExtractRoot
 }
 
+function Resolve-LocalPayloadRoot {
+  param(
+    [string]$RunRoot,
+    [string]$PackageZipPath,
+    [string]$SourceRootPath
+  )
+
+  if ($SourceRootPath -and $SourceRootPath.Trim()) {
+    $resolvedSource = (Resolve-Path -Path $SourceRootPath.Trim()).Path
+    if (-not (Test-Path (Join-Path $resolvedSource "package.json")) -or -not (Test-Path (Join-Path $resolvedSource "dist"))) {
+      throw "SourceRoot ist kein gueltiges Agent-Paket: $resolvedSource"
+    }
+    return $resolvedSource
+  }
+
+  if ($PackageZipPath -and $PackageZipPath.Trim()) {
+    $resolvedZip = (Resolve-Path -Path $PackageZipPath.Trim()).Path
+    $extractRoot = Join-Path $RunRoot "extract"
+    Write-UpdateProgress -State "running" -Message "Lokales Updatepaket wird entpackt." -ProgressPercent 45 -Stage "extract"
+    Expand-ZipArchive -ArchivePath $resolvedZip -DestinationPath $extractRoot
+    return Resolve-ExtractedPayloadRoot -ExtractRoot $extractRoot
+  }
+
+  return $null
+}
+
+function Get-PackageVersion {
+  param([string]$Root)
+
+  $packageJsonPath = Join-Path $Root "package.json"
+  if (-not (Test-Path $packageJsonPath)) {
+    throw "package.json not found at $packageJsonPath"
+  }
+
+  $pkg = Get-Content -Path $packageJsonPath -Raw | ConvertFrom-Json
+  return [string]$pkg.version
+}
+
 function Invoke-MaintenanceCleanup {
   $backupBase = Join-Path $appRootResolved "backups"
   if (Test-Path $backupBase) {
@@ -497,74 +537,83 @@ function Reconfigure-ManagedServices {
 try {
   Write-UpdateProgress -State "running" -Message "Update wird initialisiert." -ProgressPercent 5 -Stage "init"
 
-  if (-not $UpdateManifestUrl) {
-    throw "UpdateManifestUrl is required."
-  }
-
   Ensure-Directory -Path $TempRoot
   $runId = (Get-Date).ToString("yyyyMMdd-HHmmss")
   $runRoot = Join-Path $TempRoot $runId
   Ensure-Directory -Path $runRoot
 
-  $manifestPath = Join-Path $runRoot "manifest.json"
-  Write-UpdateProgress -State "running" -Message "Update-Manifest wird geladen." -ProgressPercent 10 -Stage "manifest"
-  
-  try {
-    Invoke-WebRequest -Uri $UpdateManifestUrl -OutFile $manifestPath -ErrorAction Stop
-  } catch {
-    throw "Manifest-Download fehlgeschlagen: $($_.Exception.Message)"
-  }
-  
-  $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+  $payloadRoot = Resolve-LocalPayloadRoot -RunRoot $runRoot -PackageZipPath $PackageZip -SourceRootPath $SourceRoot
+  $isLocalPackageUpdate = $null -ne $payloadRoot
 
-  $targetVersion = [string]$manifest.version
-  $packageUrl = [string]$manifest.packageUrl
-  $sha256 = [string]$manifest.sha256
-
-  if (-not $targetVersion -or -not $packageUrl) {
-    throw "Manifest must include version and packageUrl."
-  }
-
-  if ((Compare-Version -Left $targetVersion -Right $currentVersion) -le 0) {
-    Write-Host "No update needed. Current=$currentVersion Target=$targetVersion"
-    Write-UpdateProgress -State "completed" -Message "Kein Update erforderlich." -ProgressPercent 100 -Stage "idle" -TargetVersion $targetVersion
-    Invoke-MaintenanceCleanup
-    exit 0
-  }
-
-  Write-Host "Update available: $currentVersion -> $targetVersion" -ForegroundColor Cyan
-  Write-UpdateProgress -State "running" -Message "Updatepaket wird heruntergeladen." -ProgressPercent 20 -Stage "download" -TargetVersion $targetVersion
-
-  $zipPath = Join-Path $runRoot "update.zip"
-  
-  try {
-    Invoke-WebRequest -Uri $packageUrl -OutFile $zipPath -ErrorAction Stop
-  } catch {
-    throw "Package-Download fehlgeschlagen ($packageUrl): $($_.Exception.Message)"
-  }
-
-  if ($sha256) {
-    Write-UpdateProgress -State "running" -Message "Paketintegritaet wird geprueft." -ProgressPercent 35 -Stage "verify" -TargetVersion $targetVersion
-    try {
-      $actualHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-      if ($actualHash -ne $sha256.ToLowerInvariant()) {
-        throw "SHA256 mismatch for downloaded package. Expected: $sha256, Got: $actualHash"
-      }
-    } catch {
-      throw "Paketverifizierung fehlgeschlagen: $($_.Exception.Message)"
+  if ($isLocalPackageUpdate) {
+    $targetVersion = Get-PackageVersion -Root $payloadRoot
+    Write-Host "Offline-Update aus lokalem Paket: $currentVersion -> $targetVersion" -ForegroundColor Cyan
+    Write-UpdateProgress -State "running" -Message "Lokales Updatepaket wird verwendet." -ProgressPercent 50 -Stage "local-package" -TargetVersion $targetVersion
+  } else {
+    if (-not $UpdateManifestUrl) {
+      throw "UpdateManifestUrl is required."
     }
-  }
 
-  $extractRoot = Join-Path $runRoot "extract"
-  Write-UpdateProgress -State "running" -Message "Updatepaket wird entpackt." -ProgressPercent 45 -Stage "extract" -TargetVersion $targetVersion
-  
-  try {
-    Expand-ZipArchive -ArchivePath $zipPath -DestinationPath $extractRoot
-  } catch {
-    throw "ZIP-Entpacken fehlgeschlagen: $($_.Exception.Message)"
-  }
+    $manifestPath = Join-Path $runRoot "manifest.json"
+    Write-UpdateProgress -State "running" -Message "Update-Manifest wird geladen." -ProgressPercent 10 -Stage "manifest"
+    
+    try {
+      Invoke-WebRequest -Uri $UpdateManifestUrl -OutFile $manifestPath -ErrorAction Stop
+    } catch {
+      throw "Manifest-Download fehlgeschlagen: $($_.Exception.Message)"
+    }
+    
+    $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
 
-  $payloadRoot = Resolve-ExtractedPayloadRoot -ExtractRoot $extractRoot
+    $targetVersion = [string]$manifest.version
+    $packageUrl = [string]$manifest.packageUrl
+    $sha256 = [string]$manifest.sha256
+
+    if (-not $targetVersion -or -not $packageUrl) {
+      throw "Manifest must include version and packageUrl."
+    }
+
+    if ((Compare-Version -Left $targetVersion -Right $currentVersion) -le 0) {
+      Write-Host "No update needed. Current=$currentVersion Target=$targetVersion"
+      Write-UpdateProgress -State "completed" -Message "Kein Update erforderlich." -ProgressPercent 100 -Stage "idle" -TargetVersion $targetVersion
+      Invoke-MaintenanceCleanup
+      exit 0
+    }
+
+    Write-Host "Update available: $currentVersion -> $targetVersion" -ForegroundColor Cyan
+    Write-UpdateProgress -State "running" -Message "Updatepaket wird heruntergeladen." -ProgressPercent 20 -Stage "download" -TargetVersion $targetVersion
+
+    $zipPath = Join-Path $runRoot "update.zip"
+    
+    try {
+      Invoke-WebRequest -Uri $packageUrl -OutFile $zipPath -ErrorAction Stop
+    } catch {
+      throw "Package-Download fehlgeschlagen ($packageUrl): $($_.Exception.Message)"
+    }
+
+    if ($sha256) {
+      Write-UpdateProgress -State "running" -Message "Paketintegritaet wird geprueft." -ProgressPercent 35 -Stage "verify" -TargetVersion $targetVersion
+      try {
+        $actualHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualHash -ne $sha256.ToLowerInvariant()) {
+          throw "SHA256 mismatch for downloaded package. Expected: $sha256, Got: $actualHash"
+        }
+      } catch {
+        throw "Paketverifizierung fehlgeschlagen: $($_.Exception.Message)"
+      }
+    }
+
+    $extractRoot = Join-Path $runRoot "extract"
+    Write-UpdateProgress -State "running" -Message "Updatepaket wird entpackt." -ProgressPercent 45 -Stage "extract" -TargetVersion $targetVersion
+    
+    try {
+      Expand-ZipArchive -ArchivePath $zipPath -DestinationPath $extractRoot
+    } catch {
+      throw "ZIP-Entpacken fehlgeschlagen: $($_.Exception.Message)"
+    }
+
+    $payloadRoot = Resolve-ExtractedPayloadRoot -ExtractRoot $extractRoot
+  }
 
   $requiredDist = Join-Path $payloadRoot "dist"
   if (-not (Test-Path $requiredDist)) {

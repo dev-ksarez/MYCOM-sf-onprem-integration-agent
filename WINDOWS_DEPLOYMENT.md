@@ -32,10 +32,41 @@ Das Kundenpaket enthaelt jetzt auch `nssm.exe`, damit die Dienstinstallation ohn
 
 Das erzeugte Kundenpaket enthaelt im ZIP-Wurzelverzeichnis jetzt zusaetzlich:
 
+- `installieren.cmd`
+- `installieren.ps1`
+- `install-new-customer.cmd`
+- `install-new-customer.ps1`
 - `install-customer-package.cmd`
 - `install-customer-package.ps1`
 
-Nach dem Entpacken kann der Kunde direkt `install-customer-package.cmd` starten. Falls der Start nicht bereits mit Administratorrechten erfolgt, fordert das Skript diese automatisch per UAC an. Danach kopiert es die Anwendung nach `C:\apps\sf-onprem-integration-agent`, oeffnet auf Wunsch eine interaktive `.env`-Konfiguration und startet die eigentliche Dienstinstallation.
+Nach dem Entpacken kann der Kunde direkt `installieren.cmd` starten. Das Skript erkennt automatisch, ob unter `C:\apps\sf-onprem-integration-agent` bereits eine Installation vorhanden ist:
+
+- bestehende Installation: Offline-Update direkt aus dem entpackten Paket
+- neue Installation: Neuinstallation mit Diensteinrichtung
+
+Falls der Start nicht bereits mit Administratorrechten erfolgt, fordert der Neuinstallationspfad diese automatisch per UAC an. Danach kopiert er die Anwendung nach `C:\apps\sf-onprem-integration-agent`, prueft `node_modules`, legt bei Bedarf eine `.env` aus `.env.example` an und erzeugt/startet die NSSM-Dienste automatisch.
+
+Beispiel fuer eine neue Standardinstallation:
+
+```powershell
+.\installieren.cmd -PromptForEnv
+```
+
+Beispiel fuer abweichenden Zielordner, Web-Port und erzwungene Dienstneuanlage:
+
+```powershell
+.\installieren.cmd `
+	-AppRoot "D:\apps\sf-onprem-integration-agent" `
+	-WebUiPort 8090 `
+	-ForceRecreateServices `
+	-PromptForEnv
+```
+
+Wenn ein Paket ausnahmsweise ohne `node_modules` ausgeliefert wird, muss der Installer mit `-InstallDependencies` gestartet werden. Fuer Kunden-Releases ist weiterhin das Paket mit `node_modules` empfohlen.
+
+Die spezialisierten Einstiege `install-new-customer.cmd` und `update-existing-installation.cmd` bleiben verfuegbar, falls ein Administrator Installation und Update bewusst getrennt ausfuehren moechte.
+
+Der aeltere Einstieg `install-customer-package.cmd` bleibt verfuegbar und nutzt intern die vollstaendige interaktive Agent-Installation.
 
 ### 1) Release-Inhalt auf Zielserver kopieren
 

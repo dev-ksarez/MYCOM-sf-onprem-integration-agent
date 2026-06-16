@@ -268,6 +268,7 @@ Persistenz:
 - `npm run spec:new -- "Titel"` - Neue Spec fuer nicht-triviale Aenderungen anlegen
 - `npm run spec:validate` - Spec-Struktur in `docs/specs/` pruefen
 - `npm run docker:test:ubuntu` - Ubuntu-basierter Docker-Verifikationstest fuer Build + Specs
+- `npm run win:install-new-customer` - Neue Windows-Kundeninstallation inkl. Paketkopie und NSSM-Diensten
 - `npm run win:install-service` - Windows-Dienst installieren
 - `npm run win:uninstall-service` - Windows-Dienst deinstallieren
 - `npm run win:update-now` - Manuelles Update ausfuehren
@@ -296,9 +297,9 @@ Das detaillierte Runbook steht in [WINDOWS_DEPLOYMENT.md](WINDOWS_DEPLOYMENT.md)
 Kurzablauf:
 
 1. Release-Paket auf Zielserver entpacken
-2. `.env` konfigurieren
-3. Optional: `npm run init:installation -- --mode SAGE100` (fragt Salesforce URL/Client und SQL Server fuer SAGE100 ab)
-4. Dienste installieren
+2. `install-new-customer.cmd -PromptForEnv` aus dem ZIP-Wurzelverzeichnis starten
+3. `.env` speichern und den Editor schliessen
+4. Optional: `npm run init:installation -- --mode SAGE100` (fragt Salesforce URL/Client und SQL Server fuer SAGE100 ab)
 5. Agent-, Web- und AutoUpdater-Dienst pruefen
 
 Fuer spaetere Bestandsupdates:

@@ -3390,14 +3390,16 @@ ${renderAISchedulerAssistantModule()}
                   <div id="con-sql-settings-text" class="small text-secondary mb-2">Pflicht: Server, Datenbank und Benutzer. Bevorzugt Secret Key (ENV) statt Klartext-Passwort. Sichere Defaults: Encrypt aktiv, Trust Server Certificate deaktiviert.</div>
                   <div class="row g-2">
                     <div class="col-md-4 d-none" id="con-oracle-auth-type-wrap"><label class="form-label">Authentifizierungstyp</label><select id="con-oracle-auth-type" class="form-select"><option value="default">Standardwert</option><option value="password">Benutzername/Kennwort</option></select></div>
+                    <div class="col-md-4 d-none" id="con-mssql-auth-type-wrap"><label class="form-label">Authentifizierung</label><select id="con-mssql-auth-type" class="form-select"><option value="sql">SQL Server</option><option value="windows">Windows (NTLM)</option></select></div>
                     <div class="col-md-4 d-none" id="con-oracle-role-wrap"><label class="form-label">Rolle</label><select id="con-oracle-role" class="form-select"><option value="default">Standardwert</option><option value="sysdba">SYSDBA</option><option value="sysoper">SYSOPER</option></select></div>
                     <div class="col-md-12 d-none" id="con-oracle-connection-type-wrap"><label class="form-label">Verbindungstyp</label><select id="con-oracle-connection-type" class="form-select"><option value="basic">Einfach</option></select></div>
                     <div class="col-md-4"><label id="con-sql-server-label" class="form-label">Server / Host</label><input id="con-mssql-server" class="form-control" placeholder="sql.example.local" /></div>
                     <div class="col-md-2"><label class="form-label">Port</label><input id="con-mssql-port" type="number" class="form-control" placeholder="1433" /></div>
                     <div class="col-md-3 d-none" id="con-oracle-service-type-wrap"><label class="form-label">Typ</label><select id="con-oracle-service-type" class="form-select"><option value="serviceName">Servicename</option><option value="sid">SID</option><option value="connectString">Connect String</option></select></div>
                     <div class="col-md-3"><label id="con-sql-database-label" class="form-label">Datenbank</label><input id="con-mssql-database" class="form-control" placeholder="ERP" /></div>
-                    <div class="col-md-3"><label class="form-label">Benutzername</label><input id="con-mssql-user" class="form-control" placeholder="etl_user" /></div>
-                    <div class="col-md-4"><label class="form-label">Kennwort</label><input id="con-mssql-password" type="password" class="form-control" placeholder="Optional: direkt speichern" autocomplete="new-password" /></div>
+                    <div class="col-md-3 d-none" id="con-mssql-domain-wrap"><label class="form-label">Windows Domain</label><input id="con-mssql-domain" class="form-control" placeholder="DOMAIN" /></div>
+                    <div class="col-md-3" id="con-mssql-user-wrap"><label id="con-mssql-user-label" class="form-label">Benutzername</label><input id="con-mssql-user" class="form-control" placeholder="etl_user" /></div>
+                    <div class="col-md-4" id="con-mssql-password-wrap"><label id="con-mssql-password-label" class="form-label">Kennwort</label><input id="con-mssql-password" type="password" class="form-control" placeholder="Optional: direkt speichern" autocomplete="new-password" /></div>
                     <div class="col-md-3 d-none align-items-end" id="con-oracle-save-password-wrap"><div class="form-check"><input id="con-oracle-save-password" class="form-check-input" type="checkbox" checked /><label class="form-check-label">Kennwort speichern</label></div></div>
                     <div class="col-md-3 d-flex align-items-end" id="con-mssql-encrypt-wrap"><div class="form-check"><input id="con-mssql-encrypt" class="form-check-input" type="checkbox" checked /><label class="form-check-label">Encrypt</label></div></div>
                     <div class="col-md-5 d-flex align-items-end" id="con-mssql-trust-server-certificate-wrap"><div class="form-check"><input id="con-mssql-trust-server-certificate" class="form-check-input" type="checkbox" /><label class="form-check-label">Trust Server Certificate</label></div></div>
@@ -5985,11 +5987,12 @@ export function createAppServer(
       }
 
       if (req.method === "POST" && requestUrl.pathname === "/api/targets/objects") {
-        const body = (await readJsonBody(req)) as { targetSystem?: string; connectorId?: string };
+        const body = (await readJsonBody(req)) as { targetSystem?: string; connectorId?: string; targetType?: string };
         const result = await adminDataService.getTargetObjects(
           body.targetSystem,
           body.connectorId,
-          instanceId
+          instanceId,
+          body.targetType
         );
         sendJson(200, result);
         return;

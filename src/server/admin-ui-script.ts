@@ -1442,18 +1442,18 @@ export function renderAdminUiScript(): string {
 
       function esc(value) {
         return String(value ?? '-')
-          .replaceAll('&', '&amp;')
-          .replaceAll('<', '&lt;')
-          .replaceAll('>', '&gt;');
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
       }
 
       function htmlEscape(value) {
         return String(value ?? '')
-          .replaceAll('&', '&amp;')
-          .replaceAll('<', '&lt;')
-          .replaceAll('>', '&gt;')
-          .replaceAll('"', '&quot;')
-          .replaceAll("'", '&#039;');
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
       }
 
       function getTemplateAccent(item) {
@@ -3122,8 +3122,8 @@ export function renderAdminUiScript(): string {
         if (!raw) {
           return '';
         }
-        const withoutLeadingSlashes = raw.startsWith('//') ? raw.slice(2) : raw.replaceAll(' ', '');
-        const normalizedHost = withoutLeadingSlashes.replaceAll('/', '');
+        const withoutLeadingSlashes = raw.startsWith('//') ? raw.slice(2) : raw.replace(/ /g, '');
+        const normalizedHost = withoutLeadingSlashes.replace(/\//g, '');
         return raw.toLowerCase().startsWith('http://') || raw.toLowerCase().startsWith('https://')
           ? raw
           : 'https://' + (normalizedHost.startsWith(':') ? normalizedHost.slice(1) : normalizedHost);
@@ -4684,12 +4684,14 @@ export function renderAdminUiScript(): string {
         }
 
         try {
+          const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
           const result = await requestJson('/api/targets/objects', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               targetSystem,
-              connectorId
+              connectorId,
+              targetType
             })
           });
 
@@ -8586,7 +8588,7 @@ export function renderAdminUiScript(): string {
       function escapeCsvCell(value) {
         const raw = String(value ?? '');
         if (/[";\\n\\r]/.test(raw)) {
-          return '"' + raw.replaceAll('"', '""') + '"';
+          return '"' + raw.replace(/"/g, '""') + '"';
         }
         return raw;
       }

@@ -899,6 +899,7 @@ document.getElementById('save-connector-template').addEventListener('click', asy
 document.getElementById('con-type').addEventListener('input', updateConnectorConfigUi);
 document.getElementById('con-wizard-type').addEventListener('change', () => applyConnectorWizardSelection(false));
 document.getElementById('con-oracle-service-type')?.addEventListener('change', updateConnectorConfigUi);
+document.getElementById('con-mssql-auth-type')?.addEventListener('change', updateConnectorConfigUi);
 document.getElementById('con-rest-auth-type').addEventListener('change', updateRestAuthUi);
 document.getElementById('con-rest-generate-bearer-token')?.addEventListener('click', generateConnectorBearerToken);
 document.getElementById('load-logs').addEventListener('click', loadLogs);
