@@ -13,13 +13,14 @@ function ensureSalesforceTargetDefinition() {
   const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
   const targetSystem = resolveEffectiveTargetSystem();
   const isSalesforce = targetType === 'SALESFORCE' && targetSystem === 'Salesforce';
+  const isGlobalPicklist = targetType === 'SALESFORCE_GLOBAL_PICKLIST' && targetSystem === 'Salesforce';
   const isMssql = isSchedulerMssqlUpsertSelection();
-  if (!isSalesforce && !isMssql) {
+  if (!isSalesforce && !isGlobalPicklist && !isMssql) {
     return;
   }
 
   const objectApiName = String(document.getElementById('sch-object')?.value || '').trim();
-  if (!objectApiName && isSalesforce) {
+  if (!objectApiName && (isSalesforce || isGlobalPicklist)) {
     return;
   }
 
@@ -30,7 +31,22 @@ function ensureSalesforceTargetDefinition() {
   const missingProductStrategy = String(document.getElementById('sch-missing-product-strategy')?.value || 'error').trim();
   const clearTargetBeforeInsert = document.getElementById('sch-clear-target-before-insert')?.checked === true;
   const operation = String(normalizeOperationValue(document.getElementById('sch-operation')?.value || 'Upsert') || 'Upsert').toLowerCase();
-  const nextDefinition = isSalesforce
+  const nextDefinition = isGlobalPicklist
+    ? {
+        selectedImportProfileName: 'Default',
+        importProfiles: [{
+          name: 'Default',
+          active: true,
+          schedulerEnabled: true,
+          mode: 'picklist',
+          target: {
+            globalValueSetApiName: objectApiName,
+            externalIdField: 'ApiName',
+            labelField: 'Label'
+          }
+        }]
+      }
+    : isSalesforce
     ? {
         objectApiName,
         operation
@@ -65,6 +81,20 @@ function ensureSalesforceTargetDefinition() {
   try {
     const parsed = JSON.parse(raw);
     const targetDefinition = getSchedulerSelectedTargetDefinitionWritableContainer(parsed) || parsed;
+    if (isGlobalPicklist) {
+      if (!Array.isArray(parsed.importProfiles) || !parsed.importProfiles.length) {
+        targetDefinitionInput.value = JSON.stringify(nextDefinition, null, 2);
+        return;
+      }
+
+      targetDefinition.globalValueSetApiName = objectApiName;
+      if (!String(targetDefinition.externalIdField || '').trim()) {
+        targetDefinition.externalIdField = 'ApiName';
+      }
+      if (!String(targetDefinition.labelField || '').trim()) {
+        targetDefinition.labelField = 'Label';
+      }
+    }
     if (isSalesforce) {
       targetDefinition.objectApiName = objectApiName;
       targetDefinition.operation = operation;

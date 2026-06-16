@@ -93,6 +93,11 @@ function normalizeMappedInputValues(
   return normalizedValues;
 }
 
+function hasEquivalentMappedKey(inputValues: Record<string, unknown>, key: string): boolean {
+  const normalizedKey = normalizeFieldKey(key);
+  return Object.keys(inputValues).some((inputKey) => normalizeFieldKey(inputKey) === normalizedKey);
+}
+
 export class MssqlRepository {
   private readonly database: MssqlDatabase;
   private readonly schemaName: string;
@@ -290,6 +295,17 @@ export class MssqlRepository {
       throw new Error(`Mapped record is missing required upsert key: ${validatedUpsertKey}`);
     }
 
+    const existing = await this.findMappedRecordByUpsertKey(validatedUpsertKey, upsertValue);
+    if (this.tableName.endsWith("_Staging")) {
+      if (!hasEquivalentMappedKey(inputValues, "PostStatus")) {
+        inputValues.PostStatus = existing ? "UPDATED" : "NEW";
+      }
+
+      if (!hasEquivalentMappedKey(inputValues, "PostFlag")) {
+        inputValues.PostFlag = 1;
+      }
+    }
+
     const columnEntries = Object.entries(inputValues)
       .filter(([, value]) => value !== undefined)
       .map(([key, value]) => ({
@@ -300,8 +316,6 @@ export class MssqlRepository {
     if (columnEntries.length === 0) {
       throw new Error("Mapped record does not contain any writable fields");
     }
-
-    const existing = await this.findMappedRecordByUpsertKey(validatedUpsertKey, upsertValue);
 
     const parameters = Object.fromEntries(
       columnEntries.map(({ columnName, value }) => [columnName, value])

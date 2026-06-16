@@ -168,6 +168,11 @@ function resolvePassword(config: ConnectorConfig): string {
   return password;
 }
 
+interface MssqlMappedRecordTargetOverride {
+  schema?: string;
+  table: string;
+}
+
 export class MssqlConnector implements TargetConnector {
   private readonly config: ConnectorConfig;
   private readonly repository?: MssqlRepository;
@@ -236,6 +241,14 @@ export class MssqlConnector implements TargetConnector {
     }
 
     await this.initializationPromise;
+  }
+
+  private createRepositoryForOverride(override?: MssqlMappedRecordTargetOverride): MssqlRepository {
+    if (!override?.table) {
+      return this.ensureRepositoryConfigured();
+    }
+
+    return new MssqlRepository(this.database, override.schema || "dbo", override.table);
   }
 
   public systemName(): string {
@@ -400,10 +413,15 @@ export class MssqlConnector implements TargetConnector {
   public async upsertMappedRecords(
     records: MappedRecord[],
     context: JobContext,
-    upsertKeyOverride?: string
+    upsertKeyOverride?: string,
+    targetOverride?: MssqlMappedRecordTargetOverride
   ): Promise<ConnectorResult[]> {
-    const repository = this.ensureRepositoryConfigured();
-    await this.initialize();
+    const repository = this.createRepositoryForOverride(targetOverride);
+    if (targetOverride?.table) {
+      await repository.ensureSchema();
+    } else {
+      await this.initialize();
+    }
 
     const results: ConnectorResult[] = [];
     const upsertKey = typeof upsertKeyOverride === "string" && upsertKeyOverride.trim()

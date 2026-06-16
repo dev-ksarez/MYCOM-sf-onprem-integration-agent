@@ -5,6 +5,7 @@ import { ConnectorConfig, CreateLogInput, SalesforceClient, SalesforceScheduleRe
 import { ConnectorRegistry } from "../core/connector-registry/connector-registry";
 import { isScheduleDue } from "../core/scheduler/is-schedule-due";
 import { getSalesforceConfig } from "../infrastructure/config/salesforce-config";
+import { MssqlDatabase } from "../infrastructure/db/mssql";
 import { SalesforceScheduleSource } from "../source/salesforce/salesforce-schedule-source";
 import { calculateNextRunAtFromTiming } from "../core/scheduler/schedule-timing";
 import { JobContext } from "../types/job-context";
@@ -415,6 +416,211 @@ async function runSalesforceAfterExport(
       level: "INFO",
       step: "AFTER_EXPORT_UPDATED",
       message: `${updatedIds.length} exportierte Datensaetze in ${updateObjectApiName} nachbearbeitet`,
+      correlationId
+    });
+  }
+}
+
+function getConnectorStringParameter(config: ConnectorConfig, key: string, required = false): string | undefined {
+  const value = config.parameters[key];
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  if (required) {
+    throw new Error(`Missing required MSSQL connector parameter: ${key}`);
+  }
+  return undefined;
+}
+
+function getConnectorNumberParameter(config: ConnectorConfig, key: string): number | undefined {
+  const value = config.parameters[key];
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid numeric MSSQL connector parameter: ${key}`);
+  }
+  return parsed;
+}
+
+function getConnectorBooleanParameter(config: ConnectorConfig, key: string): boolean | undefined {
+  const value = config.parameters[key];
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "true") {
+    return true;
+  }
+  if (normalized === "false") {
+    return false;
+  }
+  throw new Error(`Invalid boolean MSSQL connector parameter: ${key}`);
+}
+
+function resolveMssqlConnectorPassword(config: ConnectorConfig): string {
+  const inlinePassword = config.parameters.password;
+  if (typeof inlinePassword === "string" && inlinePassword.trim()) {
+    return inlinePassword;
+  }
+  if (!config.secretKey) {
+    throw new Error(`MSSQL connector ${config.name} is missing MSD_SecretKey__c`);
+  }
+  const password = process.env[config.secretKey];
+  if (!password) {
+    throw new Error(`Environment variable for secret key ${config.secretKey} is not set for connector ${config.name}`);
+  }
+  return password;
+}
+
+function createMssqlDatabaseForAfterExport(config: ConnectorConfig): MssqlDatabase {
+  return new MssqlDatabase({
+    server: getConnectorStringParameter(config, "server", true)!,
+    port: getConnectorNumberParameter(config, "port"),
+    database: getConnectorStringParameter(config, "database", true)!,
+    user: getConnectorStringParameter(config, "user"),
+    password: resolveMssqlConnectorPassword(config),
+    authType: getConnectorStringParameter(config, "authType") || getConnectorStringParameter(config, "authenticationType"),
+    domain: getConnectorStringParameter(config, "domain"),
+    encrypt: getConnectorBooleanParameter(config, "encrypt"),
+    trustServerCertificate: getConnectorBooleanParameter(config, "trustServerCertificate"),
+    connectionTimeout: config.timeoutMs,
+    requestTimeout: config.timeoutMs
+  });
+}
+
+function isSafeSqlIdentifierPart(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
+function quoteSqlIdentifierPath(value: string): string {
+  const parts = String(value || "")
+    .trim()
+    .replace(/^\[|\]$/g, "")
+    .split(".")
+    .map((part) => part.replace(/^\[|\]$/g, "").trim())
+    .filter(Boolean);
+
+  if (parts.length === 0 || parts.length > 2 || parts.some((part) => !isSafeSqlIdentifierPart(part))) {
+    throw new Error(`Invalid MSSQL afterExport table identifier: ${value}`);
+  }
+
+  return parts.map((part) => `[${part}]`).join(".");
+}
+
+function quoteSqlIdentifier(value: string, label: string): string {
+  const normalized = String(value || "").trim();
+  if (!isSafeSqlIdentifierPart(normalized)) {
+    throw new Error(`Invalid MSSQL afterExport ${label}: ${value}`);
+  }
+  return `[${normalized}]`;
+}
+
+function extractMssqlAfterExportOptions(rawDefinition: string): { table?: string; key?: string } {
+  try {
+    const parsed = JSON.parse(String(rawDefinition || "").trim()) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return {
+      table: typeof parsed.afterExportTable === "string" ? parsed.afterExportTable.trim() : undefined,
+      key: typeof parsed.afterExportKey === "string" ? parsed.afterExportKey.trim() : undefined
+    };
+  } catch {
+    return {};
+  }
+}
+
+function extractTableNameFromMssqlQuery(queryText: string): string | undefined {
+  const normalized = String(queryText || "").replace(/\s+/g, " ").trim();
+  const match = /\bfrom\s+((?:\[[A-Za-z_][A-Za-z0-9_]*\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[A-Za-z_][A-Za-z0-9_]*\]|[A-Za-z_][A-Za-z0-9_]*))?)/i.exec(normalized);
+  return match?.[1]?.replace(/\s+/g, "");
+}
+
+function resolveMssqlAfterExportValue(value: string, finishedAt: string, runId: string): unknown {
+  const resolved = resolveAfterExportValue(value, finishedAt, runId);
+  const normalized = String(resolved || "").trim().toLowerCase();
+  if (normalized === "true") {
+    return true;
+  }
+  if (normalized === "false") {
+    return false;
+  }
+  if (/^-?\d+(\.\d+)?$/.test(normalized)) {
+    return Number(normalized);
+  }
+  return resolved;
+}
+
+async function runMssqlAfterExport(
+  connectorConfig: ConnectorConfig,
+  salesforceClient: SalesforceClient,
+  schedule: IntegrationSchedule,
+  runId: string,
+  correlationId: string,
+  successfulSourceRecords: GenericRecord[] | undefined,
+  finishedAt: string
+): Promise<void> {
+  const parsedSourceDefinition = parseQuerySourceDefinition(schedule.sourceDefinition || "");
+  const afterExport = parsedSourceDefinition.afterExport;
+  if (!afterExport || !successfulSourceRecords?.length) {
+    return;
+  }
+
+  const options = extractMssqlAfterExportOptions(schedule.sourceDefinition || "");
+  const tableName = options.table || extractTableNameFromMssqlQuery(parsedSourceDefinition.queryText);
+  const keyField = options.key || "Id";
+  if (!tableName) {
+    throw new Error(`MSSQL afterExport for schedule ${schedule.name} requires afterExportTable or a simple FROM <table> query`);
+  }
+
+  const qualifiedTableName = quoteSqlIdentifierPath(tableName);
+  const quotedKey = quoteSqlIdentifier(keyField, "key field");
+  const updateEntries = Object.entries(afterExport.updates).map(([fieldName, fieldValue]) => ({
+    fieldName,
+    quotedFieldName: quoteSqlIdentifier(fieldName, "update field"),
+    fieldValue
+  }));
+  if (updateEntries.length === 0) {
+    return;
+  }
+
+  const assignments = updateEntries
+    .map((entry, index) => `${entry.quotedFieldName} = @afterExportValue${index}`)
+    .join(", ");
+  const queryText = `UPDATE ${qualifiedTableName} SET ${assignments} WHERE ${quotedKey} = @afterExportKey`;
+  const database = createMssqlDatabaseForAfterExport(connectorConfig);
+  let updatedCount = 0;
+
+  try {
+    for (const record of successfulSourceRecords) {
+      const keyValue = record.values[keyField];
+      if (keyValue === undefined || keyValue === null || keyValue === "") {
+        continue;
+      }
+      const parameters: Record<string, unknown> = {
+        afterExportKey: keyValue
+      };
+      updateEntries.forEach((entry, index) => {
+        parameters[`afterExportValue${index}`] = resolveMssqlAfterExportValue(entry.fieldValue, finishedAt, runId);
+      });
+      const result = await database.execute(queryText, parameters);
+      updatedCount += result.rowsAffected.reduce((sum, count) => sum + count, 0);
+    }
+  } finally {
+    await database.close();
+  }
+
+  if (updatedCount > 0) {
+    await salesforceClient.createLog({
+      runId,
+      level: "INFO",
+      step: "MSSQL_AFTER_EXPORT_UPDATED",
+      message: `${updatedCount} MSSQL-Quelldatensaetze nach erfolgreichem Export aktualisiert`,
       correlationId
     });
   }
@@ -997,6 +1203,18 @@ async function executeSchedule(
 
     if (schedule.sourceType === "SALESFORCE_SOQL") {
       await runSalesforceAfterExport(
+        salesforceClient,
+        schedule,
+        runId,
+        context.correlationId,
+        result.successfulSourceRecords,
+        finishedAt
+      );
+    }
+
+    if (schedule.sourceType === "MSSQL_SQL") {
+      await runMssqlAfterExport(
+        connectorConfig,
         salesforceClient,
         schedule,
         runId,

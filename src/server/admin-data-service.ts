@@ -6387,6 +6387,11 @@ export class AdminDataService {
         if (!String(resolved.globalValueSetApiName || "").trim()) add("error", "target", "Global-Picklist Ziel braucht globalValueSetApiName.");
         if (!String(resolved.externalIdField || "").trim()) add("error", "target", "Global-Picklist Ziel braucht externalIdField.");
         if (!String(resolved.labelField || "").trim()) add("error", "target", "Global-Picklist Ziel braucht labelField.");
+        const selectedObjectName = String(input.objectName || "").trim();
+        const resolvedGlobalValueSet = String(resolved.globalValueSetApiName || "").trim();
+        if (selectedObjectName && resolvedGlobalValueSet && selectedObjectName !== resolvedGlobalValueSet) {
+          add("error", "target", `Global-Picklist Ziel (${resolvedGlobalValueSet}) passt nicht zur Objektauswahl (${selectedObjectName}).`);
+        }
       } catch {
         add("error", "target", "Global-Picklist TargetDefinition muss gueltiges JSON sein.");
       }

@@ -10117,6 +10117,20 @@ body.theme-midnight.context-none .agent-topbar-primary {
   border-top: 0;
 }
 
+.graph-wrap {
+  min-height: 430px;
+  max-height: 72vh;
+  overflow: auto;
+  border: 1px solid rgba(34, 118, 210, 0.18);
+  border-radius: 8px;
+  background: #f4f7fb;
+}
+
+.graph-wrap #graph {
+  display: block;
+  max-width: none;
+}
+
 .agent-menu-tab.is-active,
 .agent-menu-tab.active,
 .agent-menu-tab:hover,

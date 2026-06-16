@@ -1,6 +1,30 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Package xmlns="http://soap.sforce.com/2006/04/metadata">
     <types>
+        <members>Account.POST_MESSAGE__c</members>
+        <members>Account.POST_STATUS__c</members>
+        <members>Account.SAGE_Address_ID__c</members>
+        <members>Account.SAGE_Customer_No__c</members>
+        <members>Contact.POST_MESSAGE__c</members>
+        <members>Contact.POST_STATUS__c</members>
+        <members>Contact.SAGE_Address_ID__c</members>
+        <members>Contact.SAGE_Contact_ID__c</members>
+        <members>Contact.SAGE_Customer_No__c</members>
+        <members>Opportunity.POST_MESSAGE__c</members>
+        <members>Opportunity.POST_STATUS__c</members>
+        <members>Opportunity.SAGE_Opportunity_ID__c</members>
+        <members>Opportunity.SAGE_Project_No__c</members>
+        <members>Quote.POST_MESSAGE__c</members>
+        <members>Quote.POST_STATUS__c</members>
+        <members>Quote.SAGE_Quote_ID__c</members>
+        <members>Quote.SAGE_Quote_No__c</members>
+        <members>QuoteLineItem.POST_MESSAGE__c</members>
+        <members>QuoteLineItem.POST_STATUS__c</members>
+        <members>QuoteLineItem.SAGE_Article_No__c</members>
+        <members>QuoteLineItem.SAGE_Quote_Item_ID__c</members>
+        <name>CustomField</name>
+    </types>
+    <types>
         <members>EZB__c</members>
         <members>MSD_Connector__c</members>
         <members>MSD_Schedule__c</members>
@@ -13,6 +37,7 @@
     </types>
     <types>
         <members>MSD_Integration_Agent</members>
+        <members>SAGE100_Integration_Agent</members>
         <name>PermissionSet</name>
     </types>
     <types>

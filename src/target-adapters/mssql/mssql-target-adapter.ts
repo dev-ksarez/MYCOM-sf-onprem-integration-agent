@@ -7,6 +7,8 @@ import { TransferContext } from "../../types/transfer-context";
 
 interface MssqlTargetDefinition {
   upsertKey?: string;
+  schema?: string;
+  table?: string;
 }
 
 function parseMssqlTargetDefinition(rawDefinition?: string): MssqlTargetDefinition {
@@ -25,8 +27,20 @@ function parseMssqlTargetDefinition(rawDefinition?: string): MssqlTargetDefiniti
     const upsertKey = typeof parsedDefinition.upsertKey === "string"
       ? parsedDefinition.upsertKey.trim()
       : "";
+    const schema = typeof parsedDefinition.schema === "string"
+      ? parsedDefinition.schema.trim()
+      : "";
+    const table = typeof parsedDefinition.table === "string"
+      ? parsedDefinition.table.trim()
+      : typeof (parsed as { tableName?: unknown }).tableName === "string"
+        ? String((parsed as { tableName?: unknown }).tableName).trim()
+        : "";
 
-    return upsertKey ? { upsertKey } : {};
+    return {
+      ...(upsertKey ? { upsertKey } : {}),
+      ...(schema ? { schema } : {}),
+      ...(table ? { table } : {})
+    };
   } catch {
     return {};
   }
@@ -49,13 +63,23 @@ export class MssqlTargetAdapter implements TargetAdapter {
       values: { ...record.values }
     }));
 
-    return this.connector.upsertMappedRecords(mappedRecords, {
-      runId: context.runId,
-      correlationId: context.correlationId,
-      scheduleId: context.scheduleId,
-      targetSystem: context.targetType,
-      batchSize: context.batchSize,
-      maxRetries: context.maxRetries
-    }, this.targetDefinition.upsertKey);
+    return this.connector.upsertMappedRecords(
+      mappedRecords,
+      {
+        runId: context.runId,
+        correlationId: context.correlationId,
+        scheduleId: context.scheduleId,
+        targetSystem: context.targetType,
+        batchSize: context.batchSize,
+        maxRetries: context.maxRetries
+      },
+      this.targetDefinition.upsertKey,
+      this.targetDefinition.table
+        ? {
+          schema: this.targetDefinition.schema,
+          table: this.targetDefinition.table
+        }
+        : undefined
+    );
   }
 }

@@ -733,7 +733,7 @@ function relayoutOverviewGraph(graph) {
   const nodeHeight = 118;
   const hGap = 24;
   const vGap = 70;
-  const connectorPad = 48;
+  const connectorPad = 56;
   const baseY = 26;
 
   const connectors = nodes.filter((node) => node.kind === 'connector');
@@ -797,6 +797,17 @@ function relayoutOverviewGraph(graph) {
     return width;
   };
 
+  const subtreeHeightCache = new Map();
+  const computeSubtreeHeight = (id) => {
+    if (subtreeHeightCache.has(id)) return subtreeHeightCache.get(id);
+    const childIds = childrenByParent.get(id) || [];
+    const height = childIds.length
+      ? nodeHeight + vGap + Math.max(...childIds.map((childId) => computeSubtreeHeight(childId)))
+      : nodeHeight;
+    subtreeHeightCache.set(id, height);
+    return height;
+  };
+
   const placeSchedule = (id, centerX, topY) => {
     const node = schedulerById.get(id);
     if (!node) return;
@@ -823,28 +834,40 @@ function relayoutOverviewGraph(graph) {
   let cursorX = 30;
   const connectorY = baseY;
   const schedulerStartY = connectorY + nodeHeight + vGap;
+  const connectorCount = connectors.length || 1;
+  const rootsPerRow = connectorCount > 1 ? 3 : 4;
 
   connectors.forEach((connectorNode, index) => {
     const connectorId = String(connectorNode.id || '');
     const rootIds = rootSchedulersByConnector.get(connectorId) || [];
+    const rootRows = [];
+    for (let i = 0; i < rootIds.length; i += rootsPerRow) {
+      rootRows.push(rootIds.slice(i, i + rootsPerRow));
+    }
 
-    const totalRootsWidth = rootIds.length
-      ? rootIds.reduce((sum, rootId, i) => {
-          return sum + computeSubtreeWidth(rootId) + (i < rootIds.length - 1 ? hGap : 0);
-        }, 0)
-      : 0;
+    const rowMetrics = rootRows.map((row) => ({
+      ids: row,
+      width: row.reduce((sum, rootId, i) => {
+        return sum + computeSubtreeWidth(rootId) + (i < row.length - 1 ? hGap : 0);
+      }, 0),
+      height: row.length ? Math.max(...row.map((rootId) => computeSubtreeHeight(rootId))) : 0
+    }));
 
-    const groupWidth = Math.max(nodeWidth, totalRootsWidth);
+    const groupWidth = Math.max(nodeWidth, ...rowMetrics.map((row) => row.width));
     const groupCenterX = cursorX + groupWidth / 2;
 
     connectorNode.x = groupCenterX - nodeWidth / 2;
     connectorNode.y = connectorY;
 
-    let schedulerCursorX = groupCenterX - totalRootsWidth / 2;
-    rootIds.forEach((rootId) => {
-      const rootWidth = computeSubtreeWidth(rootId);
-      placeSchedule(rootId, schedulerCursorX + rootWidth / 2, schedulerStartY);
-      schedulerCursorX += rootWidth + hGap;
+    let rowY = schedulerStartY;
+    rowMetrics.forEach((row) => {
+      let schedulerCursorX = groupCenterX - row.width / 2;
+      row.ids.forEach((rootId) => {
+        const rootWidth = computeSubtreeWidth(rootId);
+        placeSchedule(rootId, schedulerCursorX + rootWidth / 2, rowY);
+        schedulerCursorX += rootWidth + hGap;
+      });
+      rowY += row.height + vGap;
     });
 
     cursorX += groupWidth + (index < connectors.length - 1 ? connectorPad : 0);
