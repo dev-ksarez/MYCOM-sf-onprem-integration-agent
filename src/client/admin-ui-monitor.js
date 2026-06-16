@@ -641,7 +641,7 @@ function buildFilteredOverviewGraph(graph) {
     return { nodes: baseNodes, edges: baseEdges };
   }
 
-  const selectedConnectorNode = baseNodes.find((node) => {
+  let selectedConnectorNode = baseNodes.find((node) => {
     if (node.kind !== 'connector') return false;
     const refId = String(node.refId || '').trim();
     const connectorIdField = String(node.connectorId || '').trim();
