@@ -28,6 +28,7 @@ function ensureSalesforceTargetDefinition() {
   const upsertField = String(document.getElementById('sch-external-id-field')?.value || '').trim();
   const pricebook2Id = String(document.getElementById('sch-pricebook2id')?.value || '').trim();
   const missingProductStrategy = String(document.getElementById('sch-missing-product-strategy')?.value || 'error').trim();
+  const clearTargetBeforeInsert = document.getElementById('sch-clear-target-before-insert')?.checked === true;
   const operation = String(normalizeOperationValue(document.getElementById('sch-operation')?.value || 'Upsert') || 'Upsert').toLowerCase();
   const nextDefinition = isSalesforce
     ? {
@@ -40,6 +41,9 @@ function ensureSalesforceTargetDefinition() {
 
   if (isSalesforce && operation === 'upsert' && upsertField) {
     nextDefinition.externalIdField = upsertField;
+  }
+  if (isSalesforce && operation === 'insert' && clearTargetBeforeInsert) {
+    nextDefinition.clearTargetBeforeInsert = true;
   }
 
   if (isSalesforce && objectApiName === 'PricebookEntry' && pricebook2Id) {
@@ -70,6 +74,11 @@ function ensureSalesforceTargetDefinition() {
         }
       } else if ('externalIdField' in targetDefinition) {
         delete targetDefinition.externalIdField;
+      }
+      if (operation === 'insert' && clearTargetBeforeInsert) {
+        targetDefinition.clearTargetBeforeInsert = true;
+      } else if ('clearTargetBeforeInsert' in targetDefinition) {
+        delete targetDefinition.clearTargetBeforeInsert;
       }
       if (Array.isArray(parsed.importProfiles)) {
         if (operation === 'upsert' && String(targetDefinition.externalIdField || '').trim()) {
@@ -107,6 +116,13 @@ function isSchedulerSalesforceUpsertSelection() {
   const targetSystem = resolveEffectiveTargetSystem();
   const operation = normalizeOperationValue(document.getElementById('sch-operation')?.value || '');
   return targetType === 'SALESFORCE' && targetSystem === 'Salesforce' && String(operation || '').toLowerCase() === 'upsert';
+}
+
+function isSchedulerSalesforceInsertSelection() {
+  const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
+  const targetSystem = resolveEffectiveTargetSystem();
+  const operation = normalizeOperationValue(document.getElementById('sch-operation')?.value || '');
+  return targetType === 'SALESFORCE' && targetSystem === 'Salesforce' && String(operation || '').toLowerCase() === 'insert';
 }
 
 function getSchedulerSelectedTargetDefinitionContainer(parsed) {
@@ -327,6 +343,37 @@ function getSchedulerTargetDefinitionMissingProductStrategyValue() {
     return strategy === 'skip' ? 'skip' : 'error';
   } catch {
     return 'error';
+  }
+}
+
+function getSchedulerTargetDefinitionClearTargetBeforeInsertValue() {
+  const raw = String(document.getElementById('sch-target-definition')?.value || '').trim();
+  if (!raw) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    const targetDefinition = getSchedulerSelectedTargetDefinitionContainer(parsed) || parsed;
+    return targetDefinition?.clearTargetBeforeInsert === true;
+  } catch {
+    return false;
+  }
+}
+
+function syncSchedulerClearTargetBeforeInsertUi(selectedValue) {
+  const wrap = document.getElementById('sch-clear-target-before-insert-wrap');
+  const input = document.getElementById('sch-clear-target-before-insert');
+  const show = isSchedulerSalesforceInsertSelection();
+  if (wrap) {
+    wrap.classList.toggle('d-none', !show);
+  }
+  if (input) {
+    if (show) {
+      input.checked = selectedValue === true || getSchedulerTargetDefinitionClearTargetBeforeInsertValue();
+    } else {
+      input.checked = false;
+    }
   }
 }
 
@@ -597,6 +644,7 @@ async function syncSchedulerExternalIdUi(selectedValue) {
   const isMssql = isSchedulerMssqlUpsertSelection();
   const objectApiName = String(document.getElementById('sch-object')?.value || '').trim();
   const show = isSalesforce || isMssql;
+  syncSchedulerClearTargetBeforeInsertUi();
   if (wrap) {
     wrap.classList.toggle('d-none', !show);
   }
@@ -1512,6 +1560,8 @@ async function loadTargetObjects(selectedObjectName) {
   state.targetObjectsLoadSeq = loadSeq;
   const targetSystem = resolveEffectiveTargetSystem();
   const connectorId = document.getElementById('sch-connector').value;
+  const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
+  const isGlobalPicklistTarget = targetType === 'SALESFORCE_GLOBAL_PICKLIST';
 
   if (!targetSystem) {
     renderSelectOptions('sch-object', state.scheduleOptions.objectNames || [], selectedObjectName || '');
@@ -1520,7 +1570,6 @@ async function loadTargetObjects(selectedObjectName) {
   }
 
   try {
-    const targetType = String(document.getElementById('sch-target-type')?.value || '').trim().toUpperCase();
     const result = await requestJson('/api/targets/objects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1537,18 +1586,33 @@ async function loadTargetObjects(selectedObjectName) {
 
     const objects = Array.isArray(result.objects) ? result.objects : [];
     if (!objects.length) {
+      if (isGlobalPicklistTarget) {
+        state.schedulerTargetObjects = [];
+        renderSelectOptions('sch-object', [], '');
+        renderSchedulerMappingAssistant();
+        return;
+      }
       renderSelectOptions('sch-object', state.scheduleOptions.objectNames || [], selectedObjectName || '');
       renderSchedulerMappingAssistant();
       return;
     }
 
-    const preferredObjectName = normalizeSystemValue(targetSystem) === 'MS SQL'
-      ? getPreferredMssqlTargetObjectName(connectorId, selectedObjectName || '', objects)
-      : (selectedObjectName || '');
+    const selectedExists = objects.some((item) => String(item?.name || '').trim() === String(selectedObjectName || '').trim());
+    const preferredObjectName = isGlobalPicklistTarget
+      ? (selectedExists ? selectedObjectName : '')
+      : (normalizeSystemValue(targetSystem) === 'MS SQL'
+        ? getPreferredMssqlTargetObjectName(connectorId, selectedObjectName || '', objects)
+        : (selectedObjectName || ''));
     renderTargetObjectOptions(objects, preferredObjectName);
     renderSchedulerMappingAssistant();
   } catch {
     if (loadSeq !== state.targetObjectsLoadSeq) {
+      return;
+    }
+    if (isGlobalPicklistTarget) {
+      state.schedulerTargetObjects = [];
+      renderSelectOptions('sch-object', [], '');
+      renderSchedulerMappingAssistant();
       return;
     }
     renderSelectOptions('sch-object', state.scheduleOptions.objectNames || [], selectedObjectName || '');
@@ -3940,6 +4004,7 @@ function buildScheduleTargetDefinitionValue() {
     return JSON.stringify(definition, null, 2);
   }
 
+  ensureSalesforceTargetDefinition();
   return String(document.getElementById('sch-target-definition').value || '').trim() || undefined;
 }
 

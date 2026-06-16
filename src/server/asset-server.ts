@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 
-export const UI_ASSET_VERSION = "20260609-redesign-branding";
+export const UI_ASSET_VERSION = "20260616-global-picklist-targets";
 
 const INLINE_ASSET_FALLBACKS: Record<string, string> = {
   "/assets/login.js": `(function () {

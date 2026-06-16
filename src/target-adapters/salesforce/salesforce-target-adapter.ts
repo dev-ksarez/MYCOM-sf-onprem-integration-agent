@@ -49,6 +49,7 @@ interface SalesforceObjectTargetDefinition {
   objectApiName: string;
   operation: SalesforceOperation;
   externalIdField: string;
+  clearTargetBeforeInsert: boolean;
   pricebook2Id?: string;
   missingProductStrategy: MissingProductStrategy;
   picklists: SalesforcePicklistDefinition[];
@@ -204,6 +205,7 @@ function parseTargetDefinition(rawDefinition: string): SalesforceTargetDefinitio
     const objectApiName = candidate.objectApiName;
     const operation = typeof candidate.operation === "string" ? candidate.operation.trim().toLowerCase() : candidate.operation;
     const externalIdField = candidate.externalIdField;
+    const clearTargetBeforeInsert = candidate.clearTargetBeforeInsert;
     const pricebook2Id = candidate.pricebook2Id;
     const missingProductStrategy = candidate.missingProductStrategy;
     const picklists = candidate.picklists;
@@ -241,6 +243,7 @@ function parseTargetDefinition(rawDefinition: string): SalesforceTargetDefinitio
       objectApiName: validateIdentifier(objectApiName.trim(), `${path}.objectApiName`),
       operation: resolvedOperation,
       externalIdField: resolvedExternalIdField,
+      clearTargetBeforeInsert: resolvedOperation === "insert" && clearTargetBeforeInsert === true,
       pricebook2Id: typeof pricebook2Id === "string" && pricebook2Id.trim() ? pricebook2Id.trim() : undefined,
       missingProductStrategy: resolvedMissingProductStrategy,
       picklists: parsePicklists(picklists, `${path}.picklists`)
@@ -523,6 +526,7 @@ export class SalesforceTargetAdapter implements TargetAdapter {
   private picklistSqlDatabase?: MssqlDatabase;
   private readonly sqlMappingCache: Map<string, Map<string, string>>;
   private readonly objectFieldCache: Map<string, Map<string, SalesforceObjectFieldMetadata>>;
+  private targetClearedBeforeInsert = false;
 
   private async preparePricebookEntryCompositeLookup(
     records: GenericRecord[],
@@ -959,6 +963,38 @@ export class SalesforceTargetAdapter implements TargetAdapter {
     });
   }
 
+  private async clearTargetObjectBeforeInsertIfNeeded(target: SalesforceObjectTargetDefinition): Promise<void> {
+    if (this.targetClearedBeforeInsert || target.operation !== "insert" || target.clearTargetBeforeInsert !== true) {
+      return;
+    }
+
+    this.targetClearedBeforeInsert = true;
+    const idsToDelete: string[] = [];
+    let deletedCount = 0;
+    const flush = async (): Promise<void> => {
+      if (!idsToDelete.length) {
+        return;
+      }
+      deletedCount += await this.salesforceClient.deleteGenericRecords(target.objectApiName, idsToDelete.splice(0));
+    };
+
+    for await (const record of this.salesforceClient.queryGenericStream(`SELECT Id FROM ${target.objectApiName}`)) {
+      const id = String(record.Id || "").trim();
+      if (!id) {
+        continue;
+      }
+      idsToDelete.push(id);
+      if (idsToDelete.length >= 200) {
+        await flush();
+      }
+    }
+
+    await flush();
+    if (deletedCount > 0) {
+      console.info(`Cleared ${deletedCount} existing Salesforce records from ${target.objectApiName} before insert`);
+    }
+  }
+
   public async writeRecords(
     records: GenericRecord[],
     context: TransferContext
@@ -980,8 +1016,11 @@ export class SalesforceTargetAdapter implements TargetAdapter {
     const shouldUseProductCodeLookupForProduct2 =
       target.objectApiName === "Product2" && target.externalIdField === "ProductCode";
     if (mode === "object" && !shouldUseProductCodeLookupForProduct2) {
+      await this.clearTargetObjectBeforeInsertIfNeeded(target);
       return this.writeGenericObjectRecords(records, target);
     }
+
+    await this.clearTargetObjectBeforeInsertIfNeeded(target);
 
     for (const record of records) {
       const normalizedValues = await this.normalizePicklistValues(normalizeRecordValues(record.values));

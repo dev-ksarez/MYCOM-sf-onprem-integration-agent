@@ -349,6 +349,7 @@ bindEventListenerOnce('sch-target-type', 'change', async () => {
   applyOperationOptions('');
   toggleCreateObjectFromSourceUi();
   ensureSalesforceTargetDefinition();
+  await loadTargetObjects('');
   await loadTargetFields();
   await syncSchedulerExternalIdUi();
   updateScheduleFilePathSummaries();
@@ -378,6 +379,9 @@ bindEventListenerOnce('sch-pricebook2id', 'change', async () => {
 bindEventListenerOnce('sch-missing-product-strategy', 'change', () => {
   ensureSalesforceTargetDefinition();
   updateSchedulerExternalIdValidationState();
+});
+bindEventListenerOnce('sch-clear-target-before-insert', 'change', () => {
+  ensureSalesforceTargetDefinition();
 });
 bindEventListenerOnce('sch-target-definition', 'change', async () => {
   await syncSchedulerExternalIdUi();
@@ -960,6 +964,7 @@ bindEventListenerOnce('sch-target-type', 'change', async () => {
   updateScheduleTypeUi();
   toggleCreateObjectFromSourceUi();
   ensureSalesforceTargetDefinition();
+  await loadTargetObjects('');
   await loadTargetFields();
   await syncSchedulerExternalIdUi();
 });
@@ -979,6 +984,9 @@ bindEventListenerOnce('sch-external-id-field', 'change', () => {
 bindEventListenerOnce('sch-pricebook2id', 'change', async () => {
   ensureSalesforceTargetDefinition();
   await syncSchedulerExternalIdUi();
+});
+bindEventListenerOnce('sch-clear-target-before-insert', 'change', () => {
+  ensureSalesforceTargetDefinition();
 });
 bindEventListenerOnce('sch-target-definition', 'change', async () => {
   await syncSchedulerExternalIdUi();

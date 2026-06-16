@@ -6536,9 +6536,7 @@ export class AdminDataService {
     const resolvedInstance = this.resolveInstance(instanceId);
     const client = await this.createClient(resolvedInstance.id);
     const record = await client.queryScheduleById(scheduleId);
-    const cloneName = newName?.trim() || `${record.Name} (Copy)`;
     const id = await client.createScheduleRecord({
-      Name: cloneName,
       Active__c: false,
       SourceSystem__c: record.SourceSystem__c,
       TargetSystem__c: record.TargetSystem__c,
@@ -6573,7 +6571,6 @@ export class AdminDataService {
     const client = await this.createClient(resolvedInstance.id);
 
     const id = await client.createScheduleRecord({
-      Name: draft.schedule.name,
       Active__c: false,
       SourceSystem__c: draft.schedule.sourceSystem,
       TargetSystem__c: draft.schedule.targetSystem,

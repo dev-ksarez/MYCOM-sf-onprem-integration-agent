@@ -3047,6 +3047,13 @@ ${renderAISchedulerAssistantModule()}
                   <div id="sch-external-id-wrap" class="col-md-4 d-none"><label id="sch-external-id-label" class="form-label">Upsert Feld</label><select id="sch-external-id-field" class="form-select"><option value="">- Upsert Feld wählen -</option></select><div id="sch-external-id-help" class="form-text">Wählen Sie das Feld, das für Upsert verwendet werden soll.</div></div>
                   <div id="sch-pricebook2id-wrap" class="col-md-4 d-none"><label class="form-label">Pricebook</label><select id="sch-pricebook2id" class="form-select"><option value="">- Pricebook wählen -</option></select><div id="sch-pricebook2id-help" class="form-text">Optional als festes Ziel-Pricebook für PricebookEntry-Upserts.</div></div>
                   <div id="sch-missing-product-strategy-wrap" class="col-md-4 d-none"><label class="form-label">Fehlende Produkte</label><select id="sch-missing-product-strategy" class="form-select"><option value="error">als Fehler protokollieren</option><option value="skip">überspringen</option></select><div class="form-text">Gilt für PricebookEntry per ProductCode, wenn kein Product2 gefunden wird.</div></div>
+                  <div id="sch-clear-target-before-insert-wrap" class="col-md-8 d-none">
+                    <div class="form-check mt-4">
+                      <input id="sch-clear-target-before-insert" class="form-check-input" type="checkbox" />
+                      <label class="form-check-label" for="sch-clear-target-before-insert">Zielobjekt vor Insert leeren</label>
+                      <div class="form-text">Loescht alle vorhandenen Datensaetze im Salesforce-Zielobjekt unmittelbar vor dem Insert-Lauf.</div>
+                    </div>
+                  </div>
                   <div class="col-md-12">
                     <details class="json-field-collapsible">
                       <summary class="json-field-summary">Target Definition (JSON)</summary>
