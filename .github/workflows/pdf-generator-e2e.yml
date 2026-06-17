@@ -1,0 +1,36 @@
+name: PDF Generator E2E
+
+on:
+  pull_request:
+    paths:
+      - 'src/pdf-generator/**'
+      - 'docs/specs/**'
+  workflow_dispatch: {}
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Install dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps
+      - name: Run HTTP server
+        run: |
+          npx ts-node src/pdf-generator/http.ts &
+          echo $! > .pid
+          sleep 2
+      - name: Smoke test: POST HTML -> PDF
+        run: |
+          mkdir -p tmp
+          curl -s -X POST http://localhost:3000/api/v1/pdf -H 'Content-Type: application/json' -d '{"content":"<h1>CI Test</h1>"}' --output tmp/out.pdf
+          if [ ! -s tmp/out.pdf ]; then echo "PDF not created"; exit 1; fi
+      - name: Cleanup
+        if: always()
+        run: |
+          kill "$(cat .pid)" || true
