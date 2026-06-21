@@ -230,6 +230,7 @@ function updateConnectorConfigUi() {
   const fileBrowseWrap = document.getElementById('con-filebrowse-settings-wrap');
   const mssqlWrap = document.getElementById('con-mssql-settings-wrap');
   const restWrap = document.getElementById('con-rest-settings-wrap');
+  const salesforceWrap = document.getElementById('con-salesforce-settings-wrap');
   const binaryWrap = document.getElementById('con-binary-settings-wrap');
   const typeProfile = document.getElementById('con-type-profile');
   const hint = document.getElementById('con-wizard-hint');
@@ -254,13 +255,13 @@ function updateConnectorConfigUi() {
   const oracleSavePasswordWrap = document.getElementById('con-oracle-save-password-wrap');
   const mssqlEncryptWrap = document.getElementById('con-mssql-encrypt-wrap');
   const mssqlTrustServerCertificateWrap = document.getElementById('con-mssql-trust-server-certificate-wrap');
-  if (!fileWrap || !fileBrowseWrap || !mssqlWrap || !restWrap || !binaryWrap) {
+  if (!fileWrap || !fileBrowseWrap || !mssqlWrap || !restWrap || !salesforceWrap || !binaryWrap) {
     return;
   }
 
-  setClosestFieldVisible('con-secret', isSqlConnectorType(connectorType) || isEndpointConnectorType(connectorType));
-  setClosestFieldVisible('con-timeout', isSqlConnectorType(connectorType) || isRestConnectorType(connectorType) || isEndpointConnectorType(connectorType));
-  setClosestFieldVisible('con-retries', isSqlConnectorType(connectorType) || isRestConnectorType(connectorType));
+  setClosestFieldVisible('con-secret', isSqlConnectorType(connectorType) || isEndpointConnectorType(connectorType) || isSalesforceConnectorType(connectorType));
+  setClosestFieldVisible('con-timeout', isSqlConnectorType(connectorType) || isRestConnectorType(connectorType) || isEndpointConnectorType(connectorType) || isSalesforceConnectorType(connectorType));
+  setClosestFieldVisible('con-retries', isSqlConnectorType(connectorType) || isRestConnectorType(connectorType) || isSalesforceConnectorType(connectorType));
 
   if (connectorType === 'FILE') {
     fileWrap.classList.remove('d-none');
@@ -284,6 +285,12 @@ function updateConnectorConfigUi() {
     restWrap.classList.remove('d-none');
   } else {
     restWrap.classList.add('d-none');
+  }
+
+  if (isSalesforceConnectorType(connectorType)) {
+    salesforceWrap.classList.remove('d-none');
+  } else {
+    salesforceWrap.classList.add('d-none');
   }
 
   if (isBinaryImportConnectorType(connectorType)) {
@@ -391,6 +398,7 @@ function updateConnectorConfigUi() {
       FILE_BROWSE: 'Geräteakte / FileBrowse: Basisverzeichnis und Seriennummer-Ordnerlayout. Der Test prüft Lesbarkeit, Layout und optional eine Beispiel-Seriennummer.',
       REST_API: 'REST API: Base URL, Resource Path, Methode und Authentifizierung. Der Connector-Test prueft den konfigurierten Endpunkt.',
       AGENT_ENDPOINT: 'Agent Endpunkt: Root-Pfad im Agenten, Authentifizierung und Request-Limit. Scheduler definieren darunter konkrete Methoden und Pfade.',
+      SALESFORCE: 'Salesforce: Sandbox oder Produktion, Login URL und OAuth-Parameter werden als strukturierte Parameter gespeichert.',
       FILE_BINARY_SF_IMPORT: 'Datei-Binaerimport: Verzeichnis und Salesforce-Dateifelder. Der Test prueft Pfadzugriff und Zielkonfiguration.',
       CUSTOM: 'Benutzerdefiniert: Nur Basisfelder und freies Parameter-JSON werden gespeichert.'
     };
@@ -408,6 +416,7 @@ function updateConnectorConfigUi() {
       FILE_BROWSE: 'Geräteakte-Pfad und Ordnerlayout erfassen.',
       REST_API: 'REST Endpunkt + gewünschte Authentifizierung erfassen.',
       AGENT_ENDPOINT: 'Agent Root-Endpunkt und OAuth2/Bearer Authentifizierung erfassen.',
+      SALESFORCE: 'Salesforce Umgebung, Login URL und Authentifizierung erfassen.',
       FILE_BINARY_SF_IMPORT: 'Binary Import-Pfade + Salesforce Zielfelder setzen.',
       CUSTOM: 'Benutzerdefiniert: Parameter im JSON Bereich pflegen.'
     };
@@ -415,6 +424,7 @@ function updateConnectorConfigUi() {
   }
 
   updateRestAuthUi();
+  updateSalesforceAuthUi();
 }
 
 function updateRestAuthUi() {
@@ -474,6 +484,38 @@ function updateRestAuthUi() {
   toggle('con-rest-client-id-wrap', authType === 'oauth2');
   toggle('con-rest-client-secret-wrap', authType === 'oauth2');
   toggle('con-rest-scope-wrap', authType === 'oauth2');
+}
+
+function getSalesforceLoginUrlForEnvironment(environment) {
+  return String(environment || '').trim().toLowerCase() === 'sandbox'
+    ? 'https://test.salesforce.com'
+    : 'https://login.salesforce.com';
+}
+
+function updateSalesforceAuthUi() {
+  const authType = String(document.getElementById('con-salesforce-auth-type')?.value || 'client_credentials').trim();
+  const environment = String(document.getElementById('con-salesforce-environment')?.value || 'production').trim();
+  const loginUrlInput = document.getElementById('con-salesforce-login-url');
+  const defaultLoginUrl = getSalesforceLoginUrlForEnvironment(environment);
+  if (loginUrlInput && (!String(loginUrlInput.value || '').trim() || ['https://login.salesforce.com', 'https://test.salesforce.com'].includes(String(loginUrlInput.value || '').trim()))) {
+    loginUrlInput.value = defaultLoginUrl;
+    loginUrlInput.placeholder = defaultLoginUrl;
+  }
+
+  const toggle = (id, visible) => {
+    const element = document.getElementById(id);
+    if (element) {
+      element.classList.toggle('d-none', !visible);
+    }
+  };
+  toggle('con-salesforce-client-id-wrap', authType !== 'password');
+  toggle('con-salesforce-client-secret-wrap', authType !== 'password');
+  toggle('con-salesforce-username-wrap', authType === 'password');
+  toggle('con-salesforce-password-wrap', authType === 'password');
+  toggle('con-salesforce-security-token-wrap', authType === 'password');
+  toggle('con-salesforce-refresh-token-wrap', authType === 'oauth_refresh_token');
+  toggle('con-salesforce-access-token-wrap', authType === 'oauth_refresh_token');
+  toggle('con-salesforce-instance-url-wrap', authType === 'oauth_refresh_token');
 }
 
 function applyConnectorWizardSelection(preserveValues) {
@@ -536,6 +578,17 @@ function applyConnectorWizardSelection(preserveValues) {
       }
       if (!document.getElementById('con-direction').value) {
         document.getElementById('con-direction').value = 'Bidirectional';
+      }
+    }
+    if (wizardType === 'SALESFORCE') {
+      if (!document.getElementById('con-target-system').value) {
+        document.getElementById('con-target-system').value = 'Salesforce';
+      }
+      if (!document.getElementById('con-direction').value) {
+        document.getElementById('con-direction').value = 'Bidirectional';
+      }
+      if (!String(document.getElementById('con-salesforce-login-url')?.value || '').trim()) {
+        document.getElementById('con-salesforce-login-url').value = getSalesforceLoginUrlForEnvironment(document.getElementById('con-salesforce-environment')?.value || 'production');
       }
     }
   }
@@ -825,6 +878,99 @@ function mergeRestConnectorSettingsIntoParameters(parameters) {
   return merged;
 }
 
+function normalizeSalesforceEnvironment(parameters) {
+  const raw = String(parameters.environment || parameters.salesforceEnvironment || parameters.orgEnvironment || '').trim().toLowerCase();
+  const loginUrl = String(parameters.loginUrl || parameters.sfLoginUrl || parameters.url || '').trim().toLowerCase();
+  if (raw === 'sandbox' || raw === 'test') {
+    return 'sandbox';
+  }
+  if (raw === 'production' || raw === 'prod') {
+    return 'production';
+  }
+  return loginUrl.includes('test.salesforce.com') ? 'sandbox' : 'production';
+}
+
+function fillSalesforceConnectorSettingsFromParameters(parameters) {
+  const params = parameters || {};
+  const environment = normalizeSalesforceEnvironment(params);
+  const authType = String(params.authType || 'client_credentials').trim();
+  document.getElementById('con-salesforce-environment').value = environment;
+  document.getElementById('con-salesforce-login-url').value = String(params.loginUrl || params.sfLoginUrl || params.url || getSalesforceLoginUrlForEnvironment(environment));
+  document.getElementById('con-salesforce-auth-type').value = ['password', 'oauth_refresh_token', 'client_credentials'].includes(authType) ? authType : 'client_credentials';
+  document.getElementById('con-salesforce-client-id').value = String(params.clientId || params.consumerKey || '');
+  document.getElementById('con-salesforce-client-secret').value = '';
+  document.getElementById('con-salesforce-username').value = String(params.username || params.user || '');
+  document.getElementById('con-salesforce-password').value = '';
+  document.getElementById('con-salesforce-security-token').value = '';
+  document.getElementById('con-salesforce-refresh-token').value = '';
+  document.getElementById('con-salesforce-access-token').value = '';
+  document.getElementById('con-salesforce-instance-url').value = String(params.instanceUrl || '');
+  document.getElementById('con-salesforce-query-limit').value = params.queryLimit === undefined || params.queryLimit === null || params.queryLimit === ''
+    ? ''
+    : String(params.queryLimit);
+  updateSalesforceAuthUi();
+}
+
+function mergeSalesforceConnectorSettingsIntoParameters(parameters) {
+  const merged = { ...(parameters || {}) };
+  const environment = String(document.getElementById('con-salesforce-environment')?.value || 'production').trim().toLowerCase();
+  const authType = String(document.getElementById('con-salesforce-auth-type')?.value || 'client_credentials').trim();
+  const loginUrl = String(document.getElementById('con-salesforce-login-url')?.value || getSalesforceLoginUrlForEnvironment(environment)).trim();
+  const queryLimitRaw = String(document.getElementById('con-salesforce-query-limit')?.value || '').trim();
+
+  merged.environment = environment === 'sandbox' ? 'sandbox' : 'production';
+  merged.loginUrl = loginUrl || getSalesforceLoginUrlForEnvironment(merged.environment);
+  merged.authType = authType;
+
+  const clientId = String(document.getElementById('con-salesforce-client-id')?.value || '').trim();
+  const clientSecret = String(document.getElementById('con-salesforce-client-secret')?.value || '').trim();
+  const username = String(document.getElementById('con-salesforce-username')?.value || '').trim();
+  const password = String(document.getElementById('con-salesforce-password')?.value || '').trim();
+  const securityToken = String(document.getElementById('con-salesforce-security-token')?.value || '').trim();
+  const refreshToken = String(document.getElementById('con-salesforce-refresh-token')?.value || '').trim();
+  const accessToken = String(document.getElementById('con-salesforce-access-token')?.value || '').trim();
+  const instanceUrl = String(document.getElementById('con-salesforce-instance-url')?.value || '').trim();
+
+  if (authType === 'password') {
+    if (username) merged.username = username;
+    if (password) merged.password = password;
+    if (securityToken) merged.securityToken = securityToken;
+    delete merged.clientId;
+    delete merged.clientSecret;
+    delete merged.consumerKey;
+    delete merged.refreshToken;
+    delete merged.accessToken;
+    delete merged.instanceUrl;
+  } else {
+    if (clientId) merged.clientId = clientId;
+    if (clientSecret) merged.clientSecret = clientSecret;
+    delete merged.username;
+    delete merged.user;
+    delete merged.password;
+    delete merged.securityToken;
+    if (authType === 'oauth_refresh_token') {
+      if (refreshToken) merged.refreshToken = refreshToken;
+      if (accessToken) merged.accessToken = accessToken;
+      if (instanceUrl) merged.instanceUrl = instanceUrl;
+    } else {
+      delete merged.refreshToken;
+      delete merged.accessToken;
+      delete merged.instanceUrl;
+    }
+  }
+
+  if (queryLimitRaw) {
+    const parsedQueryLimit = Number(queryLimitRaw);
+    if (!Number.isNaN(parsedQueryLimit) && parsedQueryLimit > 0) {
+      merged.queryLimit = parsedQueryLimit;
+    }
+  } else {
+    delete merged.queryLimit;
+  }
+
+  return merged;
+}
+
 function generateBearerTokenValue() {
   const bytes = new Uint8Array(32);
   if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
@@ -925,6 +1071,7 @@ function openConnectorModal(connectorId, templateDraft) {
   fillFileConnectorSettingsFromParameters(parameters);
   fillFileBrowseConnectorSettingsFromParameters(parameters);
   fillRestConnectorSettingsFromParameters(parameters);
+  fillSalesforceConnectorSettingsFromParameters(parameters);
   fillBinaryImportConnectorSettingsFromParameters(parameters);
   applyConnectorWizardSelection(!!entry);
   updateConnectorConfigUi();
@@ -1119,7 +1266,7 @@ function collectConnectorFormPayload() {
   const preview = collectConnectorParametersPreview();
   const connectorType = preview.connectorType || document.getElementById('con-type').value;
   const normalizedConnectorType = normalizeConnectorType(connectorType);
-  const secretKey = (isSqlConnectorType(normalizedConnectorType) || isEndpointConnectorType(normalizedConnectorType))
+  const secretKey = (isSqlConnectorType(normalizedConnectorType) || isEndpointConnectorType(normalizedConnectorType) || isSalesforceConnectorType(normalizedConnectorType))
     ? (document.getElementById('con-secret').value || undefined)
     : undefined;
   return {

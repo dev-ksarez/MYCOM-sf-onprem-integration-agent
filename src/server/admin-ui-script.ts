@@ -2054,6 +2054,11 @@ export function renderAdminUiScript(): string {
         return normalizeConnectorType(connectorType) === 'MSSQL';
       }
 
+      function isSalesforceConnectorType(connectorType) {
+        const normalized = normalizeConnectorType(connectorType);
+        return normalized === 'SALESFORCE' || normalized === 'SALESFORCE_ORG' || normalized === 'SALESFORCE_CONNECTOR';
+      }
+
       function pickFirstAvailableSelectValue(selectEl, candidates) {
         if (!selectEl || !Array.isArray(candidates)) {
           return '';
@@ -2130,6 +2135,10 @@ export function renderAdminUiScript(): string {
           return pickFirstAvailableSelectValue(sourceTypeSelect, ['REST_API']);
         }
 
+        if (isSalesforceConnectorType(normalizedConnectorType)) {
+          return pickFirstAvailableSelectValue(sourceTypeSelect, ['SALESFORCE_SOQL']);
+        }
+
         if (normalizedConnectorType === 'FILE' || normalizedConnectorType === 'FILE_BINARY_SF_IMPORT') {
           return pickFirstAvailableSelectValue(sourceTypeSelect, ['FILE_CSV', 'FILE_JSON', 'FILE_EXCEL', 'FILE_XLSX']);
         }
@@ -2157,6 +2166,10 @@ export function renderAdminUiScript(): string {
 
         if (normalizedConnectorType === 'REST_API') {
           return pickFirstAvailableSelectValue(sourceSystemSelect, ['REST API', 'REST_API', 'REST', 'API']);
+        }
+
+        if (isSalesforceConnectorType(normalizedConnectorType)) {
+          return pickFirstAvailableSelectValue(sourceSystemSelect, ['Salesforce', 'SALESFORCE', 'SFDC']);
         }
 
         if (normalizedConnectorType === 'FILE' || normalizedConnectorType === 'FILE_BINARY_SF_IMPORT') {
@@ -2268,7 +2281,7 @@ export function renderAdminUiScript(): string {
         if (!normalized) {
           return 'MSSQL';
         }
-        if (['MSSQL', 'POSTGRESQL', 'MYSQL', 'FILE', 'REST_API', 'FILE_BINARY_SF_IMPORT'].includes(normalized)) {
+        if (['MSSQL', 'POSTGRESQL', 'MYSQL', 'FILE', 'REST_API', 'SALESFORCE', 'FILE_BINARY_SF_IMPORT'].includes(normalized)) {
           return normalized;
         }
         return 'CUSTOM';
@@ -10852,7 +10865,7 @@ export function renderAdminUiScript(): string {
           return;
         }
 
-        setClosestFieldVisible('con-secret', isSqlConnectorType(connectorType));
+        setClosestFieldVisible('con-secret', isSqlConnectorType(connectorType) || isSalesforceConnectorType(connectorType));
 
         if (connectorType === 'FILE') {
           fileWrap.classList.remove('d-none');
@@ -10900,6 +10913,7 @@ export function renderAdminUiScript(): string {
             MYSQL: 'SQL-Parameter für MySQL ausfüllen.',
             FILE: 'Datei-Einstellungen inkl. Format auswählen.',
             REST_API: 'REST Endpunkt + gewünschte Authentifizierung erfassen.',
+            SALESFORCE: 'Salesforce Org-Verbindung. Parameter: loginUrl, authType, clientId; Secret Key enthält Client Secret oder Passwort.',
             FILE_BINARY_SF_IMPORT: 'Binary Import-Pfade + Salesforce Zielfelder setzen.',
             CUSTOM: 'Benutzerdefiniert: Parameter im JSON Bereich pflegen.'
           };
@@ -10954,6 +10968,14 @@ export function renderAdminUiScript(): string {
           }
           if (wizardType === 'REST_API' && !document.getElementById('con-direction').value) {
             document.getElementById('con-direction').value = 'Outbound';
+          }
+          if (wizardType === 'SALESFORCE') {
+            if (!document.getElementById('con-target-system').value) {
+              document.getElementById('con-target-system').value = 'Salesforce';
+            }
+            if (!document.getElementById('con-direction').value) {
+              document.getElementById('con-direction').value = 'Outbound';
+            }
           }
         }
 
@@ -11363,7 +11385,8 @@ export function renderAdminUiScript(): string {
       function collectConnectorFormPayload() {
         const preview = collectConnectorParametersPreview();
         const connectorType = preview.connectorType || document.getElementById('con-type').value;
-        const secretKey = isSqlConnectorType(normalizeConnectorType(connectorType))
+        const normalizedConnectorType = normalizeConnectorType(connectorType);
+        const secretKey = (isSqlConnectorType(normalizedConnectorType) || isSalesforceConnectorType(normalizedConnectorType))
           ? (document.getElementById('con-secret').value || undefined)
           : undefined;
         return {

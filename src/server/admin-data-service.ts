@@ -32,6 +32,7 @@ import { MssqlDatabase } from "../infrastructure/db/mssql";
 import { OracleDatabase } from "../infrastructure/db/oracle";
 import { SqliteDatabase } from "../infrastructure/db/sqlite";
 import { FileMakerDataApiClient, parseFileMakerSourceDefinition } from "../connectors/filemaker/filemaker-data-api";
+import { SalesforceConnector } from "../connectors/salesforce/salesforce-connector";
 import {
   ConnectorTemplateDraft,
   listBuiltInTemplates,
@@ -6014,7 +6015,7 @@ export class AdminDataService {
     }
 
     if (normalizedType === "SALESFORCE_SOQL") {
-      const client = await this.createClient(instanceId);
+      const client = await this.createSalesforceSourceClient(connectorId, instanceId);
       const soqlText = parseQuerySourceDefinition(trimmedDefinition).queryText;
       const limitedSoql = /\bLIMIT\s+\d+\b/i.test(soqlText)
         ? soqlText.replace(/;\s*$/, "")
@@ -6047,7 +6048,7 @@ export class AdminDataService {
     const normalizedType = rawType === "MSSQL" ? "MSSQL_SQL" : rawType;
 
     if (normalizedType === "SALESFORCE_SOQL") {
-      const client = await this.createClient(instanceId);
+      const client = await this.createSalesforceSourceClient(connectorId, instanceId);
       const soqlText = parseQuerySourceDefinition(sourceDefinition).queryText;
       const resolvedObjectName = String(objectName || "").trim() || this.extractSalesforceObjectName(soqlText);
       if (!resolvedObjectName) {
@@ -6258,11 +6259,12 @@ export class AdminDataService {
     const isRestTarget = targetType === "REST_API" || targetType === "API";
     const isFileMakerSource = sourceType === "FILEMAKER_SQL";
     const isEndpointSource = sourceType === "ENDPOINT";
+    const isSalesforceToSalesforce = sourceType === "SALESFORCE_SOQL" && targetType === "SALESFORCE";
 
     if (!isFileTarget && !String(input.operation || "").trim()) add("error", "general", "Operation fehlt.");
     if (!isFileTarget && !String(input.objectName || "").trim()) add("error", "target", "Zielobjekt/Zielname fehlt.");
 
-    if ((isFileSource || isFileTarget || isMssqlSource || isMssqlTarget || isRestSource || isRestTarget || isFileMakerSource || isEndpointSource) && !connectorId) {
+    if ((isFileSource || isFileTarget || isMssqlSource || isMssqlTarget || isRestSource || isRestTarget || isFileMakerSource || isEndpointSource || isSalesforceToSalesforce) && !connectorId) {
       add("error", "connector", "Diese Scheduler-Variante benoetigt einen Connector.");
     }
     if ((isFileSource || isFileTarget) && connector && !this.isFileConnectorType(connector.connectorType)) {
@@ -6279,6 +6281,9 @@ export class AdminDataService {
     }
     if (isEndpointSource && connector && !this.isEndpointConnectorType(connector.connectorType)) {
       add("error", "connector", `Endpoint-Scheduler benoetigt einen AGENT_ENDPOINT-Connector, gewaehlt ist ${connector.connectorType}.`);
+    }
+    if (isSalesforceToSalesforce && connector && !this.isSalesforceConnectorType(connector.connectorType)) {
+      add("error", "connector", `Salesforce-zu-Salesforce-Scheduler benoetigt einen Salesforce-Connector, gewaehlt ist ${connector.connectorType}.`);
     }
     if (isRestTarget) {
       add("error", "target", "REST_API als TargetType ist im generischen Scheduler-Lauf noch nicht implementiert. Unterstuetzt sind REST_API-Quellen nach Salesforce/Global Picklist.");
@@ -7453,7 +7458,6 @@ export class AdminDataService {
 
     let schedulesCreated = 0;
     let schedulesUpdated = 0;
-
     let pending = [...document.schedules];
     let guard = 0;
 
@@ -7793,6 +7797,25 @@ export class AdminDataService {
     return client;
   }
 
+  private async createSalesforceSourceClient(connectorId: string | undefined, instanceId?: string): Promise<SalesforceClient> {
+    if (!connectorId) {
+      return this.createClient(instanceId);
+    }
+
+    const client = await this.createClient(instanceId);
+    const connectorConfig = await client.queryConnector(connectorId);
+    if (!this.isSalesforceConnectorType(connectorConfig.connectorType)) {
+      return client;
+    }
+
+    const connector = new ConnectorRegistry().getConnectorByConfig(connectorConfig);
+    if (!(connector instanceof SalesforceConnector)) {
+      throw new Error(`Connector ${connectorConfig.name} konnte nicht als Salesforce-Connector initialisiert werden.`);
+    }
+
+    return connector.getClient();
+  }
+
   private getAdaptiveSalesforceCacheTtlMs(instanceId: string): number {
     const projectRuntime = this.resolveLookupCacheRuntime(instanceId);
     if (!projectRuntime.enabled) {
@@ -8070,6 +8093,11 @@ export class AdminDataService {
   private isEndpointConnectorType(connectorType: string | undefined): boolean {
     const normalized = String(connectorType || "").trim().toLowerCase();
     return normalized === "endpoint" || normalized === "agent_endpoint";
+  }
+
+  private isSalesforceConnectorType(connectorType: string | undefined): boolean {
+    const normalized = String(connectorType || "").trim().toLowerCase();
+    return normalized === "salesforce" || normalized === "salesforce_org" || normalized === "salesforce_connector";
   }
 
   private toDirectionIcon(direction?: string): string {

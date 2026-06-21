@@ -461,10 +461,39 @@ bindEventListenerOnce('context-target-env-select', 'change', async (event) => {
   await refreshHeaderLayerOptions();
   await refresh();
 });
-bindEventListenerOnce('context-layer-select', 'change', (event) => {
+bindEventListenerOnce('context-layer-select', 'change', async (event) => {
   state.headerLayerId = String(event?.target?.value || '').trim();
+  state.schedulerConnectorFilterId = '';
+  state.overviewConnectorFilterId = '';
+  state.schedulerDirectionTab = 'all';
+  state.schedulerActiveFilter = 'all';
+  const connectorFilter = document.getElementById('schedulers-connector-filter');
+  if (connectorFilter) {
+    connectorFilter.value = '';
+  }
+  const textFilter = document.getElementById('schedulers-filter');
+  if (textFilter) {
+    textFilter.value = '';
+  }
+  const activeFilter = document.getElementById('schedulers-active-filter');
+  if (activeFilter) {
+    activeFilter.value = 'all';
+  }
+  document.querySelectorAll('#schedulers-direction-tabs [data-direction-tab]').forEach((button) => {
+    const isAll = String(button.getAttribute('data-direction-tab') || '').trim().toLowerCase() === 'all';
+    button.classList.toggle('is-active', isAll);
+    button.setAttribute('aria-pressed', isAll ? 'true' : 'false');
+  });
+  try {
+    localStorage.removeItem('sf-agent.table-filters.schedulers.connector');
+    localStorage.removeItem('sf-agent.table-filters.schedulers');
+    localStorage.removeItem('sf-agent.table-filters.schedulers.active');
+  } catch {
+    // localStorage is optional.
+  }
   persistHeaderContext();
   renderContextSelectionSummary();
+  await refresh({ refreshChart: false, includeGraph: false, includeSalesforceOverview: false, includeRecordsSummary: false });
 });
 bindEventListenerOnce('context-layer-create', 'click', async () => {
   try {
@@ -905,6 +934,8 @@ document.getElementById('con-wizard-type').addEventListener('change', () => appl
 document.getElementById('con-oracle-service-type')?.addEventListener('change', updateConnectorConfigUi);
 document.getElementById('con-mssql-auth-type')?.addEventListener('change', updateConnectorConfigUi);
 document.getElementById('con-rest-auth-type').addEventListener('change', updateRestAuthUi);
+document.getElementById('con-salesforce-auth-type')?.addEventListener('change', updateSalesforceAuthUi);
+document.getElementById('con-salesforce-environment')?.addEventListener('change', updateSalesforceAuthUi);
 document.getElementById('con-rest-generate-bearer-token')?.addEventListener('click', generateConnectorBearerToken);
 document.getElementById('load-logs').addEventListener('click', loadLogs);
 document.getElementById('analyze-run-error').addEventListener('click', analyzeCurrentRunError);

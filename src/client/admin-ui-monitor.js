@@ -604,8 +604,11 @@ function buildFilteredOverviewGraph(graph) {
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const edges = Array.isArray(graph?.edges) ? graph.edges : [];
   const selectedConnectorId = String(state.overviewConnectorFilterId || '').trim();
+  const isLayerGraph = String(graph?.source || '').trim().toLowerCase() === 'layer' || Boolean(state.headerLayerId);
 
-  const activeSchedules = (state.schedules || []).filter((schedule) => Boolean(schedule?.active));
+  const activeSchedules = isLayerGraph
+    ? (state.schedules || [])
+    : (state.schedules || []).filter((schedule) => Boolean(schedule?.active));
   const activeScheduleIds = new Set(
     activeSchedules
       .map((schedule) => String(schedule.id || '').trim())
@@ -626,7 +629,7 @@ function buildFilteredOverviewGraph(graph) {
     }
     if (node.kind === 'connector') {
       const connectorId = String(node.refId || '').trim();
-      return activeConnectorIds.has(connectorId) && connectorActiveById.get(connectorId) !== false;
+      return activeConnectorIds.has(connectorId) && (isLayerGraph || connectorActiveById.get(connectorId) !== false);
     }
     return true;
   });
@@ -997,17 +1000,7 @@ function drawGraph(graph) {
   svg.setAttribute('viewBox', '0 0 ' + String(maxX) + ' ' + String(maxY));
   svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
 
-  const defs = '<defs>' +
-    '<marker id="arrowInbound" markerWidth="14" markerHeight="10" refX="12" refY="5" orient="auto" markerUnits="userSpaceOnUse">' +
-      '<polygon points="0,1 0,9 12,5" style="fill:#2276d2" />' +
-    '</marker>' +
-    '<marker id="arrowOutbound" markerWidth="14" markerHeight="10" refX="12" refY="5" orient="auto" markerUnits="userSpaceOnUse">' +
-      '<polygon points="0,1 0,9 12,5" style="fill:#2e9b4d" />' +
-    '</marker>' +
-    '<marker id="arrowGeneric" markerWidth="14" markerHeight="10" refX="12" refY="5" orient="auto" markerUnits="userSpaceOnUse">' +
-      '<polygon points="0,1 0,9 12,5" style="fill:#7f8b95" />' +
-    '</marker>' +
-  '</defs>';
+  const defs = '';
 
   const edgePositionByKey = new Map();
   const edgesBySource = new Map();
@@ -1044,7 +1037,6 @@ function drawGraph(graph) {
     const isInbound = normalizedDirection === 'inbound';
     const isOutbound = normalizedDirection === 'outbound';
     const edgeColor = isInbound ? '#2276d2' : isOutbound ? '#2e9b4d' : '#7f8b95';
-    const markerId = isInbound ? 'arrowInbound' : isOutbound ? 'arrowOutbound' : 'arrowGeneric';
     const edgePosition = edgePositionByKey.get(String(edge.from || '') + '>' + String(edge.to || '')) || { index: 0, count: 1 };
     const fanStep = Math.min(48, Math.max(26, nodeWidth / Math.max(5, edgePosition.count + 2)));
     const fanOffset = (edgePosition.index - (edgePosition.count - 1) / 2) * fanStep;
@@ -1067,7 +1059,7 @@ function drawGraph(graph) {
       edgeClasses.push('graph-edge-failed');
     }
 
-    return '<path class="' + edgeClasses.join(' ') + '" style="stroke:' + edgeColor + ';stroke-width:2.8;fill:none;opacity:0.92;stroke-linecap:round;stroke-linejoin:round" marker-end="url(#' + markerId + ')" d="' + pathData + '" />';
+    return '<path class="' + edgeClasses.join(' ') + '" style="stroke:' + edgeColor + ';stroke-width:2.8;fill:none;opacity:0.92;stroke-linecap:round;stroke-linejoin:round" d="' + pathData + '" />';
   }).join('');
 
   const nodeMarkup = nodes.map((node) => {

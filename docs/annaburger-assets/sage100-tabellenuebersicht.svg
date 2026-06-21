@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="1040" viewBox="0 0 1320 1040" role="img" aria-labelledby="title desc">
+  <title id="title">Annaburger MSSQL Staging Tabellen für Sage100</title>
+  <desc id="desc">Hierarchische Übersicht der MSSQL-Staging-Tabellen im Schema sf für die Sage100-Verarbeitung.</desc>
+  <defs>
+    <style>
+      .bg{fill:#f6f8fb}
+      .title{font:700 28px Arial,sans-serif;fill:#1f2d3d}
+      .sub{font:500 14px Arial,sans-serif;fill:#5f6b76}
+      .card{fill:#fff;stroke:#8aa3b7;stroke-width:1.4}
+      .head{fill:#244b66}
+      .headText{font:700 15px Arial,sans-serif;fill:#fff}
+      .section{font:700 12.5px Arial,sans-serif;fill:#244b66}
+      .field{font:12px Arial,sans-serif;fill:#25313d}
+      .muted{font:11.5px Arial,sans-serif;fill:#687887}
+      .key{font:700 12px Arial,sans-serif;fill:#1f5f8b}
+      .sage{font:700 12px Arial,sans-serif;fill:#267a3f}
+      .queue{font:700 12px Arial,sans-serif;fill:#b46a13}
+      .rel{fill:none;stroke:#5c748a;stroke-width:2.1;marker-end:url(#arrow)}
+      .legend{fill:#fff;stroke:#c7d4df;stroke-width:1}
+      .tag{fill:#eef3f8;stroke:#c7d4df;stroke-width:1}
+      .tagText{font:700 11px Arial,sans-serif;fill:#244b66}
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#5c748a"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1320" height="1040"/>
+  <text class="title" x="42" y="48">MSSQL-Staging-Tabellen für Sage100</text>
+  <text class="sub" x="42" y="74">Datenbank: Salesforce · Schema: sf · Sage100 schreibt Sage-IDs und PostStatus in dieselben Queue-Tabellen zurück.</text>
+
+  <g transform="translate(430,110)">
+    <rect class="card" width="460" height="270" rx="9"/>
+    <rect class="head" width="460" height="42" rx="9"/>
+    <text class="headText" x="18" y="27">sf.KHKAdressen_Staging</text>
+    <rect class="tag" x="330" y="9" width="110" height="24" rx="12"/>
+    <text class="tagText" x="385" y="25" text-anchor="middle">Kunde</text>
+    <text class="key" x="18" y="66">PK: AccountNumber · Salesforce-ID: Id</text>
+    <text class="section" x="18" y="94">Eingangsdaten</text>
+    <text class="field" x="18" y="116">Name, AccountName2__c, Type, Description</text>
+    <text class="field" x="18" y="136">Phone, Mobile__c, General_Email__c, Website</text>
+    <text class="field" x="18" y="156">Rechnungsadresse: BillingStreet, BillingPostalCode, BillingCity</text>
+    <text class="field" x="18" y="176">Lieferadresse: ShippingStreet, ShippingPostalCode, ShippingCity</text>
+    <text class="field" x="18" y="196">Customer_Group__c, VAT_ID__c, Taxation_Type__c, Price_list__c</text>
+    <text class="section" x="18" y="224">Von Sage100 zu schreiben</text>
+    <text class="sage" x="18" y="246">SAGEAddressId, SAGECustomerNo</text>
+    <text class="queue" x="235" y="246">PostStatus, PostMessage, PostTryCount</text>
+  </g>
+
+  <g transform="translate(70,455)">
+    <rect class="card" width="360" height="235" rx="9"/>
+    <rect class="head" width="360" height="42" rx="9"/>
+    <text class="headText" x="18" y="27">sf.KHKAnsprechpartner_Staging</text>
+    <rect class="tag" x="250" y="9" width="90" height="24" rx="12"/>
+    <text class="tagText" x="295" y="25" text-anchor="middle">Kontakt</text>
+    <text class="key" x="18" y="66">PK: Id · Parent: AccountId</text>
+    <text class="section" x="18" y="94">Eingangsdaten</text>
+    <text class="field" x="18" y="116">FirstName, LastName</text>
+    <text class="field" x="18" y="136">Email, Phone, Title</text>
+    <text class="section" x="18" y="166">Von Sage100 zu schreiben</text>
+    <text class="sage" x="18" y="188">SAGEContactId, SAGEAddressId</text>
+    <text class="sage" x="18" y="208">SAGECustomerNo</text>
+    <text class="queue" x="178" y="208">PostStatus, PostMessage</text>
+  </g>
+
+  <g transform="translate(500,455)">
+    <rect class="card" width="360" height="235" rx="9"/>
+    <rect class="head" width="360" height="42" rx="9"/>
+    <text class="headText" x="18" y="27">sf.KHKVerkaufsprojekte_Staging</text>
+    <rect class="tag" x="240" y="9" width="100" height="24" rx="12"/>
+    <text class="tagText" x="290" y="25" text-anchor="middle">Projekt</text>
+    <text class="key" x="18" y="66">PK: Id · Parent: AccountId</text>
+    <text class="section" x="18" y="94">Eingangsdaten</text>
+    <text class="field" x="18" y="116">Name, CloseDate, Amount, StageName</text>
+    <text class="section" x="18" y="150">Von Sage100 zu schreiben</text>
+    <text class="sage" x="18" y="172">SAGEOpportunityId, SAGEProjectNo</text>
+    <text class="queue" x="18" y="202">PostStatus, PostMessage, PostTryCount</text>
+  </g>
+
+  <g transform="translate(500,765)">
+    <rect class="card" width="360" height="225" rx="9"/>
+    <rect class="head" width="360" height="42" rx="9"/>
+    <text class="headText" x="18" y="27">sf.KHKAngebote_Staging</text>
+    <rect class="tag" x="250" y="9" width="90" height="24" rx="12"/>
+    <text class="tagText" x="295" y="25" text-anchor="middle">Angebot</text>
+    <text class="key" x="18" y="66">PK: QuoteNumber · Salesforce-ID: Id</text>
+    <text class="key" x="18" y="86">Parent: OpportunityId, AccountId</text>
+    <text class="section" x="18" y="116">Eingangsdaten</text>
+    <text class="field" x="18" y="138">Status, ExpirationDate, GrandTotal</text>
+    <text class="section" x="18" y="168">Von Sage100 zu schreiben</text>
+    <text class="sage" x="18" y="190">SAGEQuoteId, SAGEQuoteNo</text>
+    <text class="queue" x="200" y="190">PostStatus, PostMessage</text>
+  </g>
+
+  <g transform="translate(930,765)">
+    <rect class="card" width="330" height="225" rx="9"/>
+    <rect class="head" width="330" height="42" rx="9"/>
+    <text class="headText" x="18" y="27">sf.KHKAngebotePositionen_Staging</text>
+    <rect class="tag" x="225" y="9" width="85" height="24" rx="12"/>
+    <text class="tagText" x="267" y="25" text-anchor="middle">Position</text>
+    <text class="key" x="18" y="66">PK: Id · Parent: QuoteId</text>
+    <text class="section" x="18" y="94">Eingangsdaten</text>
+    <text class="field" x="18" y="116">ProductCode, Description</text>
+    <text class="field" x="18" y="136">Quantity, UnitPrice, Discount, TotalPrice</text>
+    <text class="section" x="18" y="166">Von Sage100 zu schreiben</text>
+    <text class="sage" x="18" y="188">SAGEQuoteItemId, SAGEArticleNo</text>
+    <text class="queue" x="18" y="208">PostStatus, PostMessage</text>
+  </g>
+
+  <path class="rel" d="M580,380 C580,420 250,420 250,455"/>
+  <text class="muted" x="305" y="415">AccountId</text>
+  <path class="rel" d="M660,380 L660,455"/>
+  <text class="muted" x="672" y="425">AccountId</text>
+  <path class="rel" d="M680,690 L680,765"/>
+  <text class="muted" x="692" y="735">OpportunityId</text>
+  <path class="rel" d="M860,878 L930,878"/>
+  <text class="muted" x="868" y="862">QuoteId / QuoteNumber</text>
+
+  <g transform="translate(70,735)">
+    <rect class="legend" width="360" height="255" rx="9"/>
+    <text class="section" x="18" y="32">Legende und Verarbeitungsregel</text>
+    <text class="key" x="18" y="64">Blau: Schlüssel / Salesforce-Referenz</text>
+    <text class="sage" x="18" y="92">Grün: Felder, die Sage100 zurückschreibt</text>
+    <text class="queue" x="18" y="120">Orange: Queue- und Fehlerfelder</text>
+    <text class="field" x="18" y="160">Sage100 liest:</text>
+    <text class="status" x="18" y="184">PostFlag = 1</text>
+    <text class="status" x="18" y="206">PostStatus IN ('NEW','UPDATED')</text>
+    <text class="muted" x="18" y="238">Keine harten Foreign Keys im Staging erzwingen.</text>
+  </g>
+</svg>

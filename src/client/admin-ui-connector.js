@@ -69,6 +69,19 @@ function renderConnectors() {
         'Auth: ' + esc(parameters.authType || 'none')
       ];
     }
+    if (isSalesforceConnectorType(item.connectorType)) {
+      const environment = String(parameters.environment || '').toLowerCase() === 'sandbox'
+        ? 'Sandbox'
+        : String(parameters.environment || '').toLowerCase() === 'production'
+          ? 'Produktion'
+          : String(parameters.loginUrl || '').includes('test.salesforce.com') ? 'Sandbox' : 'Produktion';
+      return [
+        'Umgebung: ' + esc(environment),
+        'Login URL: ' + esc(parameters.loginUrl || (environment === 'Sandbox' ? 'https://test.salesforce.com' : 'https://login.salesforce.com')),
+        'Auth: ' + esc(parameters.authType || 'client_credentials'),
+        'Benutzer/Client: ' + esc(parameters.username || parameters.user || parameters.clientId || parameters.consumerKey || '-')
+      ];
+    }
     if (isFileBrowseConnectorType(item.connectorType)) {
       return [
         'Root: ' + esc(parameters.basePath || parameters.fileBasePath || parameters.rootPath || '-'),
@@ -186,6 +199,25 @@ function renderConnectors() {
   }
 
   panels.innerHTML = orderedConnectors.map((item) =>
+    {
+      const isLayerItem = item.layerReadonly === true;
+      const hasRuntimeConnector = item.layerRuntimeAvailable !== false && !String(item.id || '').startsWith('layer:');
+      const testButton = isLayerItem && !hasRuntimeConnector
+        ? '<button class="btn btn-sm btn-outline-secondary" disabled title="Dieser Layer-Connector existiert nicht als Connector in der Ziel-Org.">Testen</button>'
+        : '<button class="btn btn-sm btn-outline-secondary" data-test-connector="' + esc(item.id) + '">Testen</button>';
+      const editButton = isLayerItem && !hasRuntimeConnector
+        ? '<button class="btn btn-sm btn-outline-primary" disabled title="Dieser Layer-Connector existiert nicht als Connector in der Ziel-Org.">Öffnen</button>'
+        : '<button class="btn btn-sm btn-outline-primary" data-edit-connector="' + esc(item.id) + '">Öffnen</button>';
+      const deleteButton = isLayerItem
+        ? '<button class="btn btn-sm btn-outline-danger" disabled title="Layer-Ansicht ist nicht destruktiv.">Löschen</button>'
+        : '<button class="btn btn-sm btn-outline-danger" data-delete-connector="' + esc(item.id) + '">Löschen</button>';
+      const metadataButton = supportsConnectorMetadataImport(item) && (!isLayerItem || hasRuntimeConnector)
+        ? '<button class="btn btn-sm btn-outline-secondary" data-import-connector-metadata="' + esc(item.id) + '">Metadaten</button>'
+        : '';
+      const postmanButton = isEndpointConnectorType(item.connectorType) && (!isLayerItem || hasRuntimeConnector)
+        ? '<button class="btn btn-sm btn-outline-secondary" data-export-postman="' + esc(item.id) + '">Postman</button>'
+        : '';
+      return (
     '<div class="col-12 col-xl-6" data-connector-panel>' +
       '<div class="card h-100 border-0 shadow-sm bg-body-tertiary">' +
         '<div class="card-body d-flex flex-column gap-3">' +
@@ -198,11 +230,11 @@ function renderConnectors() {
               '</div>' +
             '</div>' +
             '<div class="d-flex flex-wrap gap-1 justify-content-end">' +
-              '<button class="btn btn-sm btn-outline-primary" data-edit-connector="' + esc(item.id) + '">Öffnen</button>' +
-              '<button class="btn btn-sm btn-outline-secondary" data-test-connector="' + esc(item.id) + '">Testen</button>' +
-              (supportsConnectorMetadataImport(item) ? '<button class="btn btn-sm btn-outline-secondary" data-import-connector-metadata="' + esc(item.id) + '">Metadaten</button>' : '') +
-              (isEndpointConnectorType(item.connectorType) ? '<button class="btn btn-sm btn-outline-secondary" data-export-postman="' + esc(item.id) + '">Postman</button>' : '') +
-              '<button class="btn btn-sm btn-outline-danger" data-delete-connector="' + esc(item.id) + '">Löschen</button>' +
+              editButton +
+              testButton +
+              metadataButton +
+              postmanButton +
+              deleteButton +
             '</div>' +
           '</div>' +
           '<div class="small d-grid gap-1">' + buildConnectorFacts(item).map((line) => '<div>' + line + '</div>').join('') + '</div>' +
@@ -212,6 +244,8 @@ function renderConnectors() {
         '</div>' +
       '</div>' +
     '</div>'
+      );
+    }
   ).join('');
 
   panels.querySelectorAll('button[data-edit-connector]').forEach((button) => {

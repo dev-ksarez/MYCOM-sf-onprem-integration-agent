@@ -23,10 +23,104 @@ import { SalesforceTargetAdapter } from "../../target-adapters/salesforce/salesf
 import { SalesforceGlobalPicklistTargetAdapter } from "../../target-adapters/salesforce/salesforce-global-picklist-target-adapter";
 import { MssqlConnector } from "../../connectors/mssql/mssql-connector";
 import { OracleConnector } from "../../connectors/oracle/oracle-connector";
+import { SalesforceConnector } from "../../connectors/salesforce/salesforce-connector";
 import { GenericRecord } from "../../types/generic-record";
 
 function isValidSalesforceIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_.]*$/.test(value);
+}
+
+function createSalesforceLookupResolver(
+  salesforceClient: SalesforceClient,
+  logger: pino.Logger,
+  schedule: IntegrationSchedule,
+  context: JobContext
+): LookupResolverFn {
+  return async (objectName, field, value) => {
+    const escapedValue = String(value).replace(/'/g, "\\'");
+    const soql = `SELECT Id FROM ${objectName} WHERE ${field} = '${escapedValue}' LIMIT 1`;
+    try {
+      logger.debug({ scheduleId: schedule.id, runId: context.runId, objectName, field, rawValue: value, soql }, "Lookup resolver: executing SOQL");
+      const records = await salesforceClient.queryGeneric(soql);
+      logger.debug(
+        { scheduleId: schedule.id, runId: context.runId, soql, found: records.length > 0, recordsCount: records.length, sample: records[0] ?? null },
+        "Lookup resolver: result"
+      );
+      return records.length > 0 ? String(records[0].Id) : null;
+    } catch (err) {
+      logger.error({ scheduleId: schedule.id, runId: context.runId, soql, error: err instanceof Error ? err.message : String(err) }, "Lookup resolver: query failed");
+      return null;
+    }
+  };
+}
+
+function createSalesforceBulkLookupResolver(
+  salesforceClient: SalesforceClient,
+  logger: pino.Logger,
+  schedule: IntegrationSchedule,
+  context: JobContext
+): BulkLookupResolverFn {
+  return async (requests) => {
+    const cache = new Map<string, string | null>();
+    const chunkSize = Math.max(1, Math.min(200, Math.trunc(context.batchSize || 100)));
+
+    for (const request of requests) {
+      const objectName = String(request.objectName || "").trim();
+      const field = String(request.field || "").trim();
+      if (!objectName || !field || !isValidSalesforceIdentifier(objectName) || !isValidSalesforceIdentifier(field)) {
+        continue;
+      }
+
+      const values = Array.from(new Set((request.values || [])
+        .map((value) => String(value ?? "").trim())
+        .filter((value) => value.length > 0)));
+
+      if (values.length === 0) {
+        continue;
+      }
+
+      for (const value of values) {
+        cache.set(`${objectName}|${field}|${value}`, null);
+      }
+
+      for (let index = 0; index < values.length; index += chunkSize) {
+        const chunk = values.slice(index, index + chunkSize);
+        const inClause = chunk.map((value) => `'${value.replace(/'/g, "\\'")}'`).join(", ");
+        const soql = `SELECT Id, ${field} FROM ${objectName} WHERE ${field} IN (${inClause})`;
+
+        try {
+          const records = await salesforceClient.queryGeneric(soql);
+          for (const record of records) {
+            const rawLookupValue = record[field];
+            if (rawLookupValue === undefined || rawLookupValue === null || rawLookupValue === "") {
+              continue;
+            }
+
+            const normalizedLookupValue = String(rawLookupValue).trim();
+            const id = String(record.Id || "").trim();
+            if (id) {
+              cache.set(`${objectName}|${field}|${normalizedLookupValue}`, id);
+            }
+          }
+        } catch (err) {
+          logger.error(
+            {
+              scheduleId: schedule.id,
+              runId: context.runId,
+              objectName,
+              field,
+              chunkStart: index,
+              chunkSize: chunk.length,
+              error: err instanceof Error ? err.message : String(err)
+            },
+            "Bulk lookup preload failed for chunk"
+          );
+        }
+      }
+    }
+
+    return cache;
+  };
 }
 
 export interface JobExecutionOptions {
@@ -55,8 +149,10 @@ export class SalesforceToTargetJobExecutor implements JobExecutor {
     const isGenericSalesforceToOracle =
       schedule.sourceType === "SALESFORCE_SOQL" && schedule.targetType === "ORACLE";
     const isGenericSalesforceToFile = schedule.sourceType === "SALESFORCE_SOQL" && isFileTarget;
+    const isGenericSalesforceToSalesforce =
+      schedule.sourceType === "SALESFORCE_SOQL" && schedule.targetType === "SALESFORCE";
 
-    return isGenericSalesforceToMssql || isGenericSalesforceToOracle || isGenericSalesforceToFile;
+    return isGenericSalesforceToMssql || isGenericSalesforceToOracle || isGenericSalesforceToFile || isGenericSalesforceToSalesforce;
   }
 
   public async execute(options: JobExecutionOptions): Promise<JobExecutionResult> {
@@ -86,6 +182,8 @@ export class SalesforceToTargetJobExecutor implements JobExecutor {
     const isGenericSalesforceToOracle =
       schedule.sourceType === "SALESFORCE_SOQL" && schedule.targetType === "ORACLE";
     const isGenericSalesforceToFile = schedule.sourceType === "SALESFORCE_SOQL" && isFileTarget;
+    const isGenericSalesforceToSalesforce =
+      schedule.sourceType === "SALESFORCE_SOQL" && schedule.targetType === "SALESFORCE";
 
     if (isGenericSalesforceToMssql && !(connector instanceof MssqlConnector)) {
       throw new Error(`Connector type ${connectorConfig.connectorType} is not supported by MssqlTargetAdapter`);
@@ -93,8 +191,11 @@ export class SalesforceToTargetJobExecutor implements JobExecutor {
     if (isGenericSalesforceToOracle && !(connector instanceof OracleConnector)) {
       throw new Error(`Connector type ${connectorConfig.connectorType} is not supported by OracleTargetAdapter`);
     }
+    if (isGenericSalesforceToSalesforce && !(connector instanceof SalesforceConnector)) {
+      throw new Error(`Connector type ${connectorConfig.connectorType} is not supported as Salesforce source connector`);
+    }
 
-    if (isGenericSalesforceToFile && !schedule.targetDefinition?.trim()) {
+    if ((isGenericSalesforceToFile || isGenericSalesforceToSalesforce) && !schedule.targetDefinition?.trim()) {
       throw new Error(`Schedule ${schedule.name} is missing MSD_TargetDefinition__c`);
     }
 
@@ -104,7 +205,7 @@ export class SalesforceToTargetJobExecutor implements JobExecutor {
       scheduleId: context.scheduleId,
       direction: schedule.direction || "Outbound",
       sourceType: schedule.sourceType || "SALESFORCE_SOQL",
-      targetType: schedule.targetType || (isGenericSalesforceToFile ? "FILE_CSV" : "MSSQL"),
+      targetType: schedule.targetType || (isGenericSalesforceToFile ? "FILE_CSV" : isGenericSalesforceToSalesforce ? "SALESFORCE" : "MSSQL"),
       batchSize: context.batchSize,
       maxRetries: context.maxRetries,
       checkpoint: {
@@ -114,13 +215,26 @@ export class SalesforceToTargetJobExecutor implements JobExecutor {
       onProgress
     };
 
-    const sourceAdapter = new SalesforceSoqlSourceAdapter(salesforceClient, schedule.sourceDefinition);
+    const sourceSalesforceClient = isGenericSalesforceToSalesforce
+      ? await (connector as SalesforceConnector).getClient()
+      : salesforceClient;
+    const sourceAdapter = new SalesforceSoqlSourceAdapter(sourceSalesforceClient, schedule.sourceDefinition);
     const targetAdapter = isGenericSalesforceToFile
       ? new FileTargetAdapter(connectorConfig, schedule.targetDefinition || "")
       : isGenericSalesforceToOracle
         ? new OracleTargetAdapter(connector as OracleConnector, schedule.targetDefinition)
-        : new MssqlTargetAdapter(connector as MssqlConnector, schedule.targetDefinition);
-    const job = new DataTransferJob(logger, sourceAdapter, targetAdapter);
+        : isGenericSalesforceToSalesforce
+          ? new SalesforceTargetAdapter(salesforceClient, schedule.targetDefinition || "", undefined, schedule.lastRunAt)
+          : new MssqlTargetAdapter(connector as MssqlConnector, schedule.targetDefinition);
+    const job = isGenericSalesforceToSalesforce
+      ? new DataTransferJob(
+        logger,
+        sourceAdapter,
+        targetAdapter,
+        createSalesforceLookupResolver(salesforceClient, logger, schedule, context),
+        createSalesforceBulkLookupResolver(salesforceClient, logger, schedule, context)
+      )
+      : new DataTransferJob(logger, sourceAdapter, targetAdapter);
     return await job.execute(transferContext, schedule.mappingDefinition);
   }
 }

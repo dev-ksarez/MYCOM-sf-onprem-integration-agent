@@ -962,6 +962,7 @@ function renderProjectVersionOptions(projectId) {
 function getProjectLayerVersions(projectId) {
   const normalizedProjectId = String(projectId || '').trim();
   return (Array.isArray(state.projectSetupVersions?.[normalizedProjectId]) ? state.projectSetupVersions[normalizedProjectId] : [])
+    .filter((version) => String(version?.artifactRef || '').trim().startsWith('file:'))
     .slice()
     .sort((a, b) => Number(b.version || 0) - Number(a.version || 0));
 }
@@ -1279,12 +1280,7 @@ async function applyHeaderLayerToCurrentEnvironment() {
   persistHeaderContext();
   renderContextSelectionSummary();
   await refresh({ refreshChart: false, includeGraph: false, includeSalesforceOverview: false, includeRecordsSummary: false });
-  const importResult = result?.importResult || {};
-  showInfo(
-    'Layer gesetzt: ' + label +
-    ' · Connectoren +' + String(importResult.connectorsCreated || 0) + '/~' + String(importResult.connectorsUpdated || 0) +
-    ' · Scheduler +' + String(importResult.schedulesCreated || 0) + '/~' + String(importResult.schedulesUpdated || 0)
-  );
+  showInfo('Layer gesetzt: ' + label + ' · Konfigurationsvariante geladen');
 }
 
 async function runProjectOperation(projectId, operation) {

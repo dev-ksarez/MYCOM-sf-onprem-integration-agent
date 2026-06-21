@@ -17,6 +17,9 @@ import {
   LogChartRange,
   OverviewStatsRange,
   SetupExportDocument,
+  ConnectorListItem,
+  ConnectionGraph,
+  ScheduleListItem,
   MigrationConfig,
   ScheduleFormOptions
 } from "./admin-data-service";
@@ -680,6 +683,234 @@ function readProjectSetupVersionArtifact(record?: ProjectSetupVersionRecord): Se
   } catch {
     return null;
   }
+}
+
+function readSelectedLayerSetup(projectId: string, layerId: string): { version: ProjectSetupVersionRecord; document: SetupExportDocument } | null {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedLayerId = String(layerId || "").trim();
+  if (!normalizedLayerId) {
+    return null;
+  }
+  const versions = normalizedProjectId
+    ? readProjectSetupVersions(normalizedProjectId)
+    : readJsonArrayFile<ProjectSetupVersionRecord>(LOCAL_PROJECT_SETUP_VERSIONS_FILE);
+  const version = versions.find((item) => item.id === normalizedLayerId)
+    || readJsonArrayFile<ProjectSetupVersionRecord>(LOCAL_PROJECT_SETUP_VERSIONS_FILE).find((item) => item.id === normalizedLayerId);
+  const document = readProjectSetupVersionArtifact(version);
+  if (!version || !document) {
+    return null;
+  }
+  return { version, document };
+}
+
+async function buildLayerConnectorItems(
+  layer: { version: ProjectSetupVersionRecord; document: SetupExportDocument },
+  instanceId: string | undefined,
+  adminDataService: AdminDataService
+): Promise<Array<ConnectorListItem & { layerReadonly: true; layerSourceId?: string; layerRuntimeAvailable: boolean }>> {
+  const runtimeConnectors = instanceId
+    ? await adminDataService.listConnectors(instanceId).catch(() => [])
+    : [];
+  const runtimeByName = new Map(runtimeConnectors.map((connector) => [String(connector.name || "").trim().toLowerCase(), connector]));
+
+  return (Array.isArray(layer.document.connectors) ? layer.document.connectors : []).map((connector, index) => {
+    const parameters = connector.parameters && typeof connector.parameters === "object" && !Array.isArray(connector.parameters)
+      ? connector.parameters as Record<string, unknown>
+      : {};
+    const runtimeConnector = runtimeByName.get(String(connector.name || "").trim().toLowerCase());
+    const fallbackId = `layer:${layer.version.id}:connector:${index}`;
+    return {
+      id: runtimeConnector?.id || fallbackId,
+      name: String(connector.name || `Connector ${index + 1}`),
+      active: connector.active !== false,
+      connectorType: String(connector.connectorType || ""),
+      targetSystem: connector.targetSystem,
+      direction: connector.direction,
+      secretKey: connector.secretKey,
+      timeoutMs: connector.timeoutMs,
+      maxRetries: connector.maxRetries,
+      description: connector.description,
+      parameters,
+      hasSecret: Boolean(String(connector.secretKey || "").trim()),
+      parameterKeys: Object.keys(parameters).sort(),
+      layerReadonly: true,
+      layerSourceId: fallbackId,
+      layerRuntimeAvailable: Boolean(runtimeConnector?.id)
+    };
+  });
+}
+
+async function buildLayerScheduleItems(
+  layer: { version: ProjectSetupVersionRecord; document: SetupExportDocument },
+  instanceId: string | undefined,
+  adminDataService: AdminDataService
+): Promise<Array<ScheduleListItem & { connectorName?: string; parentScheduleName?: string; layerReadonly: true; layerRuntimeAvailable: false }>> {
+  const runtimeConnectors = instanceId
+    ? await adminDataService.listConnectors(instanceId).catch(() => [])
+    : [];
+  const runtimeConnectorIdByName = new Map(runtimeConnectors.map((connector) => [
+    String(connector.name || "").trim().toLowerCase(),
+    connector.id
+  ]));
+  const entries = Array.isArray(layer.document.schedules) ? layer.document.schedules : [];
+  const idByName = new Map<string, string>();
+  for (const [index, schedule] of entries.entries()) {
+    const name = String(schedule.name || "").trim();
+    idByName.set(name || `#${index}`, `layer:${layer.version.id}:schedule:${index}`);
+  }
+
+  return entries.map((schedule, index) => {
+    const name = String(schedule.name || `Scheduler ${index + 1}`);
+    const connectorName = String(schedule.connectorName || "").trim();
+    const parentScheduleName = String(schedule.parentScheduleName || "").trim();
+    return {
+      id: idByName.get(String(schedule.name || "").trim() || `#${index}`) || `layer:${layer.version.id}:schedule:${index}`,
+      name,
+      active: schedule.active !== false,
+      status: schedule.active === false ? "inactive" : "scheduled",
+      sourceSystem: String(schedule.sourceSystem || ""),
+      targetSystem: String(schedule.targetSystem || ""),
+      sourceType: schedule.sourceType,
+      targetType: schedule.targetType,
+      direction: schedule.direction,
+      objectName: String(schedule.objectName || ""),
+      operation: String(schedule.operation || ""),
+      connectorId: connectorName ? runtimeConnectorIdByName.get(connectorName.toLowerCase()) || `layer:${layer.version.id}:connector-name:${connectorName}` : undefined,
+      connectorName: connectorName || undefined,
+      mappingDefinition: schedule.mappingDefinition,
+      sourceDefinition: schedule.sourceDefinition,
+      targetDefinition: schedule.targetDefinition,
+      nextRunAt: schedule.nextRunAt,
+      lastRunAt: schedule.lastRunAt,
+      batchSize: Number(schedule.batchSize || 0),
+      timingDefinition: schedule.timingDefinition,
+      parentScheduleId: parentScheduleName ? idByName.get(parentScheduleName) : undefined,
+      parentScheduleName: parentScheduleName || undefined,
+      inheritTimingFromParent: schedule.inheritTimingFromParent === true,
+      layerReadonly: true,
+      layerRuntimeAvailable: false
+    };
+  });
+}
+
+function getLayerDirectionIcon(direction?: string): string {
+  const normalized = String(direction || "").toLowerCase();
+  if (normalized.includes("bidirectional") || normalized.includes("both")) {
+    return "↔";
+  }
+  if (normalized.includes("inbound")) {
+    return "↓";
+  }
+  if (normalized.includes("outbound")) {
+    return "↑";
+  }
+  return "→";
+}
+
+async function buildLayerConnectionGraph(
+  layer: { version: ProjectSetupVersionRecord; document: SetupExportDocument },
+  instanceId: string | undefined,
+  adminDataService: AdminDataService
+): Promise<ConnectionGraph> {
+  const [connectors, schedules] = await Promise.all([
+    buildLayerConnectorItems(layer, instanceId, adminDataService),
+    buildLayerScheduleItems(layer, instanceId, adminDataService)
+  ]);
+  const scheduleById = new Map(schedules.map((schedule) => [schedule.id, schedule]));
+  const childrenByParent = new Map<string, typeof schedules>();
+  const rootSchedules: typeof schedules = [];
+
+  for (const schedule of schedules) {
+    const parentId = String(schedule.parentScheduleId || "").trim();
+    if (parentId && parentId !== schedule.id && scheduleById.has(parentId)) {
+      const children = childrenByParent.get(parentId) || [];
+      children.push(schedule);
+      childrenByParent.set(parentId, children);
+      continue;
+    }
+    rootSchedules.push(schedule);
+  }
+
+  const scheduleDepth = new Map<string, number>();
+  const orderedSchedules: typeof schedules = [];
+  const visitedSchedules = new Set<string>();
+  const visitSchedule = (schedule: typeof schedules[number], depth: number, path: Set<string>) => {
+    if (visitedSchedules.has(schedule.id) || path.has(schedule.id)) {
+      return;
+    }
+    path.add(schedule.id);
+    visitedSchedules.add(schedule.id);
+    scheduleDepth.set(schedule.id, depth);
+    orderedSchedules.push(schedule);
+    const children = (childrenByParent.get(schedule.id) || []).sort((left, right) =>
+      String(left.name || "").localeCompare(String(right.name || ""), "de", { sensitivity: "base" })
+    );
+    for (const child of children) {
+      visitSchedule(child, depth + 1, path);
+    }
+    path.delete(schedule.id);
+  };
+
+  for (const root of rootSchedules.sort((left, right) => String(left.name || "").localeCompare(String(right.name || ""), "de", { sensitivity: "base" }))) {
+    visitSchedule(root, 0, new Set<string>());
+  }
+  for (const schedule of schedules) {
+    if (!visitedSchedules.has(schedule.id)) {
+      visitSchedule(schedule, 0, new Set<string>());
+    }
+  }
+
+  const connectorNodes = connectors.map((connector, index) => ({
+    id: `connector-${connector.id}`,
+    kind: "connector" as const,
+    label: connector.name,
+    subtitle: connector.connectorType || "Connector",
+    connectorType: connector.connectorType,
+    x: 72,
+    y: 70 + index * 104,
+    refId: connector.id
+  }));
+
+  const scheduleNodes = orderedSchedules.map((schedule, index) => ({
+    id: `schedule-${schedule.id}`,
+    kind: "scheduler" as const,
+    label: schedule.name,
+    subtitle: `${schedule.objectName || "-"} | ${schedule.direction || "source-to-target"}${schedule.parentScheduleId ? " | Parent" : ""}`,
+    direction: schedule.direction,
+    objectName: schedule.objectName,
+    sourceType: schedule.sourceType,
+    targetType: schedule.targetType,
+    nextRunAt: schedule.nextRunAt,
+    directionIcon: getLayerDirectionIcon(schedule.direction),
+    x: 456 + (scheduleDepth.get(schedule.id) || 0) * 300,
+    y: 70 + index * 104,
+    refId: schedule.id
+  }));
+
+  const edges: ConnectionGraph["edges"] = [];
+  for (const schedule of orderedSchedules) {
+    const hasParent = Boolean(schedule.parentScheduleId && scheduleById.has(schedule.parentScheduleId));
+    if (!hasParent && schedule.connectorId) {
+      edges.push({
+        id: `edge-${schedule.id}-${schedule.connectorId}`,
+        from: `connector-${schedule.connectorId}`,
+        to: `schedule-${schedule.id}`,
+        direction: schedule.direction
+      });
+    }
+    if (hasParent) {
+      edges.push({
+        id: `edge-parent-${schedule.parentScheduleId}-${schedule.id}`,
+        from: `schedule-${schedule.parentScheduleId}`,
+        to: `schedule-${schedule.id}`
+      });
+    }
+  }
+
+  return {
+    nodes: [...connectorNodes, ...scheduleNodes],
+    edges
+  };
 }
 
 function summarizeSetupDocumentDiff(previous: SetupExportDocument | null, current: SetupExportDocument): string {
@@ -3293,6 +3524,7 @@ ${renderAISchedulerAssistantModule()}
                     <option value="FILE_BROWSE">Geräteakte / FileBrowse</option>
                     <option value="REST_API">REST API</option>
                     <option value="AGENT_ENDPOINT">Agent Endpunkt</option>
+                    <option value="SALESFORCE">Salesforce</option>
                     <option value="FILE_BINARY_SF_IMPORT">Datei Binärimport nach Salesforce</option>
                     <option value="CUSTOM">Benutzerdefiniert</option>
                   </select>
@@ -3341,6 +3573,11 @@ ${renderAISchedulerAssistantModule()}
                       <div class="connector-type-card-icon">⚡</div>
                       <div class="connector-type-card-title">Agent Endpunkt</div>
                       <div class="connector-type-card-desc">Eigener Webhook Endpunkt</div>
+                    </div>
+                    <div class="connector-type-card" data-type="SALESFORCE">
+                      <div class="connector-type-card-icon">SF</div>
+                      <div class="connector-type-card-title">Salesforce</div>
+                      <div class="connector-type-card-desc">Externe Salesforce Org</div>
                     </div>
                     <div class="connector-type-card" data-type="FILE_BINARY_SF_IMPORT">
                       <div class="connector-type-card-icon">📁</div>
@@ -3462,6 +3699,26 @@ ${renderAISchedulerAssistantModule()}
                     <div class="col-md-6"><label class="form-label">Audience (optional)</label><input id="con-rest-audience" class="form-control" /></div>
                     <div class="col-md-6"><label class="form-label">Zusätzliche Header (JSON)</label><input id="con-rest-extra-headers" class="form-control" placeholder='{"X-Tenant":"abc"}' /></div>
                     <div class="col-md-4 d-none" id="con-rest-max-body-wrap"><label class="form-label">Max Body Bytes</label><input id="con-rest-max-body-bytes" type="number" class="form-control" placeholder="1048576" /><div class="form-text">Maximale Requestgröße für Agent-Endpunkte.</div></div>
+                  </div>
+                </div>
+                </div>
+                <div class="col-12 d-none" id="con-salesforce-settings-wrap">
+                <div class="border rounded p-2 bg-light">
+                  <div class="fw-semibold mb-2">Salesforce Verbindung</div>
+                  <div class="small text-secondary mb-2">Sandbox und Produktion werden getrennt gespeichert. Die Umgebung setzt die Standard Login-URL, kann aber manuell übersteuert werden.</div>
+                  <div class="row g-2">
+                    <div class="col-md-3"><label class="form-label">Umgebung</label><select id="con-salesforce-environment" class="form-select"><option value="production">Produktion</option><option value="sandbox">Sandbox</option></select></div>
+                    <div class="col-md-5"><label class="form-label">Login URL</label><input id="con-salesforce-login-url" class="form-control" placeholder="https://login.salesforce.com" /></div>
+                    <div class="col-md-4"><label class="form-label">Auth Typ</label><select id="con-salesforce-auth-type" class="form-select"><option value="client_credentials">OAuth Client Credentials</option><option value="password">Username / Passwort</option><option value="oauth_refresh_token">OAuth Refresh Token</option></select></div>
+                    <div class="col-md-4" id="con-salesforce-client-id-wrap"><label class="form-label">Client ID</label><input id="con-salesforce-client-id" class="form-control" placeholder="Connected App Consumer Key" /></div>
+                    <div class="col-md-4" id="con-salesforce-client-secret-wrap"><label class="form-label">Client Secret</label><input id="con-salesforce-client-secret" type="password" class="form-control" autocomplete="new-password" placeholder="Optional: direkt speichern" /></div>
+                    <div class="col-md-4 d-none" id="con-salesforce-username-wrap"><label class="form-label">Benutzername</label><input id="con-salesforce-username" class="form-control" placeholder="integration@example.com" /></div>
+                    <div class="col-md-4 d-none" id="con-salesforce-password-wrap"><label class="form-label">Passwort</label><input id="con-salesforce-password" type="password" class="form-control" autocomplete="new-password" placeholder="Optional: direkt speichern" /></div>
+                    <div class="col-md-4 d-none" id="con-salesforce-security-token-wrap"><label class="form-label">Security Token</label><input id="con-salesforce-security-token" type="password" class="form-control" autocomplete="new-password" /></div>
+                    <div class="col-md-4 d-none" id="con-salesforce-refresh-token-wrap"><label class="form-label">Refresh Token</label><input id="con-salesforce-refresh-token" type="password" class="form-control" autocomplete="new-password" /></div>
+                    <div class="col-md-4 d-none" id="con-salesforce-access-token-wrap"><label class="form-label">Access Token</label><input id="con-salesforce-access-token" type="password" class="form-control" autocomplete="new-password" /></div>
+                    <div class="col-md-4 d-none" id="con-salesforce-instance-url-wrap"><label class="form-label">Instance URL</label><input id="con-salesforce-instance-url" class="form-control" placeholder="https://mydomain.my.salesforce.com" /></div>
+                    <div class="col-md-3"><label class="form-label">Query Limit</label><input id="con-salesforce-query-limit" type="number" min="1" class="form-control" placeholder="100" /></div>
                   </div>
                 </div>
                 </div>
@@ -3883,6 +4140,7 @@ export function createAppServer(
 
       let instanceId = requestUrl.searchParams.get("instanceId") || undefined;
       const contextProjectId = String(requestUrl.searchParams.get("projectId") || "").trim();
+      const contextLayerId = String(requestUrl.searchParams.get("layerId") || "").trim();
       const contextTargetEnv = String(requestUrl.searchParams.get("targetEnv") || "").trim() === "production" ? "production" : "test";
       const connectorMetadataMatch = req.method === "GET" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/metadata$/) : null;
       const connectorMetadataImportMatch = req.method === "POST" ? requestUrl.pathname.match(/^\/api\/connectors\/([^/]+)\/metadata\/import$/) : null;
@@ -4581,7 +4839,12 @@ export function createAppServer(
           return;
         }
 
-        const importResult = await adminDataService.importSetup(setupDocument, targetInstance.id);
+        const importResult = {
+          connectorsCreated: 0,
+          connectorsUpdated: 0,
+          schedulesCreated: 0,
+          schedulesUpdated: 0
+        };
         const existing = readProjectCurrentVersion(projectId);
         const next: ProjectCurrentVersionRecord = {
           projectId,
@@ -5465,6 +5728,16 @@ export function createAppServer(
       }
 
       if (req.method === "GET" && requestUrl.pathname === "/api/schedules") {
+        if (contextLayerId) {
+          const layer = readSelectedLayerSetup(contextProjectId, contextLayerId);
+          if (!layer) {
+            sendJson(404, { error: "Ausgewaehlter Layer wurde nicht gefunden." });
+            return;
+          }
+          const schedules = await buildLayerScheduleItems(layer, instanceId, adminDataService);
+          sendJson(200, { items: schedules, total: schedules.length, layerId: contextLayerId, source: "layer" });
+          return;
+        }
         const schedules = await adminDataService.listSchedules(instanceId);
         sendJson(200, { items: schedules, total: schedules.length });
         return;
@@ -5681,6 +5954,16 @@ export function createAppServer(
       }
 
       if (req.method === "GET" && requestUrl.pathname === "/api/connectors") {
+        if (contextLayerId) {
+          const layer = readSelectedLayerSetup(contextProjectId, contextLayerId);
+          if (!layer) {
+            sendJson(404, { error: "Ausgewaehlter Layer wurde nicht gefunden." });
+            return;
+          }
+          const connectors = await buildLayerConnectorItems(layer, instanceId, adminDataService);
+          sendJson(200, { items: connectors, total: connectors.length, layerId: contextLayerId, source: "layer" });
+          return;
+        }
         const connectors = await adminDataService.listConnectors(instanceId);
         sendJson(200, { items: connectors, total: connectors.length });
         return;
@@ -5806,6 +6089,16 @@ export function createAppServer(
       }
 
       if (req.method === "GET" && requestUrl.pathname === "/api/graph") {
+        if (contextLayerId) {
+          const layer = readSelectedLayerSetup(contextProjectId, contextLayerId);
+          if (!layer) {
+            sendJson(404, { error: "Ausgewaehlter Layer wurde nicht gefunden." });
+            return;
+          }
+          const graph = await buildLayerConnectionGraph(layer, instanceId, adminDataService);
+          sendJson(200, { ...graph, layerId: contextLayerId, source: "layer" });
+          return;
+        }
         const graph = await adminDataService.getConnectionGraph(instanceId);
         sendJson(200, graph);
         return;

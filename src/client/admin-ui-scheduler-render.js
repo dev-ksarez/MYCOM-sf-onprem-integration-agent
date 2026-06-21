@@ -101,6 +101,23 @@ function renderSchedules() {
       const connectorName = getConnectorNameById(item.connectorId);
       const intervalLabel = getScheduleIntervalLabel(item, scheduleById, false, new Set());
       const filePathLines = buildScheduleFilePathLines(item);
+      const isLayerItem = item.layerReadonly === true;
+      const scheduleToggle = isLayerItem
+        ? '<div class="form-check form-switch mb-1"><input class="form-check-input" type="checkbox" role="switch" disabled' + (item.active ? ' checked' : '') + '></div>'
+        : '<div class="form-check form-switch mb-1"><input class="form-check-input" type="checkbox" role="switch" data-toggle-schedule-active="' + esc(item.id) + '"' + (item.active ? ' checked' : '') + '></div>';
+      const actionButtons = isLayerItem
+        ? '<button class="btn btn-sm btn-outline-primary" disabled title="Layer-Ansicht ist nicht destruktiv.">Öffnen</button>' +
+          '<button class="btn btn-sm btn-outline-secondary" disabled title="Layer-Ansicht ist nicht destruktiv.">Dupl.</button>' +
+          '<button class="btn btn-sm btn-outline-secondary" disabled title="Layer-Ansicht ist nicht destruktiv.">Richtung dupl.</button>' +
+          '<button class="btn btn-sm btn-outline-success" disabled title="Layer-Ansicht ist nicht destruktiv.">Run</button>' +
+          '<button class="btn btn-sm btn-outline-info" disabled title="Layer-Ansicht ist nicht destruktiv.">Dry-Run</button>' +
+          '<button class="btn btn-sm btn-outline-danger" disabled title="Layer-Ansicht ist nicht destruktiv.">Löschen</button>'
+        : '<button class="btn btn-sm btn-outline-primary" data-edit-schedule="' + esc(item.id) + '">Öffnen</button>' +
+          '<button class="btn btn-sm btn-outline-secondary" data-dup-schedule="' + esc(item.id) + '">Dupl.</button>' +
+          '<button class="btn btn-sm btn-outline-secondary" data-dup-reverse-schedule="' + esc(item.id) + '">Richtung dupl.</button>' +
+          '<button class="btn btn-sm btn-outline-success" data-run-now="' + esc(item.id) + '">Run</button>' +
+          '<button class="btn btn-sm btn-outline-info" data-dry-run="' + esc(item.id) + '">Dry-Run</button>' +
+          '<button class="btn btn-sm btn-outline-danger" data-delete-schedule="' + esc(item.id) + '">Löschen</button>';
       const hierarchyBadge = depth > 0
         ? '<span class="badge bg-light text-dark border ms-1">Level ' + (depth + 1) + '</span>'
         : '<span class="badge bg-secondary-subtle text-secondary border ms-1">Root</span>';
@@ -114,18 +131,11 @@ function renderSchedules() {
       
       return '<tr data-schedule-active="' + (item.active ? 'active' : 'inactive') + '">' +
         '<td><div style="padding-left:' + indent + 'px"><strong class="text-truncate d-block" title="' + esc(item.name) + '">' + esc(item.name) + hierarchyBadge + '</strong><div class="small text-secondary text-truncate" title="' + esc(item.objectName) + ' / ' + esc(item.operation) + '">' + objectIcon + ' ' + esc(item.objectName) + ' / ' + esc(item.operation) + '</div><div class="small text-secondary text-truncate mt-1" title="' + esc(parentName) + '">Parent: ' + esc(parentName) + (item.inheritTimingFromParent ? ' <span class="badge bg-primary-subtle text-primary border">inherits</span>' : '') + '</div></div></td>' +
-        '<td><div class="form-check form-switch mb-1"><input class="form-check-input" type="checkbox" role="switch" data-toggle-schedule-active="' + esc(item.id) + '"' + (item.active ? ' checked' : '') + '></div>' + activeHint + '</td>' +
+        '<td>' + scheduleToggle + activeHint + '</td>' +
         '<td>' + getStatusBadge(item.status) + errorMarkup + '</td>' +
         '<td><div class="fw-semibold text-truncate" title="' + esc(connectorName) + '">' + esc(connectorName) + '</div><div class="small text-secondary">' + esc(item.direction || '-') + '</div>' + (filePathLines.length ? '<div class="small text-secondary mt-1">' + renderScheduleFilePathLines(filePathLines) + '</div>' : '') + '</td>' +
         '<td><div class="fw-semibold">' + esc(intervalLabel) + '</div><div class="small text-secondary">Nächster Lauf: ' + formatDate(item.nextRunAt, 'short') + '</div></td>' +
-        '<td><div class="d-flex flex-wrap gap-1">' +
-          '<button class="btn btn-sm btn-outline-primary" data-edit-schedule="' + esc(item.id) + '">Öffnen</button>' +
-          '<button class="btn btn-sm btn-outline-secondary" data-dup-schedule="' + esc(item.id) + '">Dupl.</button>' +
-          '<button class="btn btn-sm btn-outline-secondary" data-dup-reverse-schedule="' + esc(item.id) + '">Richtung dupl.</button>' +
-          '<button class="btn btn-sm btn-outline-success" data-run-now="' + esc(item.id) + '">Run</button>' +
-          '<button class="btn btn-sm btn-outline-info" data-dry-run="' + esc(item.id) + '">Dry-Run</button>' +
-          '<button class="btn btn-sm btn-outline-danger" data-delete-schedule="' + esc(item.id) + '">Löschen</button>' +
-        '</div>' +
+        '<td><div class="d-flex flex-wrap gap-1">' + actionButtons + '</div>' +
         '</td>' +
       '</tr>';
   }).join('');
@@ -226,4 +236,3 @@ function renderSchedules() {
 
   setTimeout(() => initializeTableFilters(), 100);
 }
-

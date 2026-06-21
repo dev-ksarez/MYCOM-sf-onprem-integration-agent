@@ -69,6 +69,9 @@ function collectConnectorParametersPreview() {
   if (isEndpointConnectorType(normalizedConnectorType)) {
     parsedParameters = mergeRestConnectorSettingsIntoParameters(parsedParameters);
   }
+  if (isSalesforceConnectorType(normalizedConnectorType)) {
+    parsedParameters = mergeSalesforceConnectorSettingsIntoParameters(parsedParameters);
+  }
   if (isBinaryImportConnectorType(normalizedConnectorType)) {
     parsedParameters = mergeBinaryImportConnectorSettingsIntoParameters(parsedParameters);
   }
@@ -195,6 +198,31 @@ function validateConnectorWizardStep(step) {
     if (connectorType === 'REST_API') {
       if (!String(document.getElementById('con-rest-base-url')?.value || '').trim()) {
         throw new Error('Bitte eine Base URL für den REST-Connector angeben.');
+      }
+    }
+    if (isSalesforceConnectorType(connectorType)) {
+      const authType = String(document.getElementById('con-salesforce-auth-type')?.value || 'client_credentials').trim();
+      let existingParameters = {};
+      const rawParameters = String(document.getElementById('con-parameters')?.value || '').trim();
+      if (rawParameters) {
+        try {
+          existingParameters = JSON.parse(rawParameters);
+        } catch {
+          existingParameters = {};
+        }
+      }
+      if (!String(document.getElementById('con-salesforce-login-url')?.value || '').trim()) {
+        throw new Error('Bitte eine Salesforce Login URL angeben.');
+      }
+      if (authType !== 'password' && !String(document.getElementById('con-salesforce-client-id')?.value || '').trim()) {
+        throw new Error('Bitte die Salesforce Client ID angeben.');
+      }
+      if (authType === 'password' && !String(document.getElementById('con-salesforce-username')?.value || '').trim()) {
+        throw new Error('Bitte den Salesforce Benutzernamen angeben.');
+      }
+      if (authType === 'oauth_refresh_token' &&
+          !String(document.getElementById('con-salesforce-refresh-token')?.value || existingParameters.refreshToken || '').trim()) {
+        throw new Error('Bitte den Salesforce Refresh Token angeben.');
       }
     }
     if (isEndpointConnectorType(connectorType)) {

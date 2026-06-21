@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="900" viewBox="0 0 1320 900" role="img" aria-labelledby="title desc">
+  <title id="title">Annaburger Prozessfluss für Sage100</title>
+  <desc id="desc">Prozessfluss für Sage100 Administratoren: MSSQL Queue lesen, Datensätze in Sage100 anlegen oder aktualisieren und Statuswerte zurückschreiben.</desc>
+  <defs>
+    <style>
+      .bg{fill:#f6f8fb}
+      .title{font:700 28px Arial,sans-serif;fill:#1f2d3d}
+      .sub{font:500 14px Arial,sans-serif;fill:#5f6b76}
+      .lane{fill:#fff;stroke:#d3dde7;stroke-width:1.2}
+      .laneHead{font:700 16px Arial,sans-serif;fill:#244b66}
+      .box{fill:#fff;stroke:#8aa3b7;stroke-width:1.5}
+      .sf{fill:#edf6ff;stroke:#2f80d0}
+      .sql{fill:#edf8f1;stroke:#2e8b57}
+      .sage{fill:#fff6e8;stroke:#d78c1d}
+      .ok{fill:#eefaf0;stroke:#2e9b4d}
+      .err{fill:#fff0f0;stroke:#d13f45}
+      .sync{fill:#f3f6fb;stroke:#5c748a}
+      .label{font:700 15px Arial,sans-serif;fill:#23313d}
+      .text{font:12.5px Arial,sans-serif;fill:#314150}
+      .small{font:11.5px Arial,sans-serif;fill:#5f6b76}
+      .status{font:700 12.5px Arial,sans-serif;fill:#1f2d3d}
+      .arrow{fill:none;stroke:#5c748a;stroke-width:2.2;marker-end:url(#arrow)}
+      .green{fill:none;stroke:#2e9b4d;stroke-width:2.2;marker-end:url(#arrowGreen)}
+      .red{fill:none;stroke:#d13f45;stroke-width:2.2;marker-end:url(#arrowRed)}
+      .divider{stroke:#d3dde7;stroke-width:1.2}
+      .pill{fill:#fff;stroke:#c7d4df;stroke-width:1}
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#5c748a"/></marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#2e9b4d"/></marker>
+    <marker id="arrowRed" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#d13f45"/></marker>
+  </defs>
+
+  <rect class="bg" width="1320" height="900"/>
+  <text class="title" x="44" y="48">Prozessfluss für Sage100</text>
+  <text class="sub" x="44" y="74">Sage100 verarbeitet ausschließlich MSSQL-Staging-Zeilen mit PostFlag = 1 und schreibt Sage-IDs sowie Statuswerte zurück.</text>
+
+  <rect class="lane" x="44" y="105" width="388" height="690" rx="10"/>
+  <rect class="lane" x="466" y="105" width="388" height="690" rx="10"/>
+  <rect class="lane" x="888" y="105" width="388" height="690" rx="10"/>
+  <text class="laneHead" x="70" y="136">MSSQL Staging</text>
+  <text class="laneHead" x="492" y="136">Sage100 Verarbeitung</text>
+  <text class="laneHead" x="914" y="136">Rückmeldung / Abschluss</text>
+  <line class="divider" x1="44" y1="154" x2="432" y2="154"/>
+  <line class="divider" x1="466" y1="154" x2="854" y2="154"/>
+  <line class="divider" x1="888" y1="154" x2="1276" y2="154"/>
+
+  <g transform="translate(78,190)">
+    <rect class="box sf" width="320" height="90" rx="8"/>
+    <text class="label" x="18" y="28">1. Salesforce-Daten stehen bereit</text>
+    <text class="text" x="18" y="54">Kunden, Ansprechpartner, Projekte,</text>
+    <text class="text" x="18" y="72">Angebote und Angebotspositionen</text>
+  </g>
+  <path class="arrow" d="M238,285 L238,328"/>
+
+  <g transform="translate(78,330)">
+    <rect class="box sql" width="320" height="120" rx="8"/>
+    <text class="label" x="18" y="30">2. Offene Queue-Zeilen</text>
+    <text class="status" x="18" y="58">PostFlag = 1</text>
+    <text class="status" x="18" y="80">PostStatus = NEW oder UPDATED</text>
+    <text class="small" x="18" y="104">Sage100 liest nur diese Zeilen.</text>
+  </g>
+  <path class="arrow" d="M398,390 L500,390"/>
+
+  <g transform="translate(512,220)">
+    <rect class="box sage" width="300" height="110" rx="8"/>
+    <text class="label" x="18" y="30">3a. Neuanlage</text>
+    <text class="text" x="18" y="58">Wenn PostStatus = NEW</text>
+    <text class="text" x="18" y="80">Datensatz in Sage100 anlegen</text>
+  </g>
+  <path class="green" d="M812,275 L932,275"/>
+
+  <g transform="translate(512,380)">
+    <rect class="box sage" width="300" height="110" rx="8"/>
+    <text class="label" x="18" y="30">3b. Aktualisierung</text>
+    <text class="text" x="18" y="58">Wenn PostStatus = UPDATED</text>
+    <text class="text" x="18" y="80">Datensatz in Sage100 aktualisieren</text>
+  </g>
+  <path class="green" d="M812,435 L932,435"/>
+
+  <g transform="translate(512,565)">
+    <rect class="box err" width="300" height="120" rx="8"/>
+    <text class="label" x="18" y="30">3c. Fehlerfall</text>
+    <text class="text" x="18" y="58">Keine Teilfreigabe ohne Ergebnis</text>
+    <text class="status" x="18" y="82">PostStatus = SAGE_ERROR</text>
+    <text class="text" x="18" y="104">PostMessage und PostTryCount setzen</text>
+  </g>
+  <path class="red" d="M812,625 L932,625"/>
+
+  <g transform="translate(938,205)">
+    <rect class="box ok" width="300" height="140" rx="8"/>
+    <text class="label" x="18" y="30">4a. Neuanlage erfolgreich</text>
+    <text class="text" x="18" y="58">Sage-ID / Nummer in MSSQL schreiben</text>
+    <text class="status" x="18" y="84">PostStatus = SAGE_CREATED</text>
+    <text class="text" x="18" y="108">PostMessage = NULL</text>
+    <text class="text" x="18" y="126">PostedAt setzen</text>
+  </g>
+
+  <g transform="translate(938,365)">
+    <rect class="box ok" width="300" height="140" rx="8"/>
+    <text class="label" x="18" y="30">4b. Update erfolgreich</text>
+    <text class="text" x="18" y="58">Optional Sage-ID / Nummer nachpflegen</text>
+    <text class="status" x="18" y="84">PostStatus = SAGE_UPDATED</text>
+    <text class="text" x="18" y="108">PostMessage = NULL</text>
+    <text class="text" x="18" y="126">PostedAt setzen</text>
+  </g>
+
+  <g transform="translate(938,555)">
+    <rect class="box err" width="300" height="140" rx="8"/>
+    <text class="label" x="18" y="30">4c. Fehler zurückschreiben</text>
+    <text class="status" x="18" y="58">PostStatus = SAGE_ERROR</text>
+    <text class="text" x="18" y="84">PostMessage = fachlicher Fehlertext</text>
+    <text class="text" x="18" y="108">PostTryCount + 1</text>
+    <text class="text" x="18" y="126">LastPostAttemptAt setzen</text>
+  </g>
+
+  <path class="arrow" d="M1088,345 L1088,365"/>
+  <path class="arrow" d="M1088,505 L1088,535"/>
+  <g transform="translate(938,735)">
+    <rect class="box sync" width="300" height="80" rx="8"/>
+    <text class="label" x="18" y="30">5. Nach Rückmeldung an Salesforce</text>
+    <text class="status" x="18" y="56">PostStatus = SF_SYNCED, PostFlag = 0</text>
+  </g>
+
+  <g transform="translate(44,835)">
+    <rect class="pill" width="1232" height="38" rx="8"/>
+    <text class="small" x="18" y="24">Kurzregel: Sage100 liest NEW/UPDATED, schreibt bei Erfolg SAGE_CREATED/SAGE_UPDATED und bei Fehler SAGE_ERROR. SF_SYNCED wird danach durch den Rückmeldeprozess gesetzt.</text>
+  </g>
+</svg>

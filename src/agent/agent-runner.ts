@@ -996,6 +996,8 @@ async function executeSchedule(
   const isGenericSalesforceToMssql =
     schedule.sourceType === "SALESFORCE_SOQL" && schedule.targetType === "MSSQL";
   const isGenericSalesforceToFile = schedule.sourceType === "SALESFORCE_SOQL" && isFileTarget;
+  const isGenericSalesforceToSalesforce =
+    schedule.sourceType === "SALESFORCE_SOQL" && schedule.targetType === "SALESFORCE";
   const isGenericMssqlToSalesforce =
     schedule.sourceType === "MSSQL_SQL" && schedule.targetType === "SALESFORCE";
   const isGenericMssqlToGlobalPicklist =
@@ -1014,6 +1016,7 @@ async function executeSchedule(
   const isHandledGenericFlow =
     isGenericSalesforceToMssql ||
     isGenericSalesforceToFile ||
+    isGenericSalesforceToSalesforce ||
     isGenericMssqlToSalesforce ||
     isGenericMssqlToGlobalPicklist ||
     isGenericMssqlToFile ||

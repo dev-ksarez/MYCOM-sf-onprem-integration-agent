@@ -4,6 +4,7 @@ import { TargetConnector } from "../../types/target-connector";
 import { MssqlConnector } from "../../connectors/mssql/mssql-connector";
 import { OracleConnector } from "../../connectors/oracle/oracle-connector";
 import { FileMakerConnector } from "../../connectors/filemaker/filemaker-connector";
+import { SalesforceConnector } from "../../connectors/salesforce/salesforce-connector";
 
 interface CacheEntry {
   connector: TargetConnector;
@@ -64,6 +65,11 @@ export class ConnectorRegistry {
       case "filemaker":
       case "filemaker_data_api":
         connector = new FileMakerConnector(config);
+        break;
+      case "salesforce":
+      case "salesforce_org":
+      case "salesforce_connector":
+        connector = new SalesforceConnector(config);
         break;
       default:
         throw new Error(`No connector registered for connector type: ${config.connectorType}`);

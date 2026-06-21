@@ -266,6 +266,9 @@ function withInstance(path) {
   if (state.instanceId) {
     url.searchParams.set('instanceId', state.instanceId);
   }
+  if (state.headerLayerId && (url.pathname === '/api/schedules' || url.pathname === '/api/connectors' || url.pathname === '/api/graph')) {
+    url.searchParams.set('layerId', state.headerLayerId);
+  }
   return url.pathname + url.search;
 }
 
@@ -360,6 +363,11 @@ function isFileBrowseConnectorType(connectorType) {
 
 function isMssqlConnectorType(connectorType) {
   return normalizeConnectorType(connectorType) === 'MSSQL';
+}
+
+function isSalesforceConnectorType(connectorType) {
+  const normalized = normalizeConnectorType(connectorType);
+  return normalized === 'SALESFORCE' || normalized === 'SALESFORCE_ORG' || normalized === 'SALESFORCE_CONNECTOR';
 }
 
 function pickFirstAvailableSelectValue(selectEl, candidates) {
@@ -623,7 +631,7 @@ function getConnectorWizardTypeFromConnectorType(connectorType) {
   if (!normalized) {
     return 'MSSQL';
   }
-  if (['MSSQL', 'POSTGRESQL', 'MYSQL', 'ORACLE', 'FILEMAKER', 'FILE', 'FILE_BROWSE', 'REST_API', 'AGENT_ENDPOINT', 'FILE_BINARY_SF_IMPORT'].includes(normalized)) {
+  if (['MSSQL', 'POSTGRESQL', 'MYSQL', 'ORACLE', 'FILEMAKER', 'FILE', 'FILE_BROWSE', 'REST_API', 'AGENT_ENDPOINT', 'SALESFORCE', 'FILE_BINARY_SF_IMPORT'].includes(normalized)) {
     return normalized;
   }
   return 'CUSTOM';
